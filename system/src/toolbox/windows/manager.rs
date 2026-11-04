@@ -18,28 +18,28 @@ use crate::toolbox::{events::*,
                                  presentation::Outline,
                                  region::{BooleanOp, Region, RegionError}},
                      resources::definitions::{BoundDefinition, DefinitionRef}};
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[path = "admission.rs"]
 mod admission;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[path = "operations.rs"]
 pub(crate) mod operations;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[path = "birth.rs"]
 pub(crate) mod birth;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[path = "paint.rs"]
 pub(crate) mod paint;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[path = "canvas.rs"]
 pub(crate) mod canvas;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[path = "trusted.rs"]
 pub(crate) mod trusted;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[path = "ack.rs"]
 pub(crate) mod ack;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) use admission::{PreparedWindow, WindowCommit, WindowPlan};
 /// First content scan line below the menu bar.
 const MENU_BAR_BOTTOM: i16 = 21;
@@ -74,7 +74,7 @@ pub enum GroupFocus
 }
 
 /// Logical event ownership and retained resource source are different roles.
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[derive(Clone, Copy)]
 enum WindowSource
 {
@@ -86,7 +86,7 @@ enum WindowSource
     }
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 impl WindowSource
 {
     fn with<R>(self, owner: u64, operation: impl FnOnce() -> R) -> Result<R, Status>
@@ -135,16 +135,16 @@ struct OwnedWindow
     binding:           BoundDefinition,
     revision:          Option<u64>,
     content_revision:  Option<u64>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     cleanup_job:       Option<alloc::sync::Arc<operations::WindowJob>>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     paint:             Option<alloc::sync::Arc<paint::PaintOwner>>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     trusted_close:     Option<trusted::TrustedCloseHandle>
 }
 /// Same-exclusion outline publication; preparation changes no Window state.
 /// The original full-key payload stays borrowed through retained CTRL commit.
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) struct ControlOutlinePermit<'a>
 {
     outline:      &'a mut Option<Rect>,
@@ -153,7 +153,7 @@ pub(crate) struct ControlOutlinePermit<'a>
     next:         Option<Rect>,
     revisions:    Option<(u64, u64)>
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 impl ControlOutlinePermit<'_>
 {
     pub(crate) fn commit(self) -> bool
@@ -174,7 +174,7 @@ impl OwnedWindow
     #[allow(clippy::too_many_arguments)]
     fn new(bounds: Rect, title: &str, owner: u64, minimum: (i16, i16), procedure: i16,
            gate: mac_abi::TrapGate, binding: BoundDefinition, stay_in_back: bool,
-           #[cfg(guest)] source: WindowSource)
+           #[cfg(systemrisc)] source: WindowSource)
            -> Self
     {
         Self { window: Window { id: WindowId(0),
@@ -182,7 +182,7 @@ impl OwnedWindow
                                 user_initialization: UserInitialization::None,
                                 bounds,
                                 owner,
-                                #[cfg(guest)]
+                                #[cfg(systemrisc)]
                                 source,
                                 min_width: minimum.0,
                                 min_height: minimum.1,
@@ -208,11 +208,11 @@ impl OwnedWindow
                binding,
                revision: Some(1),
                content_revision: Some(1),
-               #[cfg(guest)]
+               #[cfg(systemrisc)]
                cleanup_job: None,
-               #[cfg(guest)]
+               #[cfg(systemrisc)]
                paint: None,
-               #[cfg(guest)]
+               #[cfg(systemrisc)]
                trusted_close: None }
     }
 }
@@ -241,7 +241,7 @@ pub struct Window
     user_initialization: UserInitialization,
     pub bounds:          Rect,
     pub owner:           u64,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     source:              WindowSource,
     pub min_width:       i16,
     pub min_height:      i16,
@@ -324,7 +324,7 @@ impl Window
     /// definition behind this frame was replaced.
     fn same_source(&self, _other: &Self) -> bool
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         {
             use WindowSource::{Application, System};
             match (&self.source, &_other.source)
@@ -337,14 +337,14 @@ impl Window
                 _ => false
             }
         }
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         {
             true
         }
     }
 
     /// Classification only; this does not authorize any caller or object ID.
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn uses_system_resources(&self) -> bool
     {
         matches!(self.source, WindowSource::System { .. })
@@ -352,7 +352,7 @@ impl Window
 
     /// Scope the source captured from the genuine storage owner at creation.
     /// Ordinary replay cannot inherit a surrounding modal placement permit.
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn with_resources<R>(&self, operation: impl FnOnce() -> R) -> Result<R, Status>
     {
         self.source.with(self.owner, operation)
@@ -451,7 +451,7 @@ impl Window
     /// Definition-owned content adornments are above retained application
     /// drawing. Preserve the compositor's damage clip, including grow-strip
     /// restrictions supplied by applications that do not use both scrollbars.
-    #[cfg_attr(not(guest), allow(dead_code))]
+    #[cfg_attr(not(systemrisc), allow(dead_code))]
     pub(crate) fn paint_content_overlay(&self, canvas: &mut Canvas<'_>) -> Result<(), Status>
     {
         let origin = canvas.origin();
@@ -503,7 +503,7 @@ impl Window
             }
         };
         // The manager owns state, and a supplied entry must implement this native ABI.
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         {
             // Copy source metadata before invoking the ABI: holding &Window
             // across a call which mutates its definition state would alias it.
@@ -511,7 +511,7 @@ impl Window
             let owner = self.owner;
             source.with(owner, invoke).unwrap_or_else(i64::from)
         }
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         {
             invoke()
         }
@@ -763,9 +763,9 @@ impl Drop for InitializingWindow<'_>
         {
             let (ticket, cause) = failure.into_parts();
             self.manager.quarantine_or_retain(ticket);
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: {cause}");
-            #[cfg(not(guest))]
+            #[cfg(not(systemrisc))]
             let _ = cause;
         }
     }
@@ -789,7 +789,7 @@ impl core::fmt::Display for CloseError
     }
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 struct RecoveryWindow
 {
     id:       WindowId,
@@ -803,12 +803,12 @@ struct RecoveryWindow
 /// This pins at most the two real service guards once per traversal under the
 /// manager's existing admission. Use with its synchronously borrowed Window;
 /// this grants source/placement selection, not arbitrary object mutation.
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) struct WindowScopes
 {
     recovery: [Option<(WindowId, crate::recovery::Activity)>; 2]
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 impl WindowScopes
 {
     pub(crate) fn with_window<R>(&self, window: &Window, operation: impl FnOnce() -> R)
@@ -852,22 +852,22 @@ pub struct WindowManager
     /// Main-screen bounds that interactive drag, grow and zoom stay within.
     screen:                Rect,
     hit_revision:          Option<u64>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     removals:              VecDeque<operations::RemovalDebt>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     removal_readers:       alloc::sync::Arc<operations::RemovalReaders>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     work_notice: alloc::sync::Arc<crate::toolbox::resources::definitions::callbacks::Notice>,
     retained_failures:     VecDeque<mac_object_table::domain::CompletionError>,
     // One guaranteed modal service has one main window and one auxiliary
     // sheet. Keep their guards outside the Copy geometry payload, keyed by
     // their canonical full window IDs, including while invalidated/quarantined.
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     recovery_windows:      [Option<RecoveryWindow>; 2],
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     recovery_publications:
         Option<[mac_object_table::store::PublicationReservation<InvocationGate>; 2]>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     recovery_closes:       Vec<alloc::sync::Arc<trusted::TrustedCloseHeader>>,
     order:                 Vec<WindowId>,
     len:                   usize,
@@ -892,13 +892,13 @@ impl Default for WindowManager
 }
 impl WindowManager
 {
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn recovery_window_capacity(&self) -> usize
     {
         self.recovery_windows.len()
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn resource_scopes(&self) -> WindowScopes
     {
         WindowScopes { recovery: core::array::from_fn(|index| {
@@ -910,7 +910,7 @@ impl WindowManager
     pub(crate) fn with_kinds(kinds: (KindLease, KindLease), gate: mac_abi::TrapGate)
                              -> Result<Self, Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let work_notice = crate::toolbox::resources::definitions::callbacks::Notice::new()?;
         Ok(Self { visibility: RefCell::new(Default::default()),
                   front_cache: Cell::new(None),
@@ -919,18 +919,18 @@ impl WindowManager
                   })?,
                   retained_failures: VecDeque::new(),
                   hit_revision: Some(1),
-                  #[cfg(guest)]
+                  #[cfg(systemrisc)]
                   removals: VecDeque::new(),
-                  #[cfg(guest)]
+                  #[cfg(systemrisc)]
                   removal_readers: alloc::sync::Arc::try_new(operations::RemovalReaders::new(work_notice.clone()))
                       .map_err(|_| mac_abi::NO_MEMORY)?,
-                  #[cfg(guest)]
+                  #[cfg(systemrisc)]
                   work_notice,
-                  #[cfg(guest)]
+                  #[cfg(systemrisc)]
                   recovery_windows: core::array::from_fn(|_| None),
-                  #[cfg(guest)]
+                  #[cfg(systemrisc)]
                   recovery_publications: None,
-                  #[cfg(guest)]
+                  #[cfg(systemrisc)]
                   recovery_closes: Vec::new(),
                   screen: Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16),
                   order: Vec::new(),
@@ -1002,23 +1002,23 @@ impl WindowManager
         {
             return storage.incarnation() == recipient;
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         {
             return self.recovery_windows
                        .iter()
                        .flatten()
                        .any(|held| held.id == id && held.activity.owner() == recipient);
         }
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         false
     }
 
     pub(crate) fn front_readable(&self, recipient: u64) -> Option<WindowId>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let service_window =
             self.recovery_windows.iter().flatten().any(|held| held.activity.owner() == recipient);
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         let service_window = false;
         if !service_window
         {
@@ -1042,7 +1042,7 @@ impl WindowManager
         {
             return storage.incarnation() == recipient && window.owner == recipient;
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if let Some(activity) = crate::context::recovery_activity()
         {
             return window.owner == activity.owner()
@@ -1055,7 +1055,7 @@ impl WindowManager
         false
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn prepare_recovery(&mut self, storage: &OwnerRef) -> Result<(), Status>
     {
         if storage.owner().kind() != mac_object_table::domain::DomainKind::System
@@ -1090,7 +1090,7 @@ impl WindowManager
 
     pub(crate) fn recovery_spare(&self) -> usize
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if let Some(tokens) = &self.recovery_publications
         {
             // A releasing endpoint has already left geometry/order, but its
@@ -1100,7 +1100,7 @@ impl WindowManager
         0
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     fn finish_recovery_acknowledgements(&mut self)
     {
         let Some(tokens) = &self.recovery_publications
@@ -1127,7 +1127,7 @@ impl WindowManager
 
     /// Run at a real cleanup/progress checkpoint, never as a pointer-motion
     /// retry loop. The unique ticket stays here if its WDEF still refuses.
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn retry_recovery_cleanup(&mut self)
     {
         use mac_object_table::registry::CleanupFailure;
@@ -1196,7 +1196,7 @@ impl WindowManager
         self.finish_recovery_acknowledgements();
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn recovery_close_pending(&mut self, id: WindowId,
                                          activity: &crate::recovery::Activity)
                                          -> Result<bool, Status>
@@ -1230,7 +1230,7 @@ impl WindowManager
     {
         if let Err(error) = self.windows.quarantine(ticket)
         {
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             serial!("WINDOW_QUARANTINE_RETAINED: {error}; payload/backing remain pending");
             // Capacity for a refusal per admitted window is pinned before
             // publication. Cleanup neither allocates nor drops this capability.
@@ -1298,7 +1298,7 @@ impl WindowManager
             return Err(Failure::registration_mismatch(ticket));
         };
         let id = window.id;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         {
             if let Some(owned) = self.windows.releasing(&ticket)
                && (owned.initialized
@@ -1347,18 +1347,18 @@ impl WindowManager
                                                               self.removals.capacity()));
             }
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.windows.releasing(&ticket).is_some_and(|owned| owned.trusted_close.is_some())
         {
             return self.defer_trusted_release(ticket);
         }
         self.release_trusted_now(ticket,
-                                 #[cfg(guest)]
+                                 #[cfg(systemrisc)]
                                  None)
     }
 
     fn release_trusted_now(&mut self, ticket: mac_object_table::domain::ReleasedResource,
-                           #[cfg(guest)]
+                           #[cfg(systemrisc)]
                            trusted: Option<trusted::TrustedCloseHandle>)
                            -> Result<WindowId, Failure>
     {
@@ -1406,7 +1406,7 @@ impl WindowManager
             return Err(Failure::window_definition(ticket, id.0, window.procedure, reply));
         }
         owned.disposal_complete.set(true);
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         {
             let removed = self.windows.release(ticket).map_err(Failure::from)?;
             let debt = match trusted
@@ -1425,9 +1425,9 @@ impl WindowManager
             self.removals.push_back(debt);
             self.work_notice.request();
         }
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         drop(self.windows.release(ticket).map_err(Failure::from)?);
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         {
             if let Some(held) =
                 self.recovery_windows.iter_mut().flatten().find(|held| held.id == id)
@@ -1561,7 +1561,7 @@ impl WindowManager
         let owner = self.test_owner(owner);
         self.new_window_with_activation(bounds, title, &owner, minimum, procedure, entry, events,
                                         when, true, false,
-                                        #[cfg(guest)]
+                                        #[cfg(systemrisc)]
                                         None)
             .ok()
     }
@@ -1578,9 +1578,9 @@ impl WindowManager
             return Err(CreationError::Stopping);
         }
         let (min_width, min_height) = minimum;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let recovery = crate::context::recovery_activity();
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let recovery_slot = if let Some(activity) = &recovery
         {
             if owner.owner() != activity.storage_owner().owner()
@@ -1637,7 +1637,7 @@ impl WindowManager
         {
             return Err(CreationError::InvalidRequest);
         }
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         let recovery_slot = None;
         Ok(recovery_slot)
     }
@@ -1649,14 +1649,14 @@ impl WindowManager
                                              procedure: i16, entry: DefinitionRef,
                                              events: &mut EventManager, when: u32, activate: bool,
                                              stay_in_back: bool,
-                                             #[cfg(guest)] owner_close: Option<trusted::TrustedBinding>)
+                                             #[cfg(systemrisc)] owner_close: Option<trusted::TrustedBinding>)
                                              -> Result<WindowId, CreationError>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let recovery = crate::context::recovery_activity();
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let recovery_slot = self.preflight_creation(bounds, owner, minimum, stay_in_back)?;
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         self.preflight_creation(bounds, owner, minimum, stay_in_back)?;
         let binding =
             crate::toolbox::resources::definitions::bind(entry).map_err(CreationError::Binding)?;
@@ -1664,7 +1664,7 @@ impl WindowManager
         // the subsequent Window and owner Store backing retain caller charges.
         InvocationGate::with_system_allocation(|| {
             let padding = self.recovery_spare();
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             let padding = if recovery.is_some() { 0 } else { padding };
             let required = self.len
                                .checked_add(1)
@@ -1678,13 +1678,13 @@ impl WindowManager
             self.geometry_order
                 .try_reserve(required.saturating_sub(self.geometry_order.len()))
                 .map_err(|_| CreationError::NoMemory)?;
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             self.removals
                 .try_reserve(self.removal_capacity_required(1 + padding)?)
                 .map_err(|_| CreationError::NoMemory)?;
             Ok(())
         })?;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let source = if owner.owner().kind() == mac_object_table::domain::DomainKind::System
         {
             WindowSource::System {
@@ -1697,7 +1697,7 @@ impl WindowManager
         {
             WindowSource::Application
         };
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let trusted_binding = if crate::toolbox::resources::definitions::is_user(entry)
             .map_err(CreationError::Binding)? { None }
         else if let Some(slot) = recovery_slot
@@ -1716,23 +1716,23 @@ impl WindowManager
         }
         else { owner_close };
         let mut logical_owner = owner.owner().incarnation();
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if let Some(activity) = &recovery
         {
             logical_owner = activity.owner();
         }
         let mut window = Some(OwnedWindow::new(bounds, title, logical_owner, minimum, procedure,
                                                self.gate, binding, stay_in_back,
-                                               #[cfg(guest)]
+                                               #[cfg(systemrisc)]
                                                source));
         self.retry_retained_quarantines();
         InvocationGate::with_system_allocation(|| {
             let padding = self.recovery_spare();
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             let padding = if recovery.is_some() { 0 } else { padding };
             self.retained_failures.try_reserve(self.len + 1 + padding)
         }).map_err(|_| CreationError::NoMemory)?;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let reserved = if let (Some(slot), Some(activity)) = (recovery_slot, &recovery)
         {
             let subject = activity.root_subject();
@@ -1750,7 +1750,7 @@ impl WindowManager
         {
             None
         };
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         let reserved = None;
         let id = match reserved
         {
@@ -1767,11 +1767,11 @@ impl WindowManager
             }
         };
         self.initialize_window(id, procedure, events, when, activate,
-                               #[cfg(guest)]
+                               #[cfg(systemrisc)]
                                recovery,
-                               #[cfg(guest)]
+                               #[cfg(systemrisc)]
                                recovery_slot,
-                               #[cfg(guest)]
+                               #[cfg(systemrisc)]
                                trusted_binding)
     }
 
@@ -1780,10 +1780,10 @@ impl WindowManager
     #[allow(clippy::too_many_arguments)]
     fn initialize_window(&mut self, id: WindowId, procedure: i16, events: &mut EventManager,
                          when: u32, activate: bool,
-                         #[cfg(guest)]
+                         #[cfg(systemrisc)]
                          recovery: Option<crate::recovery::Activity>,
-                         #[cfg(guest)] recovery_slot: Option<usize>,
-                         #[cfg(guest)]
+                         #[cfg(systemrisc)] recovery_slot: Option<usize>,
+                         #[cfg(systemrisc)]
                          trusted_binding: Option<trusted::TrustedBinding>)
                          -> Result<WindowId, CreationError>
     {
@@ -1795,7 +1795,7 @@ impl WindowManager
         let mut guard = InitializingWindow { manager: self,
                                              id,
                                              committed: false };
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if let (Some(activity), Some(slot)) = (recovery, recovery_slot)
         {
             activity.window_created(id).map_err(|_| CreationError::RecoveryBusy)?;
@@ -1804,7 +1804,7 @@ impl WindowManager
                                                                          retry: None,
                                                                          disposed: false });
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if let Some(binding) = trusted_binding
         {
             let (storage, _) = guard.manager
@@ -2082,7 +2082,7 @@ impl WindowManager
             {
                 let (ticket, cause) = failure.into_parts();
                 let mut pending = Some(ticket);
-                #[cfg(guest)]
+                #[cfg(systemrisc)]
                 if let Some(held) =
                     self.recovery_windows.iter_mut().flatten().find(|held| held.id == id)
                 {
@@ -2391,7 +2391,7 @@ impl WindowManager
         true
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn content_outline(&mut self, id: WindowId, next: Option<Rect>)
                                   -> Result<bool, mac_abi::Status>
     {
@@ -2406,7 +2406,7 @@ impl WindowManager
 
     /// Resolve the actual original full-key payload without window_mut's
     /// revision side effects. Only changed scalar commit advances dependencies.
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn prepare_control_outline(&mut self, id: WindowId, next: Option<Rect>)
                                           -> Result<ControlOutlinePermit<'_>, mac_abi::Status>
     {
@@ -2430,7 +2430,7 @@ impl WindowManager
                                   revisions })
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn control_outline(&mut self, id: WindowId, next: Option<Rect>)
                                   -> Result<bool, mac_abi::Status>
     {
@@ -2710,7 +2710,7 @@ impl WindowManager
                 {
                     let w = &mut next;
                     zoom_geometry(w, self.screen);
-                    #[cfg(guest)]
+                    #[cfg(systemrisc)]
                     self.preflight_geometry(window)?;
                     if !w.calculate()
                     {
@@ -2750,7 +2750,7 @@ impl WindowManager
                         staged.bounds = next;
                         staged.user_bounds = None;
                         staged.state.zoomed = 0;
-                        #[cfg(guest)]
+                        #[cfg(systemrisc)]
                         self.preflight_geometry(window)?;
                         if !staged.calculate()
                         {
@@ -2782,7 +2782,7 @@ impl WindowManager
                     staged.bounds = next;
                     staged.user_bounds = None;
                     staged.state.zoomed = 0;
-                    #[cfg(guest)]
+                    #[cfg(systemrisc)]
                     self.preflight_geometry(window)?;
                     if !staged.calculate()
                     {
@@ -2813,9 +2813,9 @@ impl WindowManager
                         let owner = self.window(window).ok_or(NOT_FOUND)?.owner;
                         if let Err(error) = self.dispose_window(window, events, when)
                         {
-                            #[cfg(guest)]
+                            #[cfg(systemrisc)]
                             serial!("WINDOW_CLOSE_REFUSED: owner={owner} {error}");
-                            #[cfg(not(guest))]
+                            #[cfg(not(systemrisc))]
                             let _ = error;
                         }
                         action = Some(Action::Close(window, owner));
@@ -3056,7 +3056,7 @@ impl WindowManager
         {
             return Ok(None);
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         self.preflight_geometry(id)?;
         let mut staged = *current;
         staged.bounds = bounds;
@@ -3089,7 +3089,7 @@ impl WindowManager
     /// Before device or geometry effects, in the SAME Desktop exclusion as
     /// fit_to_screen. No author executes here. Actual claimed painters are
     /// cancelled to drain, and the caller retains the original settled size.
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn preflight_fit_to_screen(&self, screen: Rect, bar: i16) -> Result<(), Status>
     {
         for &id in &self.order[..self.len]
@@ -3167,7 +3167,7 @@ impl WindowManager
         {
             return Ok(());
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         self.preflight_geometry(id)?;
         let window = self.window_mut(id).ok_or(NOT_FOUND)?;
         if let Some(bounds) = bounds
@@ -3214,7 +3214,7 @@ impl WindowManager
                              mut paint: impl FnMut(&Window, &mut Canvas) -> Result<(), Status>)
                              -> Result<(), Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let scopes = self.resource_scopes();
         for window in self.back_to_front().filter(|window| include(window))
         {
@@ -3224,9 +3224,9 @@ impl WindowManager
                     Some(Tracking::Close {window: id, armed: true}) if id == window.id));
                 copy.state.zoom_pressed = u32::from(matches!(self.tracking,
                     Some(Tracking::Zoom {window: id, armed: true}) if id == window.id));
-                #[cfg(guest)]
+                #[cfg(systemrisc)]
                 let system = window.uses_system_resources();
-                #[cfg(not(guest))]
+                #[cfg(not(systemrisc))]
                 let system = false;
                 self.draw_layer_piece(c, &mut copy, definition::DRAW, system)?;
                 let mut content = Ok(());
@@ -3253,9 +3253,9 @@ impl WindowManager
                 content?;
                 self.draw_layer_piece(c, &mut copy, definition::DRAW_GROW_ICON, system)
             };
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             let result = scopes.with_window(window, draw).and_then(core::convert::identity);
-            #[cfg(not(guest))]
+            #[cfg(not(systemrisc))]
             let result = {
                 let mut draw = draw;
                 draw()
@@ -3395,7 +3395,7 @@ impl WindowManager
 
     /// Copy committed ordinary pixels only where no genuine System source
     /// structure covers them. This never recomposes or samples service pixels.
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn for_each_ordinary_underlay_rect(&self, bounds: Rect, mut visit: impl FnMut(Rect))
     {
         if !self.back_to_front().any(|window| window.uses_system_resources())

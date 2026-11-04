@@ -13,7 +13,7 @@ pub(super) struct Group
 {
     pub owner:             u64,
     pub authority:         super::subject::Authority,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(super) io_subject: Option<crate::drivers::jobs::subjects::Subject>,
     pub volume:            u32,
     pub when:              u64,
@@ -39,7 +39,7 @@ impl super::objects::Payload for Group
 
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FIGR");
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
     {
         self.io_subject.as_ref()
@@ -113,7 +113,7 @@ impl Manager
                                            -> Result<(), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FIGR"))?;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         self.prepare_groups(crate::toolbox::handles::file_group_kinds()?)?;
         if call.operation != BEGIN_ICON_GROUP
            || call.handle != 0
@@ -169,7 +169,7 @@ impl Manager
                                   completed: 0,
                                   total:     rows.len() as u32,
                                   changed:   false };
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         let io_subject = if provider.is_some()
         {
             Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?)
@@ -181,7 +181,7 @@ impl Manager
         call.handle =
             self.groups
                 .insert_authorized(authority,
-                                   Group { #[cfg(guest)]
+                                   Group { #[cfg(systemrisc)]
                                            io_subject,
                                            owner: owner.label(),
                                            authority: authority.clone(),
@@ -213,7 +213,7 @@ impl Manager
         {
             #[cfg(test)]
             let authority = self.fixture_group_owner(owner);
-            #[cfg(all(not(test), guest))]
+            #[cfg(all(not(test), systemrisc))]
             let authority = if owner == 0
             {
                 crate::toolbox::handles::system_owner()?
@@ -222,9 +222,9 @@ impl Manager
             {
                 return Err(ACCESS_DENIED);
             };
-            #[cfg(all(not(test), not(guest)))]
+            #[cfg(all(not(test), not(systemrisc)))]
             return Err(ACCESS_DENIED);
-            #[cfg(any(test, guest))]
+            #[cfg(any(test, systemrisc))]
             return self.group_request_for(owner, &authority, call, rows);
         }
         self.group_request_authorized(super::subject::Access::Client(owner), None, call, rows)

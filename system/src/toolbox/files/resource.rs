@@ -55,14 +55,14 @@ impl ModuleReadError
     }
 }
 
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 fn module_headers(index: mac_formats::resource::stream::ReferenceIndex<'_>)
                   -> impl Iterator<Item = mac_formats::module::ResourceHeader> + Clone
 {
     index.entries().map(mac_formats::module::ResourceHeader::from)
 }
 
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 fn module_length(row: mac_formats::resource::index::Entry<'_>,
                  read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
                  -> mac_formats::Result<usize>
@@ -78,7 +78,7 @@ fn module_length(row: mac_formats::resource::index::Entry<'_>,
     Ok(length)
 }
 
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 fn module_contract(index: mac_formats::resource::stream::ReferenceIndex<'_>,
                    row: mac_formats::resource::index::Entry<'_>, file_type: [u8; 4],
                    read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
@@ -122,7 +122,7 @@ fn module_contract(index: mac_formats::resource::stream::ReferenceIndex<'_>,
                        data: bytes }))
 }
 
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 fn module_preflight(index: mac_formats::resource::stream::ReferenceIndex<'_>, file_type: [u8; 4],
                     read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
                     -> mac_formats::Result<mac_formats::resource::Resource>
@@ -153,7 +153,7 @@ fn module_preflight(index: mac_formats::resource::stream::ReferenceIndex<'_>, fi
 /// Complete framing and both target contracts are validated before selected
 /// System code is admitted. Finder body/digest/relocations remain uninspected;
 /// its code stays on disk after indexed range and stored-size validation.
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 fn project_module(length: u64, file_type: [u8; 4], metadata_only: bool,
                   mut storage: impl FnMut(u64, &mut [u8]) -> Result<(), Status>)
                   -> Result<Vec<mac_formats::resource::Resource>, ModuleReadError>
@@ -224,7 +224,7 @@ pub(super) fn application_format_status(error: mac_formats::Error) -> Status
     }
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) struct ProviderInspection
 {
     pub token:    u64,
@@ -235,10 +235,10 @@ pub(crate) struct ProviderInspection
     pub length:   u64,
     pub index:    Option<mac_formats::resource::index::Index>
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 impl Manager
 {
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn startup_preferences(&mut self, name: &str) -> Result<Vec<u8>, Status>
     {
         let id = self.volumes
@@ -383,7 +383,7 @@ fn read_icon(length: u64, id: i16, resident: crate::toolbox::resources::manager:
 }
 
 
-#[cfg_attr(not(guest), allow(dead_code))]
+#[cfg_attr(not(systemrisc), allow(dead_code))]
 impl Manager
 {
     pub(crate) fn take_resource_index(
@@ -450,7 +450,7 @@ impl Manager
         loader.finish().map_err(application_format_status)
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn application_resources_selected(
         &mut self, volume: u32, cnid: u32, selection: super::application::Selection)
         -> Result<(CatalogInfo, Vec<mac_formats::resource::Resource>), Status>
@@ -538,7 +538,7 @@ impl Manager
     }
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) struct ModuleCandidate
 {
     pub directory: mac_module::PackageKind,
@@ -547,7 +547,7 @@ pub(crate) struct ModuleCandidate
     pub file_type: [u8; 4],
     pub name:      Vec<u8>
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 impl Manager
 {
     /// Discover metadata only in the selected blessed installation. This never
@@ -617,10 +617,10 @@ impl Manager
     }
 }
 
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 impl Manager
 {
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn module_metadata(&mut self, volume: u32, cnid: u32) -> Result<Vec<u8>, Status>
     {
         let mut resources = self.module_projected(volume, cnid, true).map_err(|cause| {
@@ -630,7 +630,7 @@ impl Manager
         resources.pop().map(|resource| resource.data).ok_or(BAD_ABI)
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn module_resources(&mut self, volume: u32, cnid: u32)
                                    -> Result<Vec<mac_formats::resource::Resource>, Status>
     {

@@ -12,7 +12,7 @@ impl Manager
         mounted.info().ok_or(NOT_FOUND)?;
         Ok(match mounted
         {
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Mounted::Operating(_) => false,
             Mounted::Block(block) => block.info.read_only == 0 && !block.poisoned,
             Mounted::Provider(provider) =>

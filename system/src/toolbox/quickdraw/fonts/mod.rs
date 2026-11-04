@@ -500,7 +500,7 @@ impl FontManager
 
     /// Conservative ink extent for retained bitmap text, cached with the draw
     /// command. Outline/hinted text retains its ordinary clipped drawing path.
-    #[cfg_attr(not(guest), allow(dead_code))]
+    #[cfg_attr(not(systemrisc), allow(dead_code))]
     pub(crate) fn vertical_ink_bounds(&self, selection: FontSelection)
                                       -> Result<Option<(i32, i32)>, Status>
     {

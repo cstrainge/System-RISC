@@ -2492,7 +2492,7 @@ impl WindowManager
                                                               trusted: None,
                                                               readers: self.removal_readers
                                                                            .clone() }));
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if let Some(held) = self.recovery_windows.iter_mut().flatten().find(|held| held.id == id)
         {
             held.disposed = true;

@@ -233,7 +233,7 @@ impl Drop for ReleasedStock
 {
     fn drop(&mut self)
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if available()
         {
             crate::toolbox::processes::termination::progress();
@@ -293,7 +293,7 @@ impl Protected
                 })
                 .ok_or(SERVICE_BUSY)
         })?;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         crate::toolbox::processes::termination::progress();
         Ok(claimed)
     }

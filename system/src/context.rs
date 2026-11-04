@@ -1,26 +1,26 @@
 //! Execution identity. Active classic state belongs to its resident services.
 //! Identity must come
 //! from the kernel scheduler, not from untrusted request fields.
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 mod selection;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThreadId(pub u64);
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub const BOOT_THREAD: ThreadId = ThreadId(1);
 static FINDER_APP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 pub fn finder_app() -> AppId
 {
     AppId(FINDER_APP.load(core::sync::atomic::Ordering::Acquire))
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn set_finder_app(app: u64)
 {
     FINDER_APP.store(app, core::sync::atomic::Ordering::Release);
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn replace_finder_app(old: u64, owner: &crate::toolbox::handles::OwnerRef)
                                  -> Result<(), mac_abi::Status>
 {
@@ -35,14 +35,14 @@ pub(crate) fn replace_finder_app(old: u64, owner: &crate::toolbox::handles::Owne
               .map(|_| ())
               .map_err(|_| mac_abi::SERVICE_BUSY)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutionContext
 {
     pub app:    AppId,
     pub thread: ThreadId
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub fn bootstrap_thread() -> ThreadId
 {
     // This CPU must hold the actual admitted sscratch control. Checked boot
@@ -53,7 +53,7 @@ pub fn bootstrap_thread() -> ThreadId
 
 /// Scheduler wake identity is typed; a full native transfer ID is never
 /// guessed from the bit range of another manager's native ID.
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeferredIo
 {
@@ -61,7 +61,7 @@ pub enum DeferredIo
     FileTransfer(u64),
     FileOperation(u64)
 }
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 impl DeferredIo
 {
     fn valid(self) -> bool
@@ -75,7 +75,7 @@ impl DeferredIo
 }
 
 /// A borrowed event readiness pass, filled in preallocated scheduler scratch.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) struct EventWaiter
 {
     pub(crate) app:   u64,
@@ -85,37 +85,37 @@ pub(crate) struct EventWaiter
 
 /// Accounting belongs to an OS thread and survives hart migration with it.
 /// Independent app calls must never increment each other's nesting counters.
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 pub struct ThreadTrapState
 {
     depth:                     core::sync::atomic::AtomicUsize,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     reported:                  core::sync::atomic::AtomicBool,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     refusal_reported:          core::sync::atomic::AtomicBool,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     terminal_busy_reported:    core::sync::atomic::AtomicBool,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     tracking_refusal_reported: core::sync::atomic::AtomicBool,
     deferred:                  spinning_top::Spinlock<Option<DeferredIo>>
 }
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 impl ThreadTrapState
 {
     pub const fn new() -> Self
     {
         Self { depth:
                    core::sync::atomic::AtomicUsize::new(0),
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                reported:
                    core::sync::atomic::AtomicBool::new(false),
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                refusal_reported:
                    core::sync::atomic::AtomicBool::new(false),
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                terminal_busy_reported:
                    core::sync::atomic::AtomicBool::new(false),
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                tracking_refusal_reported:
                    core::sync::atomic::AtomicBool::new(false),
                deferred:
@@ -171,13 +171,13 @@ impl ThreadTrapState
         crate::toolbox::handles::InvocationGate::run(|| self.deferred.lock().take())
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub fn nesting_refusal_reported(&self) -> bool
     {
         self.refusal_reported.swap(true, core::sync::atomic::Ordering::Relaxed)
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub fn nesting_reported(&self) -> bool
     {
         self.reported.swap(true, core::sync::atomic::Ordering::Relaxed)
@@ -185,26 +185,26 @@ impl ThreadTrapState
 
     /// Bound the native terminal-service diagnostic to this actual thread.
     /// This flag carries no service readiness or completion authority.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn terminal_busy_reported(&self) -> bool
     {
         self.terminal_busy_reported.swap(true, core::sync::atomic::Ordering::Relaxed)
     }
 
     /// First producer refusal only; not readiness or completion authority.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn tracking_refusal_reported(&self) -> bool
     {
         self.tracking_refusal_reported.swap(true, core::sync::atomic::Ordering::Relaxed)
     }
 }
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 pub struct TrapScope<'a>
 {
     state:     &'a ThreadTrapState,
     pub depth: usize
 }
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 impl Drop for TrapScope<'_>
 {
     fn drop(&mut self)
@@ -1218,7 +1218,7 @@ pub(crate) fn selected_allocation() -> AllocationSelection
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn capture_allocation() -> Result<crate::allocation::Target, mac_abi::Status>
 {
     match selected_allocation()
@@ -1228,7 +1228,7 @@ pub(crate) fn capture_allocation() -> Result<crate::allocation::Target, mac_abi:
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_allocation<R>(target: crate::allocator::Target, operation: impl FnOnce() -> R)
                                  -> R
 {
@@ -1489,13 +1489,13 @@ mod tests
 /// the scheduled thread. Only the validated definition adapter installs them;
 /// neither a caller request nor the interrupted worker selects this scope.
 /// This does not change the thread identity or its module resource authority.
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 pub struct DefinitionInvocations
 {
     current: core::sync::atomic::AtomicU64,
     surface: core::sync::atomic::AtomicPtr<mac_abi::Surface>
 }
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 impl DefinitionInvocations
 {
     pub const fn new() -> Self
@@ -1536,14 +1536,14 @@ impl DefinitionInvocations
         (identity != 0).then_some(((identity >> 16) as u32, identity as i16))
     }
 }
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 struct DefinitionScope<'a>
 {
     state:            &'a DefinitionInvocations,
     previous:         u64,
     previous_surface: *mut mac_abi::Surface
 }
-#[cfg(any(guest, test))]
+#[cfg(any(systemrisc, test))]
 impl Drop for DefinitionScope<'_>
 {
     fn drop(&mut self)

@@ -2,7 +2,7 @@
 //! object-value scans, formatting allocations, or caller-selected identity.
 #![forbid(unsafe_code)]
 pub(crate) mod memory;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod cpus;
 use mac_abi::{inspection::*, *};
 use mac_object_table::{domain::{CapacityPolicy, Directory, DomainKind, LedgerReadError},
@@ -604,15 +604,15 @@ impl core::fmt::Write for FaultText<'_>
 }
 
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 static MEMBERSHIP_CHANGED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn membership_changed()
 {
     MEMBERSHIP_CHANGED.store(true, core::sync::atomic::Ordering::Release);
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn take_membership_change() -> bool
 {
     MEMBERSHIP_CHANGED.load(core::sync::atomic::Ordering::Acquire)

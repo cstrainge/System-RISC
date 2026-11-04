@@ -37,7 +37,7 @@ pub(in crate::toolbox::files) type Key<T> = <<T as Payload>::Storage as Backend<
 pub(in crate::toolbox::files) type Guard<T> = <<T as Payload>::Storage as Backend<T>>::Guard;
 fn status(error: projected::Error) -> Status
 {
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     serial!("FILE_OBJECT_ADMISSION_REFUSED: {error}");
     crate::toolbox::handles::projection_status(error)
 }

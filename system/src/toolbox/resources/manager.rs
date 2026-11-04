@@ -21,9 +21,9 @@ pub struct Manager<'a>
     application:        &'a [Resource],
     fonts:              &'a [Resource],
     images:             Option<&'a dyn ImageCatalog>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     application_origin: u64,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     image_pin:          Option<&'a crate::images::Read>
 }
 impl<'a> Manager<'a>
@@ -35,13 +35,13 @@ impl<'a> Manager<'a>
                application,
                fonts,
                images: None,
-               #[cfg(guest)]
+               #[cfg(systemrisc)]
                application_origin: 0,
-               #[cfg(guest)]
+               #[cfg(systemrisc)]
                image_pin: None }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn with_images(mut self, images: &'a dyn ImageCatalog, application_origin: u64,
                               image_pin: Option<&'a crate::images::Read>)
                               -> Self
@@ -52,7 +52,7 @@ impl<'a> Manager<'a>
         self
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn retain_origin(self) -> Result<Option<crate::images::Read>, Status>
     {
         self.image_pin.map(crate::images::Read::retain).transpose()
@@ -62,7 +62,7 @@ impl<'a> Manager<'a>
     /// keeping the logical view must never retarget it to a later application.
     pub(crate) fn resolved_scope(self, scope: Scope) -> Scope
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if scope == APPLICATION && self.application_origin != 0
         {
             return Scope::image(self.application_origin);

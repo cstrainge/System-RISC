@@ -1,10 +1,10 @@
 //! Resident File Manager with catalog/Trash writes on live firmware block devices.
 //! No file contents or catalog listings are fabricated or cached in applications.
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 mod resource;
 #[cfg(feature = "test-support")]
 pub(crate) use resource::ModuleReadError;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod application;
 use alloc::{string::String, sync::Arc, vec::Vec};
 
@@ -14,7 +14,7 @@ use mac_object_table::shared::InvocationGate as _;
 use crate::toolbox::handles::InvocationGate;
 
 mod objects;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod local;
 mod subject;
 pub(crate) mod pins;
@@ -23,51 +23,51 @@ mod scan;
 mod properties;
 pub(crate) mod watch;
 mod cache;
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 mod icon_cache;
 pub(crate) mod streams;
 pub(crate) mod groups;
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 mod stream_native;
 mod provider;
 #[cfg(feature = "test-support")]
 pub(crate) use provider::Source as TestProviderSource;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) use provider::runtime::transfer::lifetime as transfer_lifetime;
 pub(crate) mod types;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 mod backing;
 use mac_abi::{files::*, *};
 use mac_filesystem::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, Volume,
                      WritableBlockDevice};
 pub use mac_formats::macbinary::MacFile;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(in crate::toolbox) use provider::runtime::{ResidentReply, ResidentRequest};
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) use provider::runtime::{abandon_thread as abandon_provider_thread,
                                    mount_startup_exports, pump as pump_provider_operations,
                                    request_resource};
 
 /// Owned transfer compatibility calls use the same trap replay boundary as
 /// driver jobs, with IDs classified by the central namespace registry.
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn transfer_io_pending(thread: u64, handle: u64) -> Result<bool, Status>
 {
     provider::runtime::transfer::bridge::pending(thread, handle)
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn abandon_transfer_waiter(thread: u64, handle: u64)
 {
     provider::runtime::transfer::bridge::abandon_waiter(thread, handle)
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn current_io_pending() -> bool
 {
     provider::runtime::current_io_pending()
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u32,
                                   application: bool)
                                   -> bool
@@ -77,7 +77,7 @@ pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u3
 
 /// Resolve a resident coordinator's trusted subject before any firmware stack
 /// handoff. Request payloads never supply this identity or authority.
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(super) fn creation_authority(owner: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
 {
     if owner == 0
@@ -105,9 +105,9 @@ pub const MAX_VOLUMES: usize = crate::toolbox::handles::Kind::Volumes.capacity()
 pub const MAX_OPEN_FILES: usize = crate::toolbox::handles::Kind::Files.capacity();
 use crate::toolbox::handles::{Kind, KindLease, OwnerRef, Table};
 pub(crate) mod write;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod module_preferences;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod installed_fonts;
 mod moves;
 const MAX_PATH: usize = 4096;
@@ -116,25 +116,25 @@ const MAX_PATH: usize = 4096;
 // use the admitted root and the masked restoration guard; no native old mode.
 fn firmware_call<R>(call: impl FnOnce() -> R) -> Result<R, Status>
 {
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     {
         crate::machine::paging::with_firmware(call).map_err(|error| {
             crate::machine::paging::report_refusal(&error);
             mac_abi::BAD_ABI
         })
     }
-    #[cfg(not(guest))]
+    #[cfg(not(systemrisc))]
     {
         Ok(call())
     }
 }
 fn firmware_buffer(pointer: *const u8, bytes: usize) -> bool
 {
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     {
         crate::machine::paging::firmware_visible(pointer as u64, bytes as u64)
     }
-    #[cfg(not(guest))]
+    #[cfg(not(systemrisc))]
     {
         let _ = (pointer, bytes);
         true
@@ -321,10 +321,10 @@ struct BlockMounted
 #[allow(clippy::large_enum_variant)]
 enum Mounted
 {
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     Operating(Arc<local::Operation>),
     Block(BlockMounted),
-    #[cfg_attr(not(guest), allow(dead_code))]
+    #[cfg_attr(not(systemrisc), allow(dead_code))]
     Provider(provider::Mounted)
 }
 impl Mounted
@@ -334,7 +334,7 @@ impl Mounted
         match self
         {
             Self::Block(mounted) => Some(mounted.info),
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::Operating(operation) => Some(operation.info()),
             Self::Provider(mounted) => mounted.info
         }
@@ -350,9 +350,9 @@ struct OpenFile
     last_close:     core::sync::atomic::AtomicBool,
     operations:     core::sync::atomic::AtomicU32,
     authority:      subject::Authority,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     io_subject:     Option<crate::drivers::jobs::subjects::Subject>,
-    #[cfg_attr(not(any(guest, feature = "test-support")), allow(dead_code))]
+    #[cfg_attr(not(any(systemrisc, feature = "test-support")), allow(dead_code))]
     resource_index: spinning_top::Spinlock<Option<mac_formats::resource::index::Index>>
 }
 struct OpenDescription
@@ -428,7 +428,7 @@ impl OpenFile
                   description:                                self.description.clone(),
                   authority:                                  self.authority.clone(),
                   resource_index:                             spinning_top::Spinlock::new(None),
-                  #[cfg(guest)]
+                  #[cfg(systemrisc)]
                   io_subject:                                 self.io_subject.clone(),
                   retired:
                       core::sync::atomic::AtomicBool::new(false),
@@ -469,13 +469,13 @@ impl FileFork
 }
 pub struct Manager
 {
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     local_operation:      Option<Arc<local::Operation>>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     operations:           objects::Objects<local::pending::Entry>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     operation_cursor:     usize,
-    #[cfg(any(guest, feature = "test-support"))]
+    #[cfg(any(systemrisc, feature = "test-support"))]
     file_icons:           icon_cache::Cache,
     pins:                 pins::Pins,
     volumes:              Table<Mounted>,
@@ -483,7 +483,7 @@ pub struct Manager
     writes:               objects::Objects<write::Pending>,
     streams:              objects::Objects<streams::Stream>,
     groups:               objects::Objects<groups::Group>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     transfers:            objects::Objects<provider::runtime::transfer::Entry>,
     watches:              watch::Watches,
     pub rejected_volumes: u32
@@ -492,12 +492,12 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { #[cfg(guest)]
+        Self { #[cfg(systemrisc)]
                local_operation:                                                           None,
-               #[cfg(guest)]
+               #[cfg(systemrisc)]
                operations:
                    objects::Objects::new(),
-               #[cfg(guest)]
+               #[cfg(systemrisc)]
                operation_cursor:                                                          0,
                pins:
                    pins::Pins::new(),
@@ -511,13 +511,13 @@ impl Default for Manager
                    objects::Objects::new(),
                groups:
                    objects::Objects::new(),
-               #[cfg(guest)]
+               #[cfg(systemrisc)]
                transfers:
                    objects::Objects::new(),
                watches:
                    watch::Watches::new(),
                rejected_volumes:                                                          0,
-               #[cfg(any(guest, feature = "test-support"))]
+               #[cfg(any(systemrisc, feature = "test-support"))]
                file_icons:
                    Default::default() }
     }
@@ -586,7 +586,7 @@ impl Manager
     /// provider commits already acknowledge their own durability barriers.
     pub(crate) fn prepare_power(&mut self) -> Result<(), Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         self.local_ready()?;
         if self.handles.cleanup_pending()
            || self.writes.iter().next().is_some()
@@ -595,7 +595,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.transfers.iter().next().is_some()
            || self.operations.iter().next().is_some()
            || !provider::runtime::power_ready()
@@ -618,7 +618,7 @@ impl Manager
                     }
                 }
                 Mounted::Provider(mounted) => mounted.power_status()?,
-                #[cfg(guest)]
+                #[cfg(systemrisc)]
                 Mounted::Operating(_) => return Err(SERVICE_BUSY)
             }
         }
@@ -694,7 +694,7 @@ impl Manager
     fn validate_transfer_mutation<'a>(&self, owner: impl Into<subject::Access<'a>>, volume: u32)
                                       -> Result<(), Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.operations.iter().any(|(_, entry)| entry.blocks_mutation(self, volume))
         {
             return Err(SERVICE_BUSY);
@@ -706,7 +706,7 @@ impl Manager
                                        -> Result<(), Status>
     {
         let owner = owner.into();
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.transfers
                .iter()
                .any(|(handle, entry)| entry.uses(volume) && !entry.permits(handle, owner))
@@ -724,7 +724,7 @@ impl Manager
         let owner = authority.owner().incarnation();
         self.read_provider(volume)?;
         self.validate_transfer_read(owner, volume, id)?;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
         {
             return Err(SERVICE_BUSY);
@@ -736,7 +736,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         self.prepare_executable_pins(crate::toolbox::handles::system_owner()?,
                                      crate::toolbox::handles::file_pin_kinds()?)?;
         self.pins.document(authority, batch, scope, volume, id)
@@ -758,7 +758,7 @@ impl Manager
 
     fn file_pinned(&self, volume: u32, id: u32) -> bool
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
         {
             return true;
@@ -771,7 +771,7 @@ impl Manager
                                   -> Result<(), Status>
     {
         let owner = owner.into();
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.transfers
                .iter()
                .any(|(handle, entry)| entry.protects_read(handle, owner, volume, id))
@@ -789,7 +789,7 @@ impl Manager
     {
         let owner = authority.owner().incarnation();
         self.validate_transfer_read(owner, volume, id)?;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
         {
             return Err(SERVICE_BUSY);
@@ -801,7 +801,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         self.prepare_executable_pins(crate::toolbox::handles::system_owner()?,
                                      crate::toolbox::handles::file_pin_kinds()?)?;
         self.pins.insert(authority, volume, id)
@@ -929,11 +929,11 @@ impl Manager
 
     fn mounted(&mut self, id: u32) -> Result<&mut BlockMounted, Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         self.local_ready()?;
         match self.volumes.get_mut(id).ok_or(NOT_FOUND)?
         {
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Mounted::Operating(_) => Err(SERVICE_BUSY),
             Mounted::Block(mounted) => Ok(mounted),
             Mounted::Provider(_) => Err(NOT_SUPPORTED)
@@ -1109,14 +1109,14 @@ impl Manager
     fn validate_file_authority(&self, owner: u64, authority: &crate::toolbox::handles::OwnerRef)
                                -> Result<(), Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         {
             if owner != 0 && owner != authority.owner().incarnation()
             {
                 return Err(ACCESS_DENIED);
             }
         }
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         let _ = (owner, authority);
         Ok(())
     }
@@ -1173,7 +1173,7 @@ impl Manager
                        -> Result<(u32, u64), Status>
     {
         self.validate_creation(access, authority, crate::toolbox::handles::KindCode(*b"FFRK"))?;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
         self.validate_transfer_read(access, volume, id)?;
         if self.streams.iter().any(|(_, mark)| mark.volume == volume && mark.expected == id)
@@ -1195,7 +1195,7 @@ impl Manager
         let handle =
             self.handles
                 .insert_authorized(authority,
-                                   OpenFile { #[cfg(guest)]
+                                   OpenFile { #[cfg(systemrisc)]
                                               io_subject: None,
                                               owner: access.label(),
                                               id,
@@ -1220,7 +1220,7 @@ impl Manager
     {
         #[cfg(test)]
         let authority = self.handles.fixture_owner(owner);
-        #[cfg(all(not(test), guest))]
+        #[cfg(all(not(test), systemrisc))]
         let authority = if owner == 0
         {
             crate::toolbox::handles::system_owner()?
@@ -1229,12 +1229,12 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         };
-        #[cfg(all(not(test), not(guest)))]
+        #[cfg(all(not(test), not(systemrisc)))]
         {
             let _ = (owner, volume, id, kind);
             return Err(ACCESS_DENIED);
         }
-        #[cfg(any(test, guest))]
+        #[cfg(any(test, systemrisc))]
         self.open_for(owner, &authority, volume, id, kind)
     }
 
@@ -1777,5 +1777,5 @@ impl Manager
 #[cfg(test)]
 mod tests;
 
-#[cfg(any(guest, feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 pub(crate) mod native;

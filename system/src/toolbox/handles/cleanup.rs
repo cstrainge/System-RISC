@@ -34,45 +34,45 @@ pub(crate) enum Cause
         kind:      mac_object_table::domain::KindCode,
         preparing: usize
     },
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     ThreadPreparations
     {
         preparing: usize
     },
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     NativeJoin
     {
         readers:      usize,
         preparations: usize
     },
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     ApplicationHeap(crate::toolbox::application_heap::CleanupCause),
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     NativeTls(crate::toolbox::native_threads::CleanupCause),
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     ProcessSpace(crate::machine::paging::process::CleanupCause),
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     DefinitionPending
     {
         owner: u64,
         drain: crate::toolbox::resources::definitions::Drain
     },
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     ModuleMapping(crate::machine::paging::modules::CleanupCause),
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     RequestRegistryUnavailable(crate::state::AccessError),
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     ScrapManagerUnavailable(crate::state::AccessError),
     ContextUnavailable
     {
         required: &'static str
     },
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     SchedulerPending
     {
         generation: u64
     },
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     SchedulerUnavailable(crate::state::AccessError),
     DriverInterfaceBusy
     {
@@ -96,7 +96,7 @@ pub(crate) enum Cause
         mappings: usize,
         reset:    Option<u64>
     },
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     DeviceManagerUnavailable(crate::state::AccessError),
     DriverDependencyScopeActive
     {
@@ -131,9 +131,9 @@ pub(crate) enum Cause
         pending:   usize,
         requested: usize
     },
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     MemoryManagerUnavailable(crate::state::AccessError),
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     FileManagerUnavailable(crate::state::AccessError),
     WindowDefinitionDisposal
     {
@@ -188,14 +188,14 @@ impl core::fmt::Display for Cause
                        "owner {owner:?} backing {kind:?} retains {preparing} actual prepared \
                         publications; original cleanup ticket retained")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::ThreadPreparations { preparing } =>
             {
                 write!(f,
                        "native thread backing retains {preparing} actual prepared publications; \
                         original THST ticket retained")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::NativeJoin { readers,
                                preparations } =>
             {
@@ -203,13 +203,13 @@ impl core::fmt::Display for Cause
                        "native join right retains {readers} actual readers and {preparations} \
                         prepared publications; original ticket retained")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::ApplicationHeap(cause) => cause.fmt(f),
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::NativeTls(cause) => cause.fmt(f),
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::ProcessSpace(cause) => cause.fmt(f),
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::DefinitionPending { owner,
                                       drain } =>
             {
@@ -217,16 +217,16 @@ impl core::fmt::Display for Cause
                        "definition owner {owner} awaits {drain:?}; original callable and cleanup \
                         ticket retained")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::ModuleMapping(cause) => cause.fmt(f),
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::RequestRegistryUnavailable(cause) =>
             {
                 write!(f,
                        "driver request cleanup could not enter its registry ({cause:?}); exact \
                         ticket and pending request remain retained for retry")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::ScrapManagerUnavailable(cause) =>
             {
                 write!(f,
@@ -239,14 +239,14 @@ impl core::fmt::Display for Cause
                        "registered cleanup requires the {required} context; payload and unique \
                         ticket remain retained for retry")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::SchedulerPending { generation } =>
             {
                 write!(f,
                        "scheduler registration {generation} awaits actual callback and \
                         target-owned quiescence; original payload and cleanup ticket retained")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::SchedulerUnavailable(cause) =>
             {
                 write!(f,
@@ -279,7 +279,7 @@ impl core::fmt::Display for Cause
                         (stopped={stopped}, mappings={mappings}, reset={reset:?}); claim, DMA and \
                         unique cleanup ticket remain retained for retry")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::DeviceManagerUnavailable(cause) =>
             {
                 write!(f,
@@ -342,14 +342,14 @@ impl core::fmt::Display for Cause
                         {pending} pending; protocol state and cleanup ticket remain retained for \
                         retry")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::MemoryManagerUnavailable(error) =>
             {
                 write!(f,
                        "Memory Manager cleanup could not enter its resident state ({error:?}); \
                         payload, backing and cleanup ticket remain retained for retry")
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             Self::FileManagerUnavailable(error) =>
             {
                 write!(f,
@@ -410,7 +410,7 @@ impl Failure
                cause: Cause::ControlOperationPending { control } }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn definition_pending(ticket: ReleasedResource, owner: u64,
                                      drain: crate::toolbox::resources::definitions::Drain)
                                      -> Self
@@ -420,7 +420,7 @@ impl Failure
                                                  drain } }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn module_mapping(ticket: ReleasedResource,
                                  cause: crate::machine::paging::modules::CleanupCause)
                                  -> Self
@@ -429,14 +429,14 @@ impl Failure
                cause: Cause::ModuleMapping(cause) }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn thread_preparations(ticket: ReleasedResource, preparing: usize) -> Self
     {
         Self { ticket,
                cause: Cause::ThreadPreparations { preparing } }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn native_join(ticket: ReleasedResource, readers: usize, preparations: usize)
                               -> Self
     {
@@ -445,7 +445,7 @@ impl Failure
                                           preparations } }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn process_space(ticket: ReleasedResource,
                                 cause: crate::machine::paging::process::Error)
                                 -> Self
@@ -454,7 +454,7 @@ impl Failure
                cause: Cause::ProcessSpace(cause.into()) }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn native_tls(ticket: ReleasedResource,
                              cause: crate::toolbox::native_threads::CleanupCause)
                              -> Self
@@ -463,7 +463,7 @@ impl Failure
                cause: Cause::NativeTls(cause) }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn application_heap(ticket: ReleasedResource,
                                    cause: crate::toolbox::application_heap::CleanupCause)
                                    -> Self
@@ -472,14 +472,14 @@ impl Failure
                cause: Cause::ApplicationHeap(cause) }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn scheduler_pending(ticket: ReleasedResource, generation: u64) -> Self
     {
         Self { ticket,
                cause: Cause::SchedulerPending { generation } }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn scheduler_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
                                         -> Self
     {
@@ -487,7 +487,7 @@ impl Failure
                cause: Cause::SchedulerUnavailable(cause) }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn request_registry_unavailable(ticket: ReleasedResource,
                                                cause: crate::state::AccessError)
                                                -> Self
@@ -515,7 +515,7 @@ impl Failure
                                              reset } }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn devices_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
                                       -> Self
     {
@@ -523,7 +523,7 @@ impl Failure
                cause: Cause::DeviceManagerUnavailable(cause) }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn scrap_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
                                     -> Self
     {
@@ -641,7 +641,7 @@ impl Failure
                                                  requested: 4 } }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn files_unavailable(ticket: ReleasedResource, error: crate::state::AccessError)
                                     -> Self
     {
@@ -649,7 +649,7 @@ impl Failure
                cause: Cause::FileManagerUnavailable(error) }
     }
 
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     pub(crate) fn memory_unavailable(ticket: ReleasedResource, error: crate::state::AccessError)
                                      -> Self
     {

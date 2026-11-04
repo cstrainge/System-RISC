@@ -3,24 +3,24 @@
 #![forbid(unsafe_code)]
 pub(crate) mod cleanup;
 pub(crate) mod subject;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) use mac_object_table::domain::{DirectoryCapacityError, DirectoryError, DomainKind};
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) type Directory<T> =
     mac_object_table::domain::Directory<T, crate::machine::interrupts::NativeInvocationGate>;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) type DirectoryCapacityPlan<T> =
     mac_object_table::domain::DirectoryCapacityPlan<T, crate::machine::interrupts::NativeInvocationGate>;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) type PreparedDirectoryCapacity<T> =
     mac_object_table::domain::PreparedDirectoryCapacity<T, crate::machine::interrupts::NativeInvocationGate>;
 pub(crate) use mac_object_table::{Kind, Table};
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) type InvocationGate = crate::machine::interrupts::NativeInvocationGate;
-#[cfg(not(guest))]
+#[cfg(not(systemrisc))]
 pub(crate) struct InvocationGate;
-#[cfg(not(guest))]
+#[cfg(not(systemrisc))]
 impl mac_object_table::shared::InvocationGate for InvocationGate
 {
     fn run<R>(operation: impl FnOnce() -> R) -> R
@@ -63,14 +63,14 @@ pub(crate) fn registry_status(error: &mac_object_table::registry::Error) -> mac_
     }
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 #[derive(Debug)]
 pub(crate) enum KindAccessError
 {
     Owner(mac_object_table::domain::IndexError),
     Registry(mac_object_table::registry::Error)
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 impl core::fmt::Display for KindAccessError
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -82,7 +82,7 @@ impl core::fmt::Display for KindAccessError
         }
     }
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 impl KindAccessError
 {
     pub(crate) fn status(&self) -> mac_abi::Status
@@ -101,7 +101,7 @@ impl KindAccessError
     }
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Context>) -> R)
                           -> Result<R, KindAccessError>
 {
@@ -259,28 +259,28 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
     Ok(InvocationGate::run(|| run(&registry.lock())))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn controls_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"CTRL"))?, registry.get(KindCode(*b"CSTA"))?))).map_err(|error| error.status())?
                                                          .map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn thread_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"THRD"))?, registry.get(KindCode(*b"THST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn definition_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"DDEF"))?, registry.get(KindCode(*b"DSTA"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn image_kinds() -> Result<[KindLease; 4], mac_abi::Status>
 {
     registry(|registry| {
@@ -292,28 +292,28 @@ pub(crate) fn image_kinds() -> Result<[KindLease; 4], mac_abi::Status>
       .map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn scroll_box_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"SBOX"))?, registry.get(KindCode(*b"SBST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_dialog_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"SFDL"))?, registry.get(KindCode(*b"SFST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn system_owner() -> Result<OwnerRef, mac_abi::Status>
 {
     system_owner_checked().map_err(|error| error.status())
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 static SYSTEM_OWNER: spin::Once<OwnerRef> = spin::Once::new();
-#[cfg(guest)]
+#[cfg(systemrisc)]
 fn system_owner_checked() -> Result<OwnerRef, KindAccessError>
 {
     SYSTEM_OWNER.try_call_once(|| {
@@ -323,55 +323,55 @@ fn system_owner_checked() -> Result<OwnerRef, KindAccessError>
 }
 /// Inspection borrows the already-issued root. A read must not issue a new
 /// domain, allocate authority storage or retain the querying app's account.
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn system_owner_if_ready() -> Option<&'static OwnerRef>
 {
     SYSTEM_OWNER.get()
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn world_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"GWLD"))?, registry.get(KindCode(*b"GWST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn window_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"WIND"))?, registry.get(KindCode(*b"WNST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn menu_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"MENU"))?, registry.get(KindCode(*b"MNST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn memory_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"MMBL"))?, registry.get(KindCode(*b"MMST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn editor_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"TEDT"))?, registry.get(KindCode(*b"TESV"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn alert_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry|Ok((registry.get(KindCode(*b"ALRT"))?,registry.get(KindCode(*b"ALST"))?)))
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn drag_kinds(
     )
     -> Result<((KindLease, KindLease), (KindLease, KindLease)), mac_abi::Status>
@@ -383,21 +383,21 @@ pub(crate) fn drag_kinds(
       .map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_watch_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"FWCH"))?, registry.get(KindCode(*b"FWST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn font_suitcase_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"FTSU"))?, registry.get(KindCode(*b"FTST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_fork_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"FFRK"))?,registry.get(KindCode(*b"FFST"))?)))
@@ -450,35 +450,35 @@ pub(crate) fn projection_status(error: mac_object_table::projected::Error) -> ma
     }
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_write_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry|Ok((registry.get(KindCode(*b"FDWR"))?,registry.get(KindCode(*b"FDST"))?)))
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_stream_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry|Ok((registry.get(KindCode(*b"FSWR"))?,registry.get(KindCode(*b"FSST"))?)))
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_group_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry|Ok((registry.get(KindCode(*b"FIGR"))?,registry.get(KindCode(*b"FIGS"))?)))
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_transfer_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry|Ok((registry.get(KindCode(*b"FTXN"))?,registry.get(KindCode(*b"FTXS"))?)))
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_pin_kinds() -> Result<[KindLease; 4], mac_abi::Status>
 {
     registry(|registry| {
@@ -490,14 +490,14 @@ pub(crate) fn file_pin_kinds() -> Result<[KindLease; 4], mac_abi::Status>
       .map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn document_batch_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"DBAT"))?,registry.get(KindCode(*b"DBST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) fn file_operation_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry|Ok((registry.get(KindCode(*b"FIOP"))?,registry.get(KindCode(*b"FIOB"))?)))
