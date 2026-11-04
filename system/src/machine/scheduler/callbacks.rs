@@ -598,3 +598,150 @@ pub(crate) fn wake_waiter(id: crate::context::ThreadId)
         super::wake::runnable(true);
     }
 }
+
+/// Authenticated ordinary native caller, not a borrowed maintenance/callback role.
+/// The wake target retains no Core, Context, source or account strongly.
+pub(crate) struct ControlWaitTarget
+{
+    thread: crate::context::ThreadId,
+    owner:  mac_object_table::domain::DomainId,
+    image:  crate::images::Binding,
+    core:   Weak<ThreadCore>
+}
+impl ControlWaitTarget
+{
+    fn matches(&self, thread: &Thread) -> bool
+    {
+        thread.id == self.thread.0
+        && thread.core.context.identity().thread == self.thread
+        && thread.core.binding == self.image
+        && thread.core.context.identity().app.0 == self.owner.incarnation()
+        && Arc::as_ptr(&thread.core) == self.core.as_ptr()
+    }
+}
+pub(crate) struct ControlWaitCaller
+{
+    target:     ControlWaitTarget,
+    allocation: super::accounting::AllocationAuthority
+}
+impl ControlWaitCaller
+{
+    pub(crate) fn owner(&self) -> mac_object_table::domain::DomainId
+    {
+        self.target.owner
+    }
+
+    pub(crate) fn allocation(&self) -> &super::accounting::AllocationAuthority
+    {
+        &self.allocation
+    }
+
+    pub(crate) fn target(&self) -> ControlWaitTarget
+    {
+        ControlWaitTarget { thread: self.target.thread,
+                            owner:  self.target.owner,
+                            image:  self.target.image,
+                            core:   self.target.core.clone() }
+    }
+}
+pub(crate) fn control_wait_caller() -> Result<ControlWaitCaller, Status>
+{
+    use mac_object_table::shared::InvocationGate as _;
+    crate::context::with_application_executor(|executor| {
+        crate::toolbox::handles::InvocationGate::run(|| {
+            let scheduler = SCHEDULER.lock();
+            let thread = scheduler.thread(current()).ok_or(WRONG_THREAD)?;
+            if thread.id != executor.thread()
+               || !live(thread, executor.owner(), executor.image())
+               || thread.state.get().claimed_by != Some(selected_hart())
+               || !thread.core
+                         .space
+                         .as_ref()
+                         .is_some_and(|space| space.matches(executor.owner(), executor.image()))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            // A running author may itself have to RETURN to release the blocker.
+            // Keep the original Busy contract; do not invent a new nested wait.
+            if thread.core.callback_queue.is_some()
+            {
+                return Err(mac_abi::SERVICE_BUSY);
+            }
+            service::suspension_allowed(thread.state.get())?;
+            Ok(ControlWaitCaller { target:
+                                       ControlWaitTarget { thread:
+                                                               crate::context::ThreadId(thread.id),
+                                                           owner:  executor.owner().owner(),
+                                                           image:  executor.image(),
+                                                           core:   Arc::downgrade(&thread.core) },
+                                   allocation: executor.allocation().clone() })
+        })
+    }).map_err(|cause| cause.status())?
+}
+pub(crate) fn wait_control_claim(ticket: &crate::toolbox::controls::objects::ClaimWaitTicket)
+                                 -> Result<bool, Status>
+{
+    use mac_object_table::shared::InvocationGate as _;
+    crate::context::with_application_executor(|executor| {
+        crate::toolbox::handles::InvocationGate::run(|| {
+            let scheduler = SCHEDULER.lock();
+            let thread = scheduler.thread(current()).ok_or(WRONG_THREAD)?;
+            if ticket.node().target().owner != executor.owner().owner()
+               || !ticket.node().target().matches(thread)
+               || thread.id != executor.thread()
+               || !live(thread, executor.owner(), executor.image())
+               || thread.state.get().claimed_by != Some(selected_hart())
+            {
+                return Err(ACCESS_DENIED);
+            }
+            service::suspension_allowed(thread.state.get())?;
+            if !ticket.node().active_for(ticket.epoch())
+            {
+                return Err(OPERATION_CANCELLED);
+            }
+            if ticket.ready()
+            {
+                return Ok(false);
+            }
+            thread.update(|state| {
+                      state.waiting = Some(Wait::Callback);
+                      state.woken = 0;
+                  });
+            Ok(true)
+        })
+    }).map_err(|cause| cause.status())?
+}
+/// An immutable registration epoch prevents an old return from waking a reused node.
+/// Direct full-key Store lookup avoids adding a scheduler scan per claim return.
+pub(crate) fn wake_control_claim(node: &crate::toolbox::controls::objects::WaitNode, epoch: u64)
+{
+    use mac_object_table::shared::InvocationGate as _;
+    let changed = crate::toolbox::handles::InvocationGate::run(|| {
+        let scheduler = SCHEDULER.lock();
+        let target = node.target();
+        if let Some(thread) = scheduler.records
+                                       .as_ref()
+                                       .and_then(|store| store.get(target.thread.0))
+                                       .and_then(Record::scheduled)
+           && target.matches(thread)
+           && node.ready_for(epoch)
+           && thread.state.get().live
+           && !thread.state.get().retired
+           && matches!(thread.state.get().waiting, Some(Wait::Callback))
+        {
+            thread.update(|state| {
+                      state.waiting = None;
+                      state.woken = 1;
+                  });
+            true
+        }
+        else
+        {
+            false
+        }
+    });
+    if changed
+    {
+        super::wake::runnable(true);
+    }
+}

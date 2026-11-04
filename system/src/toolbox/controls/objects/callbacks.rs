@@ -1,5 +1,6 @@
 //! Owned Control Manager continuations. Canonical controls retain only weak
-//! claims; the original request owns calculation/source pins outside Desktop.
+//! links; original immutable source/claim custody follows both the request and
+//! its canonical running callback outside Desktop.
 use alloc::{boxed::Box,
             sync::{Arc, Weak}};
 use core::{future::Future,
@@ -15,17 +16,45 @@ use crate::{machine::scheduler::accounting::AllocationAuthority,
 mod paint;
 pub(crate) use paint::{ManagedPaintClaim, ManagedPaintOrigin};
 
-pub(super) struct Claim;
+pub(super) struct Claim
+{
+    return_record: Arc<super::claim_wait::ClaimReturn>
+}
+impl Claim
+{
+    pub(super) fn new(record: Arc<super::claim_wait::ClaimReturn>) -> Self
+    {
+        Self { return_record: record }
+    }
+}
 pub(super) struct ClaimLink
 {
-    claim:        Weak<Claim>,
-    whole_window: bool
+    claim:         Weak<Claim>,
+    whole_window:  bool,
+    return_record: Arc<super::claim_wait::ClaimReturn>
+}
+impl ClaimLink
+{
+    pub(super) fn active(&self) -> bool
+    {
+        self.return_record.active()
+    }
+
+    pub(super) fn return_record(&self) -> Option<Arc<super::claim_wait::ClaimReturn>>
+    {
+        self.return_record.active().then(|| self.return_record.clone())
+    }
 }
 impl Drop for Claim
 {
     fn drop(&mut self)
     {
-        // This owned operation/claim really returned, outside manager guards.
+        if !self.return_record.returned()
+        {
+            return;
+        }
+        // LAST original claim after semantic readers, including any canonical
+        // running callback's custody, really returned outside manager guards.
         // Wake genuine pending cleanup rather than manufacturing a completion.
         super::automatic::claim_returned();
         crate::kernel::window_sources_changed();
@@ -38,12 +67,12 @@ impl Object
     pub(super) fn claimed(&self) -> bool
     {
         self.disposal.as_ref().is_some_and(|cell| cell.active())
-        || self.claim.as_ref().is_some_and(|link| link.claim.strong_count() != 0)
+        || self.claim.as_ref().is_some_and(|link| link.active())
     }
 
     pub(super) fn window_claimed(&self) -> bool
     {
-        self.claim.as_ref().is_some_and(|link| link.whole_window && link.claim.strong_count() != 0)
+        self.claim.as_ref().is_some_and(|link| link.whole_window && link.active())
     }
 }
 struct Expected
@@ -73,18 +102,22 @@ impl Expected
 }
 struct WindowClaims
 {
-    window:   u64,
-    root:     Option<u64>,
-    owner:    mac_object_table::domain::DomainId,
-    // Actual claim disappears before original source reader-return notices.
-    claim:    Arc<Claim>,
-    expected: Vec<Expected>
+    window:      u64,
+    root:        Option<u64>,
+    owner:       mac_object_table::domain::DomainId,
+    _allocation: AllocationAuthority,
+    // Real readers leave before the final claim-return publication.
+    expected:    Vec<Expected>,
+    claim:       Arc<Claim>
+}
+impl crate::toolbox::resources::definitions::callbacks::CallbackCustody for WindowClaims
+{
 }
 pub(crate) struct WindowLayoutPlan
 {
-    claims:    WindowClaims,
     viewport:  Rect,
-    snapshots: Vec<LayoutTask>
+    snapshots: Vec<LayoutTask>,
+    claims:    Arc<WindowClaims>
 }
 enum LayoutTask
 {
@@ -199,7 +232,7 @@ impl WindowLayoutPlan
         let author = Author::staged(crate::machine::traps::gateway,
                                     completion,
                                     wait.clone(),
-                                    allocation.clone());
+                                    allocation.clone()).with_custody(self.claims.clone());
         let future_allocation = allocation.clone();
         let future = match pin_calculation(self, move |plan| {
                   async move {
@@ -310,8 +343,8 @@ pub(crate) struct PreparedWindowLayout
     // Keep all original source/claim pins even after the scene consumes this.
     prepared:         Option<Prepared>,
     published:        bool,
-    claims:           WindowClaims,
-    allocation:       AllocationAuthority
+    allocation:       AllocationAuthority,
+    claims:           Arc<WindowClaims>
 }
 impl PreparedWindowLayout
 {
@@ -452,7 +485,7 @@ impl Manager
                 return Err(SERVICE_BUSY);
             }
             if let Some(link) = &object.claim
-               && link.claim.strong_count() != 0
+               && link.active()
                && !allowed.is_some_and(|claim| link.claim.as_ptr() == Arc::as_ptr(claim))
             {
                 return Err(SERVICE_BUSY);
@@ -520,7 +553,7 @@ impl Manager
     }
 
     fn claim_window(&mut self, window: u64, allocation: &AllocationAuthority)
-                    -> Result<WindowClaims, Status>
+                    -> Result<Arc<WindowClaims>, Status>
     {
         let count = self.objects.iter().filter(|(_, object)| object.window == window).count();
         let mut keys = Vec::new();
@@ -533,7 +566,7 @@ impl Manager
     }
 
     fn claim_layout_subtree(&mut self, root: u64, allocation: &AllocationAuthority)
-                            -> Result<WindowClaims, Status>
+                            -> Result<Arc<WindowClaims>, Status>
     {
         self.no_claims_on_tree(root)?;
         let window = self.objects.get(root).ok_or(NOT_FOUND)?.window;
@@ -550,7 +583,7 @@ impl Manager
     fn claim_layout_keys(&mut self, window: u64, root: Option<u64>,
                          allocation: &AllocationAuthority,
                          keys: Vec<mac_object_table::store::CompletionKey>)
-                         -> Result<WindowClaims, Status>
+                         -> Result<Arc<WindowClaims>, Status>
     {
         let mut expected = Vec::new();
         expected.try_reserve_exact(keys.len()).map_err(|_| NO_MEMORY)?;
@@ -566,8 +599,8 @@ impl Manager
                 return Err(SERVICE_BUSY);
             }
         }
-        // Last fallible admission precedes source-pin and actual claim changes.
-        let claim = Arc::try_new(Claim).map_err(|_| NO_MEMORY)?;
+        let record = super::claim_wait::ClaimReturn::prepare(self.claim_presence.clone())?;
+        let claim = Arc::try_new(Claim::new(record.clone())).map_err(|_| NO_MEMORY)?;
         // SAME exclusive Desktop turn; no mutation/author call after key
         // preflight. Only original canonical payloads can supply these readers.
         for key in keys
@@ -580,19 +613,25 @@ impl Manager
                                          source: object.definition.quiescence_plan() });
             }
         }
-        for entry in &expected
+        let claims = Arc::try_new(WindowClaims { window,
+                                                 root,
+                                                 owner: allocation.owner(),
+                                                 _allocation: allocation.clone(),
+                                                 expected,
+                                                 claim }).map_err(|_| NO_MEMORY)?;
+        // All allocations and source readers are owned before any canonical
+        // link changes. A failed dormant admission never publishes a return.
+        record.bind()?;
+        for entry in &claims.expected
         {
             if let Some(object) = self.objects.get_mut(entry.key.id())
             {
-                object.claim = Some(ClaimLink { claim:        Arc::downgrade(&claim),
-                                                whole_window: root.is_none() });
+                object.claim = Some(ClaimLink { claim:         Arc::downgrade(&claims.claim),
+                                                whole_window:  root.is_none(),
+                                                return_record: record.clone() });
             }
         }
-        Ok(WindowClaims { window,
-                          root,
-                          owner: allocation.owner(),
-                          claim,
-                          expected })
+        Ok(claims)
     }
 }
 
@@ -926,10 +965,14 @@ struct ControlClaims
 {
     window:         u64,
     recipient:      OwnerRef,
-    claim:          Arc<Claim>,
+    _allocation:    AllocationAuthority,
     expected:       Expected,
     inherited_clip: Option<Rect>,
-    tree_geometry:  bool
+    tree_geometry:  bool,
+    claim:          Arc<Claim>
+}
+impl crate::toolbox::resources::definitions::callbacks::CallbackCustody for ControlClaims
+{
 }
 impl ControlClaims
 {
@@ -950,11 +993,11 @@ impl ControlClaims
 
 pub(crate) struct ControlOperationPlan
 {
-    claims:         ControlClaims,
     snapshot:       RequestSnapshot,
     configuration:  Option<Configuration>,
     replacement:    Option<DefinitionRef>,
-    cleanup_notice: Arc<crate::toolbox::resources::definitions::callbacks::Notice>
+    cleanup_notice: Arc<crate::toolbox::resources::definitions::callbacks::Notice>,
+    claims:         Arc<ControlClaims>
 }
 impl ControlOperationPlan
 {
@@ -983,7 +1026,7 @@ impl ControlOperationPlan
         let author = Author::staged(crate::machine::traps::gateway,
                                     completion,
                                     wait.clone(),
-                                    allocation.clone());
+                                    allocation.clone()).with_custody(self.claims.clone());
         let future_allocation = allocation.clone();
         let future = match pin_calculation(self, move |plan| {
                   async move {
@@ -1089,7 +1132,7 @@ pub(crate) struct PreparedControlOperation
     retired_binding: Option<BoundDefinition>,
     calculated:      RequestCalculation,
     replacement:     Option<BoundDefinition>,
-    claims:          ControlClaims,
+    claims:          Arc<ControlClaims>,
     published:       bool
 }
 impl PreparedControlOperation
@@ -1178,7 +1221,7 @@ impl Manager
 {
     fn claim_control(&mut self, id: u64, recipient: &OwnerRef, allocation: &AllocationAuthority,
                      tree_geometry: bool)
-                     -> Result<ControlClaims, Status>
+                     -> Result<Arc<ControlClaims>, Status>
     {
         self.get(id, recipient.owner().incarnation())?;
         // One owned operation per control: a second would replace the first
@@ -1205,21 +1248,26 @@ impl Manager
         }
         let inherited_clip = self.inherited_clip(id);
         let object = self.objects.get_mut(id).ok_or(NOT_FOUND)?;
-        let claim = Arc::try_new(Claim).map_err(|_| NO_MEMORY)?;
-        // Last fallible admission precedes all pin/weak-claim changes. The
+        let record = super::claim_wait::ClaimReturn::prepare(self.claim_presence.clone())?;
+        let claim = Arc::try_new(Claim::new(record.clone())).map_err(|_| NO_MEMORY)?;
+        // Source and shared keeper preparation precede all weak-claim changes. The
         // unique mutable canonical payload stays held through this publication.
         let expected = Expected { key,
                                   recipient: object.recipient,
                                   tree: object.tree,
                                   source: object.definition.quiescence_plan() };
-        object.claim = Some(ClaimLink { claim:        Arc::downgrade(&claim),
-                                        whole_window: false });
-        Ok(ControlClaims { window: object.window,
-                           recipient: recipient.clone(),
-                           claim,
-                           expected,
-                           inherited_clip,
-                           tree_geometry })
+        let claims = Arc::try_new(ControlClaims { window: object.window,
+                                                  recipient: recipient.clone(),
+                                                  _allocation: allocation.clone(),
+                                                  expected,
+                                                  inherited_clip,
+                                                  tree_geometry,
+                                                  claim }).map_err(|_| NO_MEMORY)?;
+        record.bind()?;
+        object.claim = Some(ClaimLink { claim:         Arc::downgrade(&claims.claim),
+                                        whole_window:  false,
+                                        return_record: record });
+        Ok(claims)
     }
 
     /// Existing leaf operations only; tree/scroll/splitter batches have their
@@ -1263,7 +1311,7 @@ impl Manager
         {
             return Ok(None);
         }
-        let object = self.get(call.id, owner)?;
+        let object = self.snapshot(call.id, owner)?;
         if call.operation == REFLOW_OBJECT
         {
             use mac_abi::controls::reflow as wire;
@@ -1421,7 +1469,7 @@ impl Manager
 
     pub(crate) fn process_control_source(&self, id: u64, owner: u64) -> Result<bool, Status>
     {
-        Ok(self.get(id, owner)?.definition.is_process_source())
+        Ok(self.snapshot(id, owner)?.definition.is_process_source())
     }
 
     /// Only a root whose subtree contains an app-owned definition elects the
@@ -1595,7 +1643,7 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
-        let object = self.get(call.id, owner)?;
+        let object = self.snapshot(call.id, owner)?;
         if call.window != 0 && call.window != object.window
         {
             return Err(BAD_ARGUMENT);
@@ -1629,7 +1677,7 @@ impl Manager
         let mut id = call.id;
         loop
         {
-            let object = self.get(id, owner)?;
+            let object = self.snapshot(id, owner)?;
             if object.definition.is_process_source() || object.state.process_dependencies()
             {
                 return Ok(true);

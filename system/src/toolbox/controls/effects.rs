@@ -136,13 +136,16 @@ pub(super) struct Author
     gate:         TrapGate,
     asynchronous: Option<(CompletionTarget,
                           Arc<WaitSlot>,
-                          crate::machine::scheduler::accounting::AllocationAuthority)>
+                          crate::machine::scheduler::accounting::AllocationAuthority)>,
+    // LAST: original wait/packet and allocation readers precede claim return.
+    custody:      Option<Arc<dyn callbacks::CallbackCustody>>
 }
 impl Author
 {
     pub(super) fn trusted(gate: TrapGate) -> Self
     {
         Self { gate,
+               custody: None,
                asynchronous: None }
     }
 
@@ -151,7 +154,14 @@ impl Author
                          -> Self
     {
         Self { gate,
+               custody: None,
                asynchronous: Some((completion, wait, allocation)) }
+    }
+
+    pub(super) fn with_custody(mut self, custody: Arc<dyn callbacks::CallbackCustody>) -> Self
+    {
+        self.custody = Some(custody);
+        self
     }
 
     async fn invoke(&self, reference: DefinitionRef, request: Request) -> Result<Reply, Status>
@@ -160,7 +170,8 @@ impl Author
         let pending = callbacks::enqueue_shared_for_object(reference,
                                                            request,
                                                            completion.clone(),
-                                                           allocation).map_err(callbacks::EnqueueError::status)?;
+                                                           allocation,
+                                                           self.custody.clone()).map_err(callbacks::EnqueueError::status)?;
         wait.register(&pending)?;
         let reply = poll_fn(|_| {
                         match pending.poll()

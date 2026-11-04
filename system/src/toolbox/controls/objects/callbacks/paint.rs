@@ -182,8 +182,13 @@ impl Manager
             crate::allocator::Target::Owner { account: allocation.clone(),
                                               class:
                                                   mac_kernel_model::policy::MemoryClass::Kernel };
-        let claim =
-            crate::allocator::with_target(target, || Arc::try_new(Claim)).map_err(|_| NO_MEMORY)?;
+        let (claim, return_record) = crate::allocator::with_target(target, || {
+            let record =
+                super::super::claim_wait::ClaimReturn::prepare(self.claim_presence.clone())?;
+            let claim = Arc::try_new(Claim::new(record.clone())).map_err(|_| NO_MEMORY)?;
+            Ok::<_, Status>((claim, record))
+        })?;
+        return_record.bind()?;
         // Last fallible work was above. Capture CURRENT binding/tree separately
         // from committed Drawing/source. No retained appearance comparison.
         let expected = Expected { key:       origin.key,
@@ -192,8 +197,9 @@ impl Manager
                                   source:    object.definition.quiescence_plan() };
         #[cfg(target_arch = "riscv64")]
         let activity = object._recovery_activity.clone();
-        object.claim = Some(ClaimLink { claim:        Arc::downgrade(&claim),
-                                        whole_window: false });
+        object.claim = Some(ClaimLink { claim:         Arc::downgrade(&claim),
+                                        whole_window:  false,
+                                        return_record: return_record.clone() });
         Ok(ManagedPaintClaim { origin: *origin,
                                expected,
                                inherited_clip,

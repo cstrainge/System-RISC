@@ -417,7 +417,7 @@ impl Manager
 
     pub(crate) fn is_table(&self, id: u64, owner: u64) -> Result<bool, Status>
     {
-        let o = self.get(id, owner)?;
+        let o = self.snapshot(id, owner)?;
         Ok(o.state.layout.is_some()
            && matches!(o.state.spec,
                        Spec::Standard { procedure: TABLE_PROCEDURE,

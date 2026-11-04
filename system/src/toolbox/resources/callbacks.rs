@@ -182,12 +182,20 @@ enum Phase
     Cancelled,
     Stopped
 }
+/// Original immutable family readers/exclusion retained by canonical callback
+/// work. Implementations contain no Future, Pending, Queue or Context backedge.
+pub(crate) trait CallbackCustody: Send + Sync
+{
+}
+
 struct Job
 {
     identity:   PanicIdentity,
     completion: CompletionTarget,
     complete:   AtomicBool,
-    state:      Spinlock<JobState>
+    state:      Spinlock<JobState>,
+    // LAST: packet/reply/invocation readers in state must be destroyed first.
+    custody:    Option<Arc<dyn CallbackCustody>>
 }
 struct JobState
 {
@@ -313,7 +321,7 @@ pub(crate) fn enqueue(reference: super::DefinitionRef, request: Request,
                       completion: impl Into<CompletionTarget>)
                       -> Result<Pending, Status>
 {
-    enqueue_with(reference, request, completion.into(), None, Ok).map_err(EnqueueError::status)
+    enqueue_with(reference, request, completion.into(), None, None, Ok).map_err(EnqueueError::status)
 }
 
 /// A real object producer lends its original storage authority. Code ownership
@@ -324,16 +332,17 @@ pub(crate) fn enqueue_for_object(reference: super::DefinitionRef, request: Reque
                                  storage: &crate::machine::scheduler::accounting::AllocationAuthority)
                                  -> Result<Pending, EnqueueError>
 {
-    enqueue_with(reference, request, completion, Some(storage), Ok)
+    enqueue_with(reference, request, completion, Some(storage), None, Ok)
 }
 
 /// Shared observer admitted before the same object-budget FIFO publication.
 pub(crate) fn enqueue_shared_for_object(reference: super::DefinitionRef, request: Request,
                                         completion: CompletionTarget,
-                                        storage:&crate::machine::scheduler::accounting::AllocationAuthority)
+                                        storage:&crate::machine::scheduler::accounting::AllocationAuthority,
+                                        custody: Option<Arc<dyn CallbackCustody>>)
                                         -> Result<Arc<Pending>, EnqueueError>
 {
-    enqueue_with(reference, request, completion, Some(storage), |pending| {
+    enqueue_with(reference, request, completion, Some(storage), custody, |pending| {
         Arc::try_new(pending).map_err(|_| NO_MEMORY)
     })
 }
@@ -341,6 +350,7 @@ pub(crate) fn enqueue_shared_for_object(reference: super::DefinitionRef, request
 fn enqueue_with<T>(reference: super::DefinitionRef, request: Request,
                    completion: CompletionTarget,
                    storage: Option<&crate::machine::scheduler::accounting::AllocationAuthority>,
+                   custody: Option<Arc<dyn CallbackCustody>>,
                    wrap: impl FnOnce(Pending) -> Result<T, Status>)
                    -> Result<T, EnqueueError>
 {
@@ -388,21 +398,19 @@ fn enqueue_with<T>(reference: super::DefinitionRef, request: Request,
     });
     let (job, pending) = crate::allocator::with_target(allocation, || {
         let packet = Arc::try_new(request.prepare(entry).map_err(EnqueueError::Packet)?).map_err(|_| EnqueueError::Storage(NO_MEMORY))?;
-        let job = Arc::try_new(Job {
-            identity,
-            completion,
-            complete: AtomicBool::new(false),
-            state: Spinlock::new(JobState {
-                phase: Phase::New,
-                next: None,
-                abandoned: false,
-                packet: Some(packet),
-                invocation: Some(invocation),
-                reply: None,
-                return_storage: ReturnStorage::Ordinary,
-            }),
-        })
-        .map_err(|_| EnqueueError::Storage(NO_MEMORY))?;
+        let job = Arc::try_new(Job { identity,
+                                     completion,
+                                     complete: AtomicBool::new(false),
+                                     state: Spinlock::new(JobState { phase:          Phase::New,
+                                                                     next:           None,
+                                                                     abandoned:      false,
+                                                                     packet:         Some(packet),
+                                                                     invocation:
+                                                                         Some(invocation),
+                                                                     reply:          None,
+                                                                     return_storage:
+                                                                         ReturnStorage::Ordinary }),
+                                     custody }).map_err(|_| EnqueueError::Storage(NO_MEMORY))?;
         let pending = wrap(Pending { job: job.clone() }).map_err(EnqueueError::Storage)?;
         Ok::<_, EnqueueError>((job, pending))
     })?;
@@ -498,10 +506,11 @@ pub(crate) enum Next
 /// A refused copy drops this lease and leaves the same original job available.
 pub(crate) struct Delivery
 {
-    queue:     Arc<Queue>,
-    job:       Arc<Job>,
     packet:    Arc<Packet>,
-    committed: bool
+    queue:     Arc<Queue>,
+    committed: bool,
+    // LAST even if another genuine owner already detached JobState readers.
+    job:       Arc<Job>
 }
 impl Delivery
 {
@@ -680,7 +689,10 @@ fn returned_for(queue: &Arc<Queue>, execution: &CallbackExecution, bytes: OwnedB
         Ok(value) => value,
         Err(status) => return Err((status, bytes))
     };
-    let reply = packet.reply(bytes, result)?;
+    let mut reply = packet.reply(bytes, result)?;
+    // Same canonical keeper follows owned returned bytes, even if the original
+    // future/Pending disappears before decoding or final publication.
+    reply.custody = job.custody.clone();
     let job_ref = &job;
     let retired = InvocationGate::run(move || {
         let mut state = queue.state.lock();

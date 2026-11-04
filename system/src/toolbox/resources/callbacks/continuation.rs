@@ -420,6 +420,12 @@ pub(crate) unsafe fn dispatch_user(number: u32, pointer: *mut (), size: usize,
                 };
                 return Some(match operation.advance(call)
                             {
+                                Ok(UserControlOperationProgress::ClaimWait(ticket)) => {
+                                    match crate::machine::scheduler::callbacks::wait_control_claim(&ticket) {
+                                        Ok(_)=>RequestResult {status:OK,action:RequestAction::Replay},
+                                        Err(status)=>RequestResult::done(status),
+                                    }
+                                },
                                 Ok(UserControlOperationProgress::Wait(pending)) => wait(&pending),
                                 Ok(UserControlOperationProgress::DisposalWait(cell)) => {
                                     match crate::machine::scheduler::callbacks::wait_control_disposal(&cell) {
