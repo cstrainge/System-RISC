@@ -10,7 +10,7 @@ aggregate `crates/mac-toolbox/tests` and call public userspace APIs. The shared
 suite runs on the host and through real RISC-V ECALLs via `cargo xtask check`.
 Run its host side with `cargo test -p mac-toolbox --tests`.
 
-The [boot ROM](bootrom/README.md) cold-boots from QEMU's read-only flash,
+The [boot ROM](bootrom-riscv/README.md) cold-boots from QEMU's read-only flash,
 finds a blessed HFS System Folder, loads its native System resource executable,
 and starts System using disk reads performed inside the guest. System loads
 Finder from that same blessed folder, initializes graphics and input, and
@@ -290,7 +290,7 @@ System7/
     src/machine/           Hardware and RV64 trap entry
     src/toolbox/           Resident manager implementations
   apps/finder/             Finder executable and resources (installed in System Folder)
-  bootrom/                 Read-only flash firmware and virtio-block driver
+  bootrom-riscv/           Read-only flash firmware and virtio-block driver
   definitions/             Independently linked native WDEF and CDEF resources
   crates/
     mac-abi/               Versioned native service/entry-point contracts
@@ -386,8 +386,8 @@ spaces remain intact in the artifact and HFS filenames:
 | `dist/<name>.bin` | MacBinary II transports preserving forks and metadata |
 | `dist/<name>.json` | Resource inventories, entry addresses, segments and hashes |
 | `dist/build.json` | Package inventory and compiler/tool versions |
-| `dist/bootrom.elf`, `dist/bootrom.bin` | Debuggable firmware and 32 MiB flash-bank image |
-| `dist/bootrom.json` | Firmware size, address and hash |
+| `dist/bootrom-riscv.elf`, `dist/bootrom-riscv.bin` | Debuggable firmware and 32 MiB flash-bank image |
+| `dist/bootrom-riscv.json` | Firmware size, address and hash |
 | `dist/system7.hfs` | Sparse, 500 MiB unpartitioned HFS volume |
 | `dist/system7.qcow2` | Same volume in qcow2 format |
 | `dist/disk.json` | File fork verification, volume blessing and disk checks |

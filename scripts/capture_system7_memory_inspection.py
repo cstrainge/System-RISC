@@ -11,7 +11,7 @@ import system7_vm as vm
 def capture(output):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
-    before = {name: packaging.sha(original / name) for name in ['system7.qcow2', 'System.rsrc', 'bootrom.bin']}
+    before = {name: packaging.sha(original / name) for name in ['system7.qcow2', 'System.rsrc', 'bootrom-riscv.bin']}
     private, binary = packaging.private_disk(output, features=('memory-inspection',),
         package_arguments=(original / 'System.bin',), replace_system=True)
     process = endpoint = None

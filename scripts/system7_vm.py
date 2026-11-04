@@ -274,7 +274,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         stamp.write_text(base_hash + '\n')
     elif preserve:
         system7_user_state.mark_persistent(build_dir(), state)
-    shutil.copyfile(DIST / 'bootrom.bin', state / 'bootrom.bin')
+    shutil.copyfile(DIST / 'bootrom-riscv.bin', state / 'bootrom-riscv.bin')
     executable = str(native_executable()) if native else 'qemu-system-riscv64'
     host_path = windows_path if native else str
     endpoint = ({'transport': 'tcp', 'host': '127.0.0.1', 'port': qmp_port, 'platform': 'windows'}
@@ -299,7 +299,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     identity = str(uuid.uuid4())
     args = [executable, '-uuid', identity, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', cpu_model(vector_bits),
             '-m', RAM, '-smp', str(harts), '-bios', 'none',
-            '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom.bin'),
+            '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom-riscv.bin'),
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
             '-global', 'virtio-mmio.force-legacy=false',
             '-device', 'virtio-blk-device,drive=startup,bus=virtio-mmio-bus.0',
@@ -448,7 +448,7 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
         raise
     print(json.dumps({'pid': process.pid, 'frontend': 'native-gtk' if frontend == 'native' else frontend,
                       'clipboard_policy': 'automatic' if clipboard is None else 'enabled' if clipboard else 'disabled',
-                      'bootrom': describe(STATE / 'bootrom.bin'),
+                      'bootrom': describe(STATE / 'bootrom-riscv.bin'),
                       'disk': describe(STATE / 'system7.qcow2'), 'build_dir': str(build_dir())}))
     print((STATE / 'serial.log').read_text(encoding='utf-8', errors='replace'))
     return process, endpoint
@@ -483,7 +483,7 @@ def check(rebuild=True, state=None):
                   'finder': 'separate executable loaded by System', 'checks': checks,
                   'qemu': subprocess.check_output(['qemu-system-riscv64', '--version'], text=True).splitlines()[0],
                   'disk_unchanged': True, 'disk_sha256': before,
-                  'rom_sha256': hashlib.sha256((DIST / 'bootrom.bin').read_bytes()).hexdigest(),
+                  'rom_sha256': hashlib.sha256((DIST / 'bootrom-riscv.bin').read_bytes()).hexdigest(),
                   'serial': describe(state / 'serial.log'),
                   'command': json.loads((state / 'command.json').read_text())}
         report_path.write_text(json.dumps(report, indent=2) + '\n')

@@ -61,7 +61,7 @@ def private_disk(output, fixture_name='conformance', *, features=(), package_arg
     if replace_system:
         fs.remove('/System Folder/System')
         fs.import_macbinary(packaged / 'System.bin', '/System Folder')
-    shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
+    shutil.copyfile(vm.DIST / 'bootrom-riscv.bin', private / 'bootrom-riscv.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
     return private, binary
@@ -71,7 +71,7 @@ def capture(output):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
-    before = {name: sha(original / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+    before = {name: sha(original / name) for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     owners = OwnedProcesses()
     private = output / 'dist'
     report = {'original_before': before, 'termination': 'transport-incomplete'}

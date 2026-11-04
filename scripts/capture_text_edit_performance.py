@@ -16,7 +16,7 @@ def capture(output):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     hashes = {name: packaging.sha(original / name)
-              for name in ('system7.qcow2', 'bootrom.bin', 'System.rsrc')}
+              for name in ('system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc')}
     process = None
     stages = []
     try:

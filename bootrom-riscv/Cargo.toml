@@ -1,11 +1,11 @@
 [package]
-name = "bootrom"
+name = "bootrom-riscv"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "bootrom"
+name = "bootrom-riscv"
 path = "src/main.rs"
 test = false
 bench = false

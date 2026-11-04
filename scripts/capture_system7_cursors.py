@@ -22,7 +22,7 @@ def capture(output, windows=False):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     before = {name: packaging.sha(vm.DIST / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc', 'Cursor Test.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc', 'Cursor Test.rsrc']}
     options = {'frontend': 'native-headless', 'qmp_port': 4467} if windows else {}
     process, endpoint = vm.launch(output / 'vm', **options)
     driver = Driver(endpoint, output / 'vm/serial.log')

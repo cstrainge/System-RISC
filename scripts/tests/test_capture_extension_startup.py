@@ -27,7 +27,7 @@ class NativeStartupCaptureTests(unittest.TestCase):
         installation = root / 'installation'
         base = installation / 'dist'
         base.mkdir(parents=True)
-        for name in ['system7.qcow2', 'bootrom.bin', 'System.elf', 'System.rsrc']:
+        for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.elf', 'System.rsrc']:
             (base / name).write_bytes(b'untouched original')
         output = root / 'capture'
         output.mkdir()
@@ -74,7 +74,7 @@ class NativeStartupCaptureTests(unittest.TestCase):
             self.assertNotIn('media_quarantine', report)
             self.assertFalse(list((output / 'dist').glob('*.raw')))
             self.assertFalse(list((output / 'vm').glob('*.qcow2')))
-            self.assertFalse((output / 'vm/bootrom.bin').exists())
+            self.assertFalse((output / 'vm/bootrom-riscv.bin').exists())
 
     def test_gdb_launch_and_reap_failure_preserve_both_causes_and_exact_media(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -84,7 +84,7 @@ class NativeStartupCaptureTests(unittest.TestCase):
                                 for error in report['cleanup_errors']))
             self.assertEqual(set(report['media_quarantine']), {
                 str(output / 'dist/startup.raw'), str(output / 'vm/system7.qcow2'),
-                str(output / 'vm/bootrom.bin')})
+                str(output / 'vm/bootrom-riscv.bin')})
             self.assertTrue(all(Path(path).is_file() for path in report['media_quarantine']))
             # The injected child is a Mock; retire only this test's empty sockets.
             endpoint = json.loads((output / 'vm/qmp-endpoint.json').read_text())

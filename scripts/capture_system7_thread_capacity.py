@@ -20,7 +20,7 @@ def capture(output):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     private = output / 'dist'
     raw = private / 'conformance.raw'
     process = None
@@ -56,8 +56,8 @@ def capture(output):
                     vm.qmp('quit', endpoint=endpoint)
             finally:
                 process.wait(timeout=10)
-        for media in [output / 'vm/system7.qcow2', output / 'vm/bootrom.bin',
-                      private / 'system7.qcow2', private / 'bootrom.bin', raw]:
+        for media in [output / 'vm/system7.qcow2', output / 'vm/bootrom-riscv.bin',
+                      private / 'system7.qcow2', private / 'bootrom-riscv.bin', raw]:
             media.unlink(missing_ok=True)
     report['owned_vm_exited'] = process.poll() is not None
     report['launch'] = json.loads((output / 'vm/command.json').read_text())

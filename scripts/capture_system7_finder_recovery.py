@@ -24,7 +24,7 @@ def capture(output, pressure=False):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     owners = OwnedProcesses()
     private = output / 'dist'
     snapshots = []

@@ -21,7 +21,7 @@ def capture(output, scroll_only=False):
     output=Path(output).resolve()
     output.mkdir(parents=True,exist_ok=False)
     original=vm.DIST
-    before={name:packaging.sha(original/name) for name in ['system7.qcow2','bootrom.bin','System.rsrc']}
+    before={name:packaging.sha(original/name) for name in ['system7.qcow2','bootrom-riscv.bin','System.rsrc']}
     private,binary=packaging.private_disk(output,'finder-selection')
     if scroll_only:
         image=packaging.NativeImage(private/'conformance.raw')

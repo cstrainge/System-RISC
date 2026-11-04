@@ -37,7 +37,7 @@ def capture(output, frontend='headless', vector_bits=None, malformed_standard_fi
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     extra = (original / 'System.bin',)
     private, observer = packaging.private_disk(output, 'process-observer', package_arguments=extra, replace_system=True)
     children = [child(output, fixture, binary)
@@ -109,8 +109,8 @@ def capture(output, frontend='headless', vector_bits=None, malformed_standard_fi
         finally:
             process.wait(timeout=10)
             vm.DIST = original
-            for media in [output / 'vm/system7.qcow2', output / 'vm/bootrom.bin',
-                          private / 'system7.qcow2', private / 'bootrom.bin', raw]:
+            for media in [output / 'vm/system7.qcow2', output / 'vm/bootrom-riscv.bin',
+                          private / 'system7.qcow2', private / 'bootrom-riscv.bin', raw]:
                 media.unlink(missing_ok=True)
     report['owned_vm_exited'] = process.returncode == 0
     (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')

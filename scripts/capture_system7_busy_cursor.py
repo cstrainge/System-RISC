@@ -9,7 +9,7 @@ from system7_platform import display_size
 def capture(output):
     output=Path(output).resolve();output.mkdir(parents=True,exist_ok=False)
     original=vm.DIST
-    before={name:packaging.sha(original/name) for name in ['system7.qcow2','System.rsrc','bootrom.bin']}
+    before={name:packaging.sha(original/name) for name in ['system7.qcow2','System.rsrc','bootrom-riscv.bin']}
     private,binary=packaging.private_disk(output,'busy-cursor');vm.DIST=private
     process,endpoint=vm.launch(output/'vm');driver=Driver(endpoint,output/'vm/serial.log');frames=[]
     def wait(stage):
@@ -60,7 +60,7 @@ def capture(output):
     finally:
         if process.poll() is None:vm.qmp('quit',endpoint=endpoint)
         process.wait(timeout=10);vm.DIST=original
-        for path in [private/'conformance.raw',private/'system7.qcow2',private/'bootrom.bin',output/'vm/system7.qcow2',output/'vm/bootrom.bin']:path.unlink(missing_ok=True)
+        for path in [private/'conformance.raw',private/'system7.qcow2',private/'bootrom-riscv.bin',output/'vm/system7.qcow2',output/'vm/bootrom-riscv.bin']:path.unlink(missing_ok=True)
     report['owned_vm_exited']=process.returncode==0
     (output/'capture.json').write_text(json.dumps(report,indent=2)+'\n')
 

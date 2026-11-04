@@ -19,7 +19,7 @@ def capture(output, windows=False):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     before = {name: packaging.sha(vm.DIST / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc', 'Panic Test.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc', 'Panic Test.rsrc']}
     options = {'frontend': 'native-headless', 'qmp_port': 4457} if windows else {}
     process, endpoint = vm.launch(output / 'vm', **options)
     driver = Driver(endpoint, output / 'vm/serial.log')
@@ -126,7 +126,7 @@ def capture(output, windows=False):
                 vm.qmp('quit', endpoint=endpoint)
         finally:
             process.wait(timeout=10)
-            for name in ['system7.qcow2', 'bootrom.bin']:
+            for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                 (output / 'vm' / name).unlink(missing_ok=True)
     report = {'transport': 'private guest; installed Panic Test, resident report viewer, and TextEdit',
               'assertion_owner': 'mac-toolbox/tests/panic_graphical.rs',

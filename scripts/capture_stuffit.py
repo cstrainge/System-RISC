@@ -56,7 +56,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
     base = vm.DIST
     subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
                     '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.SOURCE, check=True)
-    before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+    before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     dist = output / 'dist'
     dist.mkdir()
     raw = dist / 'stuffit.raw'
@@ -74,7 +74,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
             image.mkdir('/No StuffIt Driver')
         subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                         str(dist / 'system7.qcow2')], check=True)
-        shutil.copyfile(base / 'bootrom.bin', dist / 'bootrom.bin')
+        shutil.copyfile(base / 'bootrom-riscv.bin', dist / 'bootrom-riscv.bin')
         host = vm.build_dir() / 'host/debug'
         exports = []
         for directory in ['writable', 'readonly']:

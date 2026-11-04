@@ -23,7 +23,7 @@ use core::{alloc::Layout,
            panic::PanicInfo,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
-use bootrom::memory;
+use bootrom_riscv::memory;
 use linked_list_allocator::LockedHeap;
 use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NOT_FOUND, NOT_SUPPORTED, OK, Status};
 use mac_filesystem::{BlockDevice, Error, Partition, Result, Volume, WritableBlockDevice};
@@ -356,7 +356,7 @@ enum EntryError
     Format(mac_formats::Error),
     Memory(mac_abi::boot::MemoryError),
     Execution(mac_abi::boot::execution::Error),
-    Translation(bootrom::translation::Error),
+    Translation(bootrom_riscv::translation::Error),
     Physical(mac_kernel_model::pages::physical::Error),
     Supervisor(supervisor::Error)
 }
@@ -389,7 +389,7 @@ macro_rules! entry_from {
 entry_from!(Format, mac_formats::Error);
 entry_from!(Memory, mac_abi::boot::MemoryError);
 entry_from!(Execution, mac_abi::boot::execution::Error);
-entry_from!(Translation, bootrom::translation::Error);
+entry_from!(Translation, bootrom_riscv::translation::Error);
 entry_from!(Physical, mac_kernel_model::pages::physical::Error);
 entry_from!(Supervisor, supervisor::Error);
 
@@ -398,7 +398,7 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
          monitor: &monitor::Published)
          -> core::result::Result<(), EntryError>
 {
-    use bootrom::translation;
+    use bootrom_riscv::translation;
     use mac_abi::{BootMemoryRange,
                   boot::execution::{self, EXECUTE, FIRMWARE_ONLY, READ, Region, WRITE}};
     use mac_kernel_model::{pages::{Access, Permissions, PhysicalAddress, VirtualAddress},
@@ -629,7 +629,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
             serial!("BOOT_MEMORY_REJECTED: DTB exceeds platform reservation");
             halt();
         }
-        bootrom::devicetree::Tree::new(core::slice::from_raw_parts(tree_address as *const u8, size))
+        bootrom_riscv::devicetree::Tree::new(core::slice::from_raw_parts(tree_address as *const u8, size))
     };
     let tree = match tree.and_then(|tree| {
                              memory::admit(&tree)?;

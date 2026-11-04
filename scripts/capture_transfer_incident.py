@@ -122,7 +122,7 @@ def capture(output, corrupt=False):
                 companion.terminate()
                 companion.wait(timeout=10)
                 companion.stdout.close()
-            for name in ['system7.qcow2', 'bootrom.bin']:
+            for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                 (output / 'vm' / name).unlink(missing_ok=True)
 
 

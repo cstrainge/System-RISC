@@ -168,7 +168,7 @@ through the public SDK, and the absence of storage failures in all boot logs.
 
 A historical New Folder failure reported only an already-poisoned virtio queue;
 the original write/flush error was discarded. Firmware now records the first
-request failure and callback error as described in `bootrom/README.md`. This is
+request failure and callback error as described in `bootrom-riscv/README.md`. This is
 diagnostic coverage, not evidence that the underlying historical fault is fixed.
 SDK disk-fault tests separately verify failed writes/flushes restore sectors and
 payloads, and failed rollback refuses further mutation.

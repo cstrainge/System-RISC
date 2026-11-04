@@ -63,7 +63,7 @@ def capture(output):
         finally:process.wait(timeout=10)
         # Preserve logs/frames and remove obsolete test boot disks immediately.
         shutil.rmtree(private)
-        for name in ['system7.qcow2','bootrom.bin']:
+        for name in ['system7.qcow2','bootrom-riscv.bin']:
             (output/'vm'/name).unlink(missing_ok=True)
 
 if __name__=='__main__':

@@ -14,7 +14,7 @@ cargo xtask boot ../build/system7/dist/system7.hfsb
 cargo xtask boot-check
 ```
 
-`rom` produces `../build/system7/dist/bootrom.elf` and `bootrom.bin`. The
+`rom` produces `../build/system7/dist/bootrom-riscv.elf` and `bootrom-riscv.bin`. The
 executable payload is about 260 KiB; the raw image is padded to the **32 MiB**
 bank size required by QEMU. Debug information stays in the host ELF artifact.
 

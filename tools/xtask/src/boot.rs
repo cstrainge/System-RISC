@@ -19,8 +19,8 @@ pub fn package_rom(workspace: &Workspace) -> Result<Value>
     let elf = workspace.build
                        .join("target")
                        .join(&workspace.platform.rust_target)
-                       .join("release/bootrom");
-    let rom = dist.join("bootrom.bin");
+                       .join("release/bootrom-riscv");
+    let rom = dist.join("bootrom-riscv.bin");
     run(Command::new("llvm-objcopy").args(["-O", "binary"]).arg(&elf).arg(&rom))?;
     let length = rom.metadata()?.len();
     let memory = workspace.platform.memory()?;
@@ -29,9 +29,9 @@ pub fn package_rom(workspace: &Workspace) -> Result<Value>
         return Err(error("ROM payload does not fit the selected platform flash bank"));
     }
     OpenOptions::new().write(true).open(&rom)?.set_len(memory.flash_bytes())?;
-    fs::copy(&elf, dist.join("bootrom.elf"))?;
-    let report = json!({"image": workspace.describe(&rom), "elf": workspace.describe(&dist.join("bootrom.elf")), "flash_base": memory.flash_base(), "payload_size": length, "flash_bank_size": memory.flash_bytes(), "sha256": package::sha256(&fs::read(rom)?), "source": "System7/bootrom", "execution": "M-mode execute-in-place from read-only QEMU virt pflash"});
-    write_json(&dist.join("bootrom.json"), &report)?;
+    fs::copy(&elf, dist.join("bootrom-riscv.elf"))?;
+    let report = json!({"image": workspace.describe(&rom), "elf": workspace.describe(&dist.join("bootrom-riscv.elf")), "flash_base": memory.flash_base(), "payload_size": length, "flash_bank_size": memory.flash_bytes(), "sha256": package::sha256(&fs::read(rom)?), "source": "System7/bootrom-riscv", "execution": "M-mode execute-in-place from read-only QEMU virt pflash"});
+    write_json(&dist.join("bootrom-riscv.json"), &report)?;
     println!("Packaged boot ROM: {length} bytes in {} MiB platform flash bank.",
              memory.flash_bytes() / (1024 * 1024));
     Ok(report)
@@ -68,7 +68,7 @@ fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Result<Command>
                   "none",
                   "-drive"])
            .arg(format!("if=pflash,unit=0,format=raw,readonly=on,file={}",
-                        workspace.build.join("dist/bootrom.bin").display()))
+                        workspace.build.join("dist/bootrom-riscv.bin").display()))
            .args(["-global", "virtio-mmio.force-legacy=false", "-display", "none", "-monitor",
                   "none", "-nic", "none", "-device", "virtio-gpu-device,bus=virtio-mmio-bus.6",
                   "-device", "ramfb", "-device", "virtio-keyboard-device,bus=virtio-mmio-bus.1",
@@ -420,7 +420,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     {
         return Err(error("boot checks changed the generated qcow2"));
     }
-    let report = json!({"status": "passed", "method": "QEMU cold reset to read-only pflash; virtio-block reads HFS-B and loads System, Finder, WDEF and CDEF resources entirely inside the guest", "cases": cases, "disk_boot_tested": true, "finder_launched": true, "rom": serde_json::from_slice::<Value>(&fs::read(workspace.build.join("dist/bootrom.json"))?)?, "qcow2_unchanged": true, "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?});
+    let report = json!({"status": "passed", "method": "QEMU cold reset to read-only pflash; virtio-block reads HFS-B and loads System, Finder, WDEF and CDEF resources entirely inside the guest", "cases": cases, "disk_boot_tested": true, "finder_launched": true, "rom": serde_json::from_slice::<Value>(&fs::read(workspace.build.join("dist/bootrom-riscv.json"))?)?, "qcow2_unchanged": true, "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?});
     write_json(&workspace.repo.join("results/system7/boot-checks.json"), &report)?;
     println!("{} ROM boot checks passed.", cases.len());
     Ok(report)

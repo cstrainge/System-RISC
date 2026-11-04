@@ -40,9 +40,9 @@ def prune():
     candidates = []
     for base in (results, build):
         for path in base.rglob('*'):
-            if path.suffix not in ('.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk') and path.name != 'bootrom.bin':
+            if path.suffix not in ('.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk') and path.name != 'bootrom-riscv.bin':
                 continue
-            if path.parent in current and path.name in ('system7.hfsb', 'system7.qcow2', 'bootrom.bin'):
+            if path.parent in current and path.name in ('system7.hfsb', 'system7.qcow2', 'bootrom-riscv.bin'):
                 continue
             if path.is_symlink() or not path.is_file():
                 continue

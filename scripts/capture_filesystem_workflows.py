@@ -164,7 +164,7 @@ def capture(output):
                 companion.terminate()
                 companion.wait(timeout=10)
                 companion.stdout.close()
-            for path in [output / 'after.hfsb', output / 'vm/system7.qcow2', output / 'vm/bootrom.bin']:
+            for path in [output / 'after.hfsb', output / 'vm/system7.qcow2', output / 'vm/bootrom-riscv.bin']:
                 path.unlink(missing_ok=True)
 
 

@@ -89,7 +89,7 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
     endpoint = None
     try:
         prepare(output, sdk, disconnect=disconnect)
-        before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+        before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
         run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(base / 'system7.qcow2'), str(raw)], check=True)
         image = Image(raw)
@@ -100,7 +100,7 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
             image.import_macbinary(output / 'packages/Host Filesystem Probe.bin', '/System Folder/Extensions')
         run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                         str(dist / 'system7.qcow2')], check=True)
-        shutil.copyfile(base / 'bootrom.bin', dist / 'bootrom.bin')
+        shutil.copyfile(base / 'bootrom-riscv.bin', dist / 'bootrom-riscv.bin')
         export = output / 'export'
         host = vm.build_dir() / 'host/debug'
         run([str(host / 'risc-forks'), 'init', str(export), 'Native Host'], check=True)

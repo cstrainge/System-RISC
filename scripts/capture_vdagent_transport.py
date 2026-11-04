@@ -206,7 +206,7 @@ def capture_case(output, mode, base, xvfb=None, qemu=None):
         Image(raw).import_macbinary(output.parent / packages / 'VDAgent Transport Probe.bin', '/System Folder/Extensions')
         run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw), str(dist / 'system7.qcow2')])
         import shutil
-        shutil.copyfile(base / 'bootrom.bin', dist / 'bootrom.bin')
+        shutil.copyfile(base / 'bootrom-riscv.bin', dist / 'bootrom-riscv.bin')
         if mode == 'malformed':
             peer = MalformedPeer()
         if mode == 'private-x11':
@@ -282,7 +282,7 @@ def capture_case(output, mode, base, xvfb=None, qemu=None):
                 errors.append(error)
         vm.DIST = original_dist
         media = sorted(path for path in output.rglob('*')
-                       if path.is_file() and (path.suffix in DISK_SUFFIXES or path.name == 'bootrom.bin'))
+                       if path.is_file() and (path.suffix in DISK_SUFFIXES or path.name == 'bootrom-riscv.bin'))
         report['media_owners'] = owners
         if all(owner['reaped'] for owner in owners):
             for path in media:
@@ -308,7 +308,7 @@ def capture(output, modes=MODES, xvfb=None, qemu=None):
     output.mkdir(parents=True, exist_ok=False)
     (output / 'pid').write_text(str(os.getpid()))
     base = vm.build_dir() / 'dist'
-    names = ('system7.qcow2', 'bootrom.bin', 'System.rsrc')
+    names = ('system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc')
     before = {name: digest(base / name) for name in names}
     if any(mode != 'private-x11' for mode in modes):
         prepare(output)

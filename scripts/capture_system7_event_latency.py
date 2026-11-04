@@ -25,7 +25,7 @@ def capture(output, windows=False):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     private, binary = packaging.private_disk(output, 'event-latency')
     spinner, spinner_elf = child(output, 'process-spinner', 'ProcessSpinner')
 

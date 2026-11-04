@@ -16,7 +16,7 @@ def capture(output):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
-              for name in ['System.bin', 'System.rsrc', 'system7.qcow2', 'bootrom.bin']}
+              for name in ['System.bin', 'System.rsrc', 'system7.qcow2', 'bootrom-riscv.bin']}
     private, binary = packaging.private_disk(
         output, 'crash-paint-refusal', package_arguments=(original / 'System.bin',),
         replace_system=True)

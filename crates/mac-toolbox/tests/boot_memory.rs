@@ -37,7 +37,7 @@ fn boot(output: &Path, mib: u64) -> String
                   "none",
                   "-drive"])
            .arg(format!("if=pflash,unit=0,format=raw,readonly=on,file={}",
-                        dist.join("bootrom.bin").display()))
+                        dist.join("bootrom-riscv.bin").display()))
            .arg("-drive")
            .arg(format!("if=none,id=startup,format=qcow2,readonly=on,file={}",
                         dist.join("system7.qcow2").display()))

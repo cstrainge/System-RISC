@@ -55,7 +55,7 @@ def prepare(output):
          '/0 Info Cases/Nested Folder')
     file('Deep File', bytes((index * 31) & 255 for index in range(5678)),
          '/0 Info Cases/Nested Folder/Child Folder')
-    shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
+    shutil.copyfile(vm.DIST / 'bootrom-riscv.bin', private / 'bootrom-riscv.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
     return private
@@ -66,7 +66,7 @@ def capture(output, windows=False):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc', 'Finder.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc', 'Finder.rsrc']}
     private = output / 'dist'
     original_frames = vm.ROOT / 'System7/crates/mac-toolbox/tests/data/get-info'
     references = []
@@ -296,7 +296,7 @@ def capture(output, windows=False):
         (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')
         # Rust still needs the two persisted raw disks for public-SDK acceptance.
         # The remaining generated VM/build media can now be removed safely.
-        for path in [state / 'system7.qcow2', state / 'bootrom.bin']:
+        for path in [state / 'system7.qcow2', state / 'bootrom-riscv.bin']:
             path.unlink(missing_ok=True)
         shutil.rmtree(private)
     finally:
@@ -307,7 +307,7 @@ def capture(output, windows=False):
                 pass
         stop('interrupted.log')
         failed = not (output / 'capture.json').exists()
-        media = [state / 'system7.qcow2', state / 'bootrom.bin']
+        media = [state / 'system7.qcow2', state / 'bootrom-riscv.bin']
         if failed:
             media.extend([output / 'boot-1.hfs', output / 'persisted.hfs'])
             identities = {str(path.relative_to(output)): packaging.sha(path)

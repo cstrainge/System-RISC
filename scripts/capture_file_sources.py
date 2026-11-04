@@ -37,7 +37,7 @@ def capture(output):
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
                         str(output / 'packages')], env=fixture_host_env(target), check=True)
     base = vm.DIST
-    before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+    before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     dist = output / 'dist'
     dist.mkdir()
     raw = dist / 'file-source.raw'
@@ -53,7 +53,7 @@ def capture(output):
         image.import_macbinary(output / 'packages/File Source Provider.bin', '/System Folder/Drivers')
         subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                         str(dist / 'system7.qcow2')], check=True)
-        shutil.copyfile(base / 'bootrom.bin', dist / 'bootrom.bin')
+        shutil.copyfile(base / 'bootrom-riscv.bin', dist / 'bootrom-riscv.bin')
         vm.DIST = dist
         process, endpoint = owners.launch(output / 'vm', writable=True)
         argv = json.loads((output / 'vm/command.json').read_text())

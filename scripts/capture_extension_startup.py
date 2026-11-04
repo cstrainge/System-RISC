@@ -78,14 +78,14 @@ def capture(output):
         raise RuntimeError('set SYSTEM7_BUILD_DIR to an explicitly built private optimized installation')
     output = Path(output).resolve()
     original = build_dir() / 'dist'
-    names = ['system7.qcow2', 'bootrom.bin', 'System.elf', 'System.rsrc']
+    names = ['system7.qcow2', 'bootrom-riscv.bin', 'System.elf', 'System.rsrc']
     before = {name: digest(original / name) for name in names}
     prepare(output)
     state = output / 'vm'
     state.mkdir(exist_ok=False)
     dist = output / 'dist'
     dist.mkdir(exist_ok=False)
-    media = [dist / 'startup.raw', state / 'system7.qcow2', state / 'bootrom.bin']
+    media = [dist / 'startup.raw', state / 'system7.qcow2', state / 'bootrom-riscv.bin']
     owners, endpoint, errors, failure = [], None, [], None
     owned = OwnedProcesses()
     cleanup_failure = None
@@ -109,7 +109,7 @@ def capture(output):
         for _, name in CASES:
             image.import_macbinary(output / 'packages' / (name + '.bin'), '/System Folder/Extensions')
         run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(media[0]), str(media[1])])
-        shutil.copyfile(original / 'bootrom.bin', media[2])
+        shutil.copyfile(original / 'bootrom-riscv.bin', media[2])
         shutil.copyfile(original / 'System.rsrc', output / 'System.rsrc')
         entry = discovery_entry(original / 'System.elf')
         report['discovery_symbol'] = DISCOVERY
