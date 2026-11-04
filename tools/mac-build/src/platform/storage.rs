@@ -68,10 +68,12 @@ pub enum Layout
         #[serde(default)]
         files:      Vec<Entry>
     },
-    /// An ordered partition list behind a partition table.
+    /// An ordered partition list behind a partition table. The medium's total
+    /// size is declared, so a partition that consumes `remaining` has a
+    /// quantity to be the remainder of.
     Partitioned
     {
-        table: Table, partitions: Vec<Partition>
+        table: Table, size: SizeRule, partitions: Vec<Partition>
     },
     /// A payload at an absolute offset, for SPI flash, pflash or ROM media.
     Raw
@@ -112,31 +114,58 @@ pub struct Table
     pub boot: Option<usize>
 }
 
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum PartitionKind
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Partition
 {
-    Fat32,
-    System7Filesystem,
+    /// A FAT32 partition listing the files it holds.
+    Fat32
+    {
+        label: String,
+        size:  SizeRule,
+        #[serde(default)]
+        files: Vec<Entry>
+    },
+    /// The OS's own filesystem, whose contents are derived from the platform's
+    /// installed set.
+    System7Filesystem
+    {
+        label: String, size: SizeRule
+    },
+    /// A payload at an offset inside the partition, for firmware or ROM blobs.
     Raw
+    {
+        label: String, size: SizeRule, offset: String, payload: Source
+    }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Partition
+impl Partition
 {
-    pub kind:    PartitionKind,
-    /// The label a person or another tool sees on the partition.
-    pub label:   String,
-    pub size:    SizeRule,
-    /// Ordered contents, for `fat32` only.
-    #[serde(default)]
-    pub files:   Vec<Entry>,
-    /// Absolute offset and payload, for `raw` only.
-    #[serde(default)]
-    pub offset:  Option<String>,
-    #[serde(default)]
-    pub payload: Option<Source>
+    pub fn label(&self) -> &str
+    {
+        match self
+        {
+            Self::Fat32 { label,
+                          .. }
+            | Self::System7Filesystem { label,
+                                      .. }
+            | Self::Raw { label,
+                        .. } => label
+        }
+    }
+
+    pub fn size(&self) -> &SizeRule
+    {
+        match self
+        {
+            Self::Fat32 { size,
+                          .. }
+            | Self::System7Filesystem { size,
+                                      .. }
+            | Self::Raw { size,
+                        .. } => size
+        }
+    }
 }
 
 /// How much room a medium or partition gets. `remaining` consumes whatever the
@@ -274,7 +303,15 @@ impl Image
                                  size,
                                  files } =>
             {
-                size.bytes().map_err(|cause| reject("layout.size", cause.to_string()))?;
+                // A whole-medium filesystem has nothing to be the remainder of,
+                // so its size must be stated.
+                if size.bytes().map_err(|cause| reject("layout.size", cause.to_string()))?.is_none()
+                {
+                    return Err(reject("layout.size",
+                                      "must state a size; a whole-medium filesystem has no \
+                                       other declaration to take the remainder from"
+                                                                                    .into()));
+                }
                 if *filesystem == FilesystemKind::System7 && !files.is_empty()
                 {
                     return Err(reject("layout.files",
@@ -286,7 +323,12 @@ impl Image
                 entries(platform, name, "layout.files", files)?;
             }
             Layout::Partitioned { table,
-                                  partitions } => partitioned(platform, name, table, partitions)?,
+                                  size,
+                                  partitions } =>
+            {
+                size.bytes().map_err(|cause| reject("layout.size", cause.to_string()))?;
+                partitioned(platform, name, table, size, partitions)?
+            }
             Layout::Raw { offset,
                           payload,
                           size } =>
@@ -298,7 +340,13 @@ impl Image
                     return Err(reject("layout.offset",
                                       "must be a nonzero absolute offset".into()));
                 }
-                size.bytes().map_err(|cause| reject("layout.size", cause.to_string()))?;
+                if size.bytes().map_err(|cause| reject("layout.size", cause.to_string()))?.is_none()
+                {
+                    return Err(reject("layout.size",
+                                      "must state a size; a raw payload has no other \
+                                       declaration to take the remainder from"
+                                                                              .into()));
+                }
                 source(platform, name, "layout.payload", payload)?;
             }
             Layout::Container { format: _,
@@ -315,7 +363,9 @@ impl Image
     }
 }
 
-fn partitioned(platform: &str, image: &str, table: &Table, partitions: &[Partition]) -> Result<()>
+fn partitioned(platform: &str, image: &str, table: &Table, size: &SizeRule,
+               partitions: &[Partition])
+               -> Result<()>
 {
     let reject = |field: &str, why: String| {
         error(format!("platform '{platform}' storage.images.{image}.{field}: {why}"))
@@ -333,31 +383,33 @@ fn partitioned(platform: &str, image: &str, table: &Table, partitions: &[Partiti
                                       partitions.len())));
         }
     }
-    let mut remaining = None;
+    let mut remaining = false;
     for (index, partition) in partitions.iter().enumerate()
     {
         let field = format!("layout.partitions[{index}]");
-        if partition.label.trim().is_empty()
+        let label = partition.label();
+        if label.trim().is_empty()
         {
             return Err(reject(&format!("{field}.label"), "must not be empty".into()));
         }
-        if partitions[..index].iter().any(|seen| seen.label == partition.label)
+        if partitions[..index].iter().any(|seen| seen.label() == label)
         {
             return Err(reject(&format!("{field}.label"),
-                              format!("duplicates the label '{}'", partition.label)));
+                              format!("duplicates the label '{label}'")));
         }
-        let fixed = partition.size
+        let fixed = partition.size()
                              .bytes()
                              .map_err(|cause| reject(&format!("{field}.size"), cause.to_string()))?;
-        match (partition.size.clone(), fixed)
+        match fixed
         {
-            (SizeRule::Remaining, _) =>
+            None =>
             {
-                if remaining.replace(index).is_some()
+                if remaining
                 {
                     return Err(reject("layout.partitions",
                                       "only one partition may consume the remaining space".into()));
                 }
+                remaining = true;
                 if index + 1 != partitions.len()
                 {
                     return Err(reject(&format!("{field}.size"),
@@ -366,63 +418,61 @@ fn partitioned(platform: &str, image: &str, table: &Table, partitions: &[Partiti
                                                    .into()));
                 }
             }
-            (_, Some(0)) =>
-            {
-                return Err(reject(&format!("{field}.size"), "must be nonzero".into()));
-            }
-            _ =>
+            Some(0) => return Err(reject(&format!("{field}.size"), "must be nonzero".into())),
+            Some(_) =>
             {}
         }
-        match partition.kind
+        match partition
         {
-            PartitionKind::System7Filesystem =>
+            Partition::System7Filesystem { .. } =>
+            {}
+            Partition::Fat32 { files,
+                               .. } =>
             {
-                if !partition.files.is_empty()
-                {
-                    return Err(reject(&format!("{field}.files"),
-                                      "must be empty for system7-filesystem, whose contents \
-                                       are derived from the platform's installed set; add the \
-                                       package to the installed set instead"
-                                                                            .into()));
-                }
+                entries(platform, image, &format!("{field}.files"), files)?;
             }
-            PartitionKind::Fat32 =>
+            Partition::Raw { offset,
+                             payload,
+                             .. } =>
             {
-                if partition.payload.is_some()
-                {
-                    return Err(reject(&format!("{field}.payload"),
-                                      "belongs to a raw partition; a fat32 partition lists \
-                                       files"
-                                             .into()));
-                }
-                entries(platform, image, &format!("{field}.files"), &partition.files)?;
-            }
-            PartitionKind::Raw =>
-            {
-                if !partition.files.is_empty()
-                {
-                    return Err(reject(&format!("{field}.files"),
-                                      "belongs to a fat32 partition; a raw partition states a \
-                                       payload and an offset"
-                                                             .into()));
-                }
-                let Some(offset) = &partition.offset
-                else
-                {
-                    return Err(reject(&format!("{field}.offset"),
-                                      "is required for a raw partition".into()));
-                };
                 quantity(offset).map_err(|cause| {
                                     reject(&format!("{field}.offset"), cause.to_string())
                                 })?;
-                let Some(payload) = &partition.payload
-                else
-                {
-                    return Err(reject(&format!("{field}.payload"),
-                                      "is required for a raw partition".into()));
-                };
                 source(platform, image, &format!("{field}.payload"), payload)?;
             }
+        }
+    }
+    // A partition that consumes the remainder is only well defined if the
+    // declared medium is large enough for the partitions that state a size.
+    if remaining
+    {
+        let Some(total) = size.bytes().map_err(|cause| reject("layout.size", cause.to_string()))?
+        else
+        {
+            return Err(reject("layout.size",
+                              "must state a size when a partition consumes the remaining \
+                               space"
+                                   .into()));
+        };
+        let used: u64 =
+            partitions[..partitions.len() - 1].iter()
+                                              .map(Partition::size)
+                                              .map(SizeRule::bytes)
+                                              .collect::<Result<Vec<_>>>()
+                                              .map_err(|cause| {
+                                                  reject("layout.partitions", cause.to_string())
+                                              })?
+                                              .into_iter()
+                                              .flatten()
+                                              .try_fold(0u64, |total, bytes| {
+                                                  total.checked_add(bytes)
+                     .ok_or_else(|| reject("layout.partitions", "sizes overflow a u64".into()))
+                                              })?;
+        if used >= total
+        {
+            return Err(reject("layout.size",
+                              format!("{total} bytes leaves no room for the partition that \
+                                       consumes the remaining space; the others need {used}")));
         }
     }
     Ok(())

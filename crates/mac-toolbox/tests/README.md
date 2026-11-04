@@ -265,9 +265,9 @@ optimized installation. It derives discovery breakpoints from that installation'
 ELF; production boot has no test delay or instrumentation.
 
 ```sh
-export SYSTEM7_BUILD_DIR=/tmp/system-risc-startup-check
-export CARGO_TARGET_DIR="$SYSTEM7_BUILD_DIR/host"
-cargo xtask image --build-dir "$SYSTEM7_BUILD_DIR"
+export SR_BUILD_DIR=/tmp/system-risc-startup-check
+export CARGO_TARGET_DIR="$SR_BUILD_DIR/host"
+cargo xtask image --build-dir "$SR_BUILD_DIR"
 cargo test --locked -p mac-toolbox --test extension_startup_native \
   native_init_outcomes_match_public_icon_services_with_exact_cell_damage -- --ignored --exact
 ```

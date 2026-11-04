@@ -11,11 +11,12 @@ use std::{fs,
 fn system_stack_guards_and_code_permissions_fault_loudly_on_actual_sv39()
 {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-    let build = mac_build::paths::build_dir(root.parent().unwrap());
+    let build = mac_build::paths::build_dir(&root);
     let platform = mac_build::platform::current();
+    let dist = root.join("dist").join(&platform.name);
     let abi = build.join("abi-smoke");
     let descriptor = |name: &str| {
-        let file=mac_formats::macbinary::decode(&fs::read(build.join("dist").join(format!("{name}.bin"))).unwrap()).unwrap();
+        let file=mac_formats::macbinary::decode(&fs::read(dist.join(format!("{name}.bin"))).unwrap()).unwrap();
         let resources = mac_formats::resource::decode(&file.resources).unwrap();
         mac_formats::native::Descriptor::decode(&resources.iter()
                                                           .find(|r| r.kind == *b"NABI" && r.id == 0)

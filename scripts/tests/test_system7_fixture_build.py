@@ -15,9 +15,9 @@ class FixtureBuildTests(unittest.TestCase):
     def test_guest_fixtures_share_intermediates_but_keep_distinct_final_outputs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            incoming = {'SYSTEM7_BUILD_DIR': str(root),
+            incoming = {'SR_BUILD_DIR': str(root),
                         'CARGO_BUILD_BUILD_DIR': str(root / 'wrong-cache'),
-                        'SYSTEM7_CARGO_ARTIFACT_DIR': str(root / 'wrong-output'),
+                        'SR_CARGO_ARTIFACT_DIR': str(root / 'wrong-output'),
                         'CARGO_ENCODED_RUSTFLAGS': '-C\x1fdebuginfo=0',
                         'SYSTEM7_EVENT_TRACE': '1',
                         'CARGO_PROFILE_DEV_DEBUG': '0'}
@@ -39,7 +39,7 @@ class FixtureBuildTests(unittest.TestCase):
     def test_host_packager_uses_its_own_final_profile_without_guest_flag_changes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            incoming = {'SYSTEM7_BUILD_DIR': str(root), 'RUSTFLAGS': '-C debuginfo=0'}
+            incoming = {'SR_BUILD_DIR': str(root), 'RUSTFLAGS': '-C debuginfo=0'}
             with patch.dict(os.environ, incoming, clear=True):
                 env = fixture.host_env(root / 'fixtures/one')
                 self.assertEqual(dict(os.environ), incoming)
@@ -51,7 +51,7 @@ class FixtureBuildTests(unittest.TestCase):
     def test_final_fixture_targets_cannot_escape_the_selected_build(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            with patch.dict(os.environ, {'SYSTEM7_BUILD_DIR': str(root)}, clear=True):
+            with patch.dict(os.environ, {'SR_BUILD_DIR': str(root)}, clear=True):
                 for target in [root, root / 'fixtures', root / 'host', root / 'fixtures/../outside']:
                     with self.assertRaisesRegex(ValueError, 'must be a child of'):
                         fixture.guest_env(target)

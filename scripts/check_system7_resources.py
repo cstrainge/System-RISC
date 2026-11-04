@@ -2,7 +2,7 @@
 """Verify original font/icon/picture resources in the actual packaged forks."""
 import hashlib,json,struct
 from pathlib import Path
-from system7_paths import dist_dir, describe
+from sr_paths import dist_dir, describe
 from system7_resource_map import resources, resource_names, resource_map
 ROOT=Path(__file__).resolve().parents[2]
 def sha(data):return hashlib.sha256(data).hexdigest()

@@ -5,7 +5,7 @@ import queue
 import subprocess
 import threading
 
-from system7_paths import SOURCE, host_dir, host_tool
+from sr_paths import SOURCE, host_dir, host_tool
 from system7_host import process_options
 
 

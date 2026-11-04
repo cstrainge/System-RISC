@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from system7_paths import build_dir
+from sr_paths import build_dir
 import subprocess
 
 # The checkout may have any name and the caller may have any working directory.

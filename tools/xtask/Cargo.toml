@@ -15,5 +15,7 @@ mac-build.workspace = true
 mac-formats.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+sha2.workspace = true
+toml = "0.9"
 mac-hfs-b = { path = "../../crates/mac-hfs-b" }
 hfs-b = { path = "../hfs-b" }

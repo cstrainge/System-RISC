@@ -322,10 +322,10 @@ impl BlockDevice for HostDisk
 }
 /// Optional actual image test; enabled explicitly so clean checkouts remain fixture driven.
 #[test]
-#[ignore = "set SYSTEM7_TEST_HFS to a generated native or original HFS image"]
+#[ignore = "set SR_TEST_HFS to a generated native or original HFS image"]
 fn actual_disk_catalog_and_both_forks()
 {
-    let path = PathBuf::from(std::env::var_os("SYSTEM7_TEST_HFS").expect("SYSTEM7_TEST_HFS"));
+    let path = PathBuf::from(std::env::var_os("SR_TEST_HFS").expect("SR_TEST_HFS"));
     let f = File::open(path).unwrap();
     let n = f.metadata().unwrap().len();
     let mut d = HostDisk(f, n);
@@ -383,7 +383,7 @@ fn actual_disk_catalog_and_both_forks()
         resident_bytes.extend_from_slice(&chunk[..open.transferred]);
     }
     assert_eq!(resident_bytes.len() as u64, open.length);
-    if let Some(expected) = std::env::var_os("SYSTEM7_TEST_SYSTEM_RSRC")
+    if let Some(expected) = std::env::var_os("SR_TEST_SYSTEM_RSRC")
     {
         assert_eq!(resident_bytes, std::fs::read(expected).unwrap());
     }

@@ -18,7 +18,7 @@ import time
 from hfs_b_tool import Image
 from riscv_vm import qmp
 from system7_capture import OwnedProcesses
-from system7_paths import BUILD_DIR_ENV, SOURCE, build_dir
+from sr_paths import BUILD_DIR_ENV, SOURCE, build_dir
 from system7_platform import CPU, RAM, guest_env
 
 CASES = [('artwork', 'Startup Artwork Probe'),
@@ -75,7 +75,7 @@ def wait_until(predicate, description, owners, timeout=60):
 
 def capture(output):
     if not os.environ.get(BUILD_DIR_ENV):
-        raise RuntimeError('set SYSTEM7_BUILD_DIR to an explicitly built private optimized installation')
+        raise RuntimeError('set SR_BUILD_DIR to an explicitly built private optimized installation')
     output = Path(output).resolve()
     original = build_dir() / 'dist'
     names = ['system7.qcow2', 'bootrom-riscv.bin', 'System.elf', 'System.rsrc']

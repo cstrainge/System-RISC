@@ -1,0 +1,537 @@
+//! The build itself: what to compile, in what order, and what the checks run.
+//!
+//! Nothing here names a package. The set to compile comes from the platform
+//! record's `install` section plus the package its `bootloader` section names,
+//! and each package's binary name, file type and installed folder come from
+//! that package's own `resources.json`. Adding an application to a platform is
+//! an edit to `platforms/<platform>.json`.
+
+use std::{env, fs, path::Path};
+
+use mac_build::{Result, error, package};
+use serde_json::{Value, json};
+
+use crate::{Workspace, authority, boot,
+            crates::{self, Crate, Crates},
+            disk, docs, emulator, modules, ninja, output, run, sdk, write_json};
+
+/// The one command a first-time developer runs: ensure the toolchain, then
+/// hand the graph to ninja.
+pub fn build(workspace: &Workspace) -> Result<()>
+{
+    sdk::prerequisites(workspace)?;
+    ninja::run(workspace, &[])
+}
+
+/// One stage of the graph. Ninja runs these; a person normally does not.
+pub fn stage(workspace: &Workspace, name: &str) -> Result<()>
+{
+    match name
+    {
+        "definitions" =>
+        {
+            guest_build(workspace,
+                        &names(&Crates::read(workspace)?.in_stage(crates::Stage::Definitions)))?
+        }
+        "guest" => guest_build(workspace, &guest_packages(workspace)?)?,
+        "apps" =>
+        {
+            sdk::applications(workspace, &applications(workspace)?)?;
+        }
+        "package" => package_all(workspace)?,
+        "image" =>
+        {
+            disk::image(workspace)?;
+        }
+        other => return Err(error(format!("unknown build stage '{other}'")))
+    }
+    let stamps = workspace.dist().join("ninja").join("stamps");
+    fs::create_dir_all(&stamps)?;
+    crate::stamp(&stamps.join(name), workspace.dist())
+}
+
+/// Every package this platform's guest images are compiled from: the installed
+/// resident modules, plus the bootloader its record names.
+///
+/// The bootloader is not installed into the boot volume — it executes in place
+/// from read-only flash — so it is not in `install.modules`. It is still a
+/// guest package this build must produce, and the record says which one.
+fn guest_packages(workspace: &Workspace) -> Result<Vec<String>>
+{
+    let crates = Crates::read(workspace)?;
+    let mut packages: Vec<String> = workspace.platform.install.modules.clone();
+    if let Some(bootloader) = &workspace.platform.bootloader
+    {
+        packages.push(bootloader.package.clone());
+    }
+    for name in &packages
+    {
+        crates.get(name)?;
+    }
+    Ok(packages)
+}
+
+fn names(entries: &[&Crate]) -> Vec<String>
+{
+    entries.iter().map(|entry| entry.name.clone()).collect()
+}
+
+/// Compile guest images in one cargo invocation.
+///
+/// One invocation, so the shared crates are compiled once for every package
+/// that needs them rather than once per target directory, and so cargo's
+/// feature unification sees the whole set at once.
+fn guest_build(workspace: &Workspace, packages: &[String]) -> Result<()>
+{
+    if packages.is_empty()
+    {
+        return Ok(());
+    }
+    let crates = Crates::read(workspace)?;
+    // Resolving the whole set once names the package a bad record points at,
+    // before cargo is asked to compile anything.
+    let entries = crates.select(packages)?;
+    let mut command = workspace.cargo();
+    command.args(["build", "--locked", "--release", "--target", &workspace.platform.rust_target,
+                  "--target-dir"])
+           .arg(workspace.target());
+    for package in packages
+    {
+        command.args(["--package", package]);
+    }
+    for entry in &entries
+    {
+        let package = &entry.name;
+        // The stage and the `guest` feature are checked against each other
+        // when the graph is read, so this is one fact, not a second guess.
+        if entry.is_guest()
+        {
+            command.arg("--features").arg(format!("{package}/guest"));
+        }
+        for feature in workspace.platform.install.features_for(package)
+        {
+            command.arg("--features").arg(format!("{package}/{feature}"));
+        }
+    }
+    // Deliberate: these three are host-side diagnostics, so they stay
+    // environment switches rather than platform data. A platform record that
+    // enabled tracing would turn it on for everyone who built that platform.
+    if packages.iter().any(|package| package == "mac-system")
+       && (workspace.checking || env::var_os("SYSTEM7_EVENT_TRACE").is_some())
+    {
+        command.args(["--features", "mac-system/event-trace"]);
+    }
+    if packages.iter().any(|package| package == "mac-system")
+       && env::var_os("SYSTEM7_DISPLAY_EVENT_DEBUG").is_some()
+    {
+        command.args(["--features", "mac-system/display-event-debug"]);
+    }
+    if packages.iter().any(|package| package == "text-edit")
+       && (workspace.checking || env::var_os("SR_TEXTEDIT_INPUT_TRACE").is_some())
+    {
+        command.args(["--features", "text-edit/input-trace"]);
+    }
+    run(&mut command)
+}
+
+/// The applications this platform installs, with the features it asks for.
+fn applications(workspace: &Workspace) -> Result<Vec<sdk::App>>
+{
+    let crates = Crates::read(workspace)?;
+    let mut apps = Vec::new();
+    for name in &workspace.platform.install.applications
+    {
+        let entry = crates.get(name)?;
+        if entry.stage != crates::Stage::Application
+        {
+            return Err(error(format!("platform '{}' installs '{name}' as an application, but \
+                                      that package is a {}",
+                                     workspace.platform.name,
+                                     entry.stage.describe())));
+        }
+        let resources = entry.resources()?;
+        let mut features = workspace.platform.install.features_for(name).to_vec();
+        // Deliberate: the tracing build is selected by the caller, not by the
+        // platform, so it is not in the record.
+        if name == "text-edit"
+           && (workspace.checking || env::var_os("SR_TEXTEDIT_INPUT_TRACE").is_some())
+           && !features.iter().any(|feature| feature == "input-trace")
+        {
+            features.push("input-trace".to_string());
+        }
+        let manifest =
+            entry.manifest
+                 .clone()
+                 .ok_or_else(|| error(format!("application '{name}' has no resources.json")))?;
+        apps.push(sdk::App { package: name.clone(),
+                             manifest: entry.directory.join("Cargo.toml"),
+                             resources: manifest,
+                             binary: resources.binary,
+                             features });
+    }
+    Ok(apps)
+}
+
+/// Package every compiled module and record what was built.
+pub fn package_all(workspace: &Workspace) -> Result<()>
+{
+    let _ = boot::package_rom(workspace)?;
+    let crates = Crates::read(workspace)?;
+    let mut reports = Vec::new();
+    // Which packages are relocatable code resources, and where each claims
+    // preferred placement. The manifest decides the kind, so the check does not
+    // trust the packaging report to describe itself.
+    let mut mappings: Vec<(String, u64, u64)> = Vec::new();
+    for entry in crates::installed(workspace, &crates)?
+    {
+        let package = crates.get(&entry.package)?;
+        // The application stage already packaged these, with the SDK's own
+        // linker output and its receipt; packaging them twice would produce two
+        // different files under one name.
+        if package.stage == crates::Stage::Application
+        {
+            continue;
+        }
+        let resources = package.resources()?;
+        let executable = workspace.target()
+                                  .join(&workspace.platform.rust_target)
+                                  .join("release")
+                                  .join(&resources.binary);
+        let report = package::build(&resources.path, &executable, workspace.dist())?;
+        println!("Packaged {}: entry 0x{:x}, {} resources",
+                 entry.name,
+                 report["entry"].as_u64().unwrap_or_default(),
+                 report["resources"].as_array().map(Vec::len).unwrap_or_default());
+        mappings.push((resources.role.clone(),
+                       report["load_base"].as_u64().unwrap_or_default(),
+                       report["load_limit"].as_u64().unwrap_or_default()));
+        reports.push(report);
+    }
+    disk::validate_modules(workspace)?;
+    for (role, report) in application_reports(workspace)?
+    {
+        mappings.push((role,
+                       report["load_base"].as_u64().unwrap_or_default(),
+                       report["load_limit"].as_u64().unwrap_or_default()));
+        reports.push(report);
+    }
+    authority::install(workspace, &mut reports)?;
+    for (index, first) in mappings.iter().enumerate()
+    {
+        for second in &mappings[index + 1..]
+        {
+            // Relocatable modules and definitions share link origins, not
+            // execution storage. Only current flat application and System
+            // mappings need pairwise preferred-placement exclusion.
+            if first.0 != "code_resource"
+               && second.0 != "code_resource"
+               && first.1 < second.2
+               && second.1 < first.2
+            {
+                return Err(error("native executable memory reservations overlap"));
+            }
+        }
+    }
+    let capacity = workspace.platform.virtual_memory()?.module_capacity();
+    let module_bytes = modules::footprint(&reports, capacity)?;
+    println!("Resident module execution spans: {module_bytes} of {capacity} virtual bytes; \
+              payload pages admitted at runtime");
+    let emulation = workspace.platform.emulation();
+    let report = json!({"platform": workspace.platform.name,
+                        "target": &workspace.platform.rust_target,
+                        "harts": emulation.map(|emulation| emulation.harts.get()),
+                        "machine": emulation.map(|emulation| emulation.description.as_str()),
+                        "guest_profile": "release",
+                        "build_dir": workspace.describe(&workspace.build),
+                        "toolchain": {"cargo": output(workspace.cargo().arg("--version"))?,
+                                      "rustc": output(&mut workspace.rustc())?},
+                        "packages": reports});
+    write_json(&workspace.dist().join("build.json"), &report)
+}
+
+/// The reports the application stage left behind, with the kind each package
+/// declares, in a stable order.
+fn application_reports(workspace: &Workspace) -> Result<Vec<(String, Value)>>
+{
+    let mut receipts = Vec::new();
+    for entry in fs::read_dir(workspace.dist())?
+    {
+        let path = entry?.path();
+        if path.to_string_lossy().ends_with(".sdk.json")
+        {
+            receipts.push(path);
+        }
+    }
+    receipts.sort();
+    let mut reports = Vec::new();
+    for path in receipts
+    {
+        let receipt: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        let manifest = receipt["resource_manifest"].as_str().ok_or_else(|| {
+                                                                 error(format!("{} records no \
+                                                                                resource manifest",
+                                                                               path.display()))
+                                                             })?;
+        let role = mac_build::Manifest::read(Path::new(manifest))?.role;
+        reports.push((role, receipt["package"].clone()));
+    }
+    Ok(reports)
+}
+
+/// The package reports the packaging stage recorded.
+pub fn packages(workspace: &Workspace) -> Result<Vec<Value>>
+{
+    let path = workspace.dist().join("build.json");
+    let report: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    Ok(report["packages"].as_array().cloned().unwrap_or_default())
+}
+
+/// Build the declared bootloader and package it as the platform's boot ROM.
+pub fn rom(workspace: &Workspace) -> Result<()>
+{
+    let Some(bootloader) = workspace.platform.bootloader.clone()
+    else
+    {
+        println!("Platform '{}' declares no bootloader; no boot payload is produced.",
+                 workspace.platform.name);
+        return Ok(());
+    };
+    // Only this package is selected, and it declares no features, so this
+    // cannot disturb the feature set the shared guest build resolves.
+    guest_build(workspace, std::slice::from_ref(&bootloader.package))?;
+    let _ = boot::package_rom(workspace)?;
+    Ok(())
+}
+
+/// Build, then boot the platform in its emulator.
+pub fn run_platform(workspace: &Workspace, mode: emulator::Mode, disk: Option<&str>,
+                    extra: &[String])
+                    -> Result<()>
+{
+    build(workspace)?;
+    let media = match disk
+    {
+        Some(path) => vec![Path::new(path).canonicalize()?],
+        None => Vec::new()
+    };
+    boot::run(workspace, mode, &media, extra)
+}
+
+/// Remove the writable disk copies a check leaves behind.
+///
+/// A check that fails part way through must not strand them, so the caller runs
+/// this whether or not the check succeeded.
+pub fn prune(workspace: &Workspace) -> Result<()>
+{
+    python(workspace, &["scripts/prune_system7_images.py"])
+}
+
+/// Build one std application with the private SDK, selected by its manifest.
+///
+/// This is the SDK's own acceptance route: it takes a `Cargo.toml` or the
+/// `resources.json` beside it, and reports the package it produced.
+pub fn sdk_app(workspace: &Workspace, manifest: &str, features: &[String]) -> Result<()>
+{
+    let path = crate::workspace::absolute(workspace.root(), Path::new(manifest).to_path_buf());
+    let directory =
+        path.parent().ok_or_else(|| error(format!("'{manifest}' has no parent directory")))?;
+    let cargo_toml = directory.join("Cargo.toml");
+    let text = fs::read_to_string(&cargo_toml).map_err(|why| {
+                                                  error(format!("cannot read {}: {why}",
+                                                                cargo_toml.display()))
+                                              })?;
+    let declared: toml::Value =
+        text.parse()
+            .map_err(|why| error(format!("cannot parse {}: {why}", cargo_toml.display())))?;
+    let package = declared["package"]["name"].as_str()
+                                             .ok_or_else(|| {
+                                                 error(format!("{} does not name a package",
+                                                               cargo_toml.display()))
+                                             })?
+                                             .to_string();
+    let crates = Crates::read(workspace)?;
+    let entry = crates.get(&package)?;
+    if entry.stage != crates::Stage::Application
+    {
+        return Err(error(format!("'{package}' is a {}, not a native application",
+                                 entry.stage.describe())));
+    }
+    let resources = entry.resources()?;
+    let app = sdk::App { package,
+                         manifest: cargo_toml,
+                         resources: resources.path,
+                         binary: resources.binary,
+                         features: features.to_vec() };
+    for report in sdk::applications(workspace, &[app])?
+    {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    }
+    Ok(())
+}
+
+/// The host, disk, ROM boot and desktop check pipeline.
+///
+/// The check scripts under `scripts/` are outside this rewrite: they are host
+/// capture and comparison tools, not part of the build. This function is the
+/// driver that runs them, and every report path below is where the script
+/// writes it, under `results/`.
+pub fn check(workspace: &Workspace) -> Result<()>
+{
+    let results = workspace.results();
+    python(workspace, &["-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"])?;
+    python(workspace, &["scripts/prune_system7_images.py"])?;
+    run(workspace.cargo().args(["fmt", "--all", "--", "--check"]))?;
+    docs::generate(workspace)?;
+    run(workspace.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
+                                "--exclude", "quickdraw-test", "--exclude", "text-edit",
+                                "--exclude", "cursor-test", "--exclude", "panic-test",
+                                "--exclude", "resedit", "--exclude", "reactor", "--exclude",
+                                "native-wdef", "--exclude", "native-buttons-cdef", "--exclude",
+                                "native-mdef"]))?;
+    // The large-fork fixture writes every logical block through the shared
+    // core, then verifies 64-bit File Manager transport through the SDK.
+    run(workspace.cargo().args(["test", "--locked", "--release", "-p", "mac-toolbox", "--test",
+                                "hfs_b", "allocated_native_fork", "--", "--ignored"]))?;
+    build(workspace)?;
+    let packages = packages(workspace)?;
+    python(workspace, &["scripts/check_system7_boundaries.py"])?;
+    let boundaries = read(results, "system7/toolbox-boundaries.json")?;
+    let image = disk::image(workspace)?;
+    for test in ["driver_modules", "host_filesystem_module", "file_sources", "stuffit",
+                 "userspace_graphical", "window_interactions", "finder_png"]
+    {
+        private_guest_test(workspace, test)?;
+    }
+    for test in ["dates", "boot_ui", "boot_memory", "resedit", "menus", "finder_trash",
+                 "file_writes_guest", "deferred_close", "get_info_ui", "events", "clipboard",
+                 "textedit_graphical", "text_edit_documents", "textedit_display",
+                 "textedit_performance", "typing", "processes", "thread_capacity",
+                 "finder_recovery", "application_ui", "retained_update", "event_latency",
+                 "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
+                 "transfer_incident", "remote_get_info", "finder_drag", "finder_layout",
+                 "reactor_ui", "definition_binding"]
+    {
+        private_guest_test(workspace, test)?;
+    }
+    let drivers = read(results, "system7/driver-module-checks.json")?;
+    let host_driver = read(results, "system7/host-filesystem-module-checks.json")?;
+    let resource_desktop = read(results, "system7/finder-trash-checks.json")?;
+    let writable = read(results, "system7/filesystem-write-checks.json")?;
+    let userspace: Value =
+        serde_json::from_slice(&fs::read(workspace.build
+                                                  .join("userspace-conformance-checks.json"))?)?;
+    let boot = boot::check(workspace)?;
+    python(workspace,
+           &["scripts/system7_vm.py",
+             "check",
+             "--no-build",
+             "--build-dir",
+             &workspace.build.to_string_lossy()])?;
+    let desktop = read(results, "system7/desktop-checks.json")?;
+    python(workspace, &["scripts/check_wdef_pixels.py"])?;
+    let appearance = read(results, "system7/wdef-appearance-checks.json")?;
+    let mut quickdraw = serde_json::Map::new();
+    for (name, script, report) in
+        [("primitives",
+          "scripts/check_quickdraw_primitives.py",
+          "quickdraw-reference/primitive-checks.json"),
+         ("fonts", "scripts/check_quickdraw_fonts.py", "system7/font-comparison-checks.json"),
+         ("icons", "scripts/check_quickdraw_icons.py", "quickdraw-reference/icon-checks.json"),
+         ("resources",
+          "scripts/check_system7_resources.py",
+          "system7/resource-manager-checks.json")]
+    {
+        python(workspace, &[script])?;
+        quickdraw.insert(name.into(), read(results, report)?);
+    }
+    let mut finder = serde_json::Map::new();
+    for (name, script, report) in
+        [("icons", "scripts/check_finder_icons.py", "system7/finder-icon-checks.json"),
+         ("mounted_volumes",
+          "scripts/check_finder_volumes.py",
+          "system7/finder-volume-checks.json")]
+    {
+        python(workspace, &[script])?;
+        finder.insert(name.into(), read(results, report)?);
+    }
+    python(workspace, &["scripts/check_system7_files.py", "--skip-clippy"])?;
+    let filesystem = read(results, "system7/filesystem-checks.json")?;
+    let event_manager = read(results, "system7/event-manager-checks.json")?;
+    let clipboard = read(results, "system7/clipboard-checks.json")?;
+    let textedit = read(results, "system7/textedit-graphical-checks.json")?;
+    let typing = read(results, "system7/typing-checks.json")?;
+    let processes = read(results, "system7/process-checks.json")?;
+    let application_ui = read(results, "system7/application-ui-checks.json")?;
+    let retained_update = read(results, "system7/retained-update-checks.json")?;
+    let event_latency = read(results, "system7/event-latency-checks.json")?;
+    let cursors = read(results, "system7/cursor-checks.json")?;
+    let panics = read(results, "system7/panic-checks.json")?;
+    let mut report = json!({
+        "platform": workspace.platform.name, "target": &workspace.platform.rust_target,
+        "host_tests": "passed", "driver_modules": drivers, "packages": packages,
+        "toolbox_boundaries": boundaries, "disk": image, "graphical_userspace": userspace,
+        "event_manager": event_manager, "clipboard": clipboard, "textedit": textedit,
+        "typing": typing, "processes": processes, "application_ui": application_ui,
+        "retained_update": retained_update, "event_latency": event_latency,
+        "cursors": cursors, "panics": panics, "boot": boot, "desktop": desktop,
+        "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem": filesystem,
+        "writable_filesystem": writable, "resource_desktop": resource_desktop,
+        "finder": finder,
+        "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS-B, \
+                  resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, \
+                  resource menus/alerts, captured Event/Scrap and monochrome TextEdit services \
+                  with Finder exercisers, shared native HFS-B read/write services with UTF-8 \
+                  names and microsecond dates, unchanged classic HFS exchange access, and \
+                  read-only resource-fork inspection. Original visual comparisons are strict \
+                  for primitives/icons/bitmap fonts; TrueType and synthetic styles retain \
+                  measured pixel differences. Original 68k execution and full classic Toolbox \
+                  remain incomplete."
+    });
+    report["host_filesystem_driver"] = host_driver;
+    report["file_sources"] = read(results, "system7/file-source-checks.json")?;
+    report["stuffit"] = read(results, "system7/stuffit-checks.json")?;
+    report["host_filesystem_mounts"] = read(results, "system7/host-filesystem-mount-checks.json")?;
+    let path = results.join("system7/toolchain-checks.json");
+    write_json(&path, &report)?;
+    println!("System/Finder toolchain checks passed: {}", path.display());
+    Ok(())
+}
+
+fn read(results: &Path, relative: &str) -> Result<Value>
+{
+    Ok(serde_json::from_slice(&fs::read(results.join(relative))?)?)
+}
+
+/// Run a host check script.
+///
+/// The check pipeline is not part of this rewrite, and those scripts need a
+/// Python 3 interpreter. `SR_PYTHON` selects one; otherwise the name that works
+/// on this host is tried. The build path never comes through here.
+fn python(workspace: &Workspace, arguments: &[&str]) -> Result<()>
+{
+    let program =
+        env::var_os("SR_PYTHON").unwrap_or_else(|| {
+                                    if cfg!(windows) { "python".into() } else { "python3".into() }
+                                });
+    run(workspace.command(&program).current_dir(workspace.root()).args(arguments))
+}
+
+fn private_guest_test(workspace: &Workspace, name: &str) -> Result<()>
+{
+    // Guest cases measure UI timing and package feature variants into a shared
+    // compiler profile. Keep these captures isolated; ordinary host unit tests
+    // retain Cargo's parallel execution.
+    let mut command = workspace.cargo();
+    command.args(["test", "--locked", "-p", "mac-toolbox", "--test", name, "--", "--ignored",
+                  "--test-threads=1"]);
+    // This validator consumes separately collected evidence. The automatic suite
+    // builds its own guests; it must not require an unrelated capture.
+    if env::var_os("SYSTEM7_HOST_FILESYSTEM_CAPTURE").is_none()
+    {
+        command.args(["--skip", "prepared_host_filesystem_capture_passes_public_sdk_acceptance"]);
+    }
+    let checked = run(&mut command);
+    let cleaned = python(workspace, &["scripts/prune_system7_images.py"]);
+    checked?;
+    cleaned
+}

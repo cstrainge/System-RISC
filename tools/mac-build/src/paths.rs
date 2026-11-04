@@ -1,22 +1,55 @@
 //! Host build-output selection shared by packaging and acceptance readers.
 use std::{env,
-          path::{Path, PathBuf}};
+          path::{Component, Path, PathBuf}};
 
-pub const BUILD_DIR_ENV: &str = "SYSTEM7_BUILD_DIR";
+pub const BUILD_DIR_ENV: &str = "SR_BUILD_DIR";
 /// Explicit final target/profile directory when Cargo intermediates live elsewhere.
-pub const ARTIFACT_DIR_ENV: &str = "SYSTEM7_CARGO_ARTIFACT_DIR";
+pub const ARTIFACT_DIR_ENV: &str = "SR_CARGO_ARTIFACT_DIR";
+
+/// Directories a walk of the checkout must never descend into. Output lives
+/// inside the tree, so a walk that ignores this list can package its own
+/// output on the next build.
+pub const OUTPUT_DIRECTORIES: [&str; 4] = ["build", "dist", "results", "target"];
+
+/// Whether a directory name is a build output directory.
+pub fn is_output_directory(name: &str) -> bool
+{
+    OUTPUT_DIRECTORIES.contains(&name)
+}
 
 /// Relative environment overrides are relative to the outer workspace, so
 /// changing a child process's working directory never changes its input media.
 pub fn build_dir(workspace: &Path) -> PathBuf
 {
-    workspace.join(env::var_os(BUILD_DIR_ENV).map(PathBuf::from)
-                                             .unwrap_or_else(|| "build/system7".into()))
+    workspace.join(env::var_os(BUILD_DIR_ENV).map(PathBuf::from).unwrap_or_else(|| "build".into()))
 }
 
-pub fn dist_dir(workspace: &Path) -> PathBuf
+/// Whether a record names a path inside the checkout rather than anywhere on
+/// the host. A record field is read on whichever host is building, so the test
+/// is lexical and component-based, not a substring test: `version..ld` is a
+/// legitimate file name, and a Windows drive-relative `C:entry.S` is not a
+/// repository path even though it has no leading separator.
+pub fn is_repo_relative(text: &str) -> bool
 {
-    build_dir(workspace).join("dist")
+    if text.trim().is_empty()
+    {
+        return false;
+    }
+    if let Some((first, _)) = text.split_at_checked(1)
+    {
+        if first == "/" || first == "\\"
+        {
+            return false;
+        }
+    }
+    // A drive letter is a prefix on one host and an ordinary character on
+    // another, so it is recognised from the text rather than from `Path`.
+    if text.as_bytes().get(1) == Some(&b':')
+       && text.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+    {
+        return false;
+    }
+    Path::new(text).components().all(|component| matches!(component, Component::Normal(_)))
 }
 
 

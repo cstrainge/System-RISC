@@ -6,8 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from system7_paths import host_dir, build_dir
-from system7_paths import dist_dir, describe
+from sr_paths import host_dir, build_dir
+from sr_paths import dist_dir, describe
 import struct
 import subprocess
 
@@ -53,7 +53,7 @@ def main():
     def disk_case(name, disk, fork):
         before = digest(disk)
         expected = digest(fork)
-        env = dict(os.environ, SYSTEM7_TEST_HFS=str(disk), SYSTEM7_TEST_SYSTEM_RSRC=str(fork))
+        env = dict(os.environ, SR_TEST_HFS=str(disk), SR_TEST_SYSTEM_RSRC=str(fork))
         run(name, base + ["-p", "mac-system", "--lib", "toolbox::files::tests::actual_disk_catalog_and_both_forks",
                           "--", "--ignored", "--nocapture"], env)
         if before != digest(disk) or expected != digest(fork):

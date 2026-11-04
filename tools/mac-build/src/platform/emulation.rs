@@ -131,11 +131,25 @@ pub enum EntropyKind
     VirtioRng
 }
 
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntropyBackend
+{
+    /// The emulator's own generator.
+    #[default]
+    Builtin
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Entropy
 {
     pub kind:      EntropyKind,
+    /// Where the bytes come from. A machine may care — a guest that must see
+    /// the host's entropy is a different machine from one that will accept the
+    /// emulator's — so it is stated rather than assumed.
+    #[serde(default)]
+    pub backend:   EntropyBackend,
     pub transport: Transport
 }
 
@@ -196,26 +210,112 @@ pub enum DiskTransport
     VirtioPci
 }
 
-/// Attachable block devices. `slots` lists every bus slot this machine exposes
-/// to disks; each slot is a fixed guest-visible address, so the list is part of
-/// the contract and not a count of how many disks happen to be attached today.
+/// Attachable block devices, one variant per transport, because the two
+/// transports count disks differently and one number must not stand for both.
+///
+/// `virtio-mmio` exposes a fixed set of bus slots, each at a guest-visible
+/// address, so a machine that uses it lists every slot it offers and the list
+/// is part of the guest contract. `virtio-pci` assigns its own addresses, so a
+/// machine that uses it states only how many disks it can hold.
+///
 /// `attach` names platform media, by storage image name, at the slots the guest
-/// expects them; the remaining slots take caller-supplied media.
+/// expects them. Exactly one attachment is marked `boot` on a machine that
+/// boots from a disk; the boot medium is named, never inferred from position or
+/// from the order of `storage.images`.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Disks
+#[serde(tag = "transport", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Disks
 {
-    pub transport: DiskTransport,
-    #[serde(default = "raw")]
-    pub format:    String,
-    #[serde(default = "readonly")]
-    pub readonly:  bool,
-    #[serde(default)]
-    pub slots:     Vec<u32>,
-    #[serde(default)]
-    pub attach:    Vec<Attachment>,
-    #[serde(default = "four")]
-    pub capacity:  NonZeroUsize
+    VirtioMmio
+    {
+        #[serde(default = "raw")]
+        format:   String,
+        #[serde(default = "readonly")]
+        readonly: bool,
+        /// Every bus slot this machine exposes to disks.
+        slots:    Vec<u32>,
+        #[serde(default)]
+        attach:   Vec<Attachment>
+    },
+    VirtioPci
+    {
+        #[serde(default = "raw")]
+        format:   String,
+        #[serde(default = "readonly")]
+        readonly: bool,
+        #[serde(default = "four")]
+        capacity: NonZeroUsize,
+        #[serde(default)]
+        attach:   Vec<Attachment>
+    }
+}
+
+impl Disks
+{
+    pub fn transport(&self) -> DiskTransport
+    {
+        match self
+        {
+            Self::VirtioMmio { .. } => DiskTransport::VirtioMmio,
+            Self::VirtioPci { .. } => DiskTransport::VirtioPci
+        }
+    }
+
+    pub fn format(&self) -> &str
+    {
+        match self
+        {
+            Self::VirtioMmio { format,
+                               .. }
+            | Self::VirtioPci { format,
+                              .. } => format
+        }
+    }
+
+    pub fn readonly(&self) -> bool
+    {
+        match self
+        {
+            Self::VirtioMmio { readonly,
+                               .. }
+            | Self::VirtioPci { readonly,
+                              .. } => *readonly
+        }
+    }
+
+    pub fn attach(&self) -> &[Attachment]
+    {
+        match self
+        {
+            Self::VirtioMmio { attach,
+                               .. }
+            | Self::VirtioPci { attach,
+                              .. } => attach
+        }
+    }
+
+    /// How many disks the machine can hold, in the terms its transport counts.
+    pub fn capacity(&self) -> usize
+    {
+        match self
+        {
+            Self::VirtioMmio { slots,
+                               .. } => slots.len(),
+            Self::VirtioPci { capacity,
+                              .. } => capacity.get()
+        }
+    }
+
+    /// The fixed bus slots, empty on a transport that assigns its own.
+    pub fn slots(&self) -> &[u32]
+    {
+        match self
+        {
+            Self::VirtioMmio { slots,
+                               .. } => slots,
+            Self::VirtioPci { .. } => &[]
+        }
+    }
 }
 
 /// One platform medium attached to the machine.
@@ -228,7 +328,11 @@ pub struct Attachment
     /// The bus slot, required on a bus whose slots are fixed guest addresses
     /// and forbidden on a bus that assigns its own.
     #[serde(default)]
-    pub slot:  Option<u32>
+    pub slot:  Option<u32>,
+    /// Whether the machine boots from this medium. At most one attachment may
+    /// be the boot medium, and a machine with attachments must name one.
+    #[serde(default)]
+    pub boot:  bool
 }
 
 fn four() -> NonZeroUsize
@@ -286,6 +390,13 @@ pub enum Firmware
 #[serde(deny_unknown_fields)]
 pub struct Readiness
 {
+    /// How long the machine may take to reach a boot marker.
+    ///
+    /// An emulated cold boot is not fast: this record's own platform reaches its
+    /// System marker at around 19 s on a development host, so a value near that
+    /// reports the platform as broken whenever the host is busy. The budget is
+    /// data because a slower board or a slower host changes it, and a timeout is
+    /// only useful when it is longer than a working boot.
     pub timeout_seconds: NonZeroU64,
     /// A line containing any of these means the platform came up.
     pub booted:          Vec<String>,
@@ -343,17 +454,14 @@ impl Definition
         {
             return Err(reject("description", "must describe the machine".into()));
         }
-        if self.binary.trim().is_empty()
+        for (field, value, why) in [("binary", &self.binary, "must name the emulator program"),
+                                    ("machine", &self.machine, "must name the board model"),
+                                    ("ram", &self.ram, "must state the memory size")]
         {
-            return Err(reject("binary", "must name the emulator program".into()));
-        }
-        if self.machine.trim().is_empty()
-        {
-            return Err(reject("machine", "must name the board model".into()));
-        }
-        if self.ram.trim().is_empty()
-        {
-            return Err(reject("ram", "must state the memory size".into()));
+            if value.trim().is_empty()
+            {
+                return Err(reject(field, why.into()));
+            }
         }
         if self.readiness.booted.is_empty()
         {
@@ -394,48 +502,46 @@ impl Definition
         let mut slots: Vec<(u32, &str)> = Vec::new();
         if let Some(disks) = &self.disks
         {
-            if disks.format.trim().is_empty()
+            if disks.format().trim().is_empty()
             {
                 return Err(reject("disks.format", "must name a disk format".into()));
             }
-            match disks.transport
+            if let Disks::VirtioMmio { slots: offered,
+                                       .. } = disks
             {
-                DiskTransport::VirtioMmio =>
-                {
-                    if disks.slots.is_empty() && disks.attach.is_empty()
-                    {
-                        return Err(reject("disks.slots",
-                                          "must list at least one bus slot for virtio-mmio".into()));
-                    }
-                    slots.extend(disks.slots.iter().map(|slot| (*slot, "disks.slots")));
-                }
-                DiskTransport::VirtioPci if !disks.slots.is_empty() =>
+                if offered.is_empty() && disks.attach().is_empty()
                 {
                     return Err(reject("disks.slots",
-                                      "must be empty for virtio-pci, which assigns its own \
-                                       addresses"
-                                                 .into()));
+                                      "must list at least one bus slot for virtio-mmio".into()));
                 }
-                DiskTransport::VirtioPci =>
-                {}
+                slots.extend(offered.iter().map(|slot| (*slot, "disks.slots")));
             }
-            for (index, attachment) in disks.attach.iter().enumerate()
+            let mut boot = None;
+            for (index, attachment) in disks.attach().iter().enumerate()
             {
                 if attachment.image.trim().is_empty()
                 {
                     return Err(reject(&format!("disks.attach[{index}].image"),
                                       "must name a storage image".into()));
                 }
-                match (disks.transport, attachment.slot)
+                if attachment.boot
                 {
-                    (DiskTransport::VirtioMmio, Some(slot)) if disks.slots.contains(&slot) =>
+                    if boot.replace(index).is_some()
+                    {
+                        return Err(reject("disks.attach",
+                                          "only one attachment may be the boot medium".into()));
+                    }
+                }
+                match (disks.transport(), attachment.slot)
+                {
+                    (DiskTransport::VirtioMmio, Some(slot)) if disks.slots().contains(&slot) =>
                     {}
                     (DiskTransport::VirtioMmio, Some(slot)) =>
                     {
                         return Err(reject(&format!("disks.attach[{index}].slot"),
                                           format!("{slot} is not one of this machine's disk \
                                                    slots {:?}",
-                                                  disks.slots)));
+                                                  disks.slots())));
                     }
                     (DiskTransport::VirtioMmio, None) =>
                     {
@@ -454,6 +560,13 @@ impl Definition
                                                          .into()));
                     }
                 }
+            }
+            if boot.is_none() && !disks.attach().is_empty()
+            {
+                return Err(reject("disks.attach",
+                                  "must mark exactly one attachment `\"boot\": true`, so the \
+                                   machine's boot medium is declared rather than inferred"
+                                                                         .into()));
             }
         }
         let devices = [("display", self.display.as_ref().map(|device| &device.transport)),
@@ -501,7 +614,7 @@ impl Definition
         self.disks
             .as_ref()
             .map(|disks| {
-                disks.slots.iter().copied().filter(|slot| !attached.contains(slot)).collect()
+                disks.slots().iter().copied().filter(|slot| !attached.contains(slot)).collect()
             })
             .unwrap_or_default()
     }
@@ -511,18 +624,23 @@ impl Definition
     {
         self.disks
             .iter()
-            .flat_map(|disks| disks.attach.iter())
+            .flat_map(|disks| disks.attach())
             .map(|attachment| (attachment.image.as_str(), attachment.slot))
     }
 
-    /// How many disks this machine accepts.
+    /// The storage image this machine boots from, when the record names one.
+    pub fn boot_image(&self) -> Option<&str>
+    {
+        self.disks
+            .iter()
+            .flat_map(|disks| disks.attach())
+            .find(|attachment| attachment.boot)
+            .map(|attachment| attachment.image.as_str())
+    }
+
+    /// How many disks this machine accepts, in the terms its transport counts.
     pub fn disk_capacity(&self) -> usize
     {
-        match &self.disks
-        {
-            Some(disks) if disks.slots.is_empty() => disks.capacity.get(),
-            Some(disks) => disks.slots.len(),
-            None => 0
-        }
+        self.disks.as_ref().map(Disks::capacity).unwrap_or_default()
     }
 }

@@ -5,10 +5,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from system7_paths import BUILD_DIR_ENV, SOURCE, build_dir, host_dir
+from sr_paths import BUILD_DIR_ENV, SOURCE, build_dir, host_dir
 from system7_platform import TARGET, guest_env as platform_guest_env
 
-ARTIFACT_DIR_ENV = 'SYSTEM7_CARGO_ARTIFACT_DIR'
+ARTIFACT_DIR_ENV = 'SR_CARGO_ARTIFACT_DIR'
 
 
 def _environment(target, env, guest):

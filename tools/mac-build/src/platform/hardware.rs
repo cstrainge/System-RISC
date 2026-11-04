@@ -13,6 +13,7 @@
 //! platform has not specified that part, not that a default applies.
 use serde::Deserialize;
 
+use super::storage::quantity;
 use crate::{Result, error};
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -36,9 +37,13 @@ pub struct Definition
     pub console:     Option<Console>,
     #[serde(default)]
     pub device_tree: Option<DeviceTree>,
-    /// The RAM window the platform expects.
+    /// The RAM window the SoC maps, as a board fact. This is not the platform
+    /// level `memory` section: that describes the paging, linker and ROM ranges
+    /// this workspace's kernel runs in, while this states where the board puts
+    /// its DRAM. A SoC port reads it to place its payload; nothing in this
+    /// workspace's builders consumes it yet.
     #[serde(default)]
-    pub memory:      Option<Region>,
+    pub ram:         Option<Region>,
     /// Integrated peripherals, by identity. Not emulator device kinds.
     #[serde(default)]
     pub devices:     Vec<Peripheral>,
@@ -215,18 +220,50 @@ impl Definition
             {
                 return Err(reject("console.kind", "must name the UART model".into()));
             }
-            if console.baud == Some(0)
+            if let Some(baud) = console.baud
             {
-                return Err(reject("console.baud", "must be nonzero".into()));
+                // A UART's line rate is a real quantity; zero and a rate no
+                // divider can produce are both defects, not settings.
+                if !(300..=4_000_000).contains(&baud)
+                {
+                    return Err(reject("console.baud",
+                                      format!("{baud} is not a usable line rate; give a rate \
+                                               between 300 and 4000000")));
+                }
             }
         }
-        for device in &self.devices
+        if let Some(ram) = &self.ram
         {
+            region(&reject, "ram", ram)?;
+        }
+        for (index, device) in self.devices.iter().enumerate()
+        {
+            let field = format!("devices[{index}]");
             if device.model.trim().is_empty()
             {
-                return Err(reject("devices.model",
+                return Err(reject(&format!("{field}.model"),
                                   format!("the {:?} peripheral must name its model",
                                           device.kind)));
+            }
+            match (&device.base, &device.bytes)
+            {
+                (None, None) =>
+                {}
+                (Some(base), Some(bytes)) =>
+                {
+                    region(&reject,
+                           &field,
+                           &Region { base:  base.clone(),
+                                     bytes: bytes.clone() })?;
+                }
+                (base, bytes) =>
+                {
+                    return Err(reject(&field,
+                                      format!("declares base {:?} and bytes {:?}; a \
+                                               peripheral's memory window is either stated in \
+                                               full or not at all",
+                                              base, bytes)));
+                }
             }
         }
         Ok(())
@@ -235,11 +272,6 @@ impl Definition
     pub fn description(&self) -> &str
     {
         &self.description
-    }
-
-    pub fn board(&self) -> &str
-    {
-        &self.board
     }
 
     /// The storage images this board is written with, by name.
@@ -253,9 +285,27 @@ impl Definition
     {
         self.boot.first_stage == FirstStage::PlatformBootloader
     }
+}
 
-    pub fn tooling(&self) -> &[String]
+/// Validate one memory window as a quantity: both ends must parse, and the
+/// window must be nonempty, because a zero-byte region is a typo rather than a
+/// device.
+fn region(reject: &impl Fn(&str, String) -> Box<dyn std::error::Error>, field: &str,
+          window: &Region)
+          -> Result<()>
+{
+    let base =
+        quantity(&window.base).map_err(|why| reject(&format!("{field}.base"), why.to_string()))?;
+    let bytes =
+        quantity(&window.bytes).map_err(|why| reject(&format!("{field}.bytes"), why.to_string()))?;
+    if bytes == 0
     {
-        &self.tooling
+        return Err(reject(&format!("{field}.bytes"), "must be nonzero".into()));
     }
+    base.checked_add(bytes).ok_or_else(|| {
+                                reject(&format!("{field}"),
+                                       format!("base {base:#x} plus {bytes:#x} bytes overflows \
+                                                the address space"))
+                            })?;
+    Ok(())
 }

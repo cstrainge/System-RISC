@@ -1,8 +1,8 @@
 [alias]
 xtask = "run --package xtask --"
 
-[build]
-target-dir = "../build/system7/host"
+# Cargo keeps its own target directory. The build does not redirect it, so
+# `target/` beside the checkout is what a warm build reuses.
 
 # The target name selects the LP64 ABI; the complete profile selects the ISA.
 [target.riscv64imac-unknown-none-elf]

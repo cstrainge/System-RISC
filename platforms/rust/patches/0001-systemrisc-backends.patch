@@ -1,3 +1,4 @@
+diff --git a/library/std/Cargo.toml b/library/std/Cargo.toml
 --- a/library/std/Cargo.toml
 +++ b/library/std/Cargo.toml
 @@ -32,7 +32,7 @@
@@ -20,6 +21,7 @@
  
  [features]
  backtrace = [
+diff --git a/library/std/build.rs b/library/std/build.rs
 --- a/library/std/build.rs
 +++ b/library/std/build.rs
 @@ -17,7 +17,8 @@
@@ -32,6 +34,7 @@
          || target_os == "android"
          || target_os == "netbsd"
          || target_os == "dragonfly"
+diff --git a/library/std/src/alloc.rs b/library/std/src/alloc.rs
 --- a/library/std/src/alloc.rs
 +++ b/library/std/src/alloc.rs
 @@ -371,6 +371,15 @@
@@ -50,6 +53,7 @@
  #[optimize(size)]
  fn default_alloc_error_hook(layout: Layout) {
      if cfg!(panic = "immediate-abort") {
+diff --git a/library/std/src/lib.rs b/library/std/src/lib.rs
 --- a/library/std/src/lib.rs
 +++ b/library/std/src/lib.rs
 @@ -473,7 +473,7 @@
@@ -61,6 +65,7 @@
  extern crate libc;
  
  // We always need an unwinder currently for backtraces
+diff --git a/library/std/src/panicking.rs b/library/std/src/panicking.rs
 --- a/library/std/src/panicking.rs
 +++ b/library/std/src/panicking.rs
 @@ -232,7 +232,27 @@
@@ -92,7 +97,7 @@
  #[optimize(size)]
  fn default_hook(info: &PanicHookInfo<'_>) {
      // If this is a double panic, make sure that we print a backtrace
-@@ -808,7 +828,9 @@
+@@ -806,7 +826,9 @@
          // methods, this means we avoid formatting the string at all!
          // (The panic runtime might still call `payload.take_box()` though and trigger
          // formatting.)
@@ -103,6 +108,7 @@
          Hook::Default => {
              default_hook(&PanicHookInfo::new(
                  location,
+diff --git a/library/std/src/sys/alloc/mod.rs b/library/std/src/sys/alloc/mod.rs
 --- a/library/std/src/sys/alloc/mod.rs
 +++ b/library/std/src/sys/alloc/mod.rs
 @@ -64,6 +64,10 @@
@@ -116,6 +122,7 @@
      any(target_family = "unix", target_os = "wasi", target_os = "teeos", target_os = "trusty") => {
          mod unix;
          use unix as imp;
+diff --git a/library/std/src/sys/env_consts.rs b/library/std/src/sys/env_consts.rs
 --- a/library/std/src/sys/env_consts.rs
 +++ b/library/std/src/sys/env_consts.rs
 @@ -15,6 +15,17 @@
@@ -136,6 +143,7 @@
  #[cfg(target_os = "aix")]
  pub mod os {
      pub const FAMILY: &str = "unix";
+diff --git a/library/std/src/sys/exit.rs b/library/std/src/sys/exit.rs
 --- a/library/std/src/sys/exit.rs
 +++ b/library/std/src/sys/exit.rs
 @@ -93,6 +93,7 @@
@@ -146,6 +154,7 @@
          target_os = "hermit" => unsafe { hermit_abi::exit(code) },
          target_os = "linux" => unsafe {
              unique_thread_exit();
+diff --git a/library/std/src/sys/io/error/mod.rs b/library/std/src/sys/io/error/mod.rs
 --- a/library/std/src/sys/io/error/mod.rs
 +++ b/library/std/src/sys/io/error/mod.rs
 @@ -1,4 +1,8 @@
@@ -157,6 +166,7 @@
      target_os = "hermit" => {
          mod hermit;
          pub use hermit::*;
+diff --git a/library/std/src/sys/pal/mod.rs b/library/std/src/sys/pal/mod.rs
 --- a/library/std/src/sys/pal/mod.rs
 +++ b/library/std/src/sys/pal/mod.rs
 @@ -4,6 +4,10 @@
@@ -170,6 +180,7 @@
      unix => {
          mod unix;
          pub use self::unix::*;
+diff --git a/library/std/src/sys/random/mod.rs b/library/std/src/sys/random/mod.rs
 --- a/library/std/src/sys/random/mod.rs
 +++ b/library/std/src/sys/random/mod.rs
 @@ -1,4 +1,8 @@
@@ -181,6 +192,7 @@
      // Tier 1
      any(target_os = "linux", target_os = "android") => {
          mod linux;
+diff --git a/library/std/src/sys/stdio/mod.rs b/library/std/src/sys/stdio/mod.rs
 --- a/library/std/src/sys/stdio/mod.rs
 +++ b/library/std/src/sys/stdio/mod.rs
 @@ -1,6 +1,10 @@
@@ -194,6 +206,7 @@
      any(target_family = "unix", target_os = "hermit", target_os = "wasi") => {
          mod unix;
          pub use unix::*;
+diff --git a/library/std/src/sys/sync/condvar/mod.rs b/library/std/src/sys/sync/condvar/mod.rs
 --- a/library/std/src/sys/sync/condvar/mod.rs
 +++ b/library/std/src/sys/sync/condvar/mod.rs
 @@ -1,5 +1,6 @@
@@ -203,6 +216,7 @@
          all(target_os = "windows", not(target_vendor = "win7")),
          target_os = "linux",
          target_os = "android",
+diff --git a/library/std/src/sys/sync/futex/mod.rs b/library/std/src/sys/sync/futex/mod.rs
 --- a/library/std/src/sys/sync/futex/mod.rs
 +++ b/library/std/src/sys/sync/futex/mod.rs
 @@ -1,4 +1,8 @@
@@ -214,6 +228,7 @@
      any(
          target_os = "linux",
          target_os = "android",
+diff --git a/library/std/src/sys/sync/mutex/mod.rs b/library/std/src/sys/sync/mutex/mod.rs
 --- a/library/std/src/sys/sync/mutex/mod.rs
 +++ b/library/std/src/sys/sync/mutex/mod.rs
 @@ -1,5 +1,6 @@
@@ -223,6 +238,7 @@
          all(target_os = "windows", not(target_vendor = "win7")),
          target_os = "linux",
          target_os = "android",
+diff --git a/library/std/src/sys/sync/once/mod.rs b/library/std/src/sys/sync/once/mod.rs
 --- a/library/std/src/sys/sync/once/mod.rs
 +++ b/library/std/src/sys/sync/once/mod.rs
 @@ -9,6 +9,7 @@
@@ -233,6 +249,7 @@
          all(target_os = "windows", not(target_vendor = "win7")),
          target_os = "linux",
          target_os = "android",
+diff --git a/library/std/src/sys/sync/rwlock/mod.rs b/library/std/src/sys/sync/rwlock/mod.rs
 --- a/library/std/src/sys/sync/rwlock/mod.rs
 +++ b/library/std/src/sys/sync/rwlock/mod.rs
 @@ -1,5 +1,6 @@
@@ -242,6 +259,7 @@
          all(target_os = "windows", not(target_vendor = "win7")),
          target_os = "linux",
          target_os = "android",
+diff --git a/library/std/src/sys/sync/thread_parking/mod.rs b/library/std/src/sys/sync/thread_parking/mod.rs
 --- a/library/std/src/sys/sync/thread_parking/mod.rs
 +++ b/library/std/src/sys/sync/thread_parking/mod.rs
 @@ -1,5 +1,6 @@
@@ -251,6 +269,7 @@
          all(target_os = "windows", not(target_vendor = "win7")),
          target_os = "linux",
          target_os = "android",
+diff --git a/library/std/src/sys/thread/mod.rs b/library/std/src/sys/thread/mod.rs
 --- a/library/std/src/sys/thread/mod.rs
 +++ b/library/std/src/sys/thread/mod.rs
 @@ -1,4 +1,8 @@
@@ -262,6 +281,7 @@
      target_os = "hermit" => {
          mod hermit;
          pub use hermit::{DEFAULT_MIN_STACK_SIZE, Thread, available_parallelism, sleep, yield_now};
+diff --git a/library/std/src/sys/thread_local/mod.rs b/library/std/src/sys/thread_local/mod.rs
 --- a/library/std/src/sys/thread_local/mod.rs
 +++ b/library/std/src/sys/thread_local/mod.rs
 @@ -150,6 +150,13 @@
@@ -278,6 +298,7 @@
          any(
              all(not(target_vendor = "apple"), not(target_family = "wasm"), target_family = "unix"),
              all(not(target_thread_local), target_vendor = "apple"),
+diff --git a/library/std/src/sys/time/mod.rs b/library/std/src/sys/time/mod.rs
 --- a/library/std/src/sys/time/mod.rs
 +++ b/library/std/src/sys/time/mod.rs
 @@ -1,4 +1,8 @@
@@ -289,6 +310,7 @@
      target_os = "motor" => {
          use moto_rt::time as imp;
      }
+diff --git a/library/std/src/sys/fs/mod.rs b/library/std/src/sys/fs/mod.rs
 --- a/library/std/src/sys/fs/mod.rs
 +++ b/library/std/src/sys/fs/mod.rs
 @@ -6,6 +6,10 @@
@@ -302,6 +324,7 @@
      any(target_family = "unix", target_os = "wasi") => {
          mod unix;
          use unix as imp;
+diff --git a/library/std/src/sys/paths/mod.rs b/library/std/src/sys/paths/mod.rs
 --- a/library/std/src/sys/paths/mod.rs
 +++ b/library/std/src/sys/paths/mod.rs
 @@ -1,4 +1,8 @@
@@ -313,6 +336,7 @@
      target_os = "hermit" => {
          mod hermit;
          #[expect(dead_code)]
+diff --git a/library/std/src/sys/env/mod.rs b/library/std/src/sys/env/mod.rs
 --- a/library/std/src/sys/env/mod.rs
 +++ b/library/std/src/sys/env/mod.rs
 @@ -15,6 +15,10 @@
@@ -326,6 +350,7 @@
      target_family = "unix" => {
          mod unix;
          pub use unix::*;
+diff --git a/library/std/src/sys/path/unix.rs b/library/std/src/sys/path/unix.rs
 --- a/library/std/src/sys/path/unix.rs
 +++ b/library/std/src/sys/path/unix.rs
 @@ -58,7 +58,7 @@
@@ -337,9 +362,10 @@
          path.has_root()
      } else {
          path.has_root() && path.prefix().is_some()
+diff --git a/library/std/src/process.rs b/library/std/src/process.rs
 --- a/library/std/src/process.rs
 +++ b/library/std/src/process.rs
-@@ -2715,6 +2715,9 @@
+@@ -2714,6 +2714,9 @@
          match self {
              Ok(val) => val.report(),
              Err(err) => {

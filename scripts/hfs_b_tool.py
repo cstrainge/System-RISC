@@ -7,7 +7,7 @@ from functools import cache
 import json
 from pathlib import Path
 import subprocess
-from system7_paths import SOURCE, host_dir, host_tool
+from sr_paths import SOURCE, host_dir, host_tool
 
 
 @cache

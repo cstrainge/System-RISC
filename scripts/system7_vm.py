@@ -17,7 +17,7 @@ import time
 import uuid
 
 from riscv_vm import native_executable, qmp as send_qmp, windows_path
-from system7_paths import SOURCE, ROOT, BUILD_DIR_ENV, build_dir, dist_dir, describe
+from sr_paths import SOURCE, ROOT, BUILD_DIR_ENV, build_dir, dist_dir, describe
 from system7_host import process_options
 
 STATE = ROOT / 'working/system7-vm'

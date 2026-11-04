@@ -209,7 +209,7 @@ validation. This is not permission to resume now or retain the old Rust suite.
   Include HFS and other raw disk formats; retain only current build/live VM disks
   and original reference media. Reports and screenshots do not require old disks.
 - Runtime validation uses an installation under a separate build/media root
-  from the regular desktop. Propagate SYSTEM7_BUILD_DIR through all builders, guest
+  from the regular desktop. Propagate SR_BUILD_DIR through all builders, guest
   launchers and acceptance readers; never hardcode the normal installation in
   a check. Native guest builds use the optimized release profile, including for
   the regular launcher; a host debug xtask must not imply a debug guest.

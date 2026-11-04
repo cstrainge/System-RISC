@@ -49,43 +49,61 @@ with the original bomb icon, scrollable diagnostics and clipboard copying.
 
 ## Build and check
 
-Run from this directory with the nightly toolchain (required by the guest
-allocator and ROM features). If nightly is not your default, select it explicitly:
+One command builds everything and boots System RISC in QEMU. The Rust toolchain,
+the standard-library target and the instruction-set profile come from the
+platform record (`platforms/qemu_riscv.json` and `platforms/rust/sdk.json`), so
+the build selects them itself:
 
 ```sh
-cargo +nightly xtask build
-cargo +nightly xtask image
-cargo +nightly xtask boot
-cargo +nightly xtask boot-check
-cargo +nightly xtask inspect ../build/system7/dist/Finder.bin
-cargo +nightly xtask check
-cargo +nightly xtask doc
+cargo xtask build --platform qemu_riscv
 ```
+
+`--platform` accepts any spelling of the name (`QemuRISC-V`, `qemu-riscv`,
+`qemu_riscv`) and the platform segment of every output path uses one canonical
+spelling. Everything the build produces lands inside this checkout: `build/`
+for the generated ninja graph, `dist/<platform>/` for the images and packages,
+`target/` for Cargo, and `results/` for run and boot reports. All four are
+ignored by git.
+
+```sh
+cargo xtask build --platform qemu_riscv          # build and boot
+cargo xtask run   --platform qemu_riscv --no-build  # boot what is already built
+cargo xtask boot-check --platform qemu_riscv     # cold-boot and rejection cases
+cargo xtask inspect dist/qemu_riscv/Finder.bin   # resource inventory
+cargo xtask check                                 # Toolbox and packaging checks
+cargo xtask clean --platform qemu_riscv          # remove this platform's output
+cargo xtask doc                                   # regenerate docs/api
+```
+
+Override the output root with `--dist <directory>` or `SR_DIST`; the
+platform segment is appended to either. Override Cargo's target directory with
+`--target-dir` or `CARGO_TARGET_DIR`. A default build needs neither.
 
 For the graphical desktop:
 
 ```sh
-python3 ./scripts/system7_vm.py start
-python3 ./scripts/system7_vm.py check
-python3 ./scripts/system7_vm.py stop
+cargo xtask run --platform qemu_riscv             # build, then boot with a window
+cargo xtask run --platform qemu_riscv --no-build  # boot what is already built
+cargo xtask run --platform qemu_riscv --headless  # the same boot with no window
 ```
 
-The launcher opens a native Cocoa window on macOS, a native Windows GTK window
-at 2× when available, or Linux GTK. It copies the generated ROM and disk into
-`working/system7-vm`. The ROM stays read-only; the private desktop disk is
-writable and retained across starts of the same OS build. A changed base build
-replaces the previous working disk without retaining old images. Isolated test
-launches default to fresh read-only disks. `cargo xtask check` removes obsolete generated test disks and ROM copies
-before and after the gate; reports, screenshots and original reference media
-remain. Its QMP port is4447;
-the classic Mac and old QuickDraw machines keep their own state and ports.
+The platform record decides how the emulator is invoked: its machine, memory,
+harts, devices, firmware, which storage image boots, and the console and screen
+each mode gets. `--headless` therefore still boots the real guest and writes its
+console to the report; there is no second, host-side path. A run ends when the
+guest powers off or the command is interrupted, and the emulator is a child of
+that command, so there is no daemon to stop and no VM left behind.
+`cargo xtask tools` reports where the emulator and ninja come from.
 
-On Windows, run `python ./scripts/system7_vm.py start` directly from PowerShell.
-Install Python 3.11 or newer, the nightly Rust MSVC toolchain with the
-`riscv64imac-unknown-none-elf` target and its native linker prerequisites, and
-Windows QEMU including `qemu-img.exe`. The launcher selects the nightly toolchain
-unless `RUSTUP_TOOLCHAIN` explicitly selects another one, and uses the same Python
-interpreter for build and saved-file preservation helpers. WSL is not required.
+`scripts/system7_vm.py` remains only for work this rewrite did not port: prepared
+volume exports, the Transfer share, and saved-file preservation across disk
+rebuilds. Everything that builds or boots the OS is `cargo xtask`.
+
+On Windows, nothing beyond `rustup` has to be installed by hand: the build uses
+the pinned toolchain, writes its own ninja graph, and `cargo xtask tools
+--install` obtains QEMU and ninja for this host. `cargo xtask tools` without
+`--install` only reports what is missing and the command that would install it,
+and `build`, `run` and `clean` never install anything themselves.
 
 Disk preservation refuses a live VM even when its monitor is unavailable. On
 Windows, the recorded PID is also checked against the recorded executable name
@@ -102,22 +120,13 @@ same setting accepts a Windows path or its `/mnt/d/...` path. An invalid
 configured path reports an error before launch. Linux and WSL launch commands
 continue to use their existing host tools and frontend selection.
 
-On macOS, the same command runs from Terminal:
-
-```sh
-python ./scripts/system7_vm.py start
-```
-
-Use Python 3.11 or newer, nightly Rust with the
-`riscv64imac-unknown-none-elf` target, and standalone QEMU with its Cocoa display
-backend. Put `python`, `cargo`, `qemu-system-riscv64`, `qemu-img` and
-`llvm-objcopy` on `PATH`; Homebrew and MacPorts are optional. Rust's `llvm-tools`
-component includes a compatible `llvm-objcopy`. The launcher uses the invoking
-Python interpreter for build and saved-file preservation helpers. Cocoa handles
-native window scaling and absolute tablet input. The launcher prefers fixed
-2× zoom when the complete window fits the usable screen, and otherwise uses 1×.
-It uses the [tracked QEMU Cocoa scale patch](scripts/qemu/README.md);
-apply it when building standalone QEMU. `--frontend headless` retains
+On macOS, `cargo xtask run --platform qemu_riscv` is the whole command. It needs
+`cargo`, `qemu-system-riscv64` and `ninja` on `PATH`, and `cargo xtask tools`
+names the Homebrew command when one is missing. No separate `llvm-objcopy` is
+needed: the packager compacts the linked ELF itself. Cocoa handles window scaling
+and absolute tablet input, and the
+[tracked QEMU Cocoa scale patch](scripts/qemu/README.md) still applies when
+building standalone QEMU. The Python launcher's `--frontend headless` retains
 the same disk, host companion and QMP services without opening a window.
 
 Normal startup initializes `System7/transfer` on first use and exposes it as a
@@ -177,7 +186,7 @@ cargo xtask image --build-dir /tmp/my-system-risc
 A custom profile keeps its working VM in `BUILD_DIR/vm`; `--state-dir` overrides
 that separately. Use a different `--qmp-port` for each simultaneous native Windows
 VM; Linux headless/GTK VMs use a socket in their own state directory. The
-`SYSTEM7_BUILD_DIR` environment variable selects the same build root for direct
+`SR_BUILD_DIR` environment variable selects the same build root for direct
 test/capture commands; relative environment paths are outer-workspace-relative,
 while command-line paths are relative to the current directory. Keep build
 directories outside the OS source repository. `check --no-build` uses the check
@@ -373,29 +382,34 @@ original A-line adapter coverage are tracked separately.
 
 ## Artifacts
 
-Generated files live in `../build/system7/`, outside the source tree. Package
-names are `System`, `Finder`, `QuickDraw Test` and `Text Edit`; names with
-spaces remain intact in the artifact and HFS filenames:
+Generated files live inside this checkout: the build graph, its log and its
+dependency files in `build/`, this platform's output in `dist/<platform>/`,
+Cargo's target directory in `target/`, and run and boot reports in `results/`.
+`<platform>` is the canonical platform name, so `--platform QemuRISC-V` and
+`--platform qemu_riscv` are the same directory. All four roots are ignored by
+git; `cargo xtask clean` removes this platform's output and the target
+directory. Package names are `System`, `Finder`, `QuickDraw Test` and
+`Text Edit`; names with spaces remain intact in the artifact and HFS filenames:
 
 | File | Purpose |
 | --- | --- |
-| `dist/<name>.elf` | Linked executables, with debug information |
-| `dist/*.runtime.elf` | Executables stripped of symbols/debug for embedding |
-| `dist/<name>.rsrc` | Standard big-endian resource forks |
-| `dist/<name>.data` | Data forks, currently empty |
-| `dist/<name>.bin` | MacBinary II transports preserving forks and metadata |
-| `dist/<name>.json` | Resource inventories, entry addresses, segments and hashes |
-| `dist/build.json` | Package inventory and compiler/tool versions |
-| `dist/bootrom-riscv.elf`, `dist/bootrom-riscv.bin` | Debuggable firmware and 32 MiB flash-bank image |
-| `dist/bootrom-riscv.json` | Firmware size, address and hash |
-| `dist/system7.hfs` | Sparse, 500 MiB unpartitioned HFS volume |
-| `dist/system7.qcow2` | Same volume in qcow2 format |
-| `dist/disk.json` | File fork verification, volume blessing and disk checks |
-| `boot-checks/*.serial.log` | Cold-boot and rejection-case output |
+| `dist/<platform>/<name>.elf` | Linked executables, with debug information |
+| `dist/<platform>/<name>.rsrc` | Standard big-endian resource forks |
+| `dist/<platform>/<name>.data` | Data forks, currently empty |
+| `dist/<platform>/<name>.bin` | MacBinary II transports preserving forks and metadata |
+| `dist/<platform>/<name>.json` | Resource inventories, entry addresses, segments and hashes |
+| `dist/<platform>/build.json` | Package inventory and compiler/tool versions |
+| `dist/<platform>/build-report.json` | Resolved root, toolchain, ninja graph and produced artifacts |
+| `dist/<platform>/bootrom-riscv.elf`, `bootrom-riscv.bin` | Debuggable firmware and 32 MiB flash-bank image |
+| `dist/<platform>/bootrom-riscv.json` | Firmware size, address and hash |
+| `dist/<platform>/system7.hfsb` | Sparse, 500 MiB unpartitioned HFS volume |
+| `dist/<platform>/disk.json` | File fork verification, volume blessing and disk checks |
+| `build/ninja/build.ninja` | The generated graph, with its log and deps beside it |
+| `results/system7/boot-checks/*.serial.log` | Cold-boot and rejection-case output |
 
-`../results/system7/toolchain-checks.json` records the complete check result.
-`../results/system7/boot-checks.json` records the disk boot suite separately.
-`../results/system7/desktop-checks.json` records cold boot and desktop interaction;
+`results/system7/toolchain-checks.json` records the complete check result.
+`results/system7/boot-checks.json` records the disk boot suite separately.
+`results/system7/desktop-checks.json` records cold boot and desktop interaction;
 `desktop-input-checks.json` contains the individual input/pixel checks.
 `wdef-appearance-checks.json` contains the 29 original-reference RGB comparisons;
 `guest-wdef-checks.json` checks the loaded RV64 frame against that renderer.

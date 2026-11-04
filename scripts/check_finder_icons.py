@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from system7_paths import dist_dir, describe
+from sr_paths import dist_dir, describe
 import subprocess
 from PIL import Image, ImageChops
 ROOT=Path(__file__).resolve().parents[2]

@@ -3,16 +3,17 @@ import os
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1]
-ROOT = SOURCE.parent
-BUILD_DIR_ENV = 'SYSTEM7_BUILD_DIR'
-DIST_ENV = 'SYSTEM7_DIST'
-PLATFORM_ENV = 'SYSTEM7_PLATFORM'
+# The checkout is the root: build, dist, target and results all live inside it.
+ROOT = SOURCE
+BUILD_DIR_ENV = 'SR_BUILD_DIR'
+DIST_ENV = 'SR_DIST'
+PLATFORM_ENV = 'SR_PLATFORM'
 DEFAULT_PLATFORM = 'qemu_riscv'
 
 
 def build_dir():
     # Match mac_build::paths, including for subprocesses launched in System7/.
-    return (ROOT / os.environ.get(BUILD_DIR_ENV, 'build/system7')).resolve()
+    return (ROOT / os.environ.get(BUILD_DIR_ENV, 'build')).resolve()
 
 
 def dist_dir():
@@ -25,13 +26,13 @@ def dist_dir():
     chosen = os.environ.get(DIST_ENV)
     if chosen:
         path = Path(chosen)
-        return (path if path.is_absolute() else build_dir() / path).resolve()
-    return (build_dir() / 'dist' / os.environ.get(PLATFORM_ENV, DEFAULT_PLATFORM)).resolve()
+        return (path if path.is_absolute() else ROOT / path).resolve()
+    return (ROOT / 'dist' / os.environ.get(PLATFORM_ENV, DEFAULT_PLATFORM)).resolve()
 
 
 def host_dir():
-    """One compiler cache for host tools/examples within the selected build."""
-    return build_dir() / 'host'
+    """Cargo's target directory: the one place host tools are built."""
+    return (ROOT / 'target').resolve()
 
 
 def host_tool(name, profile='debug'):
