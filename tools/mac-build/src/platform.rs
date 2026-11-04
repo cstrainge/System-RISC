@@ -548,40 +548,59 @@ impl Platform
         self.emulation.as_ref().map(|emulation| emulation.harts.get()).unwrap_or(1)
     }
 
-    /// Every peripheral window the record declares, with a size. The size comes
-    /// from the peripheral itself when it states one, otherwise from the MMIO
-    /// inventory entry at the same address, so one declaration of a window is
-    /// enough.
-    pub fn declared_devices(&self) -> Vec<DeclaredDevice>
+    /// Every peripheral window the record declares. A peripheral that states a
+    /// base but no size is refused rather than given a default or looked up in
+    /// the MMIO inventory: one window must have one declaration, and a second
+    /// source could disagree with the first. A peripheral with no base describes
+    /// a function rather than a window and is skipped.
+    pub fn declared_devices(&self) -> Result<Vec<DeclaredDevice>>
     {
         let hardware = match self.hardware.as_ref()
         {
             Some(hardware) => hardware,
-            None => return Vec::new()
+            None => return Ok(Vec::new())
         };
         let mut devices = Vec::new();
         for peripheral in &hardware.devices
         {
-            let base = match peripheral.base.as_deref().and_then(parse_hex)
+            let base = match peripheral.base.as_deref()
+            {
+                Some(text) => Some(parse_hex(text).ok_or_else(|| {
+                                                       crate::error(format!("platform '{}' \
+                                                                             peripheral {} states an \
+                                                                             unreadable base {text:?}",
+                                                                            self.name,
+                                                                            peripheral.model))
+                                                   })?),
+                None => None
+            };
+            let base = match base
             {
                 Some(base) => base,
                 None => continue
             };
-            let declared = peripheral.bytes.as_deref().and_then(parse_hex);
-            let bytes = declared.or_else(|| {
-                                             self.mmio_devices.iter()
-                                                              .find(|device| {
-                                                                  parse_hex(&device.address)
-                                                                  == Some(base)
-                                                              })
-                                                              .map(|device| device.bytes)
-                                         })
-                                         .unwrap_or(4096);
+            let bytes = match peripheral.bytes.as_deref()
+            {
+                Some(text) => parse_hex(text).ok_or_else(|| {
+                                                 crate::error(format!("platform '{}' peripheral {} \
+                                                                       states an unreadable size \
+                                                                       {text:?}",
+                                                                      self.name,
+                                                                      peripheral.model))
+                                             })?,
+                None =>
+                {
+                    return Err(crate::error(format!("platform '{}' peripheral {} states a base but \
+                                                     no size, so its window is not fully declared",
+                                                    self.name,
+                                                    peripheral.model)));
+                }
+            };
             devices.push(DeclaredDevice { compatible: peripheral.model.clone(),
                                           base,
                                           bytes });
         }
-        devices
+        Ok(devices)
     }
 }
 

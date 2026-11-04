@@ -98,7 +98,7 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
     }
     tree.end_node();
 
-    let devices = platform.declared_devices();
+    let devices = platform.declared_devices()?;
     if devices.is_empty()
     {
         return Err(crate::error(format!("platform '{}' declares no peripheral windows; a \
@@ -452,7 +452,7 @@ mod tests
                    "the memory node must carry the record's RAM base and size");
         let cpus = nodes.iter().filter(|(path, _, _)| path.starts_with("cpus/cpu@")).count();
         assert_eq!(cpus, platform.harts(), "one cpu node per declared hart");
-        for device in platform.declared_devices()
+        for device in platform.declared_devices().expect("declared devices")
         {
             let path = format!("soc/{}@{:x}", device.compatible, device.base);
             let node = nodes.iter()
