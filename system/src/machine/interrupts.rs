@@ -42,6 +42,8 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
     fn resource_released(_: mac_object_table::domain::DomainId)
     {
         crate::recovery::acknowledgement_changed();
+        crate::kernel::control_resource_acknowledged();
+        crate::toolbox::windows::manager::ack::acknowledgement_changed();
     }
 
     fn publication_released(owner: mac_object_table::domain::DomainId)
@@ -55,13 +57,19 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
         }
     }
 
-    fn released(owner: mac_object_table::domain::DomainId)
+    fn released(owner: &mac_object_table::shared::OwnerRef<Self>)
     {
-        if owner.kind() == mac_object_table::domain::DomainKind::Process
+        if owner.owner().kind() == mac_object_table::domain::DomainKind::Process
         {
-            crate::toolbox::processes::retirement::resources_released();
+            // Exact-key ACK and source/reader notifications have independent
+            // paths. A live Process's account release cannot retire that owner.
+            // accepting() is its original admission AtomicBool, with no lookup.
+            if !owner.accepting()
+            {
+                crate::toolbox::processes::retirement::resources_released();
+            }
         }
-        else if owner.kind() == mac_object_table::domain::DomainKind::Module
+        else if owner.owner().kind() == mac_object_table::domain::DomainKind::Module
         {
             crate::drivers::recovery_changed();
         }

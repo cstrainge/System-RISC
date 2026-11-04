@@ -1,6 +1,7 @@
 //! One loaded Splitter CDEF supplies standalone and container drag geometry.
 //! A capture retains its initial geometry; only its outline moves until release.
 use super::*;
+use crate::toolbox::runtime::TrackingStage;
 #[derive(Clone)]
 pub(super) struct Capture
 {
@@ -17,6 +18,28 @@ pub(super) struct Capture
 }
 impl Capture
 {
+    pub(super) fn same_snapshot(&self, other: &Self) -> bool
+    {
+        self.initial == other.initial
+        && self.entry == other.entry
+        && self.anchor == other.anchor
+        && self.point == other.point
+        && self.position == other.position
+        && self.clip == other.clip
+        && self.boundary == other.boundary
+        && match (&self._definition, &other._definition)
+        {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false
+        }
+    }
+
+    pub(super) fn has_process_source(&self) -> bool
+    {
+        self._definition.as_ref().is_some_and(|source| source.is_process_source())
+    }
+
     fn new(mut initial: ControlDefinitionState, entry: DefinitionRef, anchor: Point,
            clip: Option<Rect>, definition: Option<Arc<BoundDefinition>>)
            -> Self
@@ -39,19 +62,23 @@ impl Capture
                _definition: definition }
     }
 
-    fn move_to(&mut self, point: Point, gate: TrapGate) -> Result<(), Status>
+    async fn move_to_with(&mut self, point: Point, author: &super::super::effects::Author)
+                          -> Result<(), Status>
     {
         if self.point == point
         {
             return Ok(());
         }
-        let mut call = ControlCall { operation: TRACK_SPLITTER,
-                                     procedure: SPLITTER_PROCEDURE,
-                                     standard: self.initial,
-                                     anchor: self.anchor,
-                                     point,
-                                     ..Default::default() };
-        super::super::prepare(&mut call, self.entry, gate)?;
+        let call =
+            super::super::effects::DetachedCall::capture(&ControlCall { operation:
+                                                                            TRACK_SPLITTER,
+                                                                        procedure:
+                                                                            SPLITTER_PROCEDURE,
+                                                                        standard: self.initial,
+                                                                        anchor: self.anchor,
+                                                                        point,
+                                                                        ..Default::default() })?;
+        let (call, _) = author.prepare(call, self.entry, None).await?;
         if !(0..=65535).contains(&call.result)
         {
             return Err(BAD_ABI);
@@ -98,6 +125,14 @@ impl State
     pub(super) fn divider_hit(&self, point: Point, gate: TrapGate)
                               -> Result<Option<super::super::snapshot::Divider>, Status>
     {
+        let author = super::super::effects::Author::trusted(gate);
+        super::super::effects::immediate(self.divider_hit_with(point, &author))
+    }
+
+    pub(super) async fn divider_hit_with(
+        &self, point: Point, author: &super::super::effects::Author)
+        -> Result<Option<super::super::snapshot::Divider>, Status>
+    {
         let Some(l) = &self.layout
         else
         {
@@ -119,13 +154,13 @@ impl State
             {
                 continue;
             }
-            let mut call = ControlCall { operation: HIT_STANDARD,
+            let call = super::super::effects::DetachedCall::capture(&ControlCall { operation: HIT_STANDARD,
                                          procedure: SPLITTER_PROCEDURE,
                                          reflow: 1,
                                          standard: segment.state(d.viewport, enabled),
                                          point,
-                                         ..Default::default() };
-            super::super::prepare(&mut call, d.definition.reference(), gate)?;
+                                         ..Default::default() })?;
+            let (call, _) = author.prepare(call, d.definition.reference(), None).await?;
             if call.result == i32::from(SPLITTER_PART)
             {
                 return Ok(Some(*segment));
@@ -157,7 +192,7 @@ impl Manager
 
     pub(crate) fn splitter_capture(&self, id: u64, owner: u64) -> Result<bool, Status>
     {
-        Ok(self.get(id, owner)?.state.splitter.is_some())
+        Ok(self.snapshot(id, owner)?.state.splitter.is_some())
     }
 
     pub(crate) fn window_splitter_capture(&self, window: u64) -> bool
@@ -166,168 +201,106 @@ impl Manager
     }
 
     pub(crate) fn prepare_splitter(&self, call: &mut ControlCall, owner: u64, paint_pending: bool,
-                                   gate: TrapGate,
-                                   mut resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>)
+                                   gate: TrapGate, diagnostic: &mut Option<TrackingStage>)
                                    -> Result<Prepared, Status>
     {
-        let root = self.get(call.id, owner)?;
+        let snapshot = self.snapshot_splitter(call, owner, paint_pending, diagnostic)?;
+        let author = super::super::effects::Author::trusted(gate);
+        let (prepared, output) =
+            super::super::effects::immediate(snapshot.calculate(&author)).map_err(|status| {
+                TrackingStage::refusal(diagnostic, TrackingStage::Calculate, status)
+            })?;
+        *call = output.wire();
+        Ok(prepared)
+    }
+
+    pub(super) fn snapshot_splitter(&self, call: &ControlCall, owner: u64, paint_pending: bool,
+                                    diagnostic: &mut Option<TrackingStage>)
+                                    -> Result<SplitterSnapshot, Status>
+    {
+        let root = self.get(call.id, owner).map_err(|status| {
+                                                TrackingStage::refusal(diagnostic,
+                                                                TrackingStage::SnapshotLookup,
+                                                                status)
+                                            })?;
         if call.window != 0 && call.window != root.window
         {
             return Err(BAD_ARGUMENT);
         }
         if paint_pending
         {
-            return Err(SERVICE_BUSY);
+            return Err(TrackingStage::refusal(diagnostic,
+                                              TrackingStage::SnapshotPendingPaint,
+                                              SERVICE_BUSY));
         }
         if call.operation == BEGIN_TRACKING
            && self.objects.iter().any(|(_, o)| o.recipient == owner && o.state.tracking.is_some())
         {
-            return Err(SERVICE_BUSY);
+            return Err(TrackingStage::refusal(diagnostic,
+                                              TrackingStage::SnapshotExistingCapture,
+                                              SERVICE_BUSY));
         }
         let table = matches!(root.state.spec,
                              Spec::Standard { procedure: TABLE_PROCEDURE,
                                               .. });
-        let mut prepared = if table
-                              && call.operation == BEGIN_TRACKING
-                              && root.state.layout.as_ref().is_some_and(|l| l.arrangement_pending)
+        let arrange = if table
+                         && call.operation == BEGIN_TRACKING
+                         && root.state.layout.as_ref().is_some_and(|l| l.arrangement_pending)
         {
             let assignment=ControlCall {id:call.id,operation:REFLOW_OBJECT,layout:mac_abi::controls::reflow::Payload {
                 message:mac_abi::controls::reflow::ASSIGN_RECT,rect:root.state.spec.bounds(),..Default::default()},..Default::default()};
-            self.prepare_layout(&assignment, owner, false, gate, &mut resolve, None)?
+            self.snapshot_layout_change(&assignment, owner, false, None, None, None)
+                .map_err(|status| {
+                    TrackingStage::refusal(diagnostic, TrackingStage::SnapshotArrangement, status)
+                })?
         }
         else
         {
-            Prepared::empty()
+            grid::LayoutSnapshot::Ready(Prepared::empty())
         };
-        let mut next = prepared.state(call.id).unwrap_or(&root.state).clone();
-        let mut handled = false;
-        let mut action = false;
-        let mut feedback = None;
-        let mut position = None;
-        match call.operation
+        let release = if table
+                         && call.operation == POLL_TRACKING
+                         && call.flags & BUTTON_DOWN == 0
+                         && root.state
+                                .splitter
+                                .as_ref()
+                                .is_some_and(|capture| capture.boundary.is_some())
         {
-            BEGIN_TRACKING =>
-            {
-                let clip = tree::clip(self.inherited_clip(call.id),
-                                      next.layout.as_ref().and_then(Layout::clip));
-                if !clip.is_some_and(|c| !c.contains(call.point))
-                {
-                    let capture = if table
-                    {
-                        if let Some(segment) = next.divider_hit(call.point, gate)?
-                        {
-                            let d = next.layout
-                                        .as_ref()
-                                        .and_then(|l| l.outlines.as_ref())
-                                        .and_then(|g| g.dividers.as_ref())
-                                        .ok_or(CORRUPT_DATA)?;
-                            let mut capture = Capture::new(segment.state(d.viewport, true),
-                                                           d.definition.reference(),
-                                                           call.point,
-                                                           tree::clip(clip, Some(d.viewport)),
-                                                           Some(d.definition.clone()));
-                            capture.boundary = Some((segment.axis, segment.index));
-                            Some(capture)
-                        }
-                        else
-                        {
-                            None
-                        }
-                    }
-                    else
-                    {
-                        let Spec::Standard { state: spec,
-                                             procedure: SPLITTER_PROCEDURE } = next.spec
-                        else
-                        {
-                            return Err(NOT_SUPPORTED);
-                        };
-                        let entry = resolve(CDEF_SPLITTER)?;
-                        if next.hit(call.point, entry, gate)? == SPLITTER_PART
-                        {
-                            Some(Capture::new(spec, entry, call.point, clip, None))
-                        }
-                        else
-                        {
-                            None
-                        }
-                    };
-                    if let Some(capture) = capture
-                    {
-                        position = Some(capture.position);
-                        feedback = Some(capture.outline()?);
-                        next.tracking = Some(Tracking::new(SPLITTER_PART, call.point,
-                                                           capture.position, call.ticks));
-                        next.splitter = Some(capture);
-                        handled = true;
-                    }
-                }
-            }
-            POLL_TRACKING =>
-            {
-                if let Some(mut capture) = next.splitter.take()
-                {
-                    let old = capture.outline()?;
-                    capture.move_to(call.point, gate)?;
-                    position = Some(capture.position);
-                    handled = true;
-                    if call.flags & BUTTON_DOWN != 0
-                    {
-                        let new = capture.outline()?;
-                        if old != new
-                        {
-                            feedback = Some(new);
-                        }
-                        next.splitter = Some(capture);
-                    }
-                    else
-                    {
-                        next.splitter = None;
-                        next.tracking = None;
-                        feedback = Some(None);
-                        action = true;
-                        if let Some((axis, index)) = capture.boundary
-                        {
-                            let delta =
-                                i64::from(capture.position) - i64::from(capture.initial.value);
-                            if delta != 0
-                            {
-                                prepared = self.prepare_split_release(call.id, owner, next, axis,
-                                                                      index, delta, gate,
-                                                                      &mut resolve)?;
-                                next = prepared.state(call.id).ok_or(CORRUPT_DATA)?.clone();
-                            }
-                        }
-                        else if let Spec::Standard { state,
-                                                       .. } = &mut next.spec
-                        {
-                            state.value = capture.position;
-                        }
-                    }
-                }
-            }
-            _ => return Err(NOT_SUPPORTED)
+            // A releasing POLL ends this control's own capture before it assigns
+            // the released geometry, so the plan must carry that post-release
+            // state. A stale capture left in the plan makes the assignment walk
+            // find this control tracking and refuse it as though some other
+            // control were mid-gesture, which is what the walk is there to stop.
+            let mut released = root.state.clone();
+            released.tracking = None;
+            released.splitter = None;
+            let assignment=ControlCall{id:call.id,operation:REFLOW_OBJECT,
+                layout:mac_abi::controls::reflow::Payload{message:mac_abi::controls::reflow::ASSIGN_RECT,
+                    rect:root.state.spec.bounds(),..Default::default()},..Default::default()};
+            Some(self.snapshot_layout_change(&assignment,
+                                             owner,
+                                             false,
+                                             None,
+                                             None,
+                                             Some(released))
+                     .map_err(|status| {
+                         TrackingStage::refusal(diagnostic, TrackingStage::SnapshotRelease, status)
+                     })?)
         }
-        call.window = root.window;
-        call.relation = root.tree.relation();
-        next.spec.write(call);
-        if let Some(value) = position
+        else
         {
-            call.standard.value = value;
-        }
-        call.reflow = u32::from(next.layout.is_some());
-        call.layout.anchors = next.layout.as_ref().map_or(0, |l| l.anchors.into());
-        call.layout.window_border =
-            next.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
-        call.layout.invalidation = next.layout.as_ref().map_or(0, Layout::pending);
-        call.layout.status = self.layout_status(call.id);
-        call.result = if handled { i32::from(SPLITTER_PART) } else { 0 };
-        call.flags = u32::from(handled) * HANDLED
-                     | u32::from(action) * ACTION
-                     | u32::from(next.tracking.is_some()) * TRACKING;
-        prepared.set_state(call.id, next);
-        prepared.feedback = feedback;
-        Ok(prepared)
+            None
+        };
+        Ok(SplitterSnapshot { initial: root.state.clone(),
+                              entry: root.definition.reference(),
+                              window: root.window,
+                              node: root.tree,
+                              clip: self.inherited_clip(call.id),
+                              status: self.layout_status(call.id),
+                              table,
+                              arrange,
+                              release,
+                              call: super::super::effects::DetachedCall::capture(call).map_err(|status| TrackingStage::refusal(diagnostic, TrackingStage::SnapshotCapture, status))? })
     }
 }
 
@@ -384,5 +357,171 @@ impl Manager
          .iter()
          .find(|s| s.bounds.contains(point))
          .map(|s| s.axis as usize)
+    }
+}
+
+pub(super) struct SplitterSnapshot
+{
+    initial: State,
+    entry:   DefinitionRef,
+    window:  u64,
+    node:    tree::Node,
+    clip:    Option<Rect>,
+    status:  Status,
+    table:   bool,
+    arrange: grid::LayoutSnapshot,
+    release: Option<grid::LayoutSnapshot>,
+    call:    super::super::effects::DetachedCall
+}
+impl SplitterSnapshot
+{
+    pub(super) async fn calculate(
+        self, author: &super::super::effects::Author)
+        -> Result<(Prepared, super::super::effects::DetachedCall), Status>
+    {
+        let Self { initial,
+                   entry,
+                   window,
+                   node,
+                   clip,
+                   status,
+                   table,
+                   arrange,
+                   mut release,
+                   mut call } = self;
+        let mut prepared = arrange.calculate(author).await?;
+        let mut next =
+            if let Some(state) = prepared.state(call.id) { state.clone() } else { initial };
+        let mut handled = false;
+        let mut action = false;
+        let mut feedback = None;
+        let mut position = None;
+        match call.operation
+        {
+            BEGIN_TRACKING =>
+            {
+                let clip = tree::clip(clip, next.layout.as_ref().and_then(Layout::clip));
+                if !clip.is_some_and(|c| !c.contains(call.point))
+                {
+                    let capture = if table
+                    {
+                        if let Some(segment) = next.divider_hit_with(call.point, author).await?
+                        {
+                            let d = next.layout
+                                        .as_ref()
+                                        .and_then(|l| l.outlines.as_ref())
+                                        .and_then(|g| g.dividers.as_ref())
+                                        .ok_or(CORRUPT_DATA)?;
+                            let mut capture = Capture::new(segment.state(d.viewport, true),
+                                                           d.definition.reference(),
+                                                           call.point,
+                                                           tree::clip(clip, Some(d.viewport)),
+                                                           Some(d.definition.clone()));
+                            capture.boundary = Some((segment.axis, segment.index));
+                            Some(capture)
+                        }
+                        else
+                        {
+                            None
+                        }
+                    }
+                    else
+                    {
+                        let Spec::Standard { state: spec,
+                                             procedure: SPLITTER_PROCEDURE } = next.spec
+                        else
+                        {
+                            return Err(NOT_SUPPORTED);
+                        };
+                        if next.hit_with(call.point, entry, author).await? == SPLITTER_PART
+                        {
+                            Some(Capture::new(spec, entry, call.point, clip, None))
+                        }
+                        else
+                        {
+                            None
+                        }
+                    };
+                    if let Some(capture) = capture
+                    {
+                        position = Some(capture.position);
+                        feedback = Some(capture.outline()?);
+                        next.tracking = Some(Tracking::new(SPLITTER_PART, call.point,
+                                                           capture.position, call.ticks));
+                        next.splitter = Some(capture);
+                        handled = true;
+                    }
+                }
+            }
+            POLL_TRACKING =>
+            {
+                if let Some(mut capture) = next.splitter.take()
+                {
+                    let old = capture.outline()?;
+                    capture.move_to_with(call.point, author).await?;
+                    position = Some(capture.position);
+                    handled = true;
+                    if call.flags & BUTTON_DOWN != 0
+                    {
+                        let new = capture.outline()?;
+                        if old != new
+                        {
+                            feedback = Some(new);
+                        }
+                        next.splitter = Some(capture);
+                    }
+                    else
+                    {
+                        next.splitter = None;
+                        next.tracking = None;
+                        feedback = Some(None);
+                        action = true;
+                        if let Some((axis, index)) = capture.boundary
+                        {
+                            let delta =
+                                i64::from(capture.position) - i64::from(capture.initial.value);
+                            if delta != 0
+                            {
+                                let state = Manager::split_release_state(next, axis, index, delta)?;
+                                let snapshot =
+                                    release.take().ok_or(BAD_ABI)?.with_root_state(state)?;
+                                prepared = snapshot.calculate(author).await?;
+                                next = prepared.state(call.id).ok_or(CORRUPT_DATA)?.clone();
+                            }
+                        }
+                        else if let Spec::Standard { state,
+                                                       .. } = &mut next.spec
+                        {
+                            state.value = capture.position;
+                        }
+                    }
+                }
+            }
+            _ => return Err(NOT_SUPPORTED)
+        }
+        call.window = window;
+        call.relation = node.relation();
+        {
+            let mut wire = call.wire();
+            next.spec.write(&mut wire);
+            call = super::super::effects::DetachedCall::capture(&wire)?;
+        }
+        if let Some(value) = position
+        {
+            call.standard.value = value;
+        }
+        call.reflow = u32::from(next.layout.is_some());
+        call.layout.anchors = next.layout.as_ref().map_or(0, |l| l.anchors.into());
+        call.layout.window_border =
+            next.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
+        call.layout.invalidation = next.layout.as_ref().map_or(0, Layout::pending);
+        call.layout.status = status;
+        call.result = if handled { i32::from(SPLITTER_PART) } else { 0 };
+        call.flags = u32::from(handled) * HANDLED
+                     | u32::from(action) * ACTION
+                     | u32::from(next.tracking.is_some()) * TRACKING;
+        prepared.set_state(call.id, next);
+        prepared.feedback = feedback;
+        Ok((prepared, call))
     }
 }

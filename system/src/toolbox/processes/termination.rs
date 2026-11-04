@@ -53,7 +53,8 @@ pub(crate) struct Record
     pub(crate) thread:        u64,
     pub(crate) report:        Retention,
     pub(crate) report_app:    u64,
-    pub(crate) report_thread: u64
+    pub(crate) report_thread: u64,
+    pub(crate) fault:         Option<scheduler::FaultSnapshot>
 }
 impl fmt::Display for Record
 {
@@ -83,7 +84,8 @@ impl State
                                            thread,
                                            report: Retention::NotRequested,
                                            report_app: 0,
-                                           report_thread: 0 });
+                                           report_thread: 0,
+                                           fault: None });
     }
 
     pub(crate) fn reported(&mut self, report: Retention, app: u64, thread: u64)
@@ -142,6 +144,50 @@ fn again()
     {
         scheduler::wake::request();
     }
+}
+
+/// The scheduler alone mints this authority from a hardware user-fault capture.
+/// A trusted maintenance turn can continue its admission after the author has
+/// parked; it does not impersonate that application's running thread.
+pub(crate) fn queue_user_fault(fault: &scheduler::UserFault) -> Result<(), Status>
+{
+    let owner = fault.owner();
+    if !owner.accepting()
+    {
+        // The canonical owner walk already owns stopping this incarnation.
+        return Ok(());
+    }
+    let tls = crate::kernel::with_toolbox(|toolbox| {
+                  toolbox.processes.native_exit_preflight(owner, fault.image())
+              }).map_err(|cause| cause.status())??;
+    let runtime =
+        crate::toolbox::native_threads::runtime_admission(&tls, owner).map_err(|cause| {
+                                                                          cause.status()
+                                                                      })?;
+    let outcome = Outcome::Abort(128 + fault.snapshot().cause.min(127) as i32);
+    let first = crate::kernel::with_toolbox(|toolbox| {
+                    toolbox.processes.queue_native_failure(owner,
+                                                           fault.image(),
+                                                           fault.thread().0,
+                                                           outcome,
+                                                           Some(fault.snapshot()))
+                }).map_err(|cause| cause.status())??;
+    if let Err(cause) = scheduler::application::fail_owner(&runtime)
+    {
+        if first
+        {
+            let refused = crate::kernel::with_toolbox(|toolbox| {
+                              toolbox.processes
+                                     .rollback_native_failure(owner, fault.thread().0, outcome)
+                          }).map_err(|cause| cause.status())??;
+            drop(refused);
+        }
+        return Err(cause);
+    }
+    drop(runtime);
+    crate::recovery::owner_failed(owner);
+    progress();
+    Ok(())
 }
 struct Running;
 impl Drop for Running
@@ -209,7 +255,8 @@ pub(crate) fn request(call: &mut NativeExitCall, suspension: Result<(), Status>)
                                 toolbox.processes.queue_native_failure(owner,
                                                                        executor.image(),
                                                                        executor.thread(),
-                                                                       outcome)
+                                                                       outcome,
+                                                                       None)
                             }).map_err(|error| error.status())??;
                 // Once accepted, this closes child birth and parks this genuine
                 // quiescent caller atomically under SCHED. Other Host continuations
@@ -308,7 +355,7 @@ impl super::Manager
     }
 
     fn queue_native_failure(&mut self, owner: &OwnerRef, image: crate::images::Binding,
-                            thread: u64, outcome: Outcome)
+                            thread: u64, outcome: Outcome, fault: Option<scheduler::FaultSnapshot>)
                             -> Result<bool, Status>
     {
         let id = owner.owner().incarnation();
@@ -330,7 +377,8 @@ impl super::Manager
                               thread,
                               report: Retention::NotRequested,
                               report_app: 0,
-                              report_thread: 0 };
+                              report_thread: 0,
+                              fault };
         state.pending = Some(Pending { binding,
                                        record,
                                        phase: Phase::Quiesce,
@@ -626,6 +674,7 @@ fn retain_work(mut pending: Option<Pending>, rotate: bool)
 /// modal. An unrelated Host/claim refusal cannot hold every other failure back.
 pub(crate) fn pump()
 {
+    scheduler::pump_faults();
     if !WAKE.load(Ordering::Acquire) || RUNNING.swap(true, Ordering::AcqRel)
     {
         return;

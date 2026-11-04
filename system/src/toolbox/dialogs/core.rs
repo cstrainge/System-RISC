@@ -494,6 +494,8 @@ impl PreparedAlert
                                          controls:          payload.controls,
                                          tracking:          None,
                                          system_menu:       false,
+                                         closing:           false,
+                                         close_observer:    spinning_top::Spinlock::new(None),
                                          recovery_activity: Some(activity.clone()),
                                          core_payload:      Some(lease) })
                     }).map_err(|status| OpenError::service("payload stock", status))?;

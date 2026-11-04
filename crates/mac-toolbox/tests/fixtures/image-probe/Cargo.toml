@@ -23,7 +23,7 @@ test = false
 bench = false
 
 [dependencies]
-mac-toolbox = { path = "../../.." }
+mac-toolbox = { path = "../../..", features = ["application"] }
 
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
 mac-build = { path = "../../../../../tools/mac-build" }

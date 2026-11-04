@@ -67,30 +67,35 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
                                    drop(slots);
                                    Error::Tls(cause)
                                })?;
-    let (stack, cpu, allocation) = charges.allocate(executor.owner(), |top| {
-                                              let mut frame = TrapFrame::default();
-                                              frame.pc = child_start as *const () as usize;
-                                              frame.status =
-                                                  super::super::super::traps::INITIAL_STATUS;
-                                              frame.stack_pointer = top;
-                                              frame.registers[8] = entry;
-                                              frame.registers[9] = data;
-                                              frame
-                                          })
-                                          .map_err(Error::Accounting)?;
-    let top = stack.top();
-    let stack =
-        super::super::stack::StackBacking::prepare(executor.owner(), stack).map_err(|status| {
-            Error::Admission { status,
-                               stage: "child independent stack owner" }
-        })?;
+    let runtime = super::super::user::runtime_for_executor(executor).map_err(|status| {
+                      Error::Admission { status,
+                                         stage: "child shared user runtime" }
+                  })?;
     let space = super::super::application_space(executor).map_err(|status| {
-                                                             Error::Admission { status,
+                    Error::Admission { status,
                                        stage: "child canonical Process space" }
-                                                         })?;
+                })?;
+    let (stack, mut cpu, allocation) =
+        charges.allocate(executor.owner(), |_| TrapFrame::default()).map_err(Error::Accounting)?;
+    let stack = super::super::stack::StackBacking::prepare_user(executor.owner(), stack, &space)
+        .map_err(|status| Error::Admission { status, stage: "child guarded user stack" })?;
+    let top = stack.user_top().map_err(|status| {
+                                   Error::Admission { status,
+                                                      stage: "child user stack geometry" }
+                               })?;
+    let mut frame = TrapFrame::default();
+    frame.pc = entry;
+    frame.status = super::super::super::traps::USER_STATUS;
+    frame.stack_pointer = top;
+    frame.registers[0] = runtime.thread_return();
+    frame.registers[8] = data;
+    cpu.initialize(frame).map_err(|cause| {
+                              Error::Admission { status: cause.status(),
+                                                 stage:  "child unpublished CPU initialization" }
+                          })?;
     let core=Arc::try_new(ThreadCore{
         address:Mutex::new(None),backing:Mutex::new(Some(ThreadBacking{cpu,stack,image:Some(ApplicationImageUse::Child { _execution: code })})),
-        launch:Mutex::new(None),context,release:Mutex::new(None),binding:executor.image(),space:Some(space),top,cleanup_refusal:Mutex::new(None),service_quarantine:spin::Once::new(),name:Mutex::new(None),
+        launch:Mutex::new(None),context,release:Mutex::new(None),binding:executor.image(),space:Some(space),top,cleanup_refusal:Mutex::new(None),service_quarantine:spin::Once::new(),user_fault:Mutex::new(None),runtime:Some(runtime),callback_queue:None,name:Mutex::new(None),
         application:Some(completion),pending_join:Mutex::new(None)
     }).map_err(|_|Error::Metadata("child Core"))?;
     Ok(PreparedThread { owner: executor.owner().clone(),
@@ -113,6 +118,12 @@ fn publish_inert(prepared: PreparedThread) -> Result<InertChild, Error>
         return Err(Error::Admission { status,
                                       stage: "actual child context/stack binding" });
     }
+    prepared.core.publish_user_backing().map_err(|status| {
+                                             Error::Admission { status,
+                                                                stage: "child user mappings \
+                                                                        before runnable \
+                                                                        publication" }
+                                         })?;
     Ok(guard)
 }
 struct CreateProgress(OwnerRef);
@@ -159,40 +170,4 @@ pub(crate) fn create(executor: &crate::context::ApplicationExecutor<'_>, call: &
         }
         Ok(())
     })
-}
-extern "C" fn child_start(entry: usize, data: usize) -> !
-{
-    let start: unsafe extern "C" fn(*mut u8) = unsafe { core::mem::transmute(entry) };
-    // SAFETY: actual same-image ApplicationExecution stays in this THRD's
-    // backing. Successful CREATE transferred this opaque data exactly once.
-    unsafe {
-        start(data as *mut u8);
-    }
-    let mut call = wire::Call { operation: wire::EXIT,
-                                ..Default::default() };
-    let status = unsafe {
-        super::super::super::traps::gateway(mac_abi::traps::NATIVE_THREAD,
-                                            (&mut call as *mut wire::Call).cast(),
-                                            size_of::<wire::Call>())
-    };
-    let detail = call.detail
-                     .get(..call.detail_length as usize)
-                     .and_then(|bytes| core::str::from_utf8(bytes).ok())
-                     .unwrap_or("invalid bounded child EXIT detail");
-    app_return_log(format_args!("NATIVE_CHILD_EXIT_RETURNED entry={entry:#x} status={status}; \
-                                 {detail}; child TLS/exit contract refused\n"));
-    // This actual System-owned process failure service is supplied by the
-    // coordinated NativeExit integration; never fall back to old Finder EXIT.
-    let mut abort = mac_abi::processes::NativeExitCall { code:     101,
-                                                         flags:
-                                                             mac_abi::processes::NATIVE_EXIT_ABORT,
-                                                         reserved: 0 };
-    let returned = unsafe {
-        super::super::super::traps::gateway(mac_abi::traps::PROCESS,(&mut abort as *mut mac_abi::processes::NativeExitCall).cast(),size_of::<mac_abi::processes::NativeExitCall>())
-    };
-    app_return_log(format_args!("NATIVE_PROCESS_ABORT_RETURNED status={returned}; nonreturning \
-                                 platform contract lost\n"));
-    unsafe {
-        core::arch::asm!("unimp", options(noreturn, nostack));
-    }
 }

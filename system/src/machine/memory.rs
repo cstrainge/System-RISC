@@ -2,6 +2,13 @@
 include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
 include!(concat!(env!("OUT_DIR"), "/platform-virtual.rs"));
 
+/// Application execution VAs belong to individual Process roots. They do not
+/// reserve physical storage or require exclusion against another Process.
+pub(crate) fn application_region(base: u64, limit: u64) -> bool
+{
+    base < limit && base >= VM_APPLICATION_START && limit <= VM_APPLICATION_END
+}
+
 /// # Safety
 /// The trusted bootstrap lends valid arrays for the whole System lifetime.
 /// This boundary checks lengths before creating slices; all extent validation

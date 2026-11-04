@@ -1,6 +1,7 @@
 //! Registered immutable sources and private flat execution reservations.
 #![forbid(unsafe_code)]
 mod recovery;
+mod user_runtime;
 pub(crate) use recovery::{PendingRecoveryImage, RecoveryDisposition, RecoveryImageFailure};
 mod sharing;
 mod interning;
@@ -67,8 +68,9 @@ impl Binding
 
 struct Activity
 {
-    readers:  AtomicUsize,
-    retiring: AtomicBool
+    readers:         AtomicUsize,
+    retiring:        AtomicBool,
+    waiting_readers: AtomicBool
 }
 impl Activity
 {
@@ -79,6 +81,21 @@ impl Activity
             .map_err(|_| NO_MEMORY)?;
         Ok(Use(self.clone()))
     }
+
+    /// Called only at an otherwise-eligible retirement decision under the
+    /// original image-manager exclusion. Arm before observing the last reader.
+    fn readers_quiescent(&self) -> bool
+    {
+        self.waiting_readers.store(true, Ordering::SeqCst);
+        if self.readers.load(Ordering::SeqCst) != 0
+        {
+            return false;
+        }
+        // Fresh read admission shares that manager exclusion. An existing
+        // Read clone cannot create the first reader while its own Use is live.
+        self.waiting_readers.store(false, Ordering::SeqCst);
+        true
+    }
 }
 struct Use(Arc<Activity>);
 impl Drop for Use
@@ -86,7 +103,7 @@ impl Drop for Use
     fn drop(&mut self)
     {
         if self.0.readers.fetch_sub(1, Ordering::SeqCst) == 1
-           && self.0.retiring.load(Ordering::SeqCst)
+           && self.0.waiting_readers.swap(false, Ordering::SeqCst)
         {
             crate::toolbox::processes::retirement::resources_released();
             crate::drivers::recovery_changed();
@@ -145,6 +162,26 @@ impl Read
     pub(crate) fn shared_source(&self) -> Arc<Source>
     {
         self.source.clone()
+    }
+
+    fn user_alias(&self, address: usize, bytes: usize, write: bool) -> Result<usize, Status>
+    {
+        self.instance
+            .mapping
+            .get()
+            .ok_or(SERVICE_BUSY)?
+            .user_alias(address, bytes, write)
+            .map_err(|e| e.status())
+    }
+
+    pub(crate) fn user_spans(&self) -> Result<Vec<crate::machine::paging::user::Span>, Status>
+    {
+        if self.instance.module
+           || self.instance.owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+        {
+            return Err(ACCESS_DENIED);
+        }
+        self.instance.mapping.get().ok_or(SERVICE_BUSY)?.user_spans().map_err(|e| e.status())
     }
 
     pub(crate) fn binding(&self) -> Binding
@@ -469,6 +506,11 @@ impl Loaded
         Ok(ModuleExecution(self._execution))
     }
 
+    pub(crate) fn user_read(&self) -> Result<Read, Status>
+    {
+        self._execution._source.retain()
+    }
+
     pub(crate) fn range(&self) -> core::ops::Range<u64>
     {
         self._execution._source.instance.base..self._execution._source.instance.limit
@@ -534,8 +576,9 @@ fn prepare_instance(owner: &OwnerRef,
         }
     }
     let activity =
-        Arc::try_new(Activity { readers:  AtomicUsize::new(0),
-                                retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
+        Arc::try_new(Activity { readers:         AtomicUsize::new(0),
+                                retiring:        AtomicBool::new(false),
+                                waiting_readers: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
     let instance = Arc::try_new(Instance { owner: owner.clone(), module, executable, writable,
             initialized: AtomicBool::new(false), mapping: spin::Once::new(), retirement_claimed:AtomicBool::new(false), base,
             limit: base.checked_add(extent).ok_or(NO_MEMORY)?,
@@ -558,22 +601,27 @@ impl Manager
                                                         (object, object_backing)).map_err(status)? })
     }
 
-    fn free_placement(&self, base: u64, extent: u64, limit: u64) -> bool
+    fn free_placement(&self, owner: mac_object_table::domain::DomainId, base: u64, extent: u64,
+                      limit: u64)
+                      -> bool
     {
         base.checked_add(extent).is_some_and(|end| {
                                     end <= limit
-                                    && !self.sources
-                                            .retained()
-                                            .any(|(_, instance)| {
-                                                base < instance.limit && instance.base < end
-                                            })
+                                    && !self.sources.retained().any(|(_, instance)| {
+                                                                   (instance.module
+                                                                    || instance.owner.owner()
+                                                                       == owner)
+                                                                   && base < instance.limit
+                                                                   && instance.base < end
+                                                               })
                                 })
     }
 
-    fn placement(&self, preferred: u64, extent: u64, relocation_base: u64, limit: u64)
+    fn placement(&self, owner: mac_object_table::domain::DomainId, preferred: u64, extent: u64,
+                 relocation_base: u64, limit: u64)
                  -> Result<u64, Status>
     {
-        let base = if self.free_placement(preferred, extent, limit)
+        let base = if self.free_placement(owner, preferred, extent, limit)
         {
             preferred
         }
@@ -586,7 +634,11 @@ impl Manager
                     candidate.checked_add(extent).filter(|end| *end <= limit).ok_or(NO_MEMORY)?;
                 let next = self.sources
                                .retained()
-                               .filter(|(_, i)| candidate < i.limit && i.base < end)
+                               .filter(|(_, i)| {
+                                   (i.module || i.owner.owner() == owner)
+                                   && candidate < i.limit
+                                   && i.base < end
+                               })
                                .map(|(_, i)| i.limit)
                                .max();
                 match next
@@ -672,12 +724,13 @@ impl Manager
             return Err(ACCESS_DENIED);
         }
         let offset = start.checked_sub(instance.base).ok_or(BAD_ABI)?;
+        let cpu = execution.0._source.user_alias(address, core::mem::size_of::<u32>(), true)?;
         Ok(ApplicationAtomic32 { key: ApplicationAtomic32Key { image: execution.0
                                                                                ._source
                                                                                .binding,
                                                                offset },
                                  execution,
-                                 address })
+                                 address: cpu })
     }
 
     pub(crate) fn execute_module(&self, binding: Binding) -> Result<ModuleExecution, Status>
@@ -706,9 +759,9 @@ impl Manager
                                instance.owner.owner().incarnation() > after
                                && !instance.owner.accepting()
                                && Self::root_only(&instance.owner)
-                               && instance.activity.readers.load(Ordering::SeqCst) == 0
                                && !instance.retirement_claimed.load(Ordering::Acquire)
                                && instance.mapping.get().is_some_and(|mapping| mapping.ready())
+                               && instance.activity.readers_quiescent()
                            })
                            .min_by_key(|instance| instance.owner.owner().incarnation())?;
         instance.retirement_claimed
@@ -748,12 +801,12 @@ impl Manager
     {
         self.sources.finish_deferred(|instance| {
                         instance.module
-                        && Arc::strong_count(instance) == 1
                         && !instance.retirement_claimed.load(Ordering::Acquire)
                         && instance.mapping.get().is_none_or(|mapping| mapping.settled())
                         && !instance.owner.accepting()
                         && Self::root_only(&instance.owner)
-                        && instance.activity.readers.load(Ordering::SeqCst) == 0
+                        && instance.activity.readers_quiescent()
+                        && Arc::strong_count(instance) == 1
                     })
     }
 
@@ -761,12 +814,12 @@ impl Manager
     {
         self.sources.finish_deferred(|instance| {
                         !instance.module
-                        && Arc::strong_count(instance) == 1
                         && !instance.retirement_claimed.load(Ordering::Acquire)
                         && instance.mapping.get().is_none_or(|mapping| mapping.settled())
                         && !instance.owner.accepting()
                         && Self::root_only(&instance.owner)
-                        && instance.activity.readers.load(Ordering::SeqCst) == 0
+                        && instance.activity.readers_quiescent()
+                        && Arc::strong_count(instance) == 1
                     })
     }
 

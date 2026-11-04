@@ -200,6 +200,13 @@ impl Checked
         self.layout.modules().end() - self.layout.modules().start()
     }
 
+    /// Shared link geometry for separate Process address spaces, never a
+    /// physical reservation. Packaging retains only actual segment extent.
+    pub fn application_image_range(&self) -> core::ops::Range<u64>
+    {
+        self.layout.image_base()..self.layout.application().end()
+    }
+
     pub fn system_image_range(&self) -> core::ops::Range<u64>
     {
         self.system_image..self.system_image_limit

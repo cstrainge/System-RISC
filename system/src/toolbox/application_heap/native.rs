@@ -31,9 +31,10 @@ impl Drop for Request
 }
 
 /// # Safety
-/// Native GlobalAlloc's exclusive-live-pointer/exact-Layout contract applies to
-/// free/realloc. The Call is live/exclusive for this synchronous trap. These raw
-/// pointers do not acquire stale-handle/ABA protection from canonical AALC IDs.
+/// The Call is a live/exclusive resident snapshot for this synchronous trap.
+/// Public pointer numerics are translated through the actual Process extent
+/// and checked against its canonical record/exact Layout before byte effects.
+/// Raw allocation pointers do not acquire stale/ABA protection from AALC IDs.
 pub(crate) unsafe fn request(executor: &crate::context::ApplicationExecutor<'_>,
                              call: &mut wire::Call)
                              -> Result<(), Error>
@@ -96,6 +97,14 @@ pub(crate) unsafe fn request(executor: &crate::context::ApplicationExecutor<'_>,
         let request = Request { heap: Some(heap),
                                 owner };
         let heap = request.heap.as_ref().ok_or(Error::Root)?;
+        let supplied = if call.pointer.is_null()
+        {
+            0
+        }
+        else
+        {
+            heap.cpu_address(call.pointer.addr(), layout.size())?
+        };
         match call.operation
         {
             wire::ALLOCATE | wire::ALLOCATE_ZEROED =>
@@ -107,32 +116,105 @@ pub(crate) unsafe fn request(executor: &crate::context::ApplicationExecutor<'_>,
                 {
                     // SAFETY: the actual factory-derived address is within this
                     // exclusive unpublished span, which stays pinned in Draft.
-                    unsafe { core::ptr::write_bytes(draft.pointer as *mut u8, 0, layout.size()) };
+                    unsafe {
+                        crate::machine::paging::user::zero_alias(draft.pointer, layout.size())
+                    };
                 }
-                let pointer = draft.publish(permit, credit)?;
-                call.result = pointer as *mut u8;
+                let user = heap.user_address(draft.pointer, layout.size())?;
+                let _pointer = draft.publish(permit, credit)?;
+                call.result = user as *mut u8;
             }
             wire::DEALLOCATE =>
             {
-                allocation::Lease::take(&heap, call.pointer.addr(), layout)?.dispose()?;
+                allocation::Lease::take(&heap, supplied, layout)?.dispose()?;
             }
             wire::REALLOCATE =>
             {
                 heap.admission()?;
-                let old = allocation::Lease::take(&heap, call.pointer.addr(), layout)?;
+                let old = allocation::Lease::take(&heap, supplied, layout)?;
                 let layout = replacement.ok_or(Error::Layout)?;
                 let replacement = allocation::Replacement::prepare(old, layout)?;
                 let (old, new, bytes) = replacement.copy_bounds()?;
                 // SAFETY: canonical record/exact layout were checked before access.
                 // The exclusive old lease and distinct new live span remain pinned;
-                // core partition ownership excludes overlap. No metadata/ledger/
-                // account/pool guard spans copying. Shared supervisor roots still
-                // map the actual checked DirectMap; this claims no MMU isolation.
-                unsafe { core::ptr::copy_nonoverlapping(old as *const u8, new as *mut u8, bytes) };
-                call.result = replacement.commit()? as *mut u8;
+                // core partition ownership excludes overlap. Both addresses are
+                // stable supervisor aliases of actual Process-owned extents;
+                // public addresses are translated independently to user VAs.
+                // No metadata/ledger/account/pool guard spans copying.
+                unsafe { crate::machine::paging::user::copy_aliases(old, new, bytes) };
+                let user = heap.user_address(new, layout.size())?;
+                let _pointer = replacement.commit()?;
+                call.result = user as *mut u8;
             }
             _ => return Err(Error::Layout)
         }
         Ok(())
     })
+}
+
+/// Factory-derived rounded extent metadata and its genuine physical owner.
+struct ExtentBacking
+{
+    owner:    mac_object_table::domain::DomainId,
+    progress: super::wait::Progress,
+    extent:   Arc<Extent>,
+    physical: mac_kernel_model::pages::PhysicalAddress,
+    bytes:    usize
+}
+// SAFETY: only map_extent constructs this adapter, immediately from the checked
+// native factory and its exact original reservation. Arc pins actual PageBlock
+// and charge; no logical allocation pointer supplies physical coordinates.
+unsafe impl crate::machine::paging::user::Backing for ExtentBacking
+{
+    fn heap_progress(&self) -> Option<super::wait::Progress>
+    {
+        Some(self.progress.clone())
+    }
+
+    fn owner(&self) -> mac_object_table::domain::DomainId
+    {
+        self.owner
+    }
+
+    fn cpu_base(&self) -> usize
+    {
+        self.extent.base()
+    }
+
+    fn physical(&self) -> mac_kernel_model::pages::PhysicalAddress
+    {
+        self.physical
+    }
+
+    fn bytes(&self) -> usize
+    {
+        self.bytes
+    }
+}
+pub(super) fn map_extent(heap: &Arc<Heap>, extent: Arc<Extent>, bytes: u64)
+                         -> Result<crate::machine::paging::user::Mapping, Error>
+{
+    let space = crate::machine::scheduler::current_user_space().map_err(Error::User)?;
+    if space.owner() != heap.owner.owner()
+    {
+        return Err(Error::Authority);
+    }
+    let physical=pages::application_extent_physical(&extent,bytes)
+        .map_err(|cause|Error::Extent(pages::ApplicationExtentError::Pages(cause)))?;
+    let bytes = usize::try_from(bytes).map_err(|_| Error::Layout)?;
+    let backing = heap.kernel(|| {
+                          Arc::try_new(ExtentBacking { owner: heap.owner.owner(),
+                                                       progress:
+                                                           super::wait::Progress::new(heap),
+                                                       extent,
+                                                       physical,
+                                                       bytes })
+                      })
+                      .map_err(|_| {
+                          Error::Metadata { stage:     "user extent owner",
+                                            requested: 1 }
+                      })?;
+    crate::machine::paging::user::Mapping::prepare(&space,backing,
+        crate::machine::paging::user::Kind::Heap,
+        crate::machine::paging::user::Access::ReadWrite).map_err(Error::User)
 }

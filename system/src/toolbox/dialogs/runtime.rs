@@ -37,7 +37,7 @@ fn alert_button(index: usize, item: &dialogs::Item) -> ControlCall
                   ..Default::default() }
 }
 // Initialization owns the protocol before any window or control is published.
-// Every fallible exit clears the parent, even if a child WDEF refuses disposal.
+// The canonical parent remains until admitted child cleanup actually completes.
 struct InitializingAlert<'a>
 {
     toolbox:   &'a mut super::Toolbox,
@@ -52,7 +52,7 @@ impl Drop for InitializingAlert<'_>
             if let Err(status) = self.toolbox.close_dialog()
             {
                 serial!("ALERT_INITIALIZATION_CHILD_REFUSED: owner={} status={status}; parent \
-                         protocol released, child cleanup retained by Window Manager",
+                         canonical protocol retained for admitted child cleanup",
                         self.toolbox.owner);
             }
         }
@@ -96,24 +96,14 @@ impl super::Toolbox
     {
         activity.run(|| {
                     self.with_core_dialogs(|toolbox| {
-                            let Some(record) = toolbox.dialogs.take_recovery(activity)?
-                            else
+                            if toolbox.dialogs.recovery_window(activity)?.is_none()
                             {
-                                // Protocol cancellation already completed. This does not
-                                // declare its independently retained Window children ACKed.
+                                // The original protocol is gone. Session reuse
+                                // still waits on its separately retained actual
+                                // Window/resource acknowledgements.
                                 return Ok(());
-                            };
-                            let result = if record.window == 0
-                            {
-                                Ok(())
                             }
-                            else
-                            {
-                                checked(toolbox.window(CLOSE_WINDOW,
-                                                       &mut request(record.window, Rect::ZERO)))
-                            };
-                            drop(record);
-                            result
+                            toolbox.close_dialog()
                         })
                 })?
     }
@@ -126,6 +116,10 @@ impl super::Toolbox
     pub(super) fn dialog_input(&mut self, input: crate::toolbox::events::input::Input, when: u32)
     {
         use crate::toolbox::events::{BTN_STATE, input::Input};
+        if self.dialogs.closing
+        {
+            return;
+        }
         let window = self.dialogs.window;
         let event = match input
         {
@@ -271,7 +265,7 @@ impl super::Toolbox
                 Err(original) => {
                     if let Err(cleanup) = self.close_dialog()
                     {
-                        serial!("ABOUT_SYSTEM_CLOSE_FAILED original={original} cleanup={cleanup}; protocol released, Window Manager retains child cleanup");
+                        serial!("ABOUT_SYSTEM_CLOSE_FAILED original={original} cleanup={cleanup}; canonical protocol and admitted child cleanup retained");
                     }
                     Err(original)
                 }
@@ -329,6 +323,10 @@ impl super::Toolbox
                 if !self.dialogs.active() || self.dialogs.window != call.window
                 {
                     return Err(NOT_FOUND);
+                }
+                if self.dialogs.closing
+                {
+                    return Err(SERVICE_BUSY);
                 }
                 if call.operation == DRAW
                 {
@@ -504,7 +502,7 @@ impl super::Toolbox
         {
             let mut call = alert_button(index, item);
             call.window = request.id;
-            self.managed_control(&mut call)?;
+            self.managed_control(&mut call, &mut None)?;
             self.dialogs.state_mut()?.controls[index] = Some(call.id);
         }
         self.draw_dialog()
@@ -531,7 +529,7 @@ impl super::Toolbox
                                              point,
                                              ticks: u64::from(event.when),
                                              ..Default::default() };
-                self.managed_control(&mut call)?;
+                self.managed_control(&mut call, &mut None)?;
                 if call.flags & TRACKING != 0
                 {
                     self.dialogs.state_mut()?.tracking = Some(index);
@@ -553,7 +551,7 @@ impl super::Toolbox
                                              ticks: u64::from(event.when),
                                              flags: if down { BUTTON_DOWN } else { 0 },
                                              ..Default::default() };
-                self.managed_control(&mut call)?;
+                self.managed_control(&mut call, &mut None)?;
                 if call.flags & TRACKING == 0
                 {
                     self.dialogs.state_mut()?.tracking = None;
@@ -602,23 +600,59 @@ impl super::Toolbox
             let mut call = ControlCall { operation: CANCEL_TRACKING,
                                          id,
                                          ..Default::default() };
-            self.managed_control(&mut call)?;
+            self.managed_control(&mut call, &mut None)?;
             self.dialogs.state_mut()?.tracking = None;
         }
         Ok(())
     }
 
+    /// Install only the endpoint minted by real WM admission, in the same
+    /// Desktop turn. The parent keeps it if its initiating Context is cancelled.
+    pub(crate) fn observe_dialog_window_close(&mut self, observer: super::DialogCloseObserver)
+    {
+        let storage = observer.storage_owner();
+        if self.dialogs.owner().owner() == storage
+        {
+            self.dialogs.observe_window_close(observer);
+        }
+        else if self.core_dialogs.owner().owner() == storage
+        {
+            self.core_dialogs.observe_window_close(observer);
+        }
+    }
+
     pub(super) fn close_dialog(&mut self) -> Result<(), Status>
     {
-        let record = self.dialogs.take().ok_or(NOT_FOUND)?;
-        if self.core_dialogs_active
-           && let Some(activity) = crate::context::recovery_activity()
+        let window = self.dialogs.window;
+        if window == 0
         {
-            activity.close();
+            self.dialogs.close_window_activity(0)?;
+            let record = self.dialogs.take().ok_or(NOT_FOUND)?;
+            drop(record);
+            return Ok(());
         }
-        let result = self.finish_alert_window(record.window, record.previous);
-        drop(record);
-        result
+        if let Some(observer) = self.dialogs.window_close_observer(window)
+        {
+            return match observer.status()
+            {
+                Some(OK) => Ok(()),
+                Some(status) => Err(status),
+                None => Err(SERVICE_BUSY)
+            };
+        }
+        let handle = self.request_trusted_window_close(WindowId(window))?;
+        // Admission is custody, not completion. In particular do not detach
+        // the ALRT payload or restore focus while author cleanup can still run.
+        match handle.poll_result()
+        {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(crate::toolbox::windows::manager::CloseError::NotFound(_))) => Err(NOT_FOUND),
+            Some(Err(crate::toolbox::windows::manager::CloseError::Cleanup(cause))) =>
+            {
+                Err(super::close_ui::cleanup_status(cause))
+            }
+            None => Err(SERVICE_BUSY)
+        }
     }
 
     fn finish_alert_window(&mut self, window: u64, previous: Option<WindowId>)
@@ -821,7 +855,8 @@ impl super::Toolbox
                         let id = self.dialogs.controls[index].ok_or(BAD_ABI)?;
                         self.managed_control(&mut ControlCall { operation: DRAW_OBJECT,
                                                                 id,
-                                                                ..Default::default() })?;
+                                                                ..Default::default() },
+                                             &mut None)?;
                     }
                     8 =>
                     {

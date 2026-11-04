@@ -153,6 +153,56 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     {
         return Err(Error::Malformed("startup file is not type zsys"));
     }
+    // Validate the companion before retaining the larger System image. These
+    // temporary code/relocation buffers must not overlap System's lifetime in
+    // the bounded firmware heap. Both validations still precede all loading.
+    {
+        // A bootable installation includes a compatible Finder. Validate its code
+        // and relocation plan before displaying Happy Mac or entering System.
+        let finder = volume.find_file(folder.id, b"Finder")?;
+        if finder.file_type != *b"FNDR"
+        {
+            return Err(Error::Malformed("startup Finder does not have type FNDR"));
+        }
+        let mut fork = finder.resources;
+        let finder =
+            resource::stream::read_selected(fork.length,
+                                            startup_resource_budget(),
+                                            |kind, id| {
+                                                id == 0
+                                                && matches!(&kind, b"NABI" | b"RV64" | b"RLOC")
+                                            },
+                                            |offset, output| {
+                                                let n = volume.read(&mut fork, offset, output)?;
+                                                if n == output.len()
+                                                {
+                                                    Ok(())
+                                                }
+                                                else
+                                                {
+                                                    Err(Error::Malformed("short Finder resource \
+                                                                          read"))
+                                                }
+                                            })?;
+        let get = |kind| {
+            finder.iter()
+                  .find(|r| r.kind == kind)
+                  .ok_or(Error::Malformed("startup Finder code metadata is missing"))
+        };
+        let abi = Descriptor::decode(&get(*b"NABI")?.data)?;
+        if abi.role != Role::Application
+           || abi.abi_version != mac_abi::ABI_VERSION
+           || abi.load_base != virtual_memory::VM_APPLICATION_IMAGE_BASE
+           || abi.load_limit > virtual_memory::VM_APPLICATION_END
+           || !abi.load_limit.is_multiple_of(memory::PAGE_BYTES)
+        {
+            return Err(Error::Malformed("startup Finder is incompatible; rebuild System disk"));
+        }
+        image::LoadPlan::new(&get(*b"RV64")?.data,
+                             &abi,
+                             Some(&get(*b"RLOC")?.data),
+                             abi.load_base)?;
+    }
     let mut fork = file.resources;
     let resources =
         resource::stream::read_selected(fork.length,
@@ -191,44 +241,6 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
                         .ok_or(Error::Malformed("System has no RV64 executable resource"))?
                         .data;
     let image = image::decode(&code, &descriptor)?;
-    // A bootable installation includes a compatible Finder. Validate its code
-    // and relocation plan before displaying Happy Mac or entering System.
-    let finder = volume.find_file(folder.id, b"Finder")?;
-    if finder.file_type != *b"FNDR"
-    {
-        return Err(Error::Malformed("startup Finder does not have type FNDR"));
-    }
-    let mut fork = finder.resources;
-    let finder =
-        resource::stream::read_selected(fork.length,
-                                        startup_resource_budget(),
-                                        |kind, id| {
-                                            id == 0 && matches!(&kind, b"NABI" | b"RV64" | b"RLOC")
-                                        },
-                                        |offset, output| {
-                                            let n = volume.read(&mut fork, offset, output)?;
-                                            if n == output.len()
-                                            {
-                                                Ok(())
-                                            }
-                                            else
-                                            {
-                                                Err(Error::Malformed("short Finder resource read"))
-                                            }
-                                        })?;
-    let get = |kind| {
-        finder.iter()
-              .find(|r| r.kind == kind)
-              .ok_or(Error::Malformed("startup Finder code metadata is missing"))
-    };
-    let abi = Descriptor::decode(&get(*b"NABI")?.data)?;
-    if abi.role != Role::Application
-       || abi.abi_version != mac_abi::ABI_VERSION
-       || !memory::application_region(abi.load_base, abi.load_limit)
-    {
-        return Err(Error::Malformed("startup Finder is incompatible; rebuild System disk"));
-    }
-    image::LoadPlan::new(&get(*b"RV64")?.data, &abi, Some(&get(*b"RLOC")?.data), abi.load_base)?;
     Ok(Startup { descriptor,
                  code,
                  image })

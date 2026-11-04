@@ -6,7 +6,9 @@ use core::ops::Deref;
 use mac_abi::*;
 use mac_object_table::{domain::{CompletionError, ReleasedResource},
                        registry::{Release, Source, Specification},
-                       shared::InvocationGate as _};
+                       shared::InvocationGate as _,
+                       store::CompletionKey};
+use spinning_top::Spinlock;
 
 use super::{Alert,
             core_alerts::{OpenError, PreparedAlert}};
@@ -21,6 +23,8 @@ pub(crate) struct DialogState
     pub controls:                 Vec<Option<u64>>,
     pub tracking:                 Option<usize>,
     pub system_menu:              bool,
+    pub closing:                  bool,
+    pub(super) close_observer:    Spinlock<Option<crate::toolbox::runtime::DialogCloseObserver>>,
     pub(super) recovery_activity: Option<crate::recovery::Activity>,
     pub(super) core_payload:      Option<crate::recovery::CorePayloadLease>
 }
@@ -30,6 +34,8 @@ static EMPTY: DialogState = DialogState { previous:          None,
                                           controls:          Vec::new(),
                                           tracking:          None,
                                           system_menu:       false,
+                                          closing:           false,
+                                          close_observer:    Spinlock::new(None),
                                           recovery_activity: None,
                                           core_payload:      None };
 impl Drop for DialogState
@@ -66,6 +72,8 @@ impl DialogState
                   controls,
                   tracking: None,
                   system_menu: false,
+                  closing: false,
+                  close_observer: Spinlock::new(None),
                   recovery_activity: activity,
                   core_payload: None })
     }
@@ -80,7 +88,7 @@ pub(crate) struct Manager
 {
     owner:       OwnerRef,
     records:     Store<DialogState>,
-    current:     Option<u64>,
+    current:     Option<CompletionKey>,
     publication: Option<mac_object_table::store::PublicationReservation<InvocationGate>>
 }
 impl Deref for Manager
@@ -89,7 +97,7 @@ impl Deref for Manager
 
     fn deref(&self) -> &DialogState
     {
-        self.current.and_then(|id| self.records.get(id)).unwrap_or(&EMPTY)
+        self.current.and_then(|key| self.records.get(key.id())).unwrap_or(&EMPTY)
     }
 }
 impl Manager
@@ -130,7 +138,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        if self.current.is_some_and(|id| self.records.get(id).is_some())
+        if self.current.is_some_and(|key| self.records.completing(&key).is_some())
         {
             return Err(SERVICE_BUSY);
         }
@@ -143,8 +151,11 @@ impl Manager
         }
         let mut state = DialogState::prepare(alert, None)?;
         state.previous = previous;
-        let id = self.records.insert(&self.owner, state).map_err(pool_status)?;
-        self.current = Some(id);
+        let (id, completion) = self.records
+                                   .insert_with_receipt(&self.owner, |_| state)
+                                   .map_err(pool_status)?
+                                   .into_parts();
+        self.current = Some(completion);
         Ok(id)
     }
 
@@ -169,7 +180,7 @@ impl Manager
                 return Err(OpenError::service("storage owner", ACCESS_DENIED));
             }
             if !self.owner.accepting()
-               || self.current.is_some_and(|id| self.records.get(id).is_some())
+               || self.current.is_some_and(|key| self.records.completing(&key).is_some())
             {
                 return Err(OpenError::service("protocol vacancy", SERVICE_BUSY));
             }
@@ -198,8 +209,8 @@ impl Manager
             {
                 Ok(publication) =>
                 {
-                    let id = publication.id();
-                    self.current = Some(id);
+                    let (id, completion) = publication.into_parts();
+                    self.current = Some(completion);
                     Ok(id)
                 }
                 Err((cause, state)) =>
@@ -213,12 +224,12 @@ impl Manager
 
     pub(crate) fn state_mut(&mut self) -> Result<&mut DialogState, Status>
     {
-        self.records.get_mut(self.current.ok_or(NOT_FOUND)?).ok_or(NOT_FOUND)
+        self.records.get_mut(self.current.ok_or(NOT_FOUND)?.id()).ok_or(NOT_FOUND)
     }
 
     pub(crate) fn take(&mut self) -> Option<Released>
     {
-        let record = self.records.remove(self.current?)?;
+        let record = self.records.remove(self.current?.id())?;
         self.current = None;
         Some(record)
     }
@@ -230,7 +241,7 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
-        let Some(state) = self.current.and_then(|id| self.records.get(id))
+        let Some(state) = self.current.and_then(|key| self.records.get(key.id()))
         else
         {
             return Ok(None);
@@ -242,14 +253,59 @@ impl Manager
         Ok(Some(state.window))
     }
 
-    pub(crate) fn take_recovery(&mut self, activity: &crate::recovery::Activity)
-                                -> Result<Option<Released>, Status>
+    /// Retain the original close endpoint in the actual ALRT payload, including
+    /// after its public ID has been invalidated. No new owner or ticket is made.
+    pub(crate) fn observe_window_close(&mut self,
+                                       observer: crate::toolbox::runtime::DialogCloseObserver)
     {
-        if self.recovery_window(activity)?.is_none()
+        let Some(key) = self.current
+        else
         {
-            return Ok(None);
+            return;
+        };
+        if key.owner() != observer.storage_owner()
+        {
+            return;
         }
-        self.take().map(Some).ok_or(NOT_FOUND)
+        let Some(state) = self.records.completing(&key)
+        else
+        {
+            return;
+        };
+        if state.window != observer.window_id().0 || state.alert.is_none()
+        {
+            return;
+        }
+        let recipient =
+            state.recovery_activity.as_ref().map_or(self.owner.owner().incarnation(), |activity| {
+                                                activity.recipient().owner().incarnation()
+                                            });
+        if recipient != observer.owner()
+        {
+            return;
+        }
+        InvocationGate::run(|| {
+            let mut held = state.close_observer.lock();
+            if held.is_none()
+            {
+                *held = Some(observer);
+            }
+        });
+        if let Some(state) = self.records.get_mut(key.id())
+        {
+            state.closing = true;
+        }
+    }
+
+    pub(crate) fn window_close_observer(&self, window: u64)
+                                        -> Option<crate::toolbox::runtime::DialogCloseObserver>
+    {
+        let state = self.records.completing(&self.current?)?;
+        if state.window != window
+        {
+            return None;
+        }
+        InvocationGate::run(|| state.close_observer.lock().clone())
     }
 
     pub(crate) fn take_window(&mut self, window: u64) -> Option<Released>
@@ -257,11 +313,31 @@ impl Manager
         if self.window == window && self.active() { self.take() } else { None }
     }
 
+    /// This is the original protocol's retained Activity, not a session chosen
+    /// from a numeric recipient. Call only after its actual Window UI tail is
+    /// admitted; child and payload acknowledgements still govern kit reuse.
+    pub(crate) fn close_window_activity(&self, window: u64) -> Result<(), Status>
+    {
+        if self.window != window || self.alert.is_none()
+        {
+            return Err(NOT_FOUND);
+        }
+        if let Some(activity) = &self.recovery_activity
+        {
+            activity.close();
+        }
+        Ok(())
+    }
+
     pub(crate) fn release(&mut self, ticket: ReleasedResource)
                           -> Result<Released, CompletionError>
     {
+        let key = ticket.key();
         let record = self.records.release(ticket)?;
-        self.current = None;
+        if self.current.is_some_and(|current| current.resource_key() == key)
+        {
+            self.current = None;
+        }
         Ok(record)
     }
 

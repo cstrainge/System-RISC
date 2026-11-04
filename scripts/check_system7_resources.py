@@ -4,6 +4,7 @@ import hashlib,json,struct
 from pathlib import Path
 from sr_paths import dist_dir, describe
 from system7_resource_map import resources, resource_names, resource_map
+from system7_platform import PLATFORM
 ROOT=Path(__file__).resolve().parents[2]
 def sha(data):return hashlib.sha256(data).hexdigest()
 def main():
@@ -77,18 +78,22 @@ def main():
                 checked.append({'type':key[0],'id':key[1],'length':len(data),'sha256':sha(data)})
             runtime=dist_dir()/(name+'.runtime.elf')
             elf=runtime.read_bytes();entry=struct.unpack_from('<Q',elf,24)[0]
-            expected_abi=(b'RVN1'+struct.pack('>HHIIQQQ',1,2,manifest['abi_version'],
-                                          resource_map(blob)['native_layout_fingerprint'],
-                                          int(manifest['load_base'],16),int(manifest['load_limit'],16),entry))
-            assert packed['NABI',0][2]==expected_abi, f'application ABI/reservation changed: {name}'
-            runtime=dist_dir()/(name+'.runtime.elf')
-            # ELF exists only on the build host. Compare the exact initialized
-            # PT_LOAD bytes against the resource records, with no extra baggage.
+            assert 'load_base' not in manifest and 'load_limit' not in manifest, f'stale application project: {manifest_path}; update and rebuild'
+            link_base=int(PLATFORM['virtual_memory']['application_image_base'],16)
+            page=PLATFORM['memory']['page_bytes']
+            # ELF exists only on the build host. The platform provides a shared
+            # Process-relative link origin, not per-application physical storage.
             phoff=struct.unpack_from('<Q',elf,32)[0];count=struct.unpack_from('<H',elf,56)[0]
             segments=[]
             for i in range(count):
                 kind,flags,offset,address,_,size,memory,_=struct.unpack_from('<IIQQQQQQ',elf,phoff+i*56)
-                if kind==1 and memory:segments.append((address-int(manifest['load_base'],16),memory,flags,elf[offset:offset+size]))
+                if kind==1 and memory:segments.append((address-link_base,memory,flags,elf[offset:offset+size]))
+            assert segments and all(offset>=0 for offset,_,_,_ in segments), f'application ELF precedes platform link origin: {name}'
+            extent=(max(offset+memory for offset,memory,_,_ in segments)+page-1)//page*page
+            expected_abi=(b'RVN1'+struct.pack('>HHIIQQQ',1,2,manifest['abi_version'],
+                                          resource_map(blob)['native_layout_fingerprint'],
+                                          link_base,link_base+extent,entry))
+            assert packed['NABI',0][2]==expected_abi, f'application ABI/compact layout changed: {name}'
             segments.sort()
             expected=b'RV64'+struct.pack('>HH',1,len(segments))+b''.join(struct.pack('>QQQI',offset,len(data),memory,flags)+data for offset,memory,flags,data in segments)
             assert packed['RV64',0][2]==expected, f'application segment fork differs: {name}'

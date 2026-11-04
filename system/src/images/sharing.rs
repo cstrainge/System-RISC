@@ -179,10 +179,11 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        let limit = crate::machine::memory::IMAGE_LIMIT;
-        let base = self.placement(layout.preferred,
+        let limit = crate::machine::memory::VM_APPLICATION_END;
+        let base = self.placement(owner.owner(),
+                                  layout.preferred,
                                   layout.extent,
-                                  crate::machine::memory::APPLICATION_RELOCATION_BASE,
+                                  crate::machine::memory::VM_APPLICATION_IMAGE_BASE,
                                   limit)?;
         let sharing = self.sources
                           .plan_share(original.owner(), original.binding.0, owner)
@@ -244,7 +245,10 @@ impl Manager
                                               {
                                                   return Err(ACCESS_DENIED);
                                               }
-                                              if !self.free_placement(preparation.recipient.base,
+                                              if !self.free_placement(preparation.recipient
+                                                                                 .owner
+                                                                                 .owner(),
+                                                                      preparation.recipient.base,
                                                                       preparation.recipient.extent,
                                                                       preparation.recipient.limit)
                                               {

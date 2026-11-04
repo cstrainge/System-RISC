@@ -1,12 +1,17 @@
 # Process isolation
 
-Status: design/backlog, tracked as [P13](CORE-TOOLBOX-ROADMAP.md#p13--process-isolation).
-Current applications and System share trusted supervisor-mode memory. Sv39 is
-active; application images have original-account physical backing and final
-supervisor segment permissions, but applications still enter in S-mode and both
-permanent System roots map them. Owner checks and generation-tagged IDs reject
-invalid service access, but do not stop arbitrary privileged native code. This work establishes hardware-enforced
-protection for APPLs and CLAPs, including Terminal and hosted development tools.
+Status: implementation and target qualification in progress, tracked as
+[P13](CORE-TOOLBOX-ROADMAP.md#p13--process-isolation). Native applications enter
+U-mode with their own Sv39 roots and private writable image, heap and stack
+mappings. System and kernel modules remain privileged. This is an implementation
+statement, not a claim that every callback, cleanup or failure path is qualified.
+
+The current isolation configuration exposes four physical CPUs but admits only
+one active hart. Multi-hart isolation, shootdown and reclamation require their own
+qualification before that cap is removed. Native user-fault observations apply to
+the specific guest artifacts and scenarios exercised; they do not establish
+application compatibility, account closure, arbitrary privileged-fault recovery or
+correctness on other hardware. Host Rust test results are not OS acceptance.
 
 ## Address spaces and privilege
 
@@ -29,7 +34,16 @@ Map code read/execute, constants read-only and data non-executable; add stack
 guards and allocation/commit limits. Separate native preferred virtual addresses
 from physical placement, allowing app instances to use the same virtual layout.
 Reuse validated compact segments/RLOC rather than assuming reservations are
-physical addresses or loading raw ELF. Shared immutable code is optional later;
+physical addresses or loading raw ELF.
+Executable projects do not accept application placement fields. The checked
+platform supplies one application link origin (4 MiB on QemuRISC-V); packaging
+records only the actual page-rounded ELF memory extent in NABI. Both firmware
+and System reject an incompatible link origin. NABI/RV64 remain required loader
+contracts; ResEdit archive mode preserves those raw resources verbatim. Rebuild
+all native packages/media together after a project-format change, retaining
+native ABI 1. This build contract alone is not runtime qualification.
+
+Shared immutable code is optional later;
 private writable state is mandatory. JIT/translated code needs controlled
 write-to-execute publication, never arbitrary kernel executable mappings.
 
@@ -39,7 +53,7 @@ shootdowns and migration rules with P1; page reuse cannot precede outstanding
 translations or operations. Shared generation-tagged IDs and separate ownership
 checks remain required alongside the MMU.
 
-## Implementation sequence from the current supervisor runtime
+## Process lifetime and migration boundaries
 
 Admit a canonical, generation-scoped ProcessSpace before thread publication and
 retain genuine execution pins in thread state. Its tables and branch pages are
@@ -98,6 +112,15 @@ reporting from trusted state. Copy panic/fault details safely; the dialog/event
 loop cannot depend on corrupted app code or a still-running process. Invalid
 syscall pointers return defined errors rather than crashing the kernel.
 
+The access-fault presentation uses the same System-owned bomb dialog as an
+application panic. It identifies an application access fault separately from a
+processor exception, based on the architecture's captured fault identity rather
+than application-supplied prose. The report includes the canonical application
+name, cause, program counter, fault address and captured registers in a scrollable
+view, with Copy Report and Close Application controls. The System owns drawing,
+input handling and dismissal; the failed application's code handles none of them.
+An application-supplied diagnostic cannot replace the captured hardware tail.
+
 P6 extensions and P14 loadable drivers intentionally remain in-kernel trusted
 code. DRVR metadata validation is an ABI/contract gate, not a sandbox or proof of
 correct implementation. Their fatal faults retain the kernel policy; this plan
@@ -107,6 +130,15 @@ addresses. Device/DMA mappings are owned by trusted kernel adapters; broader
 hardware/IOMMU threat profiles are separate gates.
 
 ## Delivery and acceptance
+
+The QemuRISC-V platform retains four physical CPUs but selects
+`scheduling.maximum_active_harts = 1` until the new U-mode application paths
+receive their SMP qualification. The checked build rejects zero or a cap above
+the configured CPU count. Runtime policy limits are additionally bounded by
+actual discovered CPUs, and core admission enforces the cap before changing
+dispatch eligibility. Idle peer readiness and physical CPU inspection remain
+available. Raising the configured cap requires a rebuilt platform and does not
+establish that the qualification below has passed.
 
 1. Privilege/boot/interrupt transition and kernel mappings, guarded physical-page
    ownership and checked firmware/device access on one hart.
@@ -133,3 +165,53 @@ shape tests alone are insufficient: run actual U-mode code and fault probes,
 then launch apps and exercise GUI, terminal, disk and network regressions.
 Record memory/switch/syscall cost and UI latency; isolation must not reintroduce
 polling, event storms or full-scene repainting.
+
+## Definition painting and cancellation
+
+An application-owned definition runs through its process's user callback thread.
+The resident compositor retains an owned staging buffer and a window/phase/clip
+cursor. Preparing a pixel packet, running the author and retiring the original
+reply occur outside resident manager guards. Capture and accepted pixel replay
+use fresh, bounded Canvas borrows after validating the original object, source,
+geometry, z order and relevant committed content revisions. Cached pixels do not
+replace that semantic validation. Window geometry cannot overtake an admitted
+paint callback.
+
+Cancellation retains the same admitted callback until an actual broker return or
+stopped-source result. Dropping an observer is not author completion or a resource
+ACK. A stale render transaction discards its staging changes, restores every
+attempted target clip from the committed base and retains its exact damage for a
+subsequent pass. It must not replay an accepted author prefix merely because a
+later phase suspended. Callback refusal and transient manager-lock contention
+remain distinct causes, including when both project to a Busy wire status.
+
+The ordinary committed base remains available to System-owned reports and cursor
+overlays while application drawing waits. Close and Zoom tracking invalidate the
+definition's own button bounds. Geometry changes still have their separate scene
+invalidation. Callback drawing, compound controls, source-stop cancellation,
+original-ticket closure and target performance require explicit guest coverage;
+these design and source boundaries alone do not qualify those paths.
+
+Managed control measurement, child hit-testing, layout, scrolling and splitter
+tracking retain owned calculations and the original request through user author
+waits. Automatic layout precedes the actual native positioned-event, ordinary
+event and wait/poll transports. Its completed prefix is retired before event
+waiting; a retained completion marker prevents replaying that prefix. Clean
+event polls inspect coalesced owner state rather than scanning control trees.
+Publication checks the original object keys, tree, definitions and geometry;
+tracking additionally checks that the actual Window is still active.
+
+Grow feedback is a reversible present-time overlay. The same WDEF first
+calculates the proposed structure; GROW is clipped to that validated footprint.
+The previous accepted mask stays owned until its frontbuffer pixels are erased.
+Grow feedback never becomes ordinary scene content and does not require copying
+or clearing a full-screen mask for each pointer movement.
+
+Caller-owned pixel drawing uses the original checked Surface buffers and mapping
+pins. An affine loan identifies that particular request and its actual Process
+account. User author calls draw into private staging; only a successful complete
+traversal may commit pixels and scalar output. Cancellation or refusal discards
+staging and returns the same buffers before the existing final copyout. An
+offscreen SBOX retains its own real object readset; it is not represented as a
+fabricated Window. Protected System storage does not fall back to ordinary
+Process authority for application-provided authors.

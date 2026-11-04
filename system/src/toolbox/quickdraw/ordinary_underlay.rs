@@ -13,17 +13,18 @@ use crate::toolbox::quickdraw::{geometry::{Rect, sect_rect, union_rect},
 #[derive(Default)]
 pub(super) struct OrdinaryUnderlay
 {
-    committed:                Vec<u32>,
-    staging:                  Vec<u32>,
-    pub(super) deferred:      Vec<(SceneTarget, Region)>,
-    pub(super) full_deferred: bool,
-    changed:                  Vec<Rect>,
-    previous_system:          Vec<Rect>,
-    valid:                    bool,
-    generation:               u64,
-    attempted_generation:     u64,
-    refused_available:        Option<usize>,
-    refusal:                  Option<Status>
+    pub(super) committed:         Vec<u32>,
+    pub(super) staging:           Vec<u32>,
+    pub(super) deferred:          Vec<(SceneTarget, Region)>,
+    pub(super) full_deferred:     bool,
+    pub(super) transaction:       Option<super::ordinary_transaction::Transaction>,
+    pub(super) storage:           super::ordinary_transaction::Storage,
+    previous_system:              Vec<Rect>,
+    pub(super) valid:             bool,
+    generation:                   u64,
+    attempted_generation:         u64,
+    pub(super) refused_available: Option<usize>,
+    pub(super) refusal:           Option<Status>
 }
 /// Actual admitted compositor storage; refusal/drop leaves live lengths and
 /// pixels unchanged. The exclusive borrow spans the real GPU transaction.
@@ -51,6 +52,12 @@ impl OrdinaryUnderlay
 {
     pub(super) fn prepare_mode(&mut self, count: usize) -> Result<PreparedPixels<'_>, Status>
     {
+        // The current transaction owns dimensions, staging and possibly an
+        // admitted author callback. A mode change cannot replace that storage.
+        if self.transaction.is_some()
+        {
+            return Err(SERVICE_BUSY);
+        }
         if count == 0 || count > crate::display::MAX_PIXELS
         {
             return Err(BAD_ARGUMENT);
@@ -77,7 +84,6 @@ impl OrdinaryUnderlay
         self.previous_system
             .try_reserve_exact(system_windows.saturating_sub(self.previous_system.len()))
             .map_err(|_| NO_MEMORY)?;
-        self.changed.try_reserve_exact(1).map_err(|_| NO_MEMORY)?;
         self.prepare_scenes(scenes)
     }
 
@@ -93,13 +99,43 @@ impl OrdinaryUnderlay
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// No author owns a pre-admission Busy refusal. The genuine common Window
+    /// return is its retry edge; pointer/timer traffic conveys no availability.
+    pub(super) fn source_returned(&mut self)
+    {
+        if let Some(transaction) = &mut self.transaction
+        {
+            transaction.source_returned();
+        }
+        if self.refusal == Some(SERVICE_BUSY) && self.pending()
+        {
+            self.changed();
+        }
+    }
+
+    pub(super) fn refuse(&mut self, available: usize, status: Status)
+    {
+        self.refused_available = Some(available);
+        self.attempted_generation = self.generation;
+        if self.refusal != Some(status)
+        {
+            serial!("ORDINARY_REPLAY_DEFERRED status={status}; exact work and committed pixels \
+                     retained");
+        }
+        self.refusal = Some(status);
+    }
+
     pub(super) fn pending(&self) -> bool
     {
-        self.full_deferred || !self.deferred.is_empty()
+        self.transaction.is_some() || self.full_deferred || !self.deferred.is_empty()
     }
 
     pub(super) fn retry_due(&self, available: usize) -> bool
     {
+        if let Some(transaction) = &self.transaction
+        {
+            return transaction.can_resume();
+        }
         self.pending() && self.refused_available.is_none_or(|before| {
             available > before || self.generation != self.attempted_generation
         })
@@ -148,7 +184,7 @@ impl OrdinaryUnderlay
         }
     }
 }
-fn screen() -> Rect
+pub(super) fn screen() -> Rect
 {
     Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16)
 }
@@ -158,7 +194,7 @@ fn clip(rect: Rect) -> Rect
     sect_rect(rect, screen(), &mut result);
     result
 }
-fn copy_rect(source: &[u32], destination: &mut [u32], rect: Rect)
+pub(super) fn copy_rect(source: &[u32], destination: &mut [u32], rect: Rect)
 {
     let rect = clip(rect);
     for y in rect.top as usize..rect.bottom as usize
@@ -296,231 +332,6 @@ impl Toolbox
         Ok(())
     }
 
-    fn paint_ordinary_damage(&mut self, pixels: &mut [u32], damage: &[(SceneTarget, Region)],
-                             deferred: &[(SceneTarget, Region)], changed: &mut Vec<Rect>,
-                             copy_full: &mut bool)
-                             -> Result<(), Status>
-    {
-        let scopes = self.windows.resource_scopes();
-        let font_snapshot = crate::kernel::fonts();
-        let fonts = font_snapshot.as_deref();
-        let cdef = self.cdef;
-        let cache = &mut self.presentation.content_cache;
-        let mut canvas = Canvas::new(pixels, crate::display::width(), crate::display::height());
-        let ordinary =
-            |window: &crate::toolbox::windows::manager::Window| !window.uses_system_resources();
-        for (id, region) in
-            deferred.iter().chain(damage).filter(|(id, _)| {
-                                             id.window()
-                                               .ok()
-                                               .and_then(|id| self.windows.window(id))
-                                               .is_none_or(|window| !window.uses_system_resources())
-                                         })
-        {
-            let mut result = Ok(());
-            if let Ok(window_id) = id.window()
-            {
-                let Some(window) = self.windows.window(window_id)
-                else
-                {
-                    continue;
-                };
-                let Some(content) =
-                    self.presentation.content.iter().find(|content| content.id == *id)
-                else
-                {
-                    continue;
-                };
-                let has_viewport =
-                    content.iter_commands()
-                           .any(|command| matches!(command, RenderCommand::ScrollBox(_)));
-                self.windows.for_each_layer_visible_rect(window_id, &ordinary, |visible| {
-                                for band in region.bands()
-                                {
-                                    for span in &band.spans
-                                    {
-                                        if result.is_err()
-                                        {
-                                            continue;
-                                        }
-                                        let mut rect =
-                                            Rect::new(span.left, band.top, span.right, band.bottom);
-                                        rect.offset(window.bounds.left, window.bounds.top);
-                                        let mut hit = Rect::ZERO;
-                                        if !sect_rect(rect, visible, &mut hit)
-                                        {
-                                            continue;
-                                        }
-                                        canvas.reset_port();
-                                        canvas.set_clip(hit);
-                                        canvas.set_origin(window.bounds.left, window.bounds.top);
-                                        result = scopes.with_window(window, || {
-                                                     let replay = |canvas: &mut Canvas<'_>| {
-                                                         canvas.paint_rect(window.local_bounds(),
-                                                                           WHITE);
-                                                         content.paint(canvas,
-                                                                       fonts,
-                                                                       |canvas, command| {
-                                                                           paint(canvas, command,
-                                                                                 cdef)
-                                                                       })
-                                                     };
-                                                     if has_viewport
-                                                     {
-                                                         replay(&mut canvas)?;
-                                                     }
-                                                     else
-                                                     {
-                                                         cache.try_paint(window_id.0,
-                                                                         window.bounds,
-                                                                         &mut canvas, replay)?;
-                                                     }
-                                                     window.paint_content_overlay(&mut canvas)
-                                                 })
-                                                 .and_then(core::convert::identity);
-                                        super::accumulate_presentation_damage(changed, copy_full,
-                                                                              hit);
-                                    }
-                                }
-                            });
-            }
-            result?;
-        }
-        Ok(())
-    }
-
-    /// The same renderer runs transactionally without recovery authority. Only
-    /// complete successful output becomes committed ordinary backing.
-    pub(super) fn update_ordinary_underlay(&mut self, damage: &mut Vec<(SceneTarget, Region)>,
-                                           full: bool, available: usize,
-                                           screen_damage: &mut Vec<Rect>,
-                                           screen_copy_full: &mut bool)
-                                           -> Result<bool, Status>
-    {
-        let mut staging = core::mem::take(&mut self.presentation.ordinary_underlay.staging);
-        let mut changed = core::mem::take(&mut self.presentation.ordinary_underlay.changed);
-        let deferred = core::mem::take(&mut self.presentation.ordinary_underlay.deferred);
-        changed.clear();
-        let requested_full = full;
-        let full = full
-                   || self.presentation.ordinary_underlay.full_deferred
-                   || !self.presentation.ordinary_underlay.valid;
-        let mut copy_full = full;
-        let result = if staging.len() != crate::display::pixels()
-                        || self.presentation.ordinary_underlay.committed.len()
-                           != crate::display::pixels()
-        {
-            Err(NOT_SUPPORTED)
-        }
-        else
-        {
-            crate::context::without_recovery(|| {
-                if full
-                {
-                    self.paint_ordinary_full(&mut staging)
-                }
-                else
-                {
-                    self.paint_ordinary_damage(&mut staging, damage, &deferred, &mut changed,
-                                               &mut copy_full)
-                }
-            })
-        };
-        self.presentation.ordinary_underlay.deferred = deferred;
-        if result.is_ok()
-        {
-            if copy_full
-            {
-                copy_rect(&staging, &mut self.presentation.ordinary_underlay.committed, screen());
-            }
-            else
-            {
-                for &rect in &changed
-                {
-                    copy_rect(&staging, &mut self.presentation.ordinary_underlay.committed, rect);
-                }
-            }
-            self.presentation.ordinary_underlay.valid = true;
-            self.presentation.ordinary_underlay.full_deferred = false;
-            self.presentation.ordinary_underlay.deferred.clear();
-            self.presentation.ordinary_underlay.refused_available = None;
-            self.presentation.ordinary_underlay.refusal = None;
-            let windows = &self.windows;
-            let committed = &self.presentation.ordinary_underlay.committed;
-            let back = crate::platform::back_buffer();
-            let mut expose = |rect| {
-                windows.for_each_ordinary_underlay_rect(rect, |visible| {
-                           super::accumulate_presentation_damage(screen_damage, screen_copy_full,
-                                                                 visible);
-                           copy_rect(committed, back, visible);
-                       })
-            };
-            if copy_full
-            {
-                expose(screen());
-            }
-            else
-            {
-                for &rect in &changed
-                {
-                    expose(rect);
-                }
-            }
-            damage.retain(|(id, _)| self.system_scene(*id));
-        }
-        else
-        {
-            if self.presentation.ordinary_underlay.valid
-               && staging.len() == crate::display::pixels()
-            {
-                copy_rect(&self.presentation.ordinary_underlay.committed, &mut staging, screen());
-                if requested_full
-                {
-                    // A real structural/full request must remove the prior
-                    // transient popup/tracking pixels even if ordinary replay
-                    // refuses. System windows and current menus are drawn next.
-                    copy_rect(&self.presentation.ordinary_underlay.committed,
-                              crate::platform::back_buffer(),
-                              screen());
-                    *screen_copy_full = true;
-                }
-            }
-            let refusal = result.as_ref().err().copied();
-            if self.presentation.ordinary_underlay.refusal != refusal
-            {
-                if let Some(status) = refusal
-                {
-                    serial!("ORDINARY_REPLAY_DEFERRED status={status}; committed ordinary pixels \
-                             retained");
-                }
-                self.presentation.ordinary_underlay.refusal = refusal;
-            }
-            self.presentation.ordinary_underlay.full_deferred |= full;
-            self.presentation.ordinary_underlay.refused_available = Some(available);
-            self.presentation.ordinary_underlay.attempted_generation =
-                self.presentation.ordinary_underlay.generation;
-            let mut index = 0;
-            while index < damage.len()
-            {
-                if self.system_scene(damage[index].0)
-                {
-                    index += 1;
-                    continue;
-                }
-                if self.presentation.ordinary_underlay.deferred.len()
-                   == self.presentation.ordinary_underlay.deferred.capacity()
-                {
-                    break;
-                } // Exact owned region stays in the active queue.
-                let entry = damage.swap_remove(index);
-                self.presentation.ordinary_underlay.deferred.push(entry);
-            }
-        }
-        self.presentation.ordinary_underlay.staging = staging;
-        self.presentation.ordinary_underlay.changed = changed;
-        result.map(|()| full)
-    }
-
     pub(super) fn paint_system_layer(&mut self, damage: &mut Vec<Rect>, copy_full: &mut bool)
                                      -> Result<(), Status>
     {
@@ -594,6 +405,42 @@ impl Toolbox
             {
                 continue;
             };
+            let mut frame_result = Ok(());
+            for band in region.bands()
+            {
+                for span in &band.spans
+                {
+                    let mut global = Rect::new(span.left, band.top, span.right, band.bottom);
+                    global.offset(window.bounds.left, window.bounds.top);
+                    for frame in window.frame_rects()
+                    {
+                        let mut target = Rect::ZERO;
+                        if !sect_rect(global, frame, &mut target)
+                        {
+                            continue;
+                        }
+                        self.windows.for_each_layer_frame_rect(id, target, &|_| true, |clip| {
+                                        if frame_result.is_err()
+                                        {
+                                            return;
+                                        }
+                                        canvas.reset_port();
+                                        canvas.set_clip(clip);
+                                        frame_result = scopes.with_window(window, || {
+                                                                 self.windows.draw_trusted_paint(id,
+                                    crate::toolbox::windows::manager::paint::PaintDomain::Frame,
+                                    &mut canvas).and_then(|drawn| {
+                                        if drawn { Ok(()) } else { Err(SERVICE_BUSY) }
+                                    })
+                                                             })
+                                                             .and_then(core::convert::identity);
+                                        super::accumulate_presentation_damage(changed, copy_full,
+                                                                              clip);
+                                    });
+                    }
+                }
+            }
+            frame_result?;
             let Some(content) = self.presentation.content.iter().find(|content| content.id == id)
             else
             {

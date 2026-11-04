@@ -6,6 +6,28 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cause
 {
+    WindowPaintPending
+    {
+        window: mac_object_table::domain::ResourceKey
+    },
+    WindowControlsPending
+    {
+        window: mac_object_table::domain::ResourceKey
+    },
+    ControlDefinitionDisposal
+    {
+        control: mac_object_table::domain::ResourceKey,
+        reply:   i64
+    },
+    ControlDisposalPending
+    {
+        control: mac_object_table::domain::ResourceKey,
+        status:  mac_abi::Status
+    },
+    ControlOperationPending
+    {
+        control: mac_object_table::domain::ResourceKey
+    },
     PublicationPreparations
     {
         owner:     mac_object_table::domain::DomainId,
@@ -126,6 +148,38 @@ impl core::fmt::Display for Cause
     {
         match self
         {
+            Self::WindowPaintPending { window } =>
+            {
+                write!(f,
+                       "window {window:?} awaits its actual admitted author paint; original \
+                        Window payload and cleanup ticket retained")
+            }
+            Self::WindowControlsPending { window } =>
+            {
+                write!(f,
+                       "window {window:?} awaits its actual staged control operations; original \
+                        Window payload and cleanup ticket retained")
+            }
+            Self::ControlDefinitionDisposal { control,
+                                              reply } =>
+            {
+                write!(f,
+                       "CDEF DISPOSE of control {control:?} returned {reply}; original ticket \
+                        retained until genuine source quiescence")
+            }
+            Self::ControlDisposalPending { control,
+                                           status } =>
+            {
+                write!(f,
+                       "control {control:?} retains its original disposal and cleanup ticket \
+                        (status {status})")
+            }
+            Self::ControlOperationPending { control } =>
+            {
+                write!(f,
+                       "control {control:?} retains an actual staged operation; original cleanup \
+                        ticket retained")
+            }
             Self::PublicationPreparations { owner,
                                             kind,
                                             preparing } =>
@@ -326,6 +380,36 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    pub(crate) fn window_paint_pending(ticket: ReleasedResource) -> Self
+    {
+        let window = ticket.key();
+        Self { ticket,
+               cause: Cause::WindowPaintPending { window } }
+    }
+
+    pub(crate) fn window_controls_pending(ticket: ReleasedResource) -> Self
+    {
+        let window = ticket.key();
+        Self { ticket,
+               cause: Cause::WindowControlsPending { window } }
+    }
+
+    pub(crate) fn control_disposal_pending(ticket: ReleasedResource, status: mac_abi::Status)
+                                           -> Self
+    {
+        let control = ticket.key();
+        Self { ticket,
+               cause: Cause::ControlDisposalPending { control,
+                                                      status } }
+    }
+
+    pub(crate) fn control_operation_pending(ticket: ReleasedResource) -> Self
+    {
+        let control = ticket.key();
+        Self { ticket,
+               cause: Cause::ControlOperationPending { control } }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn definition_pending(ticket: ReleasedResource, owner: u64,
                                      drain: crate::toolbox::resources::definitions::Drain)
@@ -518,6 +602,19 @@ impl Failure
         let key = ticket.key();
         Self { ticket,
                cause: Cause::RetirementStorage { provider: "System I/O Manager",
+                                                 owner: key.owner(),
+                                                 kind: key.kind(),
+                                                 pending,
+                                                 capacity } }
+    }
+
+    pub(crate) fn window_retirement_storage(ticket: ReleasedResource, pending: usize,
+                                            capacity: usize)
+                                            -> Self
+    {
+        let key = ticket.key();
+        Self { ticket,
+               cause: Cause::RetirementStorage { provider: "Window Manager",
                                                  owner: key.owner(),
                                                  kind: key.kind(),
                                                  pending,

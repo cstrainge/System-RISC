@@ -399,37 +399,6 @@ impl Checked
         !overlaps(&range, &self.ram) && !overlaps(&range, &self.flash)
     }
 
-    pub(super) fn validate_image_storage(&self, role: mac_formats::native::Role, base: u64,
-                                         limit: u64)
-                                         -> Result<()>
-    {
-        use mac_formats::native::Role;
-        let valid =
-            base < limit
-            && base.is_multiple_of(self.page_bytes)
-            && limit.is_multiple_of(self.page_bytes)
-            && match role
-            {
-                Role::System => base >= self.images.start && limit <= self.application_primary_base,
-                Role::Application =>
-                {
-                    (base >= self.application_primary_base && limit <= self.definitions.start)
-                    || (base >= self.application_relocation_base && limit <= self.images.end)
-                }
-                Role::CodeResource =>
-                {
-                    base >= self.definitions.start && limit <= self.definitions.end
-                }
-            };
-        if !valid
-        {
-            return Err(error(format!("native {role:?} reservation {base:#x}..{limit:#x} \
-                                      conflicts with the selected platform memory map; update \
-                                      its manifest or platform definition and rebuild")));
-        }
-        Ok(())
-    }
-
     /// The platform's checked hardware mapping granularity.
     pub fn page_bytes(&self) -> u64
     {
@@ -505,9 +474,7 @@ impl Checked
              ("FIRMWARE_HEAP_BYTES", self.firmware_heap.end - self.firmware_heap.start),
              ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
              ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
-             ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
-             ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
              ("DEFINITION_BASE", self.definitions.start),
              ("DEFINITION_LIMIT", self.definitions.end),
              ("IMAGE_LIMIT", self.images.end)].into_iter()
@@ -523,7 +490,6 @@ impl Checked
         }
         out.push_str(&self.reservation_constant());
         out.push_str(&self.bootstrap_io.ranges_source(&self.fw_cfg));
-        out.push_str(application_region_source());
         writeln!(out, "pub const SYSTEM_HEAP_BYTES: usize = {:#x};",self.system_heap_bytes).unwrap();
         writeln!(out,
                  "pub const SYSTEM_RECOVERY_BYTES: usize = {:#x};",
@@ -531,15 +497,15 @@ impl Checked
         out
     }
 
-    // Construction already proves that three page-aligned frames fit this
-    // reservation. Linker and resident constants consume this same record.
-    fn display_buffers(&self) -> [(&'static str, u64); 3]
+    // Three page-aligned frames remain reserved by the checked platform record.
+    // The retired middle scratch span is still owned, not reclaimed or reused.
+    // Generate only live views; preserve the original backbuffer's +2 offset.
+    fn display_buffers(&self) -> [(&'static str, u64); 2]
     {
         let stride =
             (self.display_max_width * self.display_max_height * 4).div_ceil(self.page_bytes)
             * self.page_bytes;
         [("DISPLAY_FRONTBUFFER_BASE", self.display_scratch.start),
-         ("DISPLAY_TRACKING_BASE", self.display_scratch.start + stride),
          ("DISPLAY_BACKBUFFER_BASE", self.display_scratch.start + 2 * stride)]
     }
 
@@ -597,17 +563,9 @@ impl Checked
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }
-        out.push_str(application_region_source());
         out.push_str(&self.bootstrap_io.ranges_source(&self.fw_cfg));
         out
     }
-}
-
-fn application_region_source() -> &'static str
-{
-    "pub fn application_region(base: u64, limit: u64) -> bool { base < limit && ((base >= \
-     APPLICATION_PRIMARY_BASE && limit <= APPLICATION_PRIMARY_LIMIT) || (base >= \
-     APPLICATION_RELOCATION_BASE && limit <= IMAGE_LIMIT)) }\n"
 }
 
 #[cfg(test)]
@@ -738,25 +696,8 @@ mod tests
         assert_eq!(checked.flash_bytes(), checked.flash.end - checked.flash.start);
     }
     #[test]
-    fn preferred_image_roles_cannot_overlap_firmware_or_another_role()
+    fn physical_image_definition_regions_cannot_overlap()
     {
-        use mac_formats::native::Role;
-        let checked = definition().check().unwrap();
-        checked.validate_image_storage(Role::System, 0x80200000, 0x81000000).unwrap();
-        checked.validate_image_storage(Role::Application, 0x81000000, 0x81800000).unwrap();
-        checked.validate_image_storage(Role::Application, 0x83000000, 0x83800000).unwrap();
-        checked.validate_image_storage(Role::CodeResource, 0x82000000, 0x82100000).unwrap();
-        for (role, base, limit) in [(Role::System, 0x80200000, 0x81800000),
-                                    (Role::Application, 0x82000000, 0x82100000),
-                                    (Role::Application, 0x86f00000, 0x87100000),
-                                    (Role::CodeResource, 0x83000000, 0x83100000)]
-        {
-            let message =
-                checked.validate_image_storage(role, base, limit).unwrap_err().to_string();
-            assert!(message.contains("conflicts with the selected platform memory map")
-                    && message.contains("update its manifest or platform definition and rebuild"),
-                    "{message}");
-        }
         let mut bad = definition();
         bad.definitions.base = "0x81000000".into();
         assert!(bad.check()

@@ -178,12 +178,132 @@ pub(crate) fn native_window(operation: u32, request: &mut WindowRequest) -> Stat
         }
     }
 }
+struct PreparedNative
+{
+    prepared: Option<PreparedWindow>,
+    scene:    SceneCapacity,
+    receiver: Option<PreparedReceiver>
+}
+enum Preparation
+{
+    Internal,
+    Process(PreparedNative)
+}
+
+/// The original request holds only a handle. Canonical unpublished custody was
+/// admitted before author NEW; Drop cannot lose its permit/Pending/author state.
+pub(crate) struct UserBirth
+{
+    value: PreparedNative,
+    owner: alloc::sync::Arc<crate::toolbox::windows::manager::birth::BirthOwner>
+}
+pub(crate) enum BirthProgress
+{
+    Wait,
+    Complete(Status)
+}
+impl Drop for UserBirth
+{
+    fn drop(&mut self)
+    {
+        self.owner.abandon();
+    }
+}
+impl UserBirth
+{
+    pub(crate) fn begin(request: &WindowRequest) -> Result<Self, Status>
+    {
+        let Preparation::Process(mut value) =
+            prepare_native(request).map_err(AdmissionError::status)?
+        else
+        {
+            return Err(ACCESS_DENIED);
+        };
+        let notice = toolbox(|toolbox| Ok(toolbox.windows.operation_notice())).map_err(AdmissionError::status)?;
+        let prepared = value.prepared.take().ok_or(BAD_ABI)?;
+        let owner = crate::toolbox::windows::manager::birth::BirthOwner::prepare(prepared,
+            Some(crate::context::current_thread_context().identity().thread), notice)?;
+        loop
+        {
+            let admitted = toolbox(|toolbox| {
+                if owner.storage_owner().incarnation() != toolbox.owner
+                {
+                    return Err(AdmissionError::Service { stage:  "original birth recipient",
+                                                         status: ACCESS_DENIED });
+                }
+                toolbox.windows.admit_birth_owner(&owner, request).map_err(AdmissionError::Window)
+            });
+            match admitted
+            {
+                Ok(()) => break,
+                Err(AdmissionError::Window(cause)) if capacity_changed(cause) =>
+                {
+                    let mut loan = owner.preparation()?;
+                    let plan = toolbox(|toolbox| {
+                                   loan.input()
+                                       .as_ref()
+                                       .ok_or(AdmissionError::Service { stage:  "original birth \
+                                                                                 preparation",
+                                                                        status: BAD_ABI })?
+                                       .plan_capacity(&toolbox.windows)
+                                       .map_err(AdmissionError::Window)
+                               }).map_err(AdmissionError::status)?;
+                    let capacity = plan.prepare().map_err(window_creation_status)?;
+                    loan.input().as_mut().ok_or(BAD_ABI)?.replace_capacity(capacity).dispose();
+                }
+                Err(cause) => return Err(cause.status())
+            }
+        }
+        Ok(Self { value,
+                  owner })
+    }
+
+    pub(crate) fn current_job(
+        &self)
+        -> Option<alloc::sync::Arc<crate::toolbox::windows::manager::operations::WindowJob>>
+    {
+        self.owner.current_job()
+    }
+
+    pub(crate) fn advance(&mut self, request: &mut WindowRequest) -> Result<BirthProgress, Status>
+    {
+        use crate::toolbox::windows::manager::birth::CreationProgress;
+        loop
+        {
+            match self.owner.advance_creation().map_err(window_creation_status)?
+            {
+                CreationProgress::Continue => continue,
+                CreationProgress::Wait => return Ok(BirthProgress::Wait),
+                CreationProgress::Ready =>
+                {
+                    let mut loan = self.owner.publication()?;
+                    core::mem::swap(loan.input(), &mut self.value.prepared);
+                    let result = commit_native(&mut self.value, request);
+                    core::mem::swap(loan.input(), &mut self.value.prepared);
+                    if loan.input().is_none()
+                    {
+                        loan.published()?;
+                    }
+                    return result.map(BirthProgress::Complete).map_err(AdmissionError::status);
+                }
+            }
+        }
+    }
+}
 fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
+{
+    match prepare_native(request)?
+    {
+        Preparation::Internal => toolbox(|toolbox| Ok(toolbox.window(NEW_WINDOW, request))),
+        Preparation::Process(mut prepared) => commit_native(&mut prepared, request)
+    }
+}
+fn prepare_native(request: &WindowRequest) -> Result<Preparation, AdmissionError>
 {
     let mut cold_prepared = false;
     // Before an actual permit is issued, contention returns the complete
     // unadmitted preparation for disposal and a fresh snapshot outside Desktop.
-    let (mut prepared, mut scene, mut receiver) = loop
+    loop
     {
         let plan = match toolbox(|toolbox| toolbox.plan_native_window(request))?
         {
@@ -200,7 +320,7 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
                                                               preparation",
                                                      status: SERVICE_BUSY });
             }
-            Turn::Internal => return toolbox(|toolbox| Ok(toolbox.window(NEW_WINDOW, request))),
+            Turn::Internal => return Ok(Preparation::Internal),
             Turn::Process(plan) => plan
         };
         let mut input =
@@ -225,16 +345,30 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
         }
         match admitted
         {
-            Ok(value) =>
+            Ok(mut value) =>
             {
+                let notice = toolbox(|toolbox| Ok(toolbox.windows.operation_notice()))?;
+                value.prepare_trusted_cleanup(notice).map_err(|status| {
+                                                          AdmissionError::Service {
+                    stage: "trusted close custody", status }
+                                                      })?;
                 let receiver = super::drag_runtime::admit_receiver_plan(plan.receiver)
                     .map_err(AdmissionError::Receiver)?;
-                break (Some(value), scene, Some(receiver));
+                return Ok(Preparation::Process(PreparedNative { prepared: Some(value),
+                                                                scene,
+                                                                receiver: Some(receiver) }));
             }
             Err(AdmissionError::Window(cause)) if capacity_changed(cause) => continue,
             Err(cause) => return Err(cause)
         }
-    };
+    }
+}
+fn commit_native(value: &mut PreparedNative, request: &mut WindowRequest)
+                 -> Result<Status, AdmissionError>
+{
+    let PreparedNative { prepared,
+                         scene,
+                         receiver } = value;
     loop
     {
         let mut retired = None;
@@ -250,12 +384,12 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
                 return Err(AdmissionError::Service { stage:  "admitted Process intent changed",
                                                      status: ACCESS_DENIED });
             }
-            toolbox.install_window_scene(&mut scene).map_err(AdmissionError::Scene)?;
+            toolbox.install_window_scene(scene).map_err(AdmissionError::Scene)?;
             Ok(toolbox.create_window(request,
-                                     Some(NativeWindowPublication { prepared:         &mut prepared,
-                                                                    retired:          &mut retired,
-                                                                    refusal:          &mut refusal,
-                                                                    receiver:         &mut receiver,
+                                     Some(NativeWindowPublication { prepared,
+                                                                    retired: &mut retired,
+                                                                    refusal: &mut refusal,
+                                                                    receiver,
                                                                     receiver_retired:
                                                                         &mut receiver_retired })))
         });
@@ -297,7 +431,7 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
                                 .ok_or(AdmissionError::Service { stage:  "retained window backing",
                                                                  status: BAD_ABI })?;
             value.replace_capacity(capacity).dispose();
-            scene = next_scene;
+            *scene = next_scene;
         }
     }
 }
@@ -579,6 +713,46 @@ impl Toolbox
             Ok(owners) => owners,
             Err(status) => return status
         };
+        let owner_close = if publication.is_none()
+                             && storage.owner().kind()
+                                != mac_object_table::domain::DomainKind::System
+                             && !match crate::toolbox::resources::definitions::is_user(entry)
+                             {
+                                 Ok(user) => user,
+                                 Err(status) => return status
+                             }
+        {
+            let allocation = match crate::context::capture_allocation()
+            {
+                Ok(crate::allocation::Target::Owner { account,
+                                                      .. })
+                    if account.owner() == storage.owner() =>
+                {
+                    account
+                }
+                _ =>
+                {
+                    match self.processes.allocation(storage.owner().incarnation())
+                    {
+                        Ok(account) if account.owner() == storage.owner() => account,
+                        Ok(_) => return ACCESS_DENIED,
+                        Err(status) => return status
+                    }
+                }
+            };
+            let header = match crate::toolbox::windows::manager::trusted::TrustedCloseHeader::prepare_owner(
+                &storage, &allocation, self.windows.operation_notice())
+            { Ok(header) => header, Err(status) => return status };
+            match header.prepare_binding()
+            {
+                Ok(binding) => Some(binding),
+                Err(status) => return status
+            }
+        }
+        else
+        {
+            None
+        };
         let creation = if let Some(publication) = publication.as_mut()
         {
             if publication.retired.is_some()
@@ -612,7 +786,8 @@ impl Toolbox
                                                     &mut self.events,
                                                     when,
                                                     false,
-                                                    request.reserved == WINDOW_STAY_IN_BACK)
+                                                    request.reserved == WINDOW_STAY_IN_BACK,
+                                                    owner_close)
         };
         let id = match creation
         {

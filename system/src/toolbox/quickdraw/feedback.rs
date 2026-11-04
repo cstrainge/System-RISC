@@ -2,7 +2,9 @@
 #![forbid(unsafe_code)]
 use alloc::{sync::Arc, vec::Vec};
 
-use super::{Point, Rect,
+use mac_abi::{BAD_ARGUMENT, NO_MEMORY, SERVICE_BUSY, Status};
+
+use super::{Canvas, Point, Rect,
             geometry::{outline_edges, sect_rect},
             presentation::{Outline, indexed_tracking_xor}};
 #[cfg(target_arch = "riscv64")]
@@ -214,29 +216,6 @@ impl ClippedOutline
         self.clip.visit(rect, |clip| self.shape.visit(clip, &mut pixel));
     }
 
-    fn difference(&self, other: Option<&Self>, rect: Rect, mut pixel: impl FnMut(usize, usize))
-    {
-        if other == Some(self)
-        {
-            return;
-        }
-        if let Some(other) = other.filter(|other| other.clip == self.clip)
-        {
-            self.clip.visit(rect, |clip| {
-                         self.shape.visit_difference(Some(other.shape), clip, &mut pixel)
-                     });
-        }
-        else
-        {
-            self.visit(rect, |x, y| {
-                    if !other.is_some_and(|other| other.contains(x, y))
-                    {
-                        pixel(x, y);
-                    }
-                });
-        }
-    }
-
     fn color(&self, rgb: u32, x: usize, y: usize) -> u32
     {
         if self.contains(x, y) { indexed_tracking_xor(rgb) } else { rgb }
@@ -314,9 +293,126 @@ impl Highlight
     }
 }
 
+/// A cropped, definition-produced white mask. Its original allocation receipt
+/// remains live through the last frontbuffer erase. Padding is never painted.
+#[derive(Debug)]
+pub(crate) struct GrowMask
+{
+    owner:  mac_object_table::domain::DomainId,
+    bounds: Rect,
+    clip:   Rect,
+    pixels: Vec<u32>
+}
+impl GrowMask
+{
+    pub(crate) fn prepare(reuse: &mut Option<Arc<Self>>,
+                          owner: mac_object_table::domain::DomainId, structure: Rect, screen: Rect)
+                          -> Result<(), Status>
+    {
+        let mut clip = Rect::ZERO;
+        if !sect_rect(structure, screen, &mut clip) || clip.top < 0 || clip.left < 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        clip.top = clip.top.max(21);
+        if clip.is_empty()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        // Preserve the author's global eight-pixel pattern phase.
+        let bounds = Rect::new(clip.left & !7, clip.top & !7, clip.right, clip.bottom);
+        let width = usize::try_from(bounds.right - bounds.left).map_err(|_| BAD_ARGUMENT)?;
+        let height = usize::try_from(bounds.bottom - bounds.top).map_err(|_| BAD_ARGUMENT)?;
+        let count = width.checked_mul(height).ok_or(NO_MEMORY)?;
+        if reuse.is_none()
+        {
+            *reuse = Some(Arc::try_new(Self { owner,
+                                              bounds,
+                                              clip,
+                                              pixels: Vec::new() }).map_err(|_| NO_MEMORY)?);
+        }
+        let mask = Arc::get_mut(reuse.as_mut().ok_or(SERVICE_BUSY)?).ok_or(SERVICE_BUSY)?;
+        if mask.owner != owner
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        mask.pixels
+            .try_reserve_exact(count.saturating_sub(mask.pixels.len()))
+            .map_err(|_| NO_MEMORY)?;
+        mask.pixels.truncate(count);
+        mask.pixels.fill(super::WHITE);
+        mask.pixels.resize(count, super::WHITE);
+        mask.bounds = bounds;
+        mask.clip = clip;
+        Ok(())
+    }
+
+    pub(crate) fn storage_owner(&self) -> mac_object_table::domain::DomainId
+    {
+        self.owner
+    }
+
+    pub(crate) fn canvas(&mut self) -> Canvas<'_>
+    {
+        let mut canvas = Canvas::new(&mut self.pixels,
+                                     (self.bounds.right - self.bounds.left) as usize,
+                                     (self.bounds.bottom - self.bounds.top) as usize);
+        canvas.set_origin(-self.bounds.left, -self.bounds.top);
+        canvas.set_clip(self.clip);
+        canvas
+    }
+
+    fn contains(&self, x: usize, y: usize) -> bool
+    {
+        if (x + y) & 1 != 1
+           || x > i16::MAX as usize
+           || y > i16::MAX as usize
+           || !self.clip.contains(Point { h: x as i16,
+                                          v: y as i16 })
+        {
+            return false;
+        }
+        let width = (self.bounds.right - self.bounds.left) as usize;
+        self.pixels[(y - self.bounds.top as usize) * width + x - self.bounds.left as usize]
+        != super::WHITE
+    }
+
+    fn visit(&self, rect: Rect, mut pixel: impl FnMut(usize, usize))
+    {
+        let mut clip = Rect::ZERO;
+        if !sect_rect(rect, self.clip, &mut clip)
+        {
+            return;
+        }
+        for y in clip.top as usize..clip.bottom as usize
+        {
+            for x in clip.left as usize..clip.right as usize
+            {
+                if self.contains(x, y)
+                {
+                    pixel(x, y);
+                }
+            }
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub(crate) struct GrowOverlay(pub(crate) Arc<GrowMask>);
+impl PartialEq for GrowOverlay
+{
+    fn eq(&self, other: &Self) -> bool
+    {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for GrowOverlay
+{
+}
+
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub(crate) struct Feedback
 {
+    pub grow:      Option<GrowOverlay>,
     pub outline:   Option<ClippedOutline>,
     pub highlight: Option<Highlight>
 }
@@ -324,90 +420,91 @@ impl Feedback
 {
     pub(crate) fn outline(shape: Outline, clip: Clip) -> Self
     {
-        Self { outline:   Some(ClippedOutline { shape,
+        Self { grow:      None,
+               outline:   Some(ClippedOutline { shape,
                                                 clip }),
                highlight: None }
     }
 
-    fn base(&self, rgb: u32, x: usize, y: usize) -> u32
+    fn color(&self, rgb: u32, x: usize, y: usize) -> u32
     {
-        self.highlight.as_ref().map_or(rgb, |highlight| highlight.color(rgb, x, y))
+        let rgb = self.highlight.as_ref().map_or(rgb, |highlight| highlight.color(rgb, x, y));
+        let rgb = if self.grow.as_ref().is_some_and(|mask| mask.0.contains(x, y))
+        {
+            indexed_tracking_xor(rgb)
+        }
+        else
+        {
+            rgb
+        };
+        self.outline.as_ref().map_or(rgb, |outline| outline.color(rgb, x, y))
+    }
+
+    fn visit(&self, rect: Rect, mut pixel: impl FnMut(usize, usize))
+    {
+        if let Some(highlight) = &self.highlight
+        {
+            highlight.visit(rect, &mut pixel);
+        }
+        if let Some(mask) = &self.grow
+        {
+            mask.0.visit(rect, &mut pixel);
+        }
+        if let Some(outline) = &self.outline
+        {
+            outline.visit(rect, &mut pixel);
+        }
     }
 
     pub(crate) fn paint(&self, scene: &[u32], front: &mut [u32], width: usize, rect: Rect)
     {
-        if let Some(highlight) = &self.highlight
-        {
-            highlight.visit(rect, |x, y| {
-                         front[y * width + x] = highlight.color(scene[y * width + x], x, y)
-                     });
-        }
-        if let Some(outline) = &self.outline
-        {
-            outline.visit(rect, |x, y| {
-                       front[y * width + x] =
-                           indexed_tracking_xor(self.base(scene[y * width + x], x, y))
-                   });
-        }
+        self.visit(rect, |x, y| {
+                let at = y * width + x;
+                front[at] = self.color(scene[at], x, y);
+            });
     }
 
     pub(crate) fn transition(&self, previous: &Self, scene: &[u32], front: &mut [u32],
                              width: usize, rect: Rect)
                              -> usize
     {
-        let mut changed = 0;
-        if previous.highlight != self.highlight
+        if self == previous
         {
-            // Change the lower layer while preserving the old upper outline.
-            // Then the ordinary outline delta runs against the new lower layer.
-            for (highlight, other) in [(previous.highlight.as_ref(), self.highlight.as_ref()),
-                                       (self.highlight.as_ref(), previous.highlight.as_ref())]
+            return 0;
+        }
+        let mut changed = 0;
+        // Visit only each changed object's actual pixels. Repeated overlap is
+        // idempotent: compute from clean scene, never XOR a pixel twice.
+        let mut pixel = |x, y| {
+            let at = y * width + x;
+            let next = self.color(scene[at], x, y);
+            if front[at] != next
             {
-                if let Some(highlight) = highlight
+                front[at] = next;
+                changed += 1;
+            }
+        };
+        for value in [previous, self]
+        {
+            if previous.highlight != self.highlight
+            {
+                if let Some(highlight) = &value.highlight
                 {
-                    highlight.visit(rect, |x, y| {
-                                 if other.is_some_and(|other| other.contains(x, y))
-                                 {
-                                     return;
-                                 }
-                                 let at = y * width + x;
-                                 let old = previous.base(scene[at], x, y);
-                                 let new = self.base(scene[at], x, y);
-                                 let (old, new) =
-                                     previous.outline.as_ref().map_or((old, new), |outline| {
-                                                                  (outline.color(old, x, y),
-                                                                   outline.color(new, x, y))
-                                                              });
-                                 front[at] ^= old ^ new;
-                                 changed += 1;
-                             });
+                    highlight.visit(rect, &mut pixel);
                 }
             }
-        }
-        if previous.outline != self.outline
-        {
-            let mut last = None;
-            for (outline, other) in [(previous.outline.as_ref(), self.outline.as_ref()),
-                                     (self.outline.as_ref(), previous.outline.as_ref())]
+            if previous.grow != self.grow
             {
-                if let Some(outline) = outline
+                if let Some(mask) = &value.grow
                 {
-                    outline.difference(other, rect, |x, y| {
-                               let at = y * width + x;
-                               let rgb = self.base(scene[at], x, y);
-                               let mask = match last
-                               {
-                                   Some((color, mask)) if color == rgb => mask,
-                                   _ =>
-                                   {
-                                       let mask = rgb ^ indexed_tracking_xor(rgb);
-                                       last = Some((rgb, mask));
-                                       mask
-                                   }
-                               };
-                               front[at] ^= mask;
-                               changed += 1;
-                           });
+                    mask.0.visit(rect, &mut pixel);
+                }
+            }
+            if previous.outline != self.outline
+            {
+                if let Some(outline) = &value.outline
+                {
+                    outline.visit(rect, &mut pixel);
                 }
             }
         }

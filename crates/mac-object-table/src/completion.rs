@@ -307,7 +307,7 @@ impl<G: InvocationGate> Completion<G>
                         G::resource_released(self.owner.owner());
                         if stopped
                         {
-                            G::released(self.owner.owner());
+                            G::released(&self.owner);
                         }
                     }
                     Err(error) =>

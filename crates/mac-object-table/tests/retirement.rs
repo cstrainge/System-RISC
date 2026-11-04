@@ -2,7 +2,7 @@
 //! unlock. They are neither periodic polling nor fabricated I/O completion.
 use std::cell::{Cell, RefCell};
 
-use mac_object_table::{domain::{CapacityPolicy, DomainId, DomainKind, KindCode, OwnerIndex},
+use mac_object_table::{domain::{CapacityPolicy, DomainKind, KindCode, OwnerIndex},
                        shared::{InvocationGate, OwnerRef},
                        store::Store};
 thread_local! {
@@ -18,12 +18,12 @@ impl InvocationGate for Gate
         run()
     }
 
-    fn released(owner: DomainId)
+    fn released(owner: &OwnerRef<Self>)
     {
         assert!(!PAYLOAD.get(), "retirement notification preceded actual payload destruction");
         OWNER.with_borrow(|own| {
                  let own = own.as_ref().unwrap();
-                 assert_eq!(owner, own.owner());
+                 assert_eq!(owner.owner(), own.owner());
                  assert!(!own.accepting());
                  assert_eq!(own.summary().pending,
                             0,

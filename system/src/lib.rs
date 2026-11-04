@@ -1,5 +1,6 @@
 //! Resident System RISC code. This crate is not an application dependency.
 #![no_std]
+#![recursion_limit = "256"]
 #![feature(allocator_ext)]
 extern crate alloc;
 #[cfg(target_arch = "riscv64")]

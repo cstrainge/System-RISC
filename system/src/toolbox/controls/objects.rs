@@ -86,18 +86,23 @@ impl<C: ControlHost>
         objects.release_storage(ticket).map_err(Failure::from)
     }
 }
-impl<C: ControlHost> mac_object_table::registry::Release<C> for ReleaseControls
+impl<C: ControlHost>
+    mac_object_table::registry::Release<C, crate::toolbox::handles::cleanup::Failure>
+    for ReleaseControls
 {
     fn release(&self, context: &mut C, resource: mac_object_table::domain::ReleasedResource)
-               -> Result<(), mac_object_table::domain::CompletionError>
+               -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
-        drop(context.managed_controls().objects.release(resource)?);
-        Ok(())
+        context.managed_controls().release_control(resource)
     }
 }
 
+type Retired = mac_object_table::store::Removed<Object, crate::toolbox::handles::InvocationGate>;
+
 struct Object
 {
+    claim:              Option<callbacks::ClaimLink>,
+    disposal:           Option<Arc<disposal::ControlDisposal>>,
     window:             u64,
     recipient:          u64,
     state:              State,
@@ -141,6 +146,32 @@ struct Layout
 }
 impl Layout
 {
+    fn same_admission_snapshot(&self, other: &Self) -> bool
+    {
+        fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool
+        {
+            match (a, b)
+            {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false
+            }
+        }
+        self.sizing == other.sizing
+        && self.anchors == other.anchors
+        && self.window_border == other.window_border
+        && self.window_extent == other.window_extent
+        && self.visible == other.visible
+        && self.measured == other.measured
+        && self.intrinsic == other.intrinsic
+        && self.logical == other.logical
+        && self.hidden == other.hidden
+        && self.arrangement_pending == other.arrangement_pending
+        && same(&self.grid, &other.grid)
+        && same(&self.outlines, &other.outlines)
+        && same(&self.scroll, &other.scroll)
+    }
+
     fn new(bounds: Rect) -> Result<Self, Status>
     {
         let bounds = layout::LayoutRect::try_from(bounds).map_err(|e| e.status())?;
@@ -373,26 +404,81 @@ impl Spec
 
 pub struct Manager
 {
+    claim_presence:Arc<claim_wait::Presence>,
     objects: Store<Object, automatic::Work>,
+    disposal_notice: Arc<crate::toolbox::resources::definitions::callbacks::Notice>,
+    disposal_idle: Option<Arc<disposal::DisposalSlot>>,
+    disposal_active: Option<Arc<disposal::DisposalSlot>>,
     next_order: u64,
     publications: Vec<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>>
 }
+/// A short exclusive proof for synchronous trusted Window teardown. No user
+/// callback or wait may span this borrow. Refusal has not invalidated any CTRL;
+/// commit performs the already-admitted removal without a second fallible check.
+#[must_use = "commit admitted child cleanup or leave every control unchanged"]
+pub(crate) struct WindowRemoval<'a>
+{
+    manager: &'a mut Manager,
+    window:  u64
+}
+impl WindowRemoval<'_>
+{
+    pub(crate) fn window_id(&self) -> u64
+    {
+        self.window
+    }
+
+    pub(crate) fn commit(self)
+    {
+        self.manager.retire_idle_window_metadata(self.window);
+        self.manager.objects.remove_where(|_, object| object.window == self.window);
+        crate::kernel::window_sources_changed();
+    }
+}
+
 impl Manager
 {
     pub(crate) fn new((kind, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Ok(Self { objects:      Store::owned_state_prepared(kind, storage, |_| {
-                                    Ok(automatic::Work::default())
-                                }).map_err(pool_status)?,
+        let claim_presence = claim_wait::Presence::prepare()?;
+        Ok(Self { claim_presence,
+                  objects: Store::owned_state_prepared(kind, storage, |_| {
+                               Ok(automatic::Work::default())
+                           }).map_err(pool_status)?,
+                  disposal_notice:
+                      crate::toolbox::resources::definitions::callbacks::Notice::new()?,
+                  disposal_idle: None,
+                  disposal_active: None,
                   publications: Vec::new(),
-                  next_order:   1 })
+                  next_order: 1 })
     }
 }
+mod claim_wait;
+pub(crate) use claim_wait::{ClaimAdmission, ClaimWaitTicket, WaitNode};
+
 impl Manager
 {
-    fn get(&self, id: u64, owner: u64) -> Result<&Object, Status>
+    /// A presence hint only. Original unblocked paths perform full admission.
+    pub(crate) fn admission_claims_active(&self) -> Result<bool, Status>
     {
-        let o = self.objects.get(id).ok_or(NOT_FOUND)?;
+        self.claim_presence.active()
+    }
+
+    fn lookup_owner(&self, id: u64, owner: u64) -> Result<&Object, Status>
+    {
+        let o = match self.objects.get(id)
+        {
+            Some(object) => object,
+            None =>
+            {
+                return Err(match self.disposing_owner(id)
+                {
+                    Some(domain) if domain.incarnation() == owner => SERVICE_BUSY,
+                    Some(_) => ACCESS_DENIED,
+                    None => NOT_FOUND
+                });
+            }
+        };
         if o.recipient != owner
         {
             return Err(ACCESS_DENIED);
@@ -412,6 +498,46 @@ impl Manager
             return Err(ACCESS_DENIED);
         }
         Ok(o)
+    }
+
+    fn snapshot(&self, id: u64, owner: u64) -> Result<&Object, Status>
+    {
+        let o = self.lookup_owner(id, owner)?;
+        let mut ancestor = id;
+        while ancestor != 0
+        {
+            let object = self.objects.get(ancestor).ok_or(NOT_FOUND)?;
+            if object.disposal.as_ref().is_some_and(|cell| cell.active())
+            {
+                return Err(SERVICE_BUSY);
+            }
+            ancestor = object.tree.parent;
+        }
+        Ok(o)
+    }
+
+    fn get(&self, id: u64, owner: u64) -> Result<&Object, Status>
+    {
+        let object = self.lookup_owner(id, owner)?;
+        self.no_conflicting_claims(id, None)?;
+        Ok(object)
+    }
+
+    fn snapshot_info(&self, call: &mut ControlCall, owner: u64) -> Result<(), Status>
+    {
+        let object = self.snapshot(call.id, owner)?;
+        call.window = object.window;
+        call.relation = object.tree.relation();
+        object.state.spec.write(call);
+        call.reflow = u32::from(object.state.layout.is_some());
+        call.layout.anchors = object.state.layout.as_ref().map_or(0, |l| l.anchors.into());
+        call.layout.window_border =
+            object.state.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
+        call.layout.invalidation = object.state.layout.as_ref().map_or(0, Layout::pending);
+        call.layout.status = self.layout_status(call.id);
+        call.result = 0;
+        call.flags = u32::from(object.state.tracking.is_some()) * TRACKING;
+        Ok(())
     }
 
     /// Held canonical slots and cleanup records cannot be consumed by ordinary
@@ -436,7 +562,7 @@ impl Manager
 
     pub fn window(&self, id: u64, owner: u64) -> Result<u64, Status>
     {
-        Ok(self.get(id, owner)?.window)
+        Ok(self.snapshot(id, owner)?.window)
     }
 
     /// Cancellation cannot depend on loading/validating or allocating a drawing.
@@ -447,6 +573,7 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         self.get(call.id, owner)?;
+        self.no_conflicting_claims(call.id, None)?;
         let layout_status = self.layout_status(call.id);
         let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
         let state = &mut object.state;
@@ -473,14 +600,46 @@ impl Manager
         Ok(())
     }
 
-    pub fn remove_window(&mut self, window: u64)
+    pub(crate) fn prepare_remove_window(&self, window: u64) -> Result<(), Status>
     {
-        self.objects.remove_where(|_, object| object.window == window);
+        if self.disposal_pending_window(window)
+           || self.objects.iter().any(|(_, object)| object.window == window && object.claimed())
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(())
     }
 
-    pub fn remove_owner(&mut self, owner: u64)
+    pub(crate) fn prepare_window_removal(&mut self, window: u64)
+                                         -> Result<WindowRemoval<'_>, Status>
     {
+        self.request_window_disposal(window)?;
+        self.prepare_remove_window(window)?;
+        Ok(WindowRemoval { manager: self,
+                           window })
+    }
+
+    pub fn remove_window(&mut self, window: u64) -> Result<(), Status>
+    {
+        self.request_window_disposal(window)?;
+        self.prepare_remove_window(window)?;
+        self.retire_idle_window_metadata(window);
+        self.objects.remove_where(|_, object| object.window == window);
+        crate::kernel::window_sources_changed();
+        Ok(())
+    }
+
+    pub fn remove_owner(&mut self, owner: u64) -> Result<(), Status>
+    {
+        self.request_owner_disposal(owner)?;
+        if self.objects.iter().any(|(_, object)| object.recipient == owner && object.claimed())
+        {
+            return Err(SERVICE_BUSY);
+        }
+        self.retire_idle_owner_metadata(owner);
         self.objects.remove_owner(owner);
+        crate::kernel::window_sources_changed();
+        Ok(())
     }
 
     pub fn definition(&self, call: &ControlCall, owner: u64) -> Result<i16, Status>
@@ -493,7 +652,7 @@ impl Manager
         {
             return super::definition_id(&Spec::from_call(call, false).draw());
         }
-        super::definition_id(&self.get(call.id, owner)?.state.spec.draw())
+        super::definition_id(&self.snapshot(call.id, owner)?.state.spec.draw())
     }
 
     /// Validate the real retained object's auxiliary CDEF need before the
@@ -506,7 +665,7 @@ impl Manager
         {
             return Ok(None);
         }
-        let object = self.get(call.id, owner)?;
+        let object = self.snapshot(call.id, owner)?;
         if !call.surface.is_null()
            || call.reserved != 0
            || call.reflow != 0
@@ -557,7 +716,7 @@ impl Manager
         {
             return Ok(None);
         }
-        let object = self.get(call.id, owner)?;
+        let object = self.snapshot(call.id, owner)?;
         if call.operation == CONFIGURE_OBJECT
         {
             let previous = super::definition_id(&object.state.spec.draw())?;
@@ -586,6 +745,17 @@ impl Manager
         let owner = recipient.owner().incarnation();
         let recovery = recovery_mode(recipient, storage)?;
         let creation = matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR);
+        if creation
+           && (self.disposal_pending_window(call.window)
+               || self.objects
+                      .iter()
+                      .any(|(_, object)| object.window == call.window && object.window_claimed()))
+        {
+            // A window whose definition objects are being disposed must not
+            // accept new children: the drain retires the set it captured, so a
+            // late object would outlive the close that removed its window.
+            return Err(SERVICE_BUSY);
+        }
         if creation && (!recipient.accepting() || !storage.accepting())
         {
             return Err(ACCESS_DENIED);
@@ -672,6 +842,96 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
+        self.prepare_static_text(call, owner)?;
+        let operation = call.operation;
+        if !call.surface.is_null() || call.reserved != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if call.reflow > 1
+           || (call.reflow != 0 && !matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR))
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if operation == INFO_OBJECT
+        {
+            self.snapshot_info(call, owner)?;
+            return Ok(None);
+        }
+        if !matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+        {
+            self.get(call.id, owner)?;
+            self.preflight_tree_configuration(call, owner)?;
+        }
+        let (_, bound) = self.preflight_definition(recipient, storage, call)?;
+        let entry = bound.unwrap_or(entry);
+        let replacement = if operation == CONFIGURE_OBJECT && bound.is_none()
+        {
+            Some(crate::toolbox::resources::definitions::bind(entry)?)
+        }
+        else
+        {
+            None
+        };
+        let mut admitted_title = None;
+        if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
+        {
+            let candidate = self.configuration(call, owner)?;
+            let author = super::effects::Author::trusted(gate);
+            let configured = super::effects::immediate(candidate.prepare(entry, &author))?;
+            let spec = configured.call.wire();
+            let scrollbar = configured.scrollbar;
+            admitted_title = configured.title;
+            if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+            {
+                let next_order = self.next_order.checked_add(1).ok_or(NO_MEMORY)?;
+                let definition = crate::toolbox::resources::definitions::bind(entry)?;
+                let (object, cleanup) = Object::new(call.window,
+                                                    owner,
+                                                    Spec::from_call(&spec, scrollbar),
+                                                    admitted_title.clone(),
+                                                    definition,
+                                                    call.reflow,
+                                                    self.next_order,
+                                                    recovery,
+                                                    self.disposal_notice.clone(),
+                                                    storage,
+                                                    None)?;
+                let publication = if recovery
+                {
+                    let reservation = self.publications
+                                          .iter_mut()
+                                          .find(|reservation| reservation.ready())
+                                          .ok_or(SERVICE_BUSY)?;
+                    #[cfg(target_arch = "riscv64")]
+                    {
+                        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                        let subject = activity.root_subject();
+                        self.objects.insert_reserved_in_scope_with_acknowledgement(
+                            reservation, subject.scope(), Some(activity.acknowledgement_pin()),
+                            |_| object).map_err(publication_status)?
+                    }
+                    #[cfg(not(target_arch = "riscv64"))]
+                    {
+                        let _ = (reservation, object);
+                        return Err(NOT_SUPPORTED);
+                    }
+                }
+                else
+                {
+                    self.objects.insert_with_receipt(storage, |_| object).map_err(pool_status)?
+                };
+                self.publish_disposal_slot(cleanup, publication.into_parts().1, call.window);
+                call.id = publication.id();
+                self.next_order = next_order;
+                self.schedule_layout(call.id);
+            }
+        }
+        self.finish_request_with(call, owner, entry, gate, admitted_title, replacement, publish)
+    }
+
+    fn prepare_static_text(&self, call: &mut ControlCall, owner: u64) -> Result<(), Status>
+    {
         if call.operation == SET_STATIC_TEXT_OBJECT
         {
             if call.flags == 0 || call.flags & !TEXT_PROPERTIES != 0 || call.reflow != 0
@@ -680,7 +940,7 @@ impl Manager
             }
             let Spec::Standard { mut state,
                                  procedure: STATIC_TEXT_PROCEDURE } =
-                self.get(call.id, owner)?.state.spec
+                self.snapshot(call.id, owner)?.state.spec
             else
             {
                 return Err(NOT_SUPPORTED);
@@ -710,114 +970,45 @@ impl Manager
             call.procedure = STATIC_TEXT_PROCEDURE;
             call.operation = CONFIGURE_OBJECT;
         }
-        let operation = call.operation;
-        if !call.surface.is_null() || call.reserved != 0
+        Ok(())
+    }
+
+    fn configuration(&self, call: &ControlCall, owner: u64)
+                     -> Result<callbacks::Configuration, Status>
+    {
+        let old = if call.operation == CONFIGURE_OBJECT
         {
-            return Err(BAD_ARGUMENT);
-        }
-        if call.reflow > 1
-           || (call.reflow != 0 && !matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR))
-        {
-            return Err(BAD_ARGUMENT);
-        }
-        if !matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
-        {
-            self.preflight_tree_configuration(call, owner)?;
-        }
-        let (_, bound) = self.preflight_definition(recipient, storage, call)?;
-        let entry = bound.unwrap_or(entry);
-        let replacement = if operation == CONFIGURE_OBJECT && bound.is_none()
-        {
-            Some(crate::toolbox::resources::definitions::bind(entry)?)
+            Some(self.snapshot(call.id, owner)?)
         }
         else
         {
             None
         };
-        let mut admitted_title = None;
-        if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
+        let scrollbar = old.map_or(call.operation == CREATE_SCROLLBAR, |old| {
+                               old.state.spec.scrollbar().is_some()
+                           });
+        if scrollbar && (call.step <= 0 || call.page <= 0)
         {
-            let scrollbar = if operation == CONFIGURE_OBJECT
-            {
-                self.get(call.id, owner)?.state.spec.scrollbar().is_some()
-            }
-            else
-            {
-                operation == CREATE_SCROLLBAR
-            };
-            if scrollbar && (call.step <= 0 || call.page <= 0)
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            let mut spec = *call;
-            spec.operation = if scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
-            if operation == CONFIGURE_OBJECT
-            {
-                let old = self.get(call.id, owner)?;
-                spec.reflow = u32::from(old.state.layout.is_some());
-                let highlight = old.state.spec.highlight();
-                spec.standard.highlighted = highlight;
-                spec.scrollbar.highlighted = highlight as i16;
-            }
-            if operation != CONFIGURE_OBJECT
-               || self.get(call.id, owner)?.state.spec != Spec::from_call(&spec, scrollbar)
-            {
-                // Validate through the real resource before publishing or mutating.
-                super::validate(&mut spec, entry, gate)?;
-            }
-            if !scrollbar && spec.procedure != PROGRESS_BAR_PROCEDURE
-            {
-                let previous = if operation == CONFIGURE_OBJECT
-                {
-                    self.get(call.id, owner)?.state.title.as_ref()
-                }
-                else
-                {
-                    None
-                };
-                admitted_title = Some(super::snapshot::Title::admit(&spec.standard, previous)?);
-            }
-            if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
-            {
-                let next_order = self.next_order.checked_add(1).ok_or(NO_MEMORY)?;
-                let definition = crate::toolbox::resources::definitions::bind(entry)?;
-                let object = Object::new(call.window,
-                                         owner,
-                                         Spec::from_call(&spec, scrollbar),
-                                         admitted_title.clone(),
-                                         definition,
-                                         call.reflow,
-                                         self.next_order,
-                                         recovery)?;
-                call.id = if recovery
-                {
-                    let reservation = self.publications
-                                          .iter_mut()
-                                          .find(|reservation| reservation.ready())
-                                          .ok_or(SERVICE_BUSY)?;
-                    #[cfg(target_arch = "riscv64")]
-                    {
-                        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
-                        let subject = activity.root_subject();
-                        self.objects.insert_reserved_in_scope_with_acknowledgement(
-                            reservation, subject.scope(), Some(activity.acknowledgement_pin()),
-                            |_| object).map_err(publication_status)?.id()
-                    }
-                    #[cfg(not(target_arch = "riscv64"))]
-                    {
-                        let _ = (reservation, object);
-                        return Err(NOT_SUPPORTED);
-                    }
-                }
-                else
-                {
-                    self.objects.insert(storage, object).map_err(pool_status)?
-                };
-                self.next_order = next_order;
-                self.schedule_layout(call.id);
-            }
+            return Err(BAD_ARGUMENT);
         }
-        self.finish_request_with(call, owner, entry, gate, admitted_title, replacement, publish)
+        let mut spec = *call;
+        spec.operation = if scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
+        if let Some(old) = old
+        {
+            spec.reflow = u32::from(old.state.layout.is_some());
+            let highlight = old.state.spec.highlight();
+            spec.standard.highlighted = highlight;
+            spec.scrollbar.highlighted = highlight as i16;
+        }
+        Ok(callbacks::Configuration { call: super::effects::DetachedCall::capture(&spec)?,
+                                      scrollbar,
+                                      validate: old.is_none_or(|old| {
+                                                       old.state.spec
+                                                       != Spec::from_call(&spec, scrollbar)
+                                                   }),
+                                      previous_title: old.and_then(|old| {
+                                                             old.state.title.clone()
+                                                         }) })
     }
 
     fn validate_spec(&self, owner: u64, call: &ControlCall, entry: DefinitionRef, gate: TrapGate)
@@ -889,222 +1080,53 @@ impl Manager
         let inherited_clip = self.inherited_clip(call.id);
         let layout_status = self.layout_status(call.id);
         let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
-        let mut next = object.state.clone();
-        let o = &mut next;
-        let previous = o.spec;
-        let previous_visible =
-            o.layout
-             .as_ref()
-             .and_then(Layout::clip)
-             .map_or(previous.bounds(), |clip| super::intersection(previous.bounds(), clip));
-        let mut action = false;
-        let mut handled = false;
-        let mut part = 0;
-        let mut visibility_changed = false;
-        match operation
+        let snapshot = callbacks::RequestSnapshot { call:
+                                                        super::effects::DetachedCall::capture(call)?,
+                                                    next: object.state.clone(),
+                                                    window: object.window,
+                                                    tree: object.tree,
+                                                    entry,
+                                                    inherited_clip,
+                                                    layout_status,
+                                                    admitted_title };
+        let author = super::effects::Author::trusted(gate);
+        let mut calculated = super::effects::immediate(snapshot.calculate(&author))?;
+        // Revalidate before any retained publication. Desktop excludes actual
+        // CTRL invalidation/removal; stop_admission alone does not invalidate.
+        self.get(call.id, owner)?;
+        let window = self.objects.get(call.id).ok_or(NOT_FOUND)?.window;
+        if let Some(drawing) = &mut calculated.drawing
         {
-            CREATE_STANDARD | CREATE_SCROLLBAR | INFO_OBJECT | DRAW_OBJECT => (),
-            REFLOW_OBJECT =>
-            {
-                let assigned_hidden = call.layout.message == mac_abi::controls::reflow::ASSIGN_RECT
-                                      && o.layout.as_ref().is_some_and(|l| l.hidden);
-                if assigned_hidden && let Some(l) = &mut o.layout
-                {
-                    l.hidden = false;
-                }
-                visibility_changed = o.reflow(&mut call.layout, entry, gate)? || assigned_hidden;
-            }
-            SET_TABLE_LINES_OBJECT =>
-            {
-                if call.standard.flags & !TABLE_LINE_FLAGS != 0
-                {
-                    return Err(BAD_ARGUMENT);
-                }
-                let Spec::Standard { state,
-                                     procedure: TABLE_PROCEDURE } = &mut o.spec
-                else
-                {
-                    return Err(NOT_SUPPORTED);
-                };
-                state.flags = call.standard.flags;
-            }
-            CONFIGURE_OBJECT =>
-            {
-                // New title backing was admitted before any state/capture mutation.
-                o.title = admitted_title;
-                let next = Spec::from_call(call, o.spec.scrollbar().is_some());
-                let cancel = o.spec.cancels_capture(next, o.tracking);
-                let highlight = if cancel { 0 } else { o.spec.highlight() };
-                o.spec = next;
-                if previous.bounds() != o.spec.bounds()
-                   && let Some(l) = &mut o.layout
-                {
-                    l.hidden = false;
-                }
-                if cancel
-                {
-                    o.tracking = None;
-                    o.scroll_axis = None;
-                    o.splitter = None;
-                    o.scroll_highlight = 0;
-                }
-                o.spec.set_highlight(highlight);
-                if previous != o.spec
-                   && let Some(layout) = &mut o.layout
-                {
-                    layout.measured = None;
-                    layout.intrinsic = None;
-                    layout.arrangement_pending = true;
-                }
-            }
-            BEGIN_TRACKING =>
-            {
-                if o.tracking.is_some()
-                {
-                    return Err(SERVICE_BUSY);
-                }
-                part = if inherited_clip.is_some_and(|clip| !clip.contains(call.point))
-                {
-                    0
-                }
-                else
-                {
-                    o.hit(call.point, entry, gate)?
-                };
-                if matches!(part,
-                            BUTTON_PART
-                            | CHECKBOX_PART
-                            | SCROLL_UP
-                            | SCROLL_DOWN
-                            | SCROLL_PAGE_UP
-                            | SCROLL_PAGE_DOWN
-                            | SCROLL_THUMB)
-                {
-                    handled = true;
-                    o.tracking =
-                        Some(Tracking::new(part,
-                                           call.point,
-                                           o.spec.scrollbar().map_or(0, |state| state.value),
-                                           call.ticks));
-                    o.highlight(part);
-                    if o.spec.scrollbar().is_some() && part != SCROLL_THUMB
-                    {
-                        action = o.spec.step(part);
-                    }
-                }
-            }
-            POLL_TRACKING =>
-            {
-                if let Some(tracking) = o.tracking
-                {
-                    handled = true;
-                    part = tracking.part;
-                    let transition = tracking.poll(call.point,
-                                                   call.flags & BUTTON_DOWN != 0,
-                                                   call.ticks,
-                                                   o.spec.scrollbar(),
-                                                   u32::from(o.layout.is_some()),
-                                                   entry,
-                                                   gate,
-                                                   |point| {
-                                                       if inherited_clip.is_some_and(|clip| {
-                                                                            !clip.contains(point)
-                                                                        })
-                                                       {
-                                                           Ok(0)
-                                                       }
-                                                       else
-                                                       {
-                                                           o.hit(point, entry, gate)
-                                                       }
-                                                   })?;
-                    action = match transition.action
-                    {
-                        Action::None => false,
-                        Action::Activate => true,
-                        Action::Step(part) => o.spec.step(part),
-                        Action::Value(value) => o.spec.set_value(value)
-                    };
-                    o.highlight(transition.highlight);
-                    o.tracking = transition.tracking;
-                }
-            }
-            CANCEL_TRACKING =>
-            {
-                handled = o.tracking.take().is_some();
-                o.highlight(0);
-            }
-            _ => return Err(NOT_SUPPORTED)
+            self.seal_managed_paint_origin(window, drawing)?;
         }
-        let changed = visibility_changed || !previous.appearance_matches(o.spec);
-        call.window = object.window;
-        call.relation = object.tree.relation();
-        o.spec.write(call);
-        call.reflow = u32::from(o.layout.is_some());
-        call.layout.anchors = o.layout.as_ref().map_or(0, |l| l.anchors.into());
-        call.layout.window_border =
-            o.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
-        call.layout.invalidation = o.layout.as_ref().map_or(0, Layout::pending);
-        call.layout.status = layout_status;
-        call.result = i32::from(part);
-        call.flags = (u32::from(o.tracking.is_some()) * TRACKING)
-                     | (u32::from(handled) * HANDLED)
-                     | (u32::from(action) * ACTION)
-                     | (u32::from(changed) * CHANGED);
-        let drawing = if changed || operation == DRAW_OBJECT
-        {
-            let mut state = o.spec.draw();
-            state.reflow = u32::from(o.layout.is_some());
-            let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
-            drawing.id = call.id;
-            drawing.grid = o.layout.as_ref().and_then(|l| l.outlines.clone());
-            Self::scroll_drawing(o, &mut drawing)?;
-            if changed
-               && operation == CONFIGURE_OBJECT
-               && let (Spec::Standard { state: before,
-                                        procedure: old },
-                       Spec::Standard { state: after,
-                                        procedure: new }) = (previous, o.spec)
-               && before.bounds == after.bounds
-               && old == new
-            {
-                drawing.change_from(before)?;
-            }
-            drawing.set_visible(tree::clip(o.layout.as_ref().and_then(Layout::clip),
-                                           inherited_clip));
-            if visibility_changed
-            {
-                drawing.damage = [previous_visible, drawing.visible_bounds()];
-            }
-            Some(publish(drawing)?)
-        }
-        else
-        {
-            None
-        };
+        let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
+        *call = calculated.call.wire();
+        let drawing = calculated.drawing.take().map(publish).transpose()?;
+        let mut next = calculated.next;
+        let previous = calculated.previous;
         // No fallible work after publication. A refusal above drops only staging.
-        let parent = object.tree.parent;
-        let changed_requirements =
-            object.state.layout.as_ref().map(|v| {
-                                            (v.sizing.requirements(),
-                                             v.measured.is_none(),
-                                             v.anchors)
-                                        })
-            != next.layout
-                   .as_ref()
-                   .map(|v| (v.sizing.requirements(), v.measured.is_none(), v.anchors));
-        let changed_geometry = object.state.spec.bounds() != next.spec.bounds();
-        let newly_pending = next.layout.as_ref().is_some_and(|l| l.arrangement_pending)
-                            && object.state.layout.as_ref().is_some_and(|l| !l.arrangement_pending);
-        if changed_geometry && let Some(l) = &mut next.layout
-        {
-            l.window_extent = None;
-        }
-        let released_capture = object.state.tracking.is_some() && next.tracking.is_none();
-        let configured = operation == CONFIGURE_OBJECT && previous != next.spec;
-        let retired_binding =
-            replacement.take().map(|next| core::mem::replace(&mut object.definition, next));
-        object.state = next;
+        let effects = callbacks::CommitEffects::apply(object,
+                                                      &mut next,
+                                                      previous,
+                                                      operation,
+                                                      replacement.take());
+        drop(next);
+        let retired_binding = self.apply_request_effects(call, effects);
+        drop(retired_binding);
+        Ok(drawing)
+    }
+
+    fn apply_request_effects(&mut self, call: &ControlCall, effects: callbacks::CommitEffects)
+                             -> Option<BoundDefinition>
+    {
+        let callbacks::CommitEffects { parent,
+                                       changed_requirements,
+                                       changed_geometry,
+                                       newly_pending,
+                                       configured,
+                                       released_capture,
+                                       retired_binding } = effects;
+        let operation = call.operation;
         if changed_requirements
         {
             self.invalidate_ancestors(parent);
@@ -1127,46 +1149,72 @@ impl Manager
             self.wake_capture(call.id);
         }
         self.layout_committed(call.id);
-        drop(retired_binding);
-        Ok(drawing)
+        retired_binding
     }
 }
 impl Object
 {
     fn new(window: u64, recipient: u64, spec: Spec, title: Option<Arc<super::snapshot::Title>>,
-           definition: BoundDefinition, reflow: u32, order: u64, recovery: bool)
-           -> Result<Self, Status>
+           definition: BoundDefinition, reflow: u32, order: u64, recovery: bool,
+           notice: Arc<crate::toolbox::resources::definitions::callbacks::Notice>,
+           storage: &OwnerRef, cleanup: Option<disposal::ControlCleanup>)
+           -> Result<(Self, Option<Arc<disposal::DisposalSlot>>), Status>
     {
         #[cfg(not(target_arch = "riscv64"))]
         let _ = recovery;
-        Ok(Self { window,
-                  recipient,
-                  definition,
-                  tree: tree::Node::new(order),
-                  automatic: automatic::Automatic::default(),
-                  state: State { spec,
-                                 title,
-                                 tracking: None,
-                                 splitter: None,
-                                 scroll_axis: None,
-                                 scroll_highlight: 0,
-                                 layout: if reflow == 1
-                                 {
-                                     Some(Layout::new(spec.bounds())?)
-                                 }
-                                 else
-                                 {
-                                     None
-                                 } },
-                  #[cfg(target_arch = "riscv64")]
-                  _recovery_activity: if recovery
-                  {
-                      crate::context::recovery_activity()
-                  }
-                  else
-                  {
-                      None
-                  } })
+        let (disposal, slot) = if let Some(cleanup) = cleanup
+        {
+            if !cleanup.matches(storage, definition.reference())
+            {
+                return Err(ACCESS_DENIED);
+            }
+            let (cell, slot) = cleanup.into_parts();
+            (Some(cell), Some(slot))
+        }
+        else if definition.is_process_source()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        else if !recovery
+        {
+            let (cell, slot) = disposal::ControlDisposal::new(notice, storage)?;
+            (Some(cell), Some(slot))
+        }
+        else
+        {
+            (None, None)
+        };
+        Ok((Self { claim: None,
+                   disposal,
+                   window,
+                   recipient,
+                   definition,
+                   tree: tree::Node::new(order),
+                   automatic: automatic::Automatic::default(),
+                   state: State { spec,
+                                  title,
+                                  tracking: None,
+                                  splitter: None,
+                                  scroll_axis: None,
+                                  scroll_highlight: 0,
+                                  layout: if reflow == 1
+                                  {
+                                      Some(Layout::new(spec.bounds())?)
+                                  }
+                                  else
+                                  {
+                                      None
+                                  } },
+                   #[cfg(target_arch = "riscv64")]
+                   _recovery_activity: if recovery
+                   {
+                       crate::context::recovery_activity()
+                   }
+                   else
+                   {
+                       None
+                   } },
+            slot))
     }
 }
 impl State
@@ -1176,23 +1224,26 @@ impl State
         self.spec.set_highlight(part as u32);
     }
 
-    fn hit(&self, point: Point, entry: DefinitionRef, gate: TrapGate) -> Result<i16, Status>
+    async fn hit_with(&self, point: Point, entry: DefinitionRef, author: &super::effects::Author)
+                      -> Result<i16, Status>
     {
-        let mut call = self.spec.call(if self.spec.scrollbar().is_some()
-                                      {
-                                          HIT_SCROLLBAR
-                                      }
-                                      else
-                                      {
-                                          HIT_STANDARD
-                                      });
+        let mut call = super::effects::DetachedCall::capture(&self.spec.call(if self.spec
+                                                                                    .scrollbar()
+                                                                                    .is_some()
+                                                                             {
+                                                                                 HIT_SCROLLBAR
+                                                                             }
+                                                                             else
+                                                                             {
+                                                                                 HIT_STANDARD
+                                                                             }))?;
         if self.layout.as_ref().and_then(Layout::clip).is_some_and(|clip| !clip.contains(point))
         {
             return Ok(0);
         }
         call.reflow = u32::from(self.layout.is_some());
         call.point = point;
-        super::prepare(&mut call, entry, gate)?;
+        let (call, _) = author.prepare(call, entry, None).await?;
         Ok(call.result as i16)
     }
 }
@@ -1223,3 +1274,13 @@ mod automatic;
 mod scrolling;
 
 mod splitter;
+
+mod disposal;
+pub(crate) use disposal::{ControlCleanup, ControlDisposal, DisposalObserver};
+mod callbacks;
+pub(crate) use automatic::{AutomaticBatchLease, Root as AutomaticRoot};
+pub(crate) use callbacks::{ControlLayout, ControlProgress, ControlWork, LayoutProgress,
+                           ManagedPaintClaim, ManagedPaintOrigin, PreparedControlOperation,
+                           PreparedWindowLayout};
+
+mod hit;

@@ -8,6 +8,10 @@ use mac_abi::{controls::*,
               scrollbox::{BUTTON_DOWN, CHANGED, TRACKING, *},
               *};
 
+mod paint;
+pub(crate) mod callbacks;
+pub(crate) use paint::{ScrollBoxPaintClaim, ScrollBoxPaintOrigin, ScrollBoxPaintSnapshot};
+
 use super::tracking::{Action, Tracking};
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      quickdraw::{Canvas, fonts::FontManager, fonts_service},
@@ -32,16 +36,22 @@ impl Raster
         self.width * self.height
     }
 }
+#[derive(Clone)]
+struct Viewport
+{
+    spec:      Spec,
+    top:       u32,
+    raster:    Arc<Raster>,
+    tracking:  Option<Tracking>,
+    highlight: i16
+}
 struct Object
 {
     window:           u64,
     recipient:        u64,
+    recipient_owner:  mac_object_table::domain::DomainId,
     recovery:         bool,
-    spec:             Spec,
-    top:              u32,
-    raster:           Arc<Raster>,
-    tracking:         Option<Tracking>,
-    highlight:        i16,
+    view:             Viewport,
     // Retain executable source through all control payload destruction; the
     // recovery Activity below remains the final modal-session acknowledgment.
     definition:       BoundDefinition,
@@ -103,7 +113,7 @@ impl<C: ScrollBoxHost> mac_object_table::registry::Release<C> for ReleaseScrollB
     {
         let manager = context.managed_scroll_boxes();
         let object = manager.objects.release(ticket)?;
-        manager.raster_bytes -= object.raster.pixels() * 8;
+        manager.raster_bytes -= object.view.raster.pixels() * 8;
         drop(object);
         Ok(())
     }
@@ -129,6 +139,7 @@ impl Manager
 pub struct Drawing
 {
     pub id:           u64,
+    origin:           ScrollBoxPaintOrigin,
     bounds:           Rect,
     raster:           Arc<Raster>,
     bar:              super::Drawing,
@@ -136,6 +147,26 @@ pub struct Drawing
     // this original Session pin wakes closing cleanup.
     #[cfg(target_arch = "riscv64")]
     _recovery_origin: Option<crate::recovery::ScrollBoxOrigin>
+}
+pub(crate) struct PaintCursor
+{
+    raster_done: bool,
+    bar:         super::paint::Cursor
+}
+impl Default for PaintCursor
+{
+    fn default() -> Self
+    {
+        Self { raster_done: false,
+               bar:         super::paint::Cursor::default() }
+    }
+}
+impl PaintCursor
+{
+    pub(crate) fn advance_user(&mut self, resume: super::paint::Resume) -> Result<(), Status>
+    {
+        self.bar.advance_user(resume)
+    }
 }
 impl Drawing
 {
@@ -151,10 +182,52 @@ impl Drawing
 
     pub fn storage(&self) -> usize
     {
-        self.raster.pixels() * 4 + self.raster.valid.capacity() + self.bar.storage()
+        // This is retained-scene admission, distinct from physical allocation
+        // receipts and raster quota. bar.storage already counts its header.
+        (core::mem::size_of::<Self>() - core::mem::size_of::<super::Drawing>())
+        + self.raster.pixels() * 4
+        + self.raster.valid.capacity()
+        + self.bar.storage()
+    }
+
+    pub(crate) fn has_user_sources(&self) -> bool
+    {
+        self.bar.has_user_sources()
     }
 
     pub fn paint(&self, canvas: &mut Canvas<'_>) -> Result<(), Status>
+    {
+        match self.paint_step_mode(&mut PaintCursor::default(), canvas, false)?
+        {
+            super::paint::Progress::Complete => Ok(()),
+            super::paint::Progress::User(_) => Err(SERVICE_BUSY)
+        }
+    }
+
+    pub(crate) fn paint_step(&self, cursor: &mut PaintCursor, canvas: &mut Canvas<'_>)
+                             -> Result<super::paint::Progress, Status>
+    {
+        self.paint_step_mode(cursor, canvas, true)
+    }
+
+    pub(crate) fn paint_step_mode(&self, cursor: &mut PaintCursor, canvas: &mut Canvas<'_>,
+                                  staged: bool)
+                                  -> Result<super::paint::Progress, Status>
+    {
+        if !cursor.raster_done
+        {
+            self.paint_raster(canvas);
+            cursor.raster_done = true;
+        }
+        let mut progress = super::paint::run(&self.bar, &mut cursor.bar, canvas, staged)?;
+        if let super::paint::Progress::User(plan) = &mut progress
+        {
+            plan.scroll_box_subject(&mut cursor.bar, self)?;
+        }
+        Ok(progress)
+    }
+
+    fn paint_raster(&self, canvas: &mut Canvas<'_>)
     {
         let o = canvas.origin();
         let c = canvas.clip();
@@ -186,7 +259,6 @@ impl Drawing
                 }
             }
         }
-        self.bar.paint_clipped(canvas)
     }
 }
 fn dimensions(spec: Spec) -> Result<(usize, usize, usize), Status>
@@ -226,7 +298,7 @@ fn raster(spec: Spec) -> Result<Arc<Raster>, Status>
                           rows,
                           valid }).map_err(|_| NO_MEMORY)
 }
-fn writable(object: &mut Object) -> Result<&mut Raster, Status>
+fn writable(object: &mut Viewport) -> Result<&mut Raster, Status>
 {
     if Arc::get_mut(&mut object.raster).is_none()
     {
@@ -266,7 +338,7 @@ fn row_pixels(raster: &mut Raster, index: usize) -> Result<&mut [u32], Status>
 /// Prepare an immutable-row replacement before publishing a new scroll-box
 /// snapshot. Resident compound views use this same primitive for icons + text;
 /// the borrowed drawing closure cannot retain the canvas or call an app.
-fn paint_row(object: &mut Object, row: u32,
+fn paint_row(object: &mut Viewport, row: u32,
              draw: impl FnOnce(&mut Canvas<'_>) -> Result<(), Status>)
              -> Result<(), Status>
 {
@@ -287,7 +359,7 @@ fn paint_row(object: &mut Object, row: u32,
     Ok(())
 }
 
-impl Object
+impl Viewport
 {
     fn rows(&self) -> u32
     {
@@ -435,7 +507,7 @@ impl Manager
                                draw: impl FnOnce(&mut Canvas<'_>) -> Result<(), Status>)
                                -> Result<(), Status>
     {
-        paint_row(self.get_mut_live(id, owner)?, row, draw)
+        paint_row(&mut self.get_mut_live(id, owner)?.view, row, draw)
     }
 
     /// Retain the viewport allowance derived from the admitted recovery UI.
@@ -464,12 +536,12 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         let object = self.get_mut(call.id, owner)?;
-        object.tracking = None;
-        let changed = core::mem::replace(&mut object.highlight, 0) != 0;
+        object.view.tracking = None;
+        let changed = core::mem::replace(&mut object.view.highlight, 0) != 0;
         call.window = object.window;
-        call.spec = object.spec;
-        call.top = object.top;
-        let missing = object.missing();
+        call.spec = object.view.spec;
+        call.top = object.view.top;
+        let missing = object.view.missing();
         call.first = missing.start;
         call.end = missing.end;
         call.part = 0;
@@ -490,7 +562,7 @@ impl Manager
         let bytes = &mut self.raster_bytes;
         self.objects.remove_where_with(|_, object| object.window == window,
                                        |object| {
-                                           *bytes -= object.raster.pixels() * 8;
+                                           *bytes -= object.view.raster.pixels() * 8;
                                            drop(object);
                                        });
     }
@@ -652,7 +724,7 @@ impl Manager
             let (w, h, _) = dimensions(call.spec)?;
             let previous = if call.operation == CONFIGURE
             {
-                self.get(call.id, owner)?.raster.pixels() * 8
+                self.get(call.id, owner)?.view.raster.pixels() * 8
             }
             else
             {
@@ -689,13 +761,14 @@ impl Manager
                 let data = raster(call.spec)?;
                 let object = Object { window: call.window,
                                       recipient: owner,
+                                      recipient_owner: recipient.owner(),
                                       recovery,
-                                      spec: call.spec,
+                                      view: Viewport { spec:      call.spec,
+                                                       top:       0,
+                                                       raster:    data,
+                                                       tracking:  None,
+                                                       highlight: 0 },
                                       definition: binding,
-                                      top: 0,
-                                      raster: data,
-                                      tracking: None,
-                                      highlight: 0,
                                       #[cfg(target_arch = "riscv64")]
                                       _recovery_origin: creation_origin.clone() };
                 #[cfg(target_arch = "riscv64")]
@@ -723,25 +796,25 @@ impl Manager
             else
             {
                 let object = self.get_mut(call.id, owner)?;
-                if object.spec != call.spec
+                if object.view.spec != call.spec
                 {
-                    let mut same_layout = object.spec;
+                    let mut same_layout = object.view.spec;
                     same_layout.count = call.spec.count;
                     if same_layout != call.spec
                     {
-                        object.raster = raster(call.spec)?;
+                        object.view.raster = raster(call.spec)?;
                     }
                     else
                     {
                         // Admit the row-table COW before publishing count/top.
                         // A refusal leaves the previous scroll range intact.
-                        writable(object)?;
+                        writable(&mut object.view)?;
                     }
-                    object.spec = call.spec;
-                    object.scroll(object.top.min(object.maximum()))?;
-                    let top = object.top;
-                    let count = object.spec.count;
-                    let data = writable(object)?;
+                    object.view.spec = call.spec;
+                    object.view.scroll(object.view.top.min(object.view.maximum()))?;
+                    let top = object.view.top;
+                    let count = object.view.spec.count;
+                    let data = writable(&mut object.view)?;
                     for (index, (row, valid)) in
                         data.rows.iter_mut().zip(&mut data.valid).enumerate()
                     {
@@ -751,8 +824,8 @@ impl Manager
                             *valid = false;
                         }
                     }
-                    object.tracking = None;
-                    object.highlight = 0;
+                    object.view.tracking = None;
+                    object.view.highlight = 0;
                     self.raster_bytes = used - previous + w * h * 8;
                 }
             }
@@ -762,42 +835,50 @@ impl Manager
             self.get(call.id, owner)?;
             if let Some(object) = self.objects.remove(call.id)
             {
-                self.raster_bytes -= object.raster.pixels() * 8;
+                self.raster_bytes -= object.view.raster.pixels() * 8;
             }
             return Ok(None);
         }
+        let paint_key = if call.operation == DRAW
+        {
+            Some(self.objects.completion_key(call.id).ok_or(NOT_FOUND)?)
+        }
+        else
+        {
+            None
+        };
         let object = self.get_mut(call.id, owner)?;
-        let old_top = object.top;
-        let old_highlight = object.highlight;
+        let old_top = object.view.top;
+        let old_highlight = object.view.highlight;
         match call.operation
         {
             CREATE | CONFIGURE | INFO => (),
             ROW_AT =>
             {
                 call.row = u32::MAX;
-                if object.spec.viewport.contains(call.point)
+                if object.view.spec.viewport.contains(call.point)
                 {
-                    let row = ((i32::from(call.point.v) - i32::from(object.spec.viewport.top))
-                               / i32::from(object.spec.row_height))
+                    let row = ((i32::from(call.point.v) - i32::from(object.view.spec.viewport.top))
+                               / i32::from(object.view.spec.row_height))
                               as u32;
-                    if row < object.rows() && object.top + row < object.spec.count
+                    if row < object.view.rows() && object.view.top + row < object.view.spec.count
                     {
-                        call.row = object.top + row;
+                        call.row = object.view.top + row;
                     }
                 }
             }
             INVALIDATE =>
             {
-                let data = writable(object)?;
+                let data = writable(&mut object.view)?;
                 data.rows.fill(None);
                 data.valid.fill(false);
             }
-            SCROLL_TO => object.scroll(call.top)?,
+            SCROLL_TO => object.view.scroll(call.top)?,
             SET_ROW =>
             {
-                let spec = object.spec;
+                let spec = object.view.spec;
                 let selected = call.flags & SELECTED != 0;
-                paint_row(object, call.row, |canvas| {
+                paint_row(&mut object.view, call.row, |canvas| {
                     if selected
                     {
                         canvas.paint_rect(Rect::new(1,
@@ -817,12 +898,12 @@ impl Manager
             }
             TRACK_BEGIN =>
             {
-                if object.tracking.is_some()
+                if object.view.tracking.is_some()
                 {
                     return Err(SERVICE_BUSY);
                 }
                 let mut c = ControlCall { operation: HIT_SCROLLBAR,
-                                          scrollbar: object.state(),
+                                          scrollbar: object.view.state(),
                                           point: call.point,
                                           ..Default::default() };
                 super::prepare(&mut c, entry, gate)?;
@@ -837,18 +918,18 @@ impl Manager
                 {
                     if part != SCROLL_THUMB
                     {
-                        step(object, part)?;
+                        step(&mut object.view, part)?;
                     }
-                    object.tracking =
+                    object.view.tracking =
                         Some(Tracking::new(part, call.point, c.scrollbar.value, call.ticks));
-                    object.highlight = part;
+                    object.view.highlight = part;
                 }
             }
             TRACK_POLL =>
             {
-                if let Some(tracking) = object.tracking
+                if let Some(tracking) = object.view.tracking
                 {
-                    let state = object.state();
+                    let state = object.view.state();
                     let transition =
                         tracking.poll(call.point,
                                       call.flags & BUTTON_DOWN != 0,
@@ -865,43 +946,21 @@ impl Manager
                                           super::prepare(&mut hit, entry, gate)?;
                                           Ok(hit.result as i16)
                                       })?;
-                    match transition.action
-                    {
-                        Action::None => (),
-                        Action::Step(part) => step(object, part)?,
-                        Action::Value(value) =>
-                        {
-                            let maximum = object.maximum();
-                            let scale = maximum.min(i16::MAX as u32);
-                            let top = if scale == 0
-                            {
-                                0
-                            }
-                            else
-                            {
-                                ((value.max(0) as u64 * u64::from(maximum) + u64::from(scale) / 2)
-                                 / u64::from(scale)).min(u64::from(maximum))
-                                as u32
-                            };
-                            object.scroll(top)?;
-                        }
-                        Action::Activate => return Err(BAD_ABI)
-                    }
-                    object.highlight = transition.highlight;
-                    object.tracking = transition.tracking;
+                    apply_transition(&mut object.view, transition)?;
                 }
             }
             DRAW => (),
             _ => return Err(NOT_SUPPORTED)
         }
         call.window = object.window;
-        call.spec = object.spec;
-        call.top = object.top;
-        let missing = object.missing();
+        call.spec = object.view.spec;
+        call.top = object.view.top;
+        let missing = object.view.missing();
         call.first = missing.start;
         call.end = missing.end;
-        call.flags = (u32::from(object.tracking.is_some()) * TRACKING)
-                     | (u32::from(object.top != old_top || object.highlight != old_highlight)
+        call.flags = (u32::from(object.view.tracking.is_some()) * TRACKING)
+                     | (u32::from(object.view.top != old_top
+                                  || object.view.highlight != old_highlight)
                         * CHANGED);
         if call.operation == DRAW
         {
@@ -910,12 +969,18 @@ impl Manager
                 return Err(SERVICE_BUSY);
             }
             let mut c = ControlCall { operation: DRAW_SCROLLBAR,
-                                      scrollbar: object.state(),
+                                      scrollbar: object.view.state(),
                                       ..Default::default() };
             let bar = super::prepare(&mut c, entry, gate)?.ok_or(BAD_ARGUMENT)?;
+            if !bar.source.matches(&object.definition)
+            {
+                return Err(BAD_ABI);
+            }
+            let origin = ScrollBoxPaintOrigin::publication(paint_key.ok_or(BAD_ABI)?, object);
             return Ok(Some(Drawing { id: call.id,
-                                     bounds: object.spec.viewport,
-                                     raster: object.raster.clone(),
+                                     origin,
+                                     bounds: object.view.spec.viewport,
+                                     raster: object.view.raster.clone(),
                                      bar,
                                      #[cfg(target_arch = "riscv64")]
                                      _recovery_origin: object._recovery_origin.clone() }));
@@ -923,7 +988,36 @@ impl Manager
         Ok(None)
     }
 }
-fn step(object: &mut Object, part: i16) -> Result<(), Status>
+fn apply_transition(view: &mut Viewport, transition: super::tracking::Transition)
+                    -> Result<(), Status>
+{
+    match transition.action
+    {
+        Action::None => (),
+        Action::Step(part) => step(view, part)?,
+        Action::Value(value) =>
+        {
+            let maximum = view.maximum();
+            let scale = maximum.min(i16::MAX as u32);
+            let top = if scale == 0
+            {
+                0
+            }
+            else
+            {
+                ((value.max(0) as u64 * u64::from(maximum) + u64::from(scale) / 2)
+                 / u64::from(scale)).min(u64::from(maximum)) as u32
+            };
+            view.scroll(top)?;
+        }
+        Action::Activate => return Err(BAD_ABI)
+    }
+    view.highlight = transition.highlight;
+    view.tracking = transition.tracking;
+    Ok(())
+}
+
+fn step(object: &mut Viewport, part: i16) -> Result<(), Status>
 {
     let delta = match part
     {

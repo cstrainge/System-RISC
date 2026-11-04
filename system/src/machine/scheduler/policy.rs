@@ -11,7 +11,7 @@ use spinning_top::Spinlock;
 
 // The quantum and late-return allowance are independently checked platform
 // choices. Neither is a latency guarantee or recovery from a nonreturning call.
-use super::{CALLBACK_BUDGET_MICROSECONDS, QUANTUM_MICROSECONDS};
+use super::{CALLBACK_BUDGET_MICROSECONDS, MAXIMUM_ACTIVE_HARTS, QUANTUM_MICROSECONDS};
 use super::{IDLE, SCHEDULER, Scheduler, validate_capture};
 use crate::{machine::traps::{OuterCapture,
                              execution::{HartBinding, HartKey}},
@@ -27,12 +27,20 @@ pub(crate) fn limits() -> Result<control::Limits, Status>
     {
         return Err(BAD_ABI);
     }
-    let physical_harts = cpus.len().try_into().map_err(|_| NOT_SUPPORTED)?;
+    let physical_harts: u32 = cpus.len().try_into().map_err(|_| NOT_SUPPORTED)?;
+    let maximum_active_harts = MAXIMUM_ACTIVE_HARTS.min(physical_harts);
     let result =
         control::Limits { features: control::TAKEOVER
-                                    | if cpus.len() > 1 { control::MULTI_HART } else { 0 },
+                                    | if maximum_active_harts > 1
+                                    {
+                                        control::MULTI_HART
+                                    }
+                                    else
+                                    {
+                                        0
+                                    },
                           maximum_candidates: wire::MAX_CANDIDATES as u32,
-                          maximum_active_harts: physical_harts,
+                          maximum_active_harts,
                           minimum_quantum_microseconds: QUANTUM_MICROSECONDS,
                           maximum_quantum_microseconds: QUANTUM_MICROSECONDS,
                           callback_budget_microseconds: CALLBACK_BUDGET_MICROSECONDS,

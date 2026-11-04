@@ -104,9 +104,12 @@ fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], image
                               .ok_or(Error::Missing("application ABI resource is missing"))?;
     let descriptor = Descriptor::decode(&descriptor.data)?;
     if descriptor.role != Role::Application
+       || descriptor.load_base != crate::machine::memory::VM_APPLICATION_IMAGE_BASE
        || !application_region(descriptor.load_base, descriptor.load_limit)
+       || !descriptor.load_limit.is_multiple_of(crate::machine::memory::PAGE_BYTES)
     {
-        return Err(Error::Malformed("application reservation overlaps resident images"));
+        return Err(Error::Malformed("application link layout is incompatible; rebuild with the \
+                                     current SDK"));
     }
     let code = resources.iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
@@ -274,6 +277,32 @@ fn select_definition(kind: [u8; 4], id: i16) -> LoadResult<SelectedDefinition>
         };
         Ok(SelectedDefinition::Source { origin, source })
     }).map_err(|_| Error::Missing("selected definition catalog unavailable"))?
+}
+
+/// Classification from genuine CHAIN provenance only. It performs no code
+/// publication or manager operation, so trusted definitions retain their fast
+/// path before the user callback dispatcher elects to handle a request.
+pub(crate) fn process_definition(kind: [u8; 4], id: i16) -> LoadResult<bool>
+{
+    family(kind, id)?;
+    if crate::context::recovery_activity().is_some()
+    {
+        return Ok(false);
+    }
+    match select_definition(kind, id)?
+    {
+        SelectedDefinition::Ready(reference) =>
+        {
+            definitions::is_user(reference).map_err(|cause| {
+                                               definitions::Error::OwnerUnavailable(cause).into()
+                                           })
+        }
+        SelectedDefinition::Source { source,
+                                     .. } =>
+        {
+            Ok(source.owner().owner().kind() == mac_object_table::domain::DomainKind::Process)
+        }
+    }
 }
 fn prepare_selected(selected: SelectedDefinition, kind: [u8; 4], id: i16)
                     -> LoadResult<DefinitionRef>

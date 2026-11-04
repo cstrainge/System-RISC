@@ -3,8 +3,10 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ops::{Deref, DerefMut, Range};
 
+mod paint;
 use mac_abi::{BAD_ARGUMENT, DrawCommand, Status, WindowId,
               geometry::{Point, Rect}};
+pub(crate) use paint::{ContentCursor, ContentProgress, ContentResume};
 
 use super::{Canvas,
             fonts::FontManager,
@@ -804,6 +806,69 @@ impl Content
         self.commands.try_push(command)
     }
 
+    /// Admit one retained control before taking its original staging owner.
+    /// Refusal keeps the SAME drawing; replacement returns its old command so
+    /// a suspended manager can destroy that reader outside Desktop.
+    pub(crate) fn replace_control(&mut self,
+                                  drawing: &mut Option<crate::toolbox::controls::Drawing>)
+                                  -> Result<Option<RenderCommand>, Status>
+    {
+        let id = drawing.as_ref().ok_or(mac_abi::BAD_ARGUMENT)?.id;
+        if let Some(command) =
+            self.iter_commands_mut()
+                .find(|command| matches!(command, RenderCommand::Control(old) if old.id == id))
+        {
+            let next = drawing.take().ok_or(mac_abi::BAD_ARGUMENT)?;
+            return Ok(Some(core::mem::replace(command, RenderCommand::Control(next))));
+        }
+        if self.has_report_commands() && !self.commands.is_report()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        self.commands.admit_additional(1)?;
+        let next = drawing.take().ok_or(mac_abi::BAD_ARGUMENT)?;
+        self.commands.values.push(RenderCommand::Control(next));
+        Ok(None)
+    }
+
+    /// SAME owned publication for SBOX drawings. No CTRL identity is inferred.
+    /// Refusal leaves the original validated drawing with its continuation.
+    pub(crate) fn replace_scroll_box(&mut self,
+                                     drawing: &mut Option<crate::toolbox::controls::scrollbox::Drawing>,
+                                     used: usize, limit: usize)
+                                     -> Result<Option<RenderCommand>, Status>
+    {
+        let next = drawing.as_ref().ok_or(mac_abi::BAD_ARGUMENT)?;
+        let id = next.id;
+        let size = next.storage();
+        if let Some(command) =
+            self.iter_commands_mut()
+                .find(|command| matches!(command, RenderCommand::ScrollBox(old) if old.id == id))
+        {
+            let total = used.checked_sub(command.storage())
+                            .and_then(|used| used.checked_add(size))
+                            .ok_or(mac_abi::NO_MEMORY)?;
+            if total > limit
+            {
+                return Err(mac_abi::NO_MEMORY);
+            }
+            let next = drawing.take().ok_or(mac_abi::BAD_ARGUMENT)?;
+            return Ok(Some(core::mem::replace(command, RenderCommand::ScrollBox(next))));
+        }
+        if self.has_report_commands() && !self.commands.is_report()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        if used.checked_add(size).ok_or(mac_abi::NO_MEMORY)? > limit || self.commands.len() >= 512
+        {
+            return Err(mac_abi::NO_MEMORY);
+        }
+        self.commands.admit_additional(1)?;
+        let next = drawing.take().ok_or(mac_abi::BAD_ARGUMENT)?;
+        self.commands.values.push(RenderCommand::ScrollBox(next));
+        Ok(None)
+    }
+
     /// Replace a prepared control batch after admitting its complete growth.
     /// The carrier keeps the original Core/Report backing and cannot allocate
     /// after the first live command is removed.
@@ -832,6 +897,46 @@ impl Content
                     true
                 }
             });
+        for drawing in drawings.drain(..)
+        {
+            self.commands.values.push(RenderCommand::Control(drawing));
+        }
+        Ok(())
+    }
+
+    /// Move the actual old commands into the caller's admitted carrier. Refusal
+    /// precedes any removal; no backed Vec or command is cloned/substituted.
+    pub(crate) fn replace_controls_staged(&mut self,
+                                          drawings: &mut Vec<crate::toolbox::controls::Drawing>,
+                                          retired: &mut Vec<RenderCommand>,
+                                          mut removed: impl FnMut(&crate::toolbox::controls::Drawing))
+                                          -> Result<(), Status>
+    {
+        if self.has_report_commands() && !self.commands.is_report()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        let matches = |command: &RenderCommand| matches!(command, RenderCommand::Control(old) if drawings.iter().any(|new| new.id == old.id));
+        let count = self.iter_commands().filter(|command| matches(command)).count();
+        let primary = self.commands.iter().filter(|command| matches(command)).count();
+        retired.try_reserve(count).map_err(|_| mac_abi::NO_MEMORY)?;
+        self.commands.admit_additional(drawings.len().saturating_sub(primary))?;
+        // Extract preserves each original remaining command order and backing;
+        // the real removed owners survive in the outer affine carrier.
+        for commands in self.fragments
+                            .iter_mut()
+                            .map(|fragment| &mut fragment.commands)
+                            .chain(core::iter::once(&mut self.commands))
+        {
+            for command in commands.values.extract_if(.., |command| matches(command))
+            {
+                if let RenderCommand::Control(drawing) = &command
+                {
+                    removed(drawing);
+                }
+                retired.push(command);
+            }
+        }
         for drawing in drawings.drain(..)
         {
             self.commands.values.push(RenderCommand::Control(drawing));
@@ -1099,25 +1204,14 @@ impl Content
                  mut legacy: impl FnMut(&mut Canvas, &DrawCommand))
                  -> Result<(), Status>
     {
-        for fragment in &self.fragments
+        match self.paint_step_mode(&mut ContentCursor::default(),
+                                   canvas,
+                                   fonts,
+                                   &mut legacy,
+                                   false)?
         {
-            let mut result = Ok(());
-            service::with_region_clip(canvas, &fragment.clip, |canvas| {
-                for command in fragment.commands.iter()
-                {
-                    if result.is_err()
-                    {
-                        break;
-                    }
-                    result = command.paint(canvas, fonts, &mut legacy);
-                }
-            });
-            result?;
+            ContentProgress::Complete => Ok(()),
+            ContentProgress::User(_) => Err(mac_abi::SERVICE_BUSY)
         }
-        for command in self.commands.iter()
-        {
-            command.paint(canvas, fonts, &mut legacy)?;
-        }
-        Ok(())
     }
 }

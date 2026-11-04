@@ -83,10 +83,8 @@ unsafe extern "C" fn start(data: *mut u8)
     let init = unsafe { Box::from_raw(data.cast::<ThreadInit>()) };
     let run = init.init();
     run();
-    // This must run on the actual child before its native completion receipt.
-    unsafe {
-        runtime::__system_risc_tls_teardown_v1();
-    }
+    // The admitted user thread-return entry tears TLS down exactly once before
+    // issuing the canonical native completion request.
 }
 
 pub fn current_os_id() -> Option<u64>

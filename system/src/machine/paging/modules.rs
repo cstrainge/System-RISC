@@ -1,7 +1,7 @@
-//! Real executable payload backing and the owning supervisor PTE transaction.
-//! Each permanent root retains its own validated branch path. Application and
-//! module payloads are charged to their original Kernel account; no user-mode
-//! mapping or private application address space is implied.
+//! Real executable backing and the single owning native PTE transaction.
+//! Trusted modules/definitions publish Supervisor leaves; applications and
+//! Process definitions publish User leaves only in their owning Process root.
+//! Every payload keeps its original physical owner and Kernel receipt.
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{alloc::Layout,
            fmt,
@@ -99,7 +99,13 @@ pub(crate) enum Error
     Process(super::process::Error),
     Owner,
     Closed,
+    DefinitionRetirement
+    {
+        owner: mac_object_table::domain::DomainId,
+        drain: crate::toolbox::resources::definitions::Drain
+    },
     State,
+    UserMapping(CleanupCause),
     Metadata,
     Workspace(WorkspaceError),
     Extent
@@ -137,6 +143,8 @@ impl Error
         match self
         {
             Self::Process(e) => e.status(),
+            Self::UserMapping(_) => BAD_ABI,
+            Self::DefinitionRetirement { .. } => mac_abi::SERVICE_BUSY,
             Self::Metadata => NO_MEMORY,
             Self::Workspace(cause) => cause.status(),
             Self::Account(cause) => crate::allocation::account_status(cause),
@@ -165,6 +173,7 @@ impl fmt::Display for Error
         match self
         {
             Self::Process(e) => e.fmt(out),
+            Self::UserMapping(cause) => cause.fmt(out),
             Self::Workspace(cause) => cause.fmt(out),
             Self::Missing =>
             {
@@ -177,6 +186,13 @@ impl fmt::Display for Error
             Self::Closed =>
             {
                 out.write_str("image owner stopped before executable mapping publication")
+            }
+            Self::DefinitionRetirement { owner,
+                                         drain } =>
+            {
+                write!(out,
+                       "definition mapping retirement for {owner} refused: {drain:?}; original \
+                        mapping/source/ticket retained")
             }
             Self::State =>
             {
@@ -318,7 +334,8 @@ impl fmt::Display for CleanupCause
             {
                 write!(out, "executable image {base:#x} has an uncertain owning transition")
             }
-            Self::Workspace { base, cause } => write!(out, "executable image {base:#x}: {cause}"),
+            Self::Workspace { base,
+                              cause } => write!(out, "executable image {base:#x}: {cause}"),
             Self::Monitor { base,
                             stage,
                             cause } =>
@@ -387,17 +404,19 @@ impl PayloadBacking
     }
 }
 /// Only genuine source authority can choose the corresponding physical receipt.
-pub(crate) enum DefinitionTarget
+pub(crate) enum DefinitionTarget<'a>
 {
     System(crate::kernel::SystemResources),
-    Owner(AccountUse<NativeInvocationGate>)
+    Owner(AccountUse<NativeInvocationGate>),
+    Process(&'a crate::images::Read)
 }
 #[derive(Clone, Copy)]
 enum TargetKind
 {
     Application,
     Module,
-    Definition
+    Definition,
+    UserDefinition
 }
 #[derive(Clone, Copy)]
 enum PayloadAuthority<'a>
@@ -405,7 +424,7 @@ enum PayloadAuthority<'a>
     Owner(&'a AccountUse<NativeInvocationGate>),
     System(crate::kernel::SystemResources)
 }
-struct Payload
+pub(super) struct Payload
 {
     extent:   usize,
     segments: Vec<Segment>
@@ -460,13 +479,13 @@ impl Destination for Payload
 }
 
 #[derive(Clone, Copy)]
-struct SegmentMap
+pub(super) struct SegmentMap
 {
-    virtual_base: u64,
-    physical:     u64,
-    bytes:        u64,
-    memory:       u64,
-    flags:        u32
+    pub(super) virtual_base: u64,
+    pub(super) physical:     u64,
+    pub(super) bytes:        u64,
+    pub(super) memory:       u64,
+    pub(super) flags:        u32
 }
 #[derive(Clone, Copy)]
 struct Slot
@@ -700,24 +719,28 @@ fn mapped_pages(segments: &[SegmentMap]) -> Result<usize, WorkspaceError>
 }
 struct State
 {
-    phase:     Phase,
-    requested: bool
+    phase:        Phase,
+    requested:    bool,
+    user_running: bool,
+    user_waiting: bool
 }
 /// The original canonical IMAG or DDEF record owns this anchor before the first PTE effect.
 /// Payload removal happens only after the actual translation receipt. Drop
 /// itself performs no unmap, monitor wait or fallible teardown.
 pub(crate) struct Mapping
 {
-    owner:            OwnerRef,
-    base:             u64,
-    target:           TargetKind,
-    source:           BackingSource,
-    entry:            u64,
-    segments:         Vec<SegmentMap>,
-    retirement_pages: usize,
-    leaves:           spin::Once<Entries>,
-    payload:          Mutex<Option<Payload>>,
-    state:            Mutex<State>
+    owner:             OwnerRef,
+    base:              u64,
+    target:            TargetKind,
+    source:            BackingSource,
+    entry:             u64,
+    segments:          Vec<SegmentMap>,
+    retirement_pages:  usize,
+    leaves:            spin::Once<Entries>,
+    payload:           Mutex<Option<Arc<Payload>>>,
+    definition_source: spin::Once<crate::images::Read>,
+    user_mapping:      Mutex<Option<super::user::Mapping>>,
+    state:             Mutex<State>
 }
 impl Mapping
 {
@@ -812,30 +835,42 @@ impl Mapping
         {
             return Err(Error::Owner);
         }
-        let authority = match authority
+        let (payload_authority, target, original) = match authority
         {
             DefinitionTarget::System(source) if owner.owner() == source.owner().owner() =>
             {
-                PayloadAuthority::System(*source)
+                (PayloadAuthority::System(*source), TargetKind::Definition, None)
             }
             DefinitionTarget::Owner(account)
-                if matches!(owner.owner().kind(),
-                            mac_object_table::domain::DomainKind::Process
-                            | mac_object_table::domain::DomainKind::Module)
+                if owner.owner().kind() == mac_object_table::domain::DomainKind::Module
                    && owner.owner() == account.owner() =>
             {
-                PayloadAuthority::Owner(account)
+                (PayloadAuthority::Owner(account), TargetKind::Definition, None)
+            }
+            DefinitionTarget::Process(read)
+                if owner.owner().kind() == mac_object_table::domain::DomainKind::Process
+                   && owner.owner() == read.owner().owner()
+                   && read.allocation().owner() == owner.owner() =>
+            {
+                (PayloadAuthority::Owner(read.allocation()),
+                 TargetKind::UserDefinition,
+                 Some(read.retain().map_err(|_| Error::Owner)?))
             }
             _ => return Err(Error::Owner)
         };
-        Self::prepare_payload(owner,
-                              authority,
-                              TargetKind::Definition,
-                              BackingSource::Ordinary,
-                              descriptor,
-                              bytes,
-                              relocations,
-                              base)
+        let mapping = Self::prepare_payload(owner,
+                                            payload_authority,
+                                            target,
+                                            BackingSource::Ordinary,
+                                            descriptor,
+                                            bytes,
+                                            relocations,
+                                            base)?;
+        if let Some(read) = original
+        {
+            mapping.definition_source.call_once(|| read);
+        }
+        Ok(mapping)
     }
 
     fn prepare_payload(owner: &OwnerRef, authority: PayloadAuthority<'_>, target: TargetKind,
@@ -859,7 +894,10 @@ impl Mapping
         {
             TargetKind::Module => base >= VM_MODULE_START && end <= VM_MODULE_END,
             TargetKind::Application => super::super::memory::application_region(base, end),
-            TargetKind::Definition => base >= DEFINITION_BASE && end <= DEFINITION_LIMIT
+            TargetKind::Definition | TargetKind::UserDefinition =>
+            {
+                base >= DEFINITION_BASE && end <= DEFINITION_LIMIT
+            }
         };
         if !region || !base.is_multiple_of(PAGE_BYTES) || !extent.is_multiple_of(PAGE_BYTES)
         {
@@ -974,11 +1012,17 @@ impl Mapping
                             segments,
                             retirement_pages,
                             leaves: spin::Once::new(),
-                            payload: Mutex::new(Some(payload)),
-                            state: Mutex::new(State { phase:     Phase::Prepared,
-                                                      requested: false }) }).map_err(|_| {
-                                                                                Error::Metadata
-                                                                            })
+                            payload: Mutex::new(Some(Arc::try_new(payload).map_err(|_| {
+                                                                              Error::Metadata
+                                                                          })?)),
+                            definition_source: spin::Once::new(),
+                            user_mapping: Mutex::new(None),
+                            state: Mutex::new(State { phase:        Phase::Prepared,
+                                                      requested:    false,
+                                                      user_running: false,
+                                                      user_waiting: false }) }).map_err(|_| {
+                                                                                   Error::Metadata
+                                                                               })
     }
 
     pub(crate) fn publication_state(&self) -> PublicationState
@@ -1024,6 +1068,10 @@ impl Mapping
 
     pub(crate) fn publish(&self) -> Result<(), Error>
     {
+        if matches!(self.target, TargetKind::UserDefinition)
+        {
+            return self.source.with_metadata(|| self.publish_user_definition());
+        }
         if !self.owner.accepting()
         {
             return Err(Error::Closed);
@@ -1170,6 +1218,10 @@ impl Mapping
 
     pub(crate) fn retire(&self) -> Result<(), Error>
     {
+        if matches!(self.target, TargetKind::UserDefinition)
+        {
+            return self.retire_user_definition();
+        }
         let phase = self.phase();
         match phase
         {
@@ -1205,7 +1257,8 @@ impl Mapping
                 let leaves = self.leaves.get().ok_or(Error::State)?;
                 // Application uses only its original Entries. Other targets
                 // borrow the admitted workspace and keep real Pins through ACK.
-                let mut turn = RetirementTurn { lease: Some(lease), workspace };
+                let mut turn = RetirementTurn { lease: Some(lease),
+                                                workspace };
                 let prepared = (|| {
                     if let Some(loan) = &mut turn.workspace
                     {
@@ -1230,10 +1283,15 @@ impl Mapping
                         | Error::Process(super::process::Error::Workspace(cause)) => Some(*cause),
                         _ => None
                     };
-                    if let Some(cause) = workspace_error.filter(|cause| matches!(cause,
-                        WorkspaceError::Invariant { .. } | WorkspaceError::Capacity { .. }))
+                    if let Some(cause) = workspace_error.filter(|cause| {
+                                             matches!(cause,
+                                                      WorkspaceError::Invariant { .. }
+                                                      | WorkspaceError::Capacity { .. })
+                                         })
                     {
-                        self.settle_phase(Phase::Quarantined(CleanupCause::Workspace { base: self.base, cause }));
+                        self.settle_phase(Phase::Quarantined(CleanupCause::Workspace { base:
+                                                                                       self.base,
+                                                                                   cause }));
                     }
                     return Err(cause);
                 }
@@ -1284,46 +1342,7 @@ impl Mapping
 
     fn quarantine(&self, stage: Stage, error: &crate::machine::monitor::Error)
     {
-        use crate::machine::monitor::Error as E;
-        let cause = match error
-        {
-            E::Uncertain { hart,
-                           sequence } =>
-            {
-                MonitorRefusal::Uncertain { hart:     *hart,
-                                            sequence: *sequence }
-            }
-            E::Refused { hart,
-                         status } =>
-            {
-                MonitorRefusal::Refused { hart:   *hart,
-                                          result: *status }
-            }
-            E::Stopping => MonitorRefusal::Stopping,
-            E::TransportRetired => MonitorRefusal::Retired,
-            E::ForeignHart => MonitorRefusal::ForeignIssuer,
-            E::SequenceExhausted => MonitorRefusal::SequenceExhausted,
-            E::ClockOverflow => MonitorRefusal::ClockExhausted,
-            E::Missing => MonitorRefusal::Missing,
-            E::Busy => MonitorRefusal::Busy,
-            E::Memory(_)
-            | E::Directory(_)
-            | E::Physical(_)
-            | E::AlreadyAdmitted
-            | E::Layout
-            | E::Image
-            | E::Entry(_)
-            | E::StartBinding { .. }
-            | E::StartRefused { .. }
-            | E::WakeBinding { .. }
-            | E::WakeOrder { .. }
-            | E::Wake(_)
-            | E::State { .. }
-            | E::StopUnacknowledged { .. } => MonitorRefusal::Protocol { status: error.status() }
-        };
-        self.settle_phase(Phase::Quarantined(CleanupCause::Monitor { base: self.base,
-                                                                     stage,
-                                                                     cause }));
+        self.settle_phase(Phase::Quarantined(monitor_cause(self.base, stage, error)));
     }
 
     pub(crate) fn dma_address(&self, cpu: u64, bytes: u64) -> Result<u64, Error>
@@ -1581,7 +1600,6 @@ impl Plan
                               checks:     Vec::new(),
                               ancestors:  Vec::new() };
         let spaces = SPACES.get().ok_or(Error::Missing)?;
-        let boot = BOOT.get().ok_or(Error::Missing)?;
         let pages = segments.iter()
                             .try_fold(0usize, |n, s| n.checked_add((s.bytes / PAGE_BYTES) as usize))
                             .ok_or(Error::Metadata)?;
@@ -1590,88 +1608,21 @@ impl Plan
                          .ok_or(Error::Metadata)?;
         plan.leaves.try_reserve_exact(total).map_err(|_| Error::Metadata)?;
         plan.edits.try_reserve_exact(total).map_err(|_| Error::Metadata)?;
-        for (space, account) in
-            [&spaces.kernel, &spaces.firmware].into_iter()
-                                              .map(|s| (s, None))
-                                              .chain(processes.iter()
-                                                              .map(|r| {
-                                                                  (r.space(), Some(&r.allocation))
-                                                              }))
+        // Applications are never permanent Kernel/FW mappings. Their owning
+        // Process installs these same segments through prepare_user below.
+        if !matches!(target, TargetKind::Application)
         {
-            let root = space.owner.root_physical();
-            let root_table = Table { cpu:      boot.ram
-                                                   .virtual_address(root, PAGE_BYTES)
-                                                   .map_err(|_| Error::Missing)?
-                                                   .0
-                                               as usize,
-                                     physical: root };
-            let mut l1_cache: Option<(u64, Table)> = None;
-            let mut l0_cache: Option<(u64, Table)> = None;
-            for segment in segments
+            for space in [&spaces.kernel, &spaces.firmware]
             {
-                let mut offset = 0;
-                while offset < segment.bytes
-                {
-                    let address = segment.virtual_base + offset;
-                    let l1_prefix = address & !(LeafSize::Huge.bytes() - 1);
-                    let l1 = match l1_cache
-                    {
-                        Some((prefix, table)) if prefix == l1_prefix => table,
-                        _ =>
-                        {
-                            let table = plan.table(Key { root:   root.0,
-                                                         level:  1,
-                                                         prefix: l1_prefix },
-                                                   root_table,
-                                                   address,
-                                                   space,
-                                                   account,
-                                                   source)?;
-                            l1_cache = Some((l1_prefix, table));
-                            table
-                        }
-                    };
-                    let l0_prefix = address & !(LeafSize::Large.bytes() - 1);
-                    let l0 = match l0_cache
-                    {
-                        Some((prefix, table)) if prefix == l0_prefix => table,
-                        _ =>
-                        {
-                            let table = plan.table(Key { root:   root.0,
-                                                         level:  0,
-                                                         prefix: l0_prefix },
-                                                   l1,
-                                                   address,
-                                                   space,
-                                                   account,
-                                                   source)?;
-                            l0_cache = Some((l0_prefix, table));
-                            table
-                        }
-                    };
-                    let permissions = Permissions { read:    segment.flags & image::READ != 0,
-                                                    write:   segment.flags & image::WRITE != 0,
-                                                    execute: segment.flags & image::EXECUTE != 0,
-                                                    access:  Access::Supervisor,
-                                                    global:  false };
-                    let bits = Entry::leaf(PhysicalAddress(segment.physical + offset),
-                                           LeafSize::Page,
-                                           permissions,
-                                           PageOwnership::Manual).map_err(Error::Encoding)?
-                                                                 .bits();
-                    let slot = Slot { root: root.0,
-                                      cpu: l0.cpu,
-                                      index: Sv39::index(address, 0).map_err(Error::Encoding)?,
-                                      bits,
-                                      address };
-                    // Branch edits consume their own admitted positions. Keep
-                    // the final leaf insertion fallible as well; a branch is
-                    // not allowed to steal untracked future-leaf headroom.
-                    plan.edits.try_reserve(1).map_err(|_| Error::Metadata)?;
-                    plan.leaves.push(slot);
-                    plan.edits.push(slot);
-                    offset += PAGE_BYTES;
-                }
+                plan.add_space(segments, space, None, source, Access::Supervisor)?;
+            }
+            for process in &processes
+            {
+                plan.add_space(segments,
+                               process.space(),
+                               Some(&process.allocation),
+                               source,
+                               Access::Supervisor)?;
             }
         }
         plan._processes = processes;
@@ -1679,9 +1630,122 @@ impl Plan
         Ok(plan)
     }
 
+    fn prepare_user(segments: &[SegmentMap], process: &super::process::Pin) -> Result<Self, Error>
+    {
+        for segment in segments
+        {
+            if segment.flags & image::WRITE != 0 && segment.flags & image::EXECUTE != 0
+            {
+                return Err(Error::Owner);
+            }
+        }
+        let pages = mapped_pages(segments).map_err(Error::Workspace)?;
+        let mut plan = Self { _processes: Vec::new(),
+                              branches:   Vec::new(),
+                              edits:      Vec::new(),
+                              leaves:     Vec::new(),
+                              checks:     Vec::new(),
+                              ancestors:  Vec::new() };
+        plan.leaves.try_reserve_exact(pages).map_err(|_| Error::Metadata)?;
+        plan.edits.try_reserve_exact(pages).map_err(|_| Error::Metadata)?;
+        plan.add_space(segments,
+                       process.space(),
+                       Some(&process.allocation),
+                       &crate::context::recovery_allocation().map(BackingSource::Protected)
+                                                             .unwrap_or(BackingSource::Ordinary),
+                       Access::User)?;
+        Ok(plan)
+    }
+
+    fn add_space(&mut self, segments: &[SegmentMap], space: &super::Space,
+                 account: Option<&crate::machine::scheduler::accounting::AllocationAuthority>,
+                 source: &BackingSource, access: Access)
+                 -> Result<(), Error>
+    {
+        let boot = BOOT.get().ok_or(Error::Missing)?;
+        let root = space.owner.root_physical();
+        let root_table = Table { cpu:      boot.ram
+                                               .virtual_address(root, PAGE_BYTES)
+                                               .map_err(|_| Error::Missing)?
+                                               .0
+                                           as usize,
+                                 physical: root };
+        let mut l1_cache: Option<(u64, Table)> = None;
+        let mut l0_cache: Option<(u64, Table)> = None;
+        for segment in segments
+        {
+            let mut offset = 0;
+            while offset < segment.bytes
+            {
+                let address = segment.virtual_base + offset;
+                let l1_prefix = address & !(LeafSize::Huge.bytes() - 1);
+                let l1 = match l1_cache
+                {
+                    Some((prefix, table)) if prefix == l1_prefix => table,
+                    _ =>
+                    {
+                        let table = self.table(Key { root:   root.0,
+                                                     level:  1,
+                                                     prefix: l1_prefix },
+                                               root_table,
+                                               address,
+                                               space,
+                                               account,
+                                               source,
+                                               access == Access::User)?;
+                        l1_cache = Some((l1_prefix, table));
+                        table
+                    }
+                };
+                let l0_prefix = address & !(LeafSize::Large.bytes() - 1);
+                let l0 = match l0_cache
+                {
+                    Some((prefix, table)) if prefix == l0_prefix => table,
+                    _ =>
+                    {
+                        let table = self.table(Key { root:   root.0,
+                                                     level:  0,
+                                                     prefix: l0_prefix },
+                                               l1,
+                                               address,
+                                               space,
+                                               account,
+                                               source,
+                                               access == Access::User)?;
+                        l0_cache = Some((l0_prefix, table));
+                        table
+                    }
+                };
+                let permissions = Permissions { read: segment.flags & image::READ != 0,
+                                                write: segment.flags & image::WRITE != 0,
+                                                execute: segment.flags & image::EXECUTE != 0,
+                                                access,
+                                                global: false };
+                let bits = Entry::leaf(PhysicalAddress(segment.physical + offset),
+                                       LeafSize::Page,
+                                       permissions,
+                                       PageOwnership::Manual).map_err(Error::Encoding)?
+                                                             .bits();
+                let slot = Slot { root: root.0,
+                                  cpu: l0.cpu,
+                                  index: Sv39::index(address, 0).map_err(Error::Encoding)?,
+                                  bits,
+                                  address };
+                // Branch edits consume their own admitted positions. Keep
+                // the final leaf insertion fallible as well; a branch is
+                // not allowed to steal untracked future-leaf headroom.
+                self.edits.try_reserve(1).map_err(|_| Error::Metadata)?;
+                self.leaves.push(slot);
+                self.edits.push(slot);
+                offset += PAGE_BYTES;
+            }
+        }
+        Ok(())
+    }
+
     fn table(&mut self, key: Key, parent: Table, address: u64, space: &super::Space,
              account: Option<&crate::machine::scheduler::accounting::AllocationAuthority>,
-             source: &BackingSource)
+             source: &BackingSource, user: bool)
              -> Result<Table, Error>
     {
         if let Some(table) =
@@ -1754,9 +1818,10 @@ impl Plan
                 {
                     let layout = Layout::new::<[u64; 512]>()
                         .align_to(PAGE_BYTES as usize).map_err(|_| Error::State)?;
-                    let bytes = space.tables.source.planned_bytes(layout).map_err(Error::Frames)?;
+                    let origin=if user {source}else{&space.tables.source};
+                    let bytes = origin.planned_bytes(layout).map_err(Error::Frames)?;
                     let charge = account.reserve_kernel(bytes).map_err(Error::Account)?;
-                    let backing = space.tables.source.allocate_zeroed(layout).map_err(Error::Frames)?;
+                    let backing = origin.allocate_zeroed(layout).map_err(Error::Frames)?;
                     BranchBacking::Process { backing, _charge: charge.commit() }
                 }
                 None => match source
@@ -1791,7 +1856,8 @@ impl Plan
                     account: account.clone(),
                     class: mac_kernel_model::policy::MemoryClass::Kernel
                 };
-                space.tables.source.with_metadata(|| crate::allocator::with_target(target, prepare))
+                let origin = if user { source } else { &space.tables.source };
+                origin.with_metadata(|| crate::allocator::with_target(target, prepare))
             }
             None =>
             {
@@ -1878,8 +1944,10 @@ fn unmap(entries: &Entries, dynamic: Option<&Entries>) -> Result<(), Error>
     interrupts::with_masked(|| {
         let _tables = TABLES.lock();
         let components = [Some(entries), dynamic];
-        for leaf in components.iter().flatten()
-                              .flat_map(|entries| entries.ancestors.iter().chain(entries.leaves.iter()))
+        for leaf in
+            components.iter()
+                      .flatten()
+                      .flat_map(|entries| entries.ancestors.iter().chain(entries.leaves.iter()))
         {
             let observed = leaf.load();
             if observed != leaf.bits
@@ -1922,10 +1990,20 @@ pub(crate) fn revision() -> Option<u64>
     let revision = REVISION.load(Ordering::Acquire);
     (revision & 1 == 0).then_some(revision)
 }
+pub(super) fn user_readers_released()
+{
+    crate::toolbox::resources::definitions::monitor_released();
+    if RETIRING.load(Ordering::Acquire) != 0
+    {
+        PENDING.store(true, Ordering::Release);
+        crate::machine::scheduler::wake::request();
+    }
+}
 pub(crate) fn monitor_released()
 {
     crate::toolbox::resources::definitions::monitor_released();
     super::process::monitor_released();
+    super::user::monitor_released();
     if RETIRING.load(Ordering::Acquire) != 0
     {
         PENDING.store(true, Ordering::Release);
@@ -2120,4 +2198,291 @@ fn participating_roots(target: TargetKind, owner: mac_object_table::domain::Doma
         roots.retain(|r| r.owner() == owner)
     }
     Ok(roots)
+}
+
+/// Retained validated slots for one owning Process's user mapping. The caller
+/// keeps the real Process/table pin and physical payload until unmap ACK.
+pub(super) struct UserEntries(Entries);
+impl UserEntries
+{
+    pub(super) fn unmap(&self, _lease: &crate::machine::monitor::TranslationLease)
+                        -> Result<(), Error>
+    {
+        unmap(&self.0, None)
+    }
+}
+pub(super) fn map_user(process: &super::process::Pin, segments: &[SegmentMap],
+                       _lease: &crate::machine::monitor::TranslationLease)
+                       -> Result<UserEntries, Error>
+{
+    let plan = super::user::with_metadata(process, || Plan::prepare_user(segments, process))?;
+    if !process.admitting()
+    {
+        return Err(Error::Closed);
+    }
+    let plan = plan.commit()?;
+    Ok(UserEntries(Entries { leaves:    plan.leaves,
+                             ancestors: plan.ancestors }))
+}
+impl Mapping
+{
+    /// The retained image Read is the caller's actual payload lifetime pin.
+    pub(crate) fn user_spans(&self) -> Result<Vec<super::user::Span>, Error>
+    {
+        if !matches!(self.target, TargetKind::Application | TargetKind::UserDefinition)
+           || matches!(self.phase(), Phase::Settled | Phase::Cleared | Phase::Quarantined(_))
+        {
+            return Err(Error::State);
+        }
+        let payload =
+            interrupts::with_masked(|| self.payload.lock().as_ref().cloned()).ok_or(Error::State)?;
+        let mut result = Vec::new();
+        result.try_reserve_exact(self.segments.len()).map_err(|_| Error::Metadata)?;
+        for (map, owned) in self.segments.iter().zip(&payload.segments)
+        {
+            result.push(super::user::Span { address:  map.virtual_base as usize,
+                                            cpu:      owned.backing.cpu_base(),
+                                            physical: PhysicalAddress(map.physical),
+                                            bytes:    map.bytes as usize,
+                                            flags:    map.flags });
+        }
+        Ok(result)
+    }
+}
+
+impl Mapping
+{
+    fn user_turn<R>(&self,
+                    operation: impl FnOnce(&mut super::user::Mapping) -> Result<R, super::user::Error>)
+                    -> Result<R, Error>
+    {
+        let mut mapping =
+            interrupts::with_masked(|| self.user_mapping.lock().take()).ok_or(Error::State)?;
+        let result = operation(&mut mapping);
+        let cause = mapping.quarantine_cause();
+        let conflict = interrupts::with_masked(|| self.user_mapping.lock().replace(mapping));
+        let conflict_present = conflict.is_some();
+        drop(conflict);
+        if let Some(cause) = cause
+        {
+            self.settle_phase(Phase::Quarantined(cause));
+        }
+        if conflict_present
+        {
+            return Err(Error::State);
+        }
+        result.map_err(|error| {
+                  match error
+                  {
+                      super::user::Error::Monitor { cause,
+                                                    .. } => Error::Monitor(cause),
+                      super::user::Error::Paging(cause) => cause,
+                      super::user::Error::Quarantined(cause) => Error::UserMapping(cause),
+                      super::user::Error::Readers(count) =>
+                      {
+                          Error::Process(super::process::Error::Readers(count))
+                      }
+                      super::user::Error::Rejected(status) =>
+                      {
+                          Error::Process(super::process::Error::DefinitionVisibility { status })
+                      }
+                  }
+              })
+    }
+
+    fn publish_user_definition(&self) -> Result<(), Error>
+    {
+        let _turn = self.user_operation()?;
+        if !self.owner.accepting()
+        {
+            return Err(Error::Closed);
+        }
+        if self.phase() == Phase::Live
+        {
+            return Ok(());
+        }
+        if self.phase() == Phase::Prepared
+        {
+            self.with_state(|state| {
+                    if state.phase != Phase::Prepared
+                    {
+                        return Err(Error::State);
+                    }
+                    state.phase = Phase::Preparing;
+                    Ok(())
+                })?;
+            let prepared = (|| {
+                let source = self.definition_source.get().ok_or(Error::Owner)?;
+                let space = super::process::pin_definition(source).map_err(Error::Process)?;
+                let payload=interrupts::with_masked(||self.payload.lock().as_ref().cloned()).ok_or(Error::State)?;
+                let region =
+                    super::user::with_metadata(&space, || {
+                        super::user::Mapping::definition(&space,
+                                                         payload,
+                                                         source.retain()?,
+                                                         self.user_spans()
+                                                             .map_err(|e| e.status())?)
+                    }).map_err(|status| {
+                          Error::Process(super::process::Error::DefinitionVisibility { status })
+                      })?;
+                let old = interrupts::with_masked(|| self.user_mapping.lock().replace(region));
+                let occupied = old.is_some();
+                drop(old);
+                if occupied
+                {
+                    return Err(Error::State);
+                }
+                Ok(())
+            })();
+            if let Err(cause) = prepared
+            {
+                self.set_phase(Phase::Prepared);
+                return Err(cause);
+            }
+        }
+        if self.phase() == Phase::Preparing
+        {
+            self.user_turn(|mapping| mapping.publish())?;
+            self.set_phase(Phase::Mapped);
+        }
+        if self.phase() != Phase::Mapped
+        {
+            return Err(Error::State);
+        }
+        crate::machine::monitor::publish_instructions().map_err(Error::Monitor)?;
+        self.set_phase(Phase::Live);
+        Ok(())
+    }
+
+    fn retire_user_definition(&self) -> Result<(), Error>
+    {
+        let _turn = self.user_operation()?;
+        if self.phase() == Phase::Settled
+        {
+            return Ok(());
+        }
+        if matches!(self.phase(), Phase::Quarantined(_) | Phase::Cleared)
+        {
+            return Err(Error::State);
+        }
+        let exists = interrupts::with_masked(|| self.user_mapping.lock().is_some());
+        if exists
+        {
+            self.user_turn(|mapping| mapping.retire())?;
+        }
+        let payload = interrupts::with_masked(|| self.payload.lock().take());
+        drop(payload);
+        self.settle_phase(Phase::Settled);
+        crate::toolbox::processes::retirement::resources_released();
+        Ok(())
+    }
+}
+
+struct UserOperation<'a>(&'a Mapping);
+impl Drop for UserOperation<'_>
+{
+    fn drop(&mut self)
+    {
+        let wake = self.0.with_state(|state| {
+                             state.user_running = false;
+                             core::mem::take(&mut state.user_waiting)
+                         });
+        if wake
+        {
+            changed();
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
+}
+impl Mapping
+{
+    fn user_operation(&self) -> Result<UserOperation<'_>, Error>
+    {
+        self.with_state(|state| {
+                if state.user_running
+                {
+                    state.user_waiting = true;
+                    return Err(Error::Process(super::process::Error::Busy));
+                }
+                state.user_running = true;
+                Ok(UserOperation(self))
+            })
+    }
+}
+
+/// Preserve the actual native monitor variant before a portable boundary status
+/// is returned. This is shared with owning User mapping retirement.
+pub(super) fn monitor_cause(base: u64, stage: Stage, error: &crate::machine::monitor::Error)
+                            -> CleanupCause
+{
+    use crate::machine::monitor::Error as E;
+    let cause = match error
+    {
+        E::Uncertain { hart,
+                       sequence } =>
+        {
+            MonitorRefusal::Uncertain { hart:     *hart,
+                                        sequence: *sequence }
+        }
+        E::Refused { hart,
+                     status } =>
+        {
+            MonitorRefusal::Refused { hart:   *hart,
+                                      result: *status }
+        }
+        E::Stopping => MonitorRefusal::Stopping,
+        E::TransportRetired => MonitorRefusal::Retired,
+        E::ForeignHart => MonitorRefusal::ForeignIssuer,
+        E::SequenceExhausted => MonitorRefusal::SequenceExhausted,
+        E::ClockOverflow => MonitorRefusal::ClockExhausted,
+        E::Missing => MonitorRefusal::Missing,
+        E::Busy => MonitorRefusal::Busy,
+        E::Memory(_)
+        | E::Directory(_)
+        | E::Physical(_)
+        | E::AlreadyAdmitted
+        | E::Layout
+        | E::Image
+        | E::Entry(_)
+        | E::StartBinding { .. }
+        | E::StartRefused { .. }
+        | E::WakeBinding { .. }
+        | E::WakeOrder { .. }
+        | E::Wake(_)
+        | E::State { .. }
+        | E::StopUnacknowledged { .. } => MonitorRefusal::Protocol { status: error.status() }
+    };
+    CleanupCause::Monitor { base,
+                            stage,
+                            cause }
+}
+
+impl Mapping
+{
+    /// Numeric supervisor alias only while caller retains the genuine image
+    /// execution/read owner; no temporary Span Vec is required for WAIT32.
+    pub(crate) fn user_alias(&self, address: usize, bytes: usize, write: bool)
+                             -> Result<usize, Error>
+    {
+        if !matches!(self.target, TargetKind::Application | TargetKind::UserDefinition)
+           || self.phase() != Phase::Live
+        {
+            return Err(Error::State);
+        }
+        let end = address.checked_add(bytes).ok_or(Error::State)?;
+        let (index, map) = self.segments
+                               .iter()
+                               .enumerate()
+                               .find(|(_, map)| {
+                                   address as u64 >= map.virtual_base
+                                   && end as u64 <= map.virtual_base + map.bytes
+                                   && map.flags & image::READ != 0
+                                   && (!write || map.flags & image::WRITE != 0)
+                               })
+                               .ok_or(Error::Owner)?;
+        let payload =
+            interrupts::with_masked(|| self.payload.lock().as_ref().cloned()).ok_or(Error::State)?;
+        let backing = &payload.segments.get(index).ok_or(Error::State)?.backing;
+        backing.cpu_base().checked_add(address - map.virtual_base as usize).ok_or(Error::State)
+    }
 }
