@@ -842,30 +842,6 @@ impl WindowManager
                             screen: self.screen }))
     }
 
-    /// Two windows draw and crop identically exactly when their bounds and the
-    /// definition-visible frame state agree. This replaces comparing the manager's
-    /// mutation counter, which also advances for accesses that change nothing the
-    /// frame depends on, including the paint's own admission.
-    fn same_frame(planned: &Window, live: &Window) -> bool
-    {
-        let a = planned.frame_state();
-        let b = live.frame_state();
-        planned.bounds == live.bounds
-        && a.active == b.active
-        && a.close_pressed == b.close_pressed
-        && a.zoomed == b.zoomed
-        && a.zoom_pressed == b.zoom_pressed
-        && a.content == b.content
-        && a.structure == b.structure
-        && a.close_box == b.close_box
-        && a.grow_box == b.grow_box
-        && a.zoom_box == b.zoom_box
-        && a.structure_piece_count == b.structure_piece_count
-        && a.structure_pieces == b.structure_pieces
-        && a.title_length == b.title_length
-        && a.title == b.title
-    }
-
     fn validate_paint_plan(&self, plan: &PaintPlan) -> Result<(), Status>
     {
         let (owner, owned) = self.windows
@@ -875,7 +851,7 @@ impl WindowManager
         if self.screen != plan.screen
            || owner != plan.owner
            || owned.content_revision != Some(plan.content_revision)
-           || !Self::same_frame(&plan.window, &owned.window)
+           || !plan.window.draws_same_frame_as(&owned.window)
            || !owned.binding.matches(plan.window.entry)
         {
             // Four independent causes share one refusal. Report each, first time.
@@ -889,7 +865,7 @@ impl WindowManager
                         owner == plan.owner,
                         owned.content_revision,
                         plan.content_revision,
-                        Self::same_frame(&plan.window, &owned.window),
+                        plan.window.draws_same_frame_as(&owned.window),
                         owned.binding.matches(plan.window.entry));
             }
             return Err(SERVICE_BUSY);
