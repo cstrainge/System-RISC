@@ -43,15 +43,14 @@ fn main()
                .to_string()
     };
     let pl011 = base("uart", "pl011");
-    let sdhci = base("storage", "sdhci");
-    let mailbox = base("gpio-mailbox", "bcm2835-mailbox");
+    // Only the console and the boot MMU read generated constants. Every other
+    // peripheral address comes from the device tree, so the bootloader stays a
+    // consumer of the record rather than a second copy of it.
     fs::write(out.join("platform-memory.rs"),
               format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
                        pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
                        pub const PHYSMAP_BASE: u64 = {physmap_base};\n\
-                       pub const PL011_BASE: u64 = {pl011};\n\
-                       pub const SDHCI_BASE: u64 = {sdhci};\n\
-                       pub const MAILBOX_BASE: u64 = {mailbox};\n"))
+                       pub const PL011_BASE: u64 = {pl011};\n"))
         .expect("memory constants");
     let linker = format!("OUTPUT_ARCH(aarch64)\nENTRY(_start)\nMEMORY {{ ram (rwx) : ORIGIN = \
                           {boot_base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \
