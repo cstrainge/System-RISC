@@ -117,7 +117,7 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
     Ok(quote! {
         #function
 
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         #[allow(unsafe_code)]
         #[unsafe(no_mangle)]
         #[unsafe(link_section = ".text.entry")]
@@ -126,7 +126,7 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
             unsafe { ::mac_definition::#binding(call, main) }
         }
 
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         #[panic_handler]
         fn __definition_panic(info: &::core::panic::PanicInfo<'_>) -> !
         {
