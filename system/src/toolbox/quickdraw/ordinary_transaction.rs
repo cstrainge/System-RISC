@@ -1087,7 +1087,7 @@ fn pump_ordinary_paint_inner()
         if !matches!(failure, ServiceFailure::Desktop(crate::state::AccessError::Busy))
         {
             owner.cancel();
-            let fresh = desktop(|toolbox| {
+            let _fresh = desktop(|toolbox| {
                 let Some(transaction) = toolbox.presentation.ordinary_underlay.transaction.as_mut()
                 else
                 {
@@ -1108,10 +1108,6 @@ fn pump_ordinary_paint_inner()
                     false
                 }
             });
-            if fresh == Ok(true)
-            {
-                serial!("ORDINARY_AUTHOR_FAILED cause={failure:?}");
-            }
             // Actual terminal failure/cancel can retire now. A still-running
             // Pending refuses and remains in SAME owner until its real notice.
             if let Err(cause) = loan.finish()
