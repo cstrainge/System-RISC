@@ -3,17 +3,34 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+/// Each close step can refuse with a bare status, and Service Busy is the common
+/// one, so the caller cannot tell which owner held the window. Name the first
+/// failing step once.
+fn step<T>(name: &'static str, result: Result<T, Status>) -> Result<T, Status>
+{
+    if let Err(status) = &result
+    {
+        static REPORTED: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
+        if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+        {
+            serial!("CLOSE_STEP_REFUSED step={} status={}", name, status);
+        }
+    }
+    result
+}
+
 impl Toolbox
 {
     pub(crate) fn prepare_user_window_removal(&mut self,
                                               job:&Arc<crate::toolbox::windows::manager::operations::WindowJob>)
                                               -> Result<(), Status>
     {
-        let window = self.windows.removal_window(job)?;
+        let window = step("removal-window", self.windows.removal_window(job))?;
         // Arm before testing the actual claim; a real return can arrive between
         // refusal and the caller's park, and must not be cleared afterward.
         job.arm_removal_wait();
-        self.controls.request_window_disposal(window.id.0)?;
+        step("request-window-disposal", self.controls.request_window_disposal(window.id.0))?;
         job.removal_admitted();
         Ok(())
     }
@@ -23,7 +40,7 @@ impl Toolbox
     pub(super) fn remove_closed_window_content(&mut self, id: WindowId, when: u32)
                                                -> Result<(), Status>
     {
-        self.controls.remove_window(id.0)?;
+        step("remove-window", self.controls.remove_window(id.0))?;
         let before = self.drag.feedback();
         let drag_cleanup = self.drag.forget_window(id.0, when);
         self.drag_effects(before);
@@ -83,15 +100,15 @@ impl Toolbox
                 return Err(ACCESS_DENIED);
             }
             let id = receipt.window_id();
-            self.controls.prepare_remove_window(id.0)?;
+            step("prepare-remove-window", self.controls.prepare_remove_window(id.0))?;
             if self.dialogs.active() && self.dialogs.window == id.0
             {
-                self.restore_alert_focus(self.dialogs.previous)?;
+                step("restore-alert-focus", self.restore_alert_focus(self.dialogs.previous))?;
             }
-            self.remove_closed_window_content(id, Self::when())?;
+            step("remove-closed-content", self.remove_closed_window_content(id, Self::when()))?;
             if self.dialogs.active() && self.dialogs.window == id.0
             {
-                self.dialogs.close_window_activity(id.0)?;
+                step("close-window-activity", self.dialogs.close_window_activity(id.0))?;
             }
             let removed = self.dialogs.take_window(id.0);
             self.presentation.redraw = true;
