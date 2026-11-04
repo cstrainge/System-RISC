@@ -1,4 +1,4 @@
-use mac_toolbox::{Rect, System, ToolboxResult,
+use mac_toolbox::{Rect, System,
                   controls::{Anchors, BorderOffsets, Cell, Fill, Reflow, SizeBounds, SizeUnit,
                              StaticTextSpec, TextAlignment, TextLayout},
                   events::{Event, EventMask},
@@ -14,8 +14,51 @@ include_resource_ids!();
 
 const QUIT: u32 = u32::from_be_bytes(*b"quit");
 
+/// Keep the operation and typed Toolbox cause in the System-owned error report.
+/// Graphical applications have no standard-stream endpoint.
+struct Failure
+{
+    operation: &'static str,
+    cause:     mac_toolbox::Error
+}
+impl Failure
+{
+    fn at(operation: &'static str, cause: mac_toolbox::Error) -> Self
+    {
+        Self { operation,
+               cause }
+    }
+}
+impl From<mac_toolbox::Error> for Failure
+{
+    fn from(cause: mac_toolbox::Error) -> Self
+    {
+        Self::at("Toolbox request", cause)
+    }
+}
+impl std::fmt::Display for Failure
+{
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    {
+        write!(output, "Control Suite {}: {}", self.operation, self.cause)
+    }
+}
+impl std::fmt::Debug for Failure
+{
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    {
+        std::fmt::Display::fmt(self, output)
+    }
+}
+impl std::error::Error for Failure
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)>
+    {
+        Some(&self.cause)
+    }
+}
 
-fn run(system: System) -> ToolboxResult<()>
+fn run(system: System) -> Result<(), Failure>
 {
     system.menus().clear()?;
 
@@ -58,18 +101,16 @@ fn run(system: System) -> ToolboxResult<()>
     loop
     {
         let (event, position) = system.wait_positioned(EventMask::ALL, 30)
-                                      .map_err(|error| {
-                                          eprintln!("Control Suite event/layout wait failed: \
-                                                     {error}");
-                                          error
-                                      })?
+                                      .map_err(|cause| Failure::at("event/layout wait", cause))?
                                       .into_parts();
 
-        if let Some(selection) = system.menus().selection(&event)?
+        if let Some(selection) = system.menus()
+                                       .selection(&event)
+                                       .map_err(|cause| Failure::at("menu selection", cause))?
         {
             match selection.command
             {
-                QUIT => return window.close(),
+                QUIT => return window.close().map_err(|cause| Failure::at("window close", cause)),
 
                 _ => continue
             }
@@ -80,35 +121,37 @@ fn run(system: System) -> ToolboxResult<()>
             Event::Update { window: target,
                             .. } if target == window.id() =>
             {
-                let update = system.windows().update(id)?;
+                let update = system.windows()
+                                   .update(id)
+                                   .map_err(|cause| Failure::at("begin window update", cause))?;
                 let port = system.quickdraw().port(id);
 
-                port.paint_rect(update.bounds(), WHITE)?;
-                table.control().draw()?;
+                port.paint_rect(update.bounds(), WHITE)
+                    .map_err(|cause| Failure::at("clear changed content", cause))?;
+                table.control().draw().map_err(|cause| Failure::at("table drawing", cause))?;
                 for label in labels
                 {
-                    label.draw()?;
+                    label.draw().map_err(|cause| Failure::at("table child drawing", cause))?;
                 }
 
-                update.finish()?;
+                update.finish().map_err(|cause| Failure::at("finish window update", cause))?;
             }
 
             Event::MouseDown { window: Some(target),
                                .. } if target == id =>
             {
-                let local = position.in_window(id)?;
-                if let Some(hit) =
-                    grid.hit_test(local.point()?).map_err(|error| {
-                                                      eprintln!("Control Suite table child hit \
-                                                                 test failed: {error}");
-                                                      error
-                                                  })?
+                let local =
+                    position.in_window(id)
+                            .map_err(|cause| Failure::at("capture window-local point", cause))?;
+                let point =
+                    local.point().map_err(|cause| Failure::at("read window-local point", cause))?;
+                if let Some(hit) = grid.hit_test(point)
+                                       .map_err(|cause| Failure::at("table child hit test", cause))?
                 {
-                    hit.control.track_at(local, |_| Ok(())).map_err(|error| {
-                                                                eprintln!("Control Suite managed \
-                                                                           control tracking \
-                                                                           failed: {error}");
-                                                                error
+                    hit.control.track_at(local, |_| Ok(())).map_err(|cause| {
+                                                                Failure::at("managed control \
+                                                                             tracking",
+                                                                            cause)
                                                             })?;
                 }
             }
@@ -116,7 +159,7 @@ fn run(system: System) -> ToolboxResult<()>
             Event::CloseRequested { window: target,
                                     .. } if target == window.id() =>
             {
-                return window.close();
+                return window.close().map_err(|cause| Failure::at("window close", cause));
             }
 
             _ =>
@@ -126,7 +169,7 @@ fn run(system: System) -> ToolboxResult<()>
 }
 
 
-fn main() -> ToolboxResult<()>
+fn main() -> Result<(), Failure>
 {
     run(System::new()?)
 }
