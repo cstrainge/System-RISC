@@ -269,11 +269,80 @@ enum UserInitialization
 }
 impl Window
 {
-    /// The definition-visible frame state. A paint plan captures the frame this
-    /// describes, so a plan is stale only when these values or the committed
-    /// content moved; the manager's mutation counter also advances for
-    /// bookkeeping that changes nothing a frame depends on.
-    pub(crate) fn frame_state(&self) -> WindowDefinitionState { self.state }
+    /// Everything a painted frame depends on. A plan is stale exactly when one of
+    /// these differs from the live window; the manager's mutation counter also
+    /// advances for accesses that change none of them, including the paint's own
+    /// admission and the job admission that stamps its revision.
+    pub(crate) fn draws_same_frame_as(&self, other: &Self) -> bool
+    {
+        let a = self.state;
+        let b = other.state;
+        // Identity and registration.
+        self.id == other.id
+        && self.owner == other.owner
+        && self.initialized == other.initialized
+        && self.user_initialization == other.user_initialization
+        && self.entry == other.entry
+        // Definition and frame geometry: the procedure decides how the frame is
+        // drawn, and every rect here is an input to the crop the plan takes.
+        && self.procedure == other.procedure
+        && self.gate == other.gate
+        && self.bounds == other.bounds
+        && self.min_width == other.min_width
+        && self.min_height == other.min_height
+        && self.user_bounds == other.user_bounds
+        && self.standard_bounds == other.standard_bounds
+        && self.grow_icon_clip == other.grow_icon_clip
+        && self.content_outline == other.content_outline
+        && self.control_outline == other.control_outline
+        // Definition-visible frame state.
+        && a.active == b.active
+        && a.close_pressed == b.close_pressed
+        && a.zoomed == b.zoomed
+        && a.zoom_pressed == b.zoom_pressed
+        && a.content == b.content
+        && a.structure == b.structure
+        && a.close_box == b.close_box
+        && a.grow_box == b.grow_box
+        && a.zoom_box == b.zoom_box
+        && a.structure_piece_count == b.structure_piece_count
+        && a.structure_pieces == b.structure_pieces
+        && a.title_length == b.title_length
+        && a.title == b.title
+        // Update and visibility state govern whether and what a frame may paint.
+        && self.hidden == other.hidden
+        && self.updating == other.updating
+        && self.close_deferred == other.close_deferred
+        && self.stay_in_back == other.stay_in_back
+        && self.damage == other.damage
+        // `source` names where the window's resources came from; a change means
+        // the definition behind this frame was replaced.
+        && self.same_source(other)
+    }
+
+    /// `source` names where the window's resources came from; a change means the
+    /// definition behind this frame was replaced.
+    fn same_source(&self, other: &Self) -> bool
+    {
+        #[cfg(target_arch = "riscv64")]
+        {
+            use WindowSource::{Application, System};
+            match (&self.source, &other.source)
+            {
+                (Application, Application) => true,
+                (System { resources: a,
+                          recovery: ra },
+                 System { resources: b,
+                          recovery: rb }) => a.same_source(*b) && ra == rb,
+                _ => false
+            }
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            let _ = other;
+            true
+        }
+    }
 
     /// Classification only; this does not authorize any caller or object ID.
     #[cfg(target_arch = "riscv64")]
