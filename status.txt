@@ -580,9 +580,11 @@ qemu_arm64 platform lane - 2026-11-04
 =====================================
 [Platform lane / qemu_arm64 agent]
 
-State: the record is complete and validates; the build reaches the storage
-image and refuses there because the image builder cannot emit the partitioned
-SD medium. No aarch64 boot was run (no qemu-system-aarch64 on this host).
+State: the record is complete and validates; the build now refuses at the
+empty build stages with a named reason instead of stamping success. The
+storage-image builder cannot emit the partitioned SD medium, but the build
+does not reach it until a guest set exists. No aarch64 boot was run (no
+qemu-system-aarch64 on this host).
 
 Record
 ------
@@ -591,6 +593,8 @@ platforms/qemu_arm64.json describes a BCM2837-class SoC machine: 4x Cortex-A53,
 framebuffer. The board maps peripherals at 0x3f000000..0x40000000, so the
 kernel's guaranteed linear window is 0x0..0x3f000000; the 1 GiB total is stated
 in hardware.ram.bytes. The record declares:
+  - install: set "none" with an explicit reason, because no aarch64 guest set
+    is produced yet;
   - memory: 4096-byte pages, boot at 0x80000, firmware heap, image arena,
     display scratch, FDT tail, heaps, stacks and process accounts;
   - virtual_memory: mode "aarch64", the 39-bit four-level windows the OS
@@ -624,7 +628,13 @@ tools/mac-build/src/platform/memory.rs: flash, fw_cfg, bootstrap_io and
 machine_monitor are optional; qemu_riscv declares all of them, qemu_arm64
 declares none. The fixed bootstrap_io inner window set is unchanged and
 remains a known limitation for a future board that has a UART but no CLINT.
-tools/xtask/src/build.rs: the definitions stage builds only when the platform
+tools/mac-build/src/platform/install.rs: install.set is "packages" (default)
+or "none". "none" requires a nonempty reason and forbids package, feature or
+exception entries; "packages" requires at least one application or module.
+tools/xtask/src/build.rs: require_stage_output refuses any stage whose selected
+package set is empty, naming the stage and the record's declaration. The
+definitions, guest, apps and package stages all pass through it; no empty stage
+writes a success stamp. The definitions stage builds only when the platform
 installs guest modules, and the application authority policy is applied only
 when a System report exists.
 
@@ -640,27 +650,30 @@ Verified
                                                             image stages passed
   cargo xtask boot-check --platform qemu_riscv              17 of 17 cases, 0
                                                             skipped; fresh
-                                                            13:14 serial logs
+                                                            13:28 serial logs
                                                             contain
                                                             BOOT_SYSTEM_READY:
                                                             and DESKTOP_READY:;
                                                             results/system7/
                                                             boot-checks.json
                                                             status passed,
-                                                            qcow2 unchanged
-  cargo xtask build --platform qemu_arm64                   exit 1 at the
-                                                            storage image:
-                                                            "this build produces
-                                                            a single unpartitioned
-                                                            system7-filesystem
-                                                            volume, not a Table
-                                                            { kind: Mbr, ... }
-                                                            partition table".
-                                                            Definitions, guest,
-                                                            apps and package
-                                                            stages passed (the
-                                                            platform installs no
-                                                            guest set).
+                                                            finder_launched and
+                                                            qcow2_unchanged true
+  cargo xtask build --platform qemu_arm64                   exit 1 at the empty
+                                                            stages, with
+                                                            "definitions stage
+                                                            produced no artifact:
+                                                            platform 'qemu_arm64'
+                                                            declares install.set
+                                                            none: No aarch64
+                                                            guest set is produced
+                                                            yet; ..." (the guest
+                                                            and apps stages
+                                                            report the same
+                                                            declaration). No
+                                                            stage stamp was
+                                                            written for an empty
+                                                            stage.
   aarch64 linker script                                     rustc linked a
                                                             minimal no_std
                                                             aarch64 binary with
@@ -682,7 +695,8 @@ Remaining boot blockers
      aarch64 page-table builder or activation exists; mac-riscv-pages is
      Sv39-only.
   3. SD image: tools/xtask/src/disk.rs produces only a whole-medium System7
-     volume; the MBR/FAT32 partitioned SD medium is not emitted.
+     volume; the MBR/FAT32 partitioned SD medium is not emitted. The build now
+     stops at the empty stages before this point.
   4. VideoCore mailbox framebuffer driver: none exists, so this platform
      cannot draw a desktop. No virtio fallback was added.
   5. qemu-system-aarch64 is not installed; the QEMU directory contains only

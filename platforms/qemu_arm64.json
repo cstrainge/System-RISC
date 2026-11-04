@@ -9,6 +9,8 @@
   ],
   "install": {
     "description": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
+    "set": "none",
+    "reason": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
     "applications": [],
     "modules": []
   },
