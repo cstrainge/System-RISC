@@ -1338,7 +1338,7 @@ impl WindowManager
                    static TRACED: core::sync::atomic::AtomicU8 =
                        core::sync::atomic::AtomicU8::new(0);
                    let seen = TRACED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                   if seen < 24
+                   if seen < 200
                    {
                        serial!("REVISION_BUMP site=job_admit window={} revision={}",
                                job.plan().seal.id.0,
