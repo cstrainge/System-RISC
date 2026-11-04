@@ -1213,6 +1213,21 @@ fn set_stage(toolbox: &mut Toolbox, owner: &Owner, stage: AuthorStage) -> Result
 }
 fn service_paint(owner: &Owner, loan: &mut Loan) -> Result<(), ServiceFailure>
 {
+    // Every bare status in this function becomes ServiceFailure::Callback, so the
+    // reported cause cannot say which step produced it. Name the step once.
+    fn note_step<T>(name: &'static str, result: Result<T, Status>) -> Result<T, Status>
+    {
+        if let Err(status) = &result
+        {
+            static REPORTED: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+            {
+                serial!("PAINT_STEP_REFUSED step={} status={}", name, status);
+            }
+        }
+        result
+    }
     let (stage, cancelled) =
         desktop(|toolbox| {
             same_transaction(toolbox, owner)?;
@@ -1259,7 +1274,10 @@ fn service_paint(owner: &Owner, loan: &mut Loan) -> Result<(), ServiceFailure>
             canvas.set_clip(step.clip);
             match loan
             {
-                Loan::Window(loan) => toolbox.windows.capture_paint(loan, &canvas)?,
+                Loan::Window(loan) =>
+                {
+                    note_step("capture", toolbox.windows.capture_paint(loan, &canvas))?
+                }
                 Loan::Control(loan) =>
                 {
                     if !matches!(step.phase, Phase::Content)
@@ -1316,7 +1334,7 @@ fn service_paint(owner: &Owner, loan: &mut Loan) -> Result<(), ServiceFailure>
                 {
                     Loan::Window(loan) =>
                     {
-                        toolbox.windows.replay_paint(loan, &mut canvas)?;
+                        note_step("replay", toolbox.windows.replay_paint(loan, &mut canvas))?;
                         false
                     }
                     Loan::Control(loan) =>

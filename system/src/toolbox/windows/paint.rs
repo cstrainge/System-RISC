@@ -848,12 +848,33 @@ impl WindowManager
            || owned.revision != Some(plan.revision)
            || !owned.binding.matches(plan.window.entry)
         {
+            // Four independent causes share one refusal. Report each, first time.
+            static REPORTED: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+            {
+                serial!("PAINT_PLAN_STALE screen_same={} owner_same={} revision={:?} of {} \
+                         binding_matches={}",
+                        self.screen == plan.screen,
+                        owner == plan.owner,
+                        owned.revision,
+                        plan.revision,
+                        owned.binding.matches(plan.window.entry));
+            }
             return Err(SERVICE_BUSY);
         }
         if self.paint_tracking(plan.id, plan.domain) != plan.tracking
            || (plan.domain == PaintDomain::TrackingGrow
                && self.tracking_revision != plan.tracking_revision)
         {
+            static REPORTED: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+            {
+                serial!("PAINT_PLAN_TRACKING_STALE tracking_same={} revision_same={}",
+                        self.paint_tracking(plan.id, plan.domain) == plan.tracking,
+                        self.tracking_revision == plan.tracking_revision);
+            }
             return Err(SERVICE_BUSY);
         }
         Ok(())
