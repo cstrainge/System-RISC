@@ -134,7 +134,7 @@ mod tests
     }
     fn memory() -> serde_json::Value
     {
-        super::super::super::record("QemuRISC-V").unwrap()["memory"].clone()
+        super::super::super::record("qemu_riscv").unwrap()["memory"].clone()
     }
     #[test]
     fn selected_process_caps_are_configurable_without_minimum_or_maximum_policy()

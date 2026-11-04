@@ -1,10 +1,11 @@
 {
-  "name": "ArmVirt",
+  "name": "arm_virt",
   "rust_target": "aarch64-unknown-none",
   "storage": {
     "images": {
       "sd-card": {
         "description": "Raspberry Pi SD card: an MBR with a FAT32 boot partition holding the vendor firmware config and our payload, followed by the System 7 volume",
+        "output": "sd-card.img",
         "layout": {
           "kind": "partitioned",
           "table": { "kind": "mbr", "boot": 0 },

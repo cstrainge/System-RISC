@@ -36,7 +36,21 @@ pub struct Image
 {
     /// What this medium is, in one line.
     pub description: String,
+    /// The file this medium is built as, under the build's `dist` directory.
+    /// Declared rather than derived from the image's key so a record can name
+    /// the file a guest, a board or a person expects.
+    #[serde(default)]
+    pub output:      Option<String>,
     pub layout:      Layout
+}
+
+impl Image
+{
+    /// The file name this medium is written to.
+    pub fn file(&self, name: &str) -> String
+    {
+        self.output.clone().unwrap_or_else(|| format!("{name}.img"))
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -249,6 +263,10 @@ impl Image
         if self.description.trim().is_empty()
         {
             return Err(reject("description", "must describe the medium".into()));
+        }
+        if self.output.as_ref().is_some_and(|output| output.trim().is_empty())
+        {
+            return Err(reject("output", "must name a file when present".into()));
         }
         match &self.layout
         {

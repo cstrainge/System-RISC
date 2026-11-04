@@ -503,7 +503,7 @@ Before preparing its permanent roots, System admits one physical buddy lease for
 the fixed heap. Both roots map its configured usable capacity supervisor RW/NX;
 the owner remains pinned beside those roots until reset. A buddy-rounded tail is
 retained physical backing, not extra usable heap. The ordinary allocator starts
-only after the root is installed. The selected QemuRISC-V capacity is 512 MiB;
+only after the root is installed. The selected qemu_riscv capacity is 512 MiB;
 smaller machines may refuse that admission despite satisfying static placement
 checks. They report the requested capacity and remedy, never silently shrink it.
 The checked `memory.system_recovery_bytes` reserves 32 MiB inside that same
@@ -1445,7 +1445,7 @@ pages and metadata must separately fit the original module Kernel account and
 discovered RAM. Failure does not substitute System storage.
 
 `virtual_memory.modules` defines execution placement. There is no physical module
-arena reservation or identity map. The QemuRISC-V firmware heap remains reserved
+arena reservation or identity map. The qemu_riscv firmware heap remains reserved
 at `0x87000000..0x87800000`; module storage comes from the real page pool. Boot
 reservations, constants and linker symbols are generated from the same checked
 platform record. The image builder reports installed virtual spans, while the
@@ -2570,7 +2570,7 @@ Operations are CREATE 0, DELETE 1, GET 2, SET 3, BEGIN 4, NEXT 5, ACK 6 and FINI
 CREATE takes a nullable C destructor address and returns a key. DELETE invalidates
 that Process-owned key without invoking its values' callbacks. GET/SET only
 address the actual current canonical thread and perform no allocation. Every
-thread prepays the platform-selected process key capacity before entry; QemuRISC-V
+thread prepays the platform-selected process key capacity before entry; qemu_riscv
 selects 256, checked within 16..4096. Existing-key access cannot hide a lazy slot
 allocation failure. Other-process and stale keys are rejected.
 

@@ -271,7 +271,7 @@ mod tests
     use super::*;
     fn definition() -> Definition
     {
-        serde_json::from_value(super::super::record("QemuRISC-V").unwrap()["virtual_memory"]
+        serde_json::from_value(super::super::record("qemu_riscv").unwrap()["virtual_memory"]
                                .clone()).unwrap()
     }
     #[test]

@@ -52,6 +52,11 @@ pub struct Platform
     /// is vendor firmware declares none.
     #[serde(default)]
     pub bootloader:   Option<bootloader::Definition>,
+    /// True for a record meant only to be included by other platforms. Such a
+    /// record describes shared data, not a machine, so it is not listed and
+    /// cannot be selected.
+    #[serde(default)]
+    pub base:         bool,
     fatal_shutdown:   Option<FatalShutdown>,
     #[serde(default)]
     mmio_devices:     Vec<devices::Definition>,
@@ -59,7 +64,7 @@ pub struct Platform
     memory:           Option<memory::Definition>,
     virtual_memory:   Option<virtual_memory::Definition>
 }
-pub const DEFAULT_PLATFORM: &str = "QemuRISC-V";
+pub const DEFAULT_PLATFORM: &str = "qemu_riscv";
 pub const PLATFORM_ENV: &str = "SYSTEM7_PLATFORM";
 
 /// The only directory a platform record is read from.
@@ -68,24 +73,12 @@ fn directory() -> PathBuf
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platforms")
 }
 
-/// Platform names available on this checkout, for error messages.
+/// Platform names available on this checkout, for error messages. Base records
+/// are excluded: they are not selectable, so naming them would mislead.
 fn known() -> String
 {
-    let Ok(entries) = fs::read_dir(directory())
-    else
-    {
-        return "<none>".into();
-    };
-    let mut names: Vec<String> = entries.filter_map(|entry| {
-                                            let path = entry.ok()?.path();
-                                            if path.extension()? != "json"
-                                            {
-                                                return None;
-                                            }
-                                            Some(path.file_stem()?.to_str()?.to_string())
-                                        })
-                                        .collect();
-    names.sort();
+    let names: Vec<String> =
+        stems().into_iter().filter(|stem| !base_record(stem).unwrap_or(false)).collect();
     if names.is_empty() { "<none>".into() } else { names.join(", ") }
 }
 
@@ -94,20 +87,13 @@ fn known() -> String
 /// record is reported instead of being listed as if it were usable.
 pub fn catalogue() -> Result<Vec<(String, String)>>
 {
-    let mut names: Vec<String> =
-        fs::read_dir(directory())?.filter_map(|entry| {
-                                      let path = entry.ok()?.path();
-                                      if path.extension()? != "json"
-                                      {
-                                          return None;
-                                      }
-                                      Some(path.file_stem()?.to_str()?.to_string())
-                                  })
-                                  .collect();
-    names.sort();
     let mut listed = Vec::new();
-    for name in names
+    for name in stems()
     {
+        if base_record(&name)?
+        {
+            continue;
+        }
         let platform = load(&name)?;
         let summary = platform.emulation()
                               .map(|emulation| emulation.description.clone())
@@ -198,8 +184,8 @@ fn merge(base: Value, overlay: Value) -> Result<Value>
             let Value::Array(mut existing) = base
             else
             {
-                return Err(error(format!("'{APPEND}' appends to an array, but the included value \
-                                          is not one")));
+                return Err(error(format!("'{APPEND}' appends to an array, but the included \
+                                          value is not one")));
             };
             existing.extend(items.iter().cloned());
             return Ok(Value::Array(existing));
@@ -254,24 +240,150 @@ fn plain(value: Value) -> Result<Value>
 /// include and merge semantics stay in one place.
 pub fn record(name: &str) -> Result<Value>
 {
-    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return Err(error("platform name must contain only ASCII letters, digits, - or _"));
-    }
+    let name = resolve(name)?;
     let path = directory().join(format!("{name}.json"));
-    if !path.is_file()
+    document(&path, &mut Vec::new())
+}
+
+/// The canonical spelling of a platform name.
+///
+/// This is the single identifier used for `--platform`, for the output
+/// directory and for everything the build report prints. It is derived from a
+/// user-supplied spelling by lowercasing ASCII letters and replacing each run
+/// of anything else with `_`, so `qemu_riscv`, `QemuRISC-V`, `QEMU_RISCV` and
+/// `qemu riscv` all name the same platform. The result contains only
+/// `[a-z0-9_]`, which is path-safe on every host, and it is case-folded, so two
+/// spellings can never create two directories on a case-insensitive filesystem.
+pub fn canonical(name: &str) -> String
+{
+    let mut out = String::with_capacity(name.len());
+    for character in name.chars()
     {
-        return Err(error(format!("cannot select platform '{name}': no such platform record; \
-                                  known platforms: {}",
+        if character.is_ascii_alphanumeric()
+        {
+            out.push(character.to_ascii_lowercase());
+        }
+        else if !out.ends_with('_')
+        {
+            out.push('_');
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// The spelling-insensitive key a typed name is matched by. `QemuRISC-V`,
+/// `QEMU_RISCV`, `qemu riscv` and `qemu_riscv` all squash to `qemuriscv`, so a
+/// developer does not have to remember where the underscores are.
+fn squash(name: &str) -> String
+{
+    name.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+}
+
+/// The name a record's file must carry to be usable as a directory segment on
+/// every host: lower-case ASCII, digits and single underscores.
+fn path_safe(stem: &str) -> bool
+{
+    !stem.is_empty() && canonical(stem) == stem
+}
+
+/// Whether a record is a base other platforms include, read without resolving
+/// so that `resolve` can ask the question without recursing.
+fn base_record(stem: &str) -> Result<bool>
+{
+    let path = directory().join(format!("{stem}.json"));
+    let text = fs::read_to_string(&path).map_err(|cause| {
+                                            error(format!("cannot read platform file {}: {cause}",
+                                                          path.display()))
+                                        })?;
+    let value: Value = serde_json::from_str(&text).map_err(|cause| {
+                                                      error(format!("cannot read platform file \
+                                                                     {}: {cause}",
+                                                                    path.display()))
+                                                  })?;
+    Ok(value.get("base").and_then(Value::as_bool) == Some(true))
+}
+
+fn stems() -> Vec<String>
+{
+    let Ok(entries) = fs::read_dir(directory())
+    else
+    {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries.filter_map(|entry| {
+                                            let path = entry.ok()?.path();
+                                            if path.extension()? != "json"
+                                            {
+                                                return None;
+                                            }
+                                            Some(path.file_stem()?.to_str()?.to_string())
+                                        })
+                                        .collect();
+    names.sort();
+    names
+}
+
+/// Resolve any accepted spelling of a platform name to its canonical record
+/// name, so callers never invent a second slugger for paths.
+pub fn resolve(name: &str) -> Result<String>
+{
+    if name.contains(['/', '\\']) || name.contains("..")
+    {
+        return Err(error(format!("cannot select platform '{name}': a platform name must \
+                                  contain no path separators or '..'")));
+    }
+    let wanted = squash(name);
+    if wanted.is_empty()
+    {
+        return Err(error(format!("cannot select platform '{name}': a platform name must \
+                                  contain at least one letter or digit; known platforms: {}",
                                  known())));
     }
-    document(&path, &mut Vec::new())
+    let mut matches: Vec<String> =
+        stems().into_iter().filter(|stem| squash(stem) == wanted).collect();
+    match matches.len()
+    {
+        1 =>
+        {
+            let stem = matches.remove(0);
+            if !path_safe(&stem)
+            {
+                return Err(error(format!("platform record '{stem}.json' is named badly: the \
+                                          file name must be lower-case ASCII letters, digits \
+                                          and underscores so it can name an output directory \
+                                          on every host; rename it to '{}.json'",
+                                         canonical(&stem))));
+            }
+            if base_record(&stem)?
+            {
+                return Err(error(format!("cannot select platform '{name}': '{stem}' is a base \
+                                          record that other platforms include, not a machine \
+                                          of its own; select one of: {}",
+                                         known())));
+            }
+            Ok(stem)
+        }
+        0 =>
+        {
+            Err(error(format!("cannot select platform '{name}': no platform record normalises \
+                               to '{wanted}'; known platforms: {}",
+                              known())))
+        }
+        _ =>
+        {
+            matches.sort();
+            Err(error(format!("cannot select platform '{name}': '{wanted}' is ambiguous between \
+                               {}",
+                              matches.join(", "))))
+        }
+    }
 }
 
 pub fn load(name: &str) -> Result<Platform>
 {
+    let name = resolve(name)?;
     let path = directory().join(format!("{name}.json"));
-    let document = record(name)?;
+    let document = record(&name)?;
     let platform: Platform = serde_json::from_value(document).map_err(|cause| {
                                                                  error(format!("invalid platform \
                                                                                 '{name}' at {}: \
@@ -532,8 +644,7 @@ mod tests
                   br#"{"include":"nested/leaf.json","object":{"c":3}}"#).unwrap();
         fs::write(root.join("over.json"),
                   br#"{"include":"mid.json","scalar":"over","list":{"$append":[3]},
-                       "object":{"b":20}}"#)
-            .unwrap();
+                       "object":{"b":20}}"#).unwrap();
         fs::write(root.join("extends.json"),
                   br#"{"include":"base.json","list":{"$append":[3]},"object":{"b":20}}"#).unwrap();
         fs::write(root.join("cycle-a.json"), br#"{"include":"cycle-b.json"}"#).unwrap();
@@ -557,16 +668,14 @@ mod tests
         let cycle = document(&root.join("cycle-a.json"), &mut Vec::new()).unwrap_err().to_string();
         assert!(cycle.contains("platform include cycle") && cycle.contains("cycle-a.json ->"),
                 "{cycle}");
-        let missing = document(&root.join("absent.json"), &mut Vec::new()).unwrap_err()
-                                                                          .to_string();
-        assert!(missing.contains("cannot read platform file") &&
-                missing.contains("absent.json"),
+        let missing = document(&root.join("absent.json"), &mut Vec::new()).unwrap_err().to_string();
+        assert!(missing.contains("cannot read platform file") && missing.contains("absent.json"),
                 "{missing}");
         let dangling = root.join("dangling.json");
         fs::write(&dangling, br#"{"include":"nowhere.json"}"#).unwrap();
         let dangling = document(&dangling, &mut Vec::new()).unwrap_err().to_string();
-        assert!(dangling.contains("includes 'nowhere.json'") &&
-                dangling.contains("cannot read platform file"),
+        assert!(dangling.contains("includes 'nowhere.json'")
+                && dangling.contains("cannot read platform file"),
                 "{dangling}");
         fs::remove_dir_all(&root).unwrap();
     }
@@ -780,7 +889,7 @@ mod artifact_tests
     #[test]
     fn named_platform_generates_one_consistent_device_record_and_rejects_bad_selection()
     {
-        let platform = load("QemuRISC-V").unwrap();
+        let platform = load("qemu_riscv").unwrap();
         let (rust, linker) = platform.device_artifacts(true).unwrap();
         let address =
             devices::check(&platform.mmio_devices, &platform.memory().unwrap()).unwrap()[0].address;
@@ -793,16 +902,16 @@ mod artifact_tests
         assert_eq!(platform.fatal_shutdown.as_ref().unwrap().restart_value, 0x7777);
         assert!(rust.contains("FATAL_FINISHER_RESTART: u32 = 30583;"));
         assert!(linker.contains("__platform_fatal_restart = 0x7777"));
-        for name in ["../QemuRISC-V", "QemuRISC-V/other", ""]
+        for name in ["../qemu_riscv", "qemu_riscv/other", ""]
         {
             assert!(load(name).err().unwrap().to_string().contains("platform name must contain"));
         }
         let error = load("NoSuchBoard").err().unwrap().to_string();
         assert!(error.contains("cannot select platform 'NoSuchBoard'")
-                && error.contains("known platforms: ArmVirt, QemuRISC-V, RiscVBase"));
+                && error.contains("known platforms: arm_virt, qemu_riscv"));
         for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234", "0x80000000"]
         {
-            let mut bad = load("QemuRISC-V").unwrap();
+            let mut bad = load("qemu_riscv").unwrap();
             bad.mmio_devices[0].address = text.into();
             assert!(bad.device_artifacts(true)
                        .err()
@@ -810,13 +919,13 @@ mod artifact_tests
                        .to_string()
                        .contains("platform MMIO"));
         }
-        let mut bad = load("QemuRISC-V").unwrap();
+        let mut bad = load("qemu_riscv").unwrap();
         bad.fatal_shutdown.as_mut().unwrap().failure_value = 0;
         assert!(bad.device_artifacts(true).is_err());
         bad.fatal_shutdown.as_mut().unwrap().failure_value = 1;
         bad.fatal_shutdown.as_mut().unwrap().device = "absent".into();
         assert!(bad.device_artifacts(true).err().unwrap().to_string().contains("absent"));
-        let mut bad = load("QemuRISC-V").unwrap();
+        let mut bad = load("qemu_riscv").unwrap();
         bad.mmio_devices.push(bad.mmio_devices[0].clone());
         assert!(bad.device_artifacts(true).err().unwrap().to_string().contains("non-overlapping"));
     }
@@ -825,14 +934,14 @@ mod artifact_tests
     {
         for restart in [0, 78643]
         {
-            let mut platform = load("QemuRISC-V").unwrap();
+            let mut platform = load("qemu_riscv").unwrap();
             platform.fatal_shutdown.as_mut().unwrap().restart_value = restart;
             let error = platform.device_artifacts(true).unwrap_err().to_string();
             assert!(error.contains("fatal_shutdown.restart_value"), "{error}");
             assert!(error.contains("nonzero and distinct from failure_value"), "{error}");
             assert!(error.contains("board's documented reset command"), "{error}");
         }
-        let mut platform = load("QemuRISC-V").unwrap();
+        let mut platform = load("qemu_riscv").unwrap();
         platform.fatal_shutdown.as_mut().unwrap().restart_value = 0x1234;
         let (rust, linker) = platform.device_artifacts(true).unwrap();
         assert!(rust.contains("FATAL_FINISHER_RESTART: u32 = 4660;"));

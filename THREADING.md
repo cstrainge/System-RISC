@@ -22,7 +22,7 @@ Normal return performs the shared TLS drain before Normal exit; explicit exit
 and Abort run no user TLS callbacks. See [the std status](docs/RUST-STD.md).
 
 The RV64 implementation schedules Finder, separately loaded APPLs and native
-module workers on the core-admitted eligible CPUs. The normal QemuRISC-V image
+module workers on the core-admitted eligible CPUs. The normal qemu_riscv image
 has four physical CPUs and installs Multi-Scheduler; without an active policy,
 boot scheduling stays on the primary. Supervisor timer interrupts preempt
 application and admitted worker bodies independently of Toolbox calls.
@@ -176,7 +176,7 @@ return without changing executor identity, allocation authority or resource
 selection. A worker body cannot acquire it through a trap request; a peer cannot
 migrate a drawing borrow. Unknown operations remain refused.
 
-The QemuRISC-V policy defaults to a 4 MiB stack and 16 MiB Kernel budget per
+The qemu_riscv policy defaults to a 4 MiB stack and 16 MiB Kernel budget per
 module, with zero Application-class allowance. Page-rounded stack backing,
 complete saved CPU backing, Context/Core metadata and forwarded captured closure
 storage consume that original module Kernel account. Shared scheduler capacity
@@ -387,7 +387,7 @@ and their `satp` remained zero; current privilege was not directly observable.
 Malformed external DTBs and a stale ROM exercised production boot refusals.
 These observations do not qualify sparse hardware IDs or SMP execution.
 
-The QemuRISC-V platform defines four physical harts by default. The normal
+The qemu_riscv platform defines four physical harts by default. The normal
 launcher reads that platform value; `start --harts COUNT` overrides it. Other
 CPUs independently enter System idle and acknowledge startup SSIP before actual
 policy admission. Multi-Scheduler requests the checked maximum; Automatic apps

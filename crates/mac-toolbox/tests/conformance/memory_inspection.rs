@@ -185,7 +185,7 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
             && summary.tracked_foundation_physical_bytes <= summary.ram_bytes
             && summary.tracked_foundation_physical_bytes % summary.page_bytes == 0,
             "Foundation heap occupancy and tracked physical leases are separately bounded")?;
-    // This existing guest scenario checks the selected QemuRISC-V defaults:
+    // This existing guest scenario checks the selected qemu_riscv defaults:
     // mapped reserve bytes must never be advertised as ordinary allocator space.
     require(heap == 512 * 1024 * 1024
             && summary.heap_capacity == 480 * 1024 * 1024

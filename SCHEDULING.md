@@ -213,7 +213,7 @@ for the later routing, joint claim or target-drain implementation described here
 
 The platform definition owns separate checked fields:
 
-| `platforms/QemuRISC-V.json` field | Current selection | Meaning |
+| `platforms/qemu_riscv.json` field | Current selection | Meaning |
 | --- | --- | --- |
 | `scheduling.quantum_microseconds` | 250 | Current minimum and maximum runnable-thread quantum |
 | `scheduling.callback_budget_microseconds` | 1000 | Allowance checked after the private policy call returns |

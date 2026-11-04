@@ -5,6 +5,9 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent
 BUILD_DIR_ENV = 'SYSTEM7_BUILD_DIR'
+DIST_ENV = 'SYSTEM7_DIST'
+PLATFORM_ENV = 'SYSTEM7_PLATFORM'
+DEFAULT_PLATFORM = 'qemu_riscv'
 
 
 def build_dir():
@@ -13,7 +16,17 @@ def build_dir():
 
 
 def dist_dir():
-    return build_dir() / 'dist'
+    """The selected platform's output directory.
+
+    `xtask` owns this path and exports it, so scripts never re-derive the
+    platform segment themselves; the fallback only serves a hand-run script
+    after a default build.
+    """
+    chosen = os.environ.get(DIST_ENV)
+    if chosen:
+        path = Path(chosen)
+        return (path if path.is_absolute() else build_dir() / path).resolve()
+    return (build_dir() / 'dist' / os.environ.get(PLATFORM_ENV, DEFAULT_PLATFORM)).resolve()
 
 
 def host_dir():

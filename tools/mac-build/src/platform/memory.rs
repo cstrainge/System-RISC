@@ -616,7 +616,7 @@ mod tests
     use super::*;
     fn definition() -> Definition
     {
-        let json: serde_json::Value = super::super::record("QemuRISC-V").unwrap();
+        let json: serde_json::Value = super::super::record("qemu_riscv").unwrap();
         serde_json::from_value(json["memory"].clone()).unwrap()
     }
     #[test]

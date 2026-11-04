@@ -5,6 +5,9 @@ mod authority;
 mod resource_map;
 mod modules;
 mod sdk;
+mod elf;
+mod emulator;
+mod tools;
 
 use std::{env,
           ffi::OsStr,
@@ -21,13 +24,24 @@ struct Workspace
     root:     PathBuf,
     repo:     PathBuf,
     build:    PathBuf,
+    /// One output root per platform: everything this build produces except the
+    /// cargo target dir and the tool caches lives here.
+    dist:     PathBuf,
+    /// Cargo's target dir. Separate from `dist` so an output-dir override does
+    /// not invalidate a warm build, and so two concurrent builds can use
+    /// different targets without inventing anything.
+    target:   PathBuf,
     checking: bool,
     platform: mac_build::platform::Platform
 }
 
+/// The environment variable that overrides the output root.
+pub const DIST_ENV: &str = "SYSTEM7_DIST";
+
 impl Workspace
 {
-    fn new(build: Option<PathBuf>, checking: bool, platform: mac_build::platform::Platform)
+    fn new(build: Option<PathBuf>, dist: Option<PathBuf>, target: Option<PathBuf>, checking: bool,
+           platform: mac_build::platform::Platform)
            -> Result<Self>
     {
         let root =
@@ -48,11 +62,45 @@ impl Workspace
         {
             return Err(error("build output must be outside the OS source repository"));
         }
+        // Precedence: the `--dist` flag, then `SYSTEM7_DIST`, then
+        // `<build>/dist`. A relative value resolves against the workspace root;
+        // an absolute one is used as given. The platform segment is the
+        // canonical platform name, so every spelling of a platform lands in the
+        // same directory and two platforms never collide.
+        let dist = match dist.or_else(|| env::var_os(DIST_ENV).map(PathBuf::from))
+        {
+            Some(path) if !path.as_os_str().is_empty() =>
+            {
+                (if path.is_absolute() { path } else { root.join(path) }).join(&platform.name)
+            }
+            _ => build.join("dist").join(&platform.name)
+        };
+        fs::create_dir_all(&dist)?;
+        let dist = dist.canonicalize()?;
+        let target = match target.or_else(|| env::var_os("CARGO_TARGET_DIR").map(PathBuf::from))
+        {
+            Some(path) if path.as_os_str().is_empty() => build.join("target"),
+            Some(path) if path.is_absolute() => path,
+            Some(path) => env::current_dir()?.join(path),
+            None => build.join("target")
+        };
         Ok(Self { root,
                   repo,
                   build,
+                  dist,
+                  target,
                   checking,
                   platform })
+    }
+
+    fn dist(&self) -> &Path
+    {
+        &self.dist
+    }
+
+    fn target(&self) -> &Path
+    {
+        &self.target
     }
 
     fn command(&self, program: impl AsRef<OsStr>) -> Command
@@ -78,6 +126,7 @@ impl Workspace
         let mut command = Command::new(python.as_deref().unwrap_or(program));
         command.env(mac_build::paths::BUILD_DIR_ENV, &self.build);
         command.env(mac_build::platform::PLATFORM_ENV, &self.platform.name);
+        command.env(DIST_ENV, &self.dist);
         command
     }
 
@@ -99,7 +148,7 @@ impl Workspace
         let mut command = self.cargo();
         command.args(["build", "--locked", "--release", "--target", &self.platform.rust_target,
                       "--target-dir"])
-               .arg(self.build.join("target"));
+               .arg(self.target());
         for package in packages
         {
             command.args(["--package", package]);
@@ -157,7 +206,7 @@ impl Workspace
                            "stuffit-filesystem", "qemu-power-device", "vdagent-channel",
                            "virtio-rng", "virtio-gpu", "host-clipboard-extension",
                            "multi-scheduler-extension"])?;
-        boot::package_rom(self)?;
+        let _ = boot::package_rom(self)?;
         let mut reports = Vec::new();
         for (directory, name, binary) in
             [("system", "System", "System"),
@@ -172,12 +221,11 @@ impl Workspace
              ("drivers/qemu-power-device", "Qemu Power Device", "QemuPowerDevice")]
         {
             let report = package::build(&self.root.join(directory).join("resources.json"),
-                                        &self.build
-                                             .join("target")
+                                        &self.target()
                                              .join(&self.platform.rust_target)
                                              .join("release")
                                              .join(binary),
-                                        &self.build.join("dist"))?;
+                                        self.dist())?;
             println!("Packaged {name}: entry 0x{:x}, {} resources",
                      report["entry"].as_u64().unwrap(),
                      report["resources"].as_array().unwrap().len());
@@ -200,7 +248,7 @@ impl Workspace
             reports.push(sdk::application(self,
                                           &self.root.join("apps").join(app).join("Cargo.toml"),
                                           features,
-                                          Some(&self.build.join("dist")))?);
+                                          Some(self.dist()))?);
         }
         authority::install(self, &mut reports)?;
         for (index, a) in reports.iter().enumerate()
@@ -233,7 +281,7 @@ impl Workspace
                             "toolchain": {"cargo": output(self.cargo().arg("--version"))?,
                                           "rustc": output(Command::new("rustc").arg("--version"))?},
                             "packages": reports});
-        write_json(&self.build.join("dist/build.json"), &report)?;
+        write_json(&self.dist().join("build.json"), &report)?;
         Ok(reports)
     }
 
@@ -474,6 +522,8 @@ fn execute() -> Result<()>
 {
     let mut args = Vec::new();
     let mut build = None;
+    let mut dist = None;
+    let mut target = None;
     let mut platform = None;
     let mut input = env::args().skip(1);
     while let Some(arg) = input.next()
@@ -497,6 +547,25 @@ fn execute() -> Result<()>
                 Some(PathBuf::from(input.next()
                                         .ok_or_else(|| error("--build-dir needs a directory"))?));
         }
+        else if arg == "--dist"
+        {
+            if dist.is_some()
+            {
+                return Err(error("--dist may only be supplied once"));
+            }
+            dist = Some(PathBuf::from(input.next()
+                                           .ok_or_else(|| error("--dist needs a directory"))?));
+        }
+        else if arg == "--target-dir"
+        {
+            if env::var_os("CARGO_TARGET_DIR").is_some()
+            {
+                return Err(error("--target-dir and CARGO_TARGET_DIR are both set; use one"));
+            }
+            target =
+                Some(PathBuf::from(input.next()
+                                        .ok_or_else(|| error("--target-dir needs a directory"))?));
+        }
         else
         {
             args.push(arg);
@@ -516,7 +585,47 @@ fn execute() -> Result<()>
     }
     let name = platform.or_else(|| env::var(mac_build::platform::PLATFORM_ENV).ok())
                        .unwrap_or_else(|| mac_build::platform::DEFAULT_PLATFORM.into());
-    let workspace = Workspace::new(build, checking, mac_build::platform::load(&name)?)?;
+    let workspace =
+        Workspace::new(build, dist, target, checking, mac_build::platform::load(&name)?)?;
+    if args.first().map(String::as_str) == Some("tools")
+    {
+        let mut programs: Vec<String> = workspace.platform
+                                                 .emulation()
+                                                 .map(|emulation| vec![emulation.binary.clone()])
+                                                 .unwrap_or_default();
+        programs.push("ninja".into());
+        tools::report(&programs);
+        return Ok(());
+    }
+    if args.first().map(String::as_str) == Some("run")
+    {
+        let mut mode = emulator::Mode::Interactive;
+        let mut no_build = false;
+        let mut extra = Vec::new();
+        let mut passthrough = false;
+        for arg in &args[1..]
+        {
+            if passthrough
+            {
+                extra.push(arg.clone());
+                continue;
+            }
+            match arg.as_str()
+            {
+                "--headless" => mode = emulator::Mode::Headless,
+                "--no-build" => no_build = true,
+                "--" => passthrough = true,
+                other => return Err(error(format!("unknown run option '{other}'")))
+            }
+        }
+        if !no_build
+        {
+            workspace.build()?;
+            disk::image(&workspace)?;
+        }
+        boot::run(&workspace, mode, &[], &extra)?;
+        return Ok(());
+    }
     let lease = if args.first().is_some_and(|s| {
                                    matches!(s.as_str(),
                                             "build"
@@ -529,7 +638,7 @@ fn execute() -> Result<()>
                                             | "test")
                                })
     {
-        Some(BuildLease::acquire(&workspace.build)?)
+        Some(BuildLease::acquire(workspace.dist())?)
     }
     else
     {
@@ -584,8 +693,15 @@ fn execute() -> Result<()>
         }
         [command] if command == "rom" =>
         {
-            workspace.guest_build(&["bootrom-riscv"])?;
-            boot::package_rom(&workspace)?;
+            if let Some(package) = workspace.platform.bootloader.as_ref().map(|b| b.package.clone())
+            {
+                workspace.guest_build(&[package.as_str()])?;
+                let _ = boot::package_rom(&workspace)?;
+            }
+            else
+            {
+                let _ = boot::package_rom(&workspace)?;
+            }
         }
         [command] if command == "boot-check" =>
         {
@@ -597,15 +713,17 @@ fn execute() -> Result<()>
         {
             workspace.build()?;
             disk::image(&workspace)?;
-            boot::interactive(&workspace, &workspace.build.join("dist/system7.qcow2"), "qcow2")?;
+            boot::run(&workspace, emulator::Mode::Interactive, &[], &[])?;
         }
         [command, path] if command == "boot" =>
         {
-            workspace.guest_build(&["bootrom-riscv"])?;
-            boot::package_rom(&workspace)?;
+            if let Some(package) = workspace.platform.bootloader.as_ref().map(|b| b.package.clone())
+            {
+                workspace.guest_build(&[package.as_str()])?;
+            }
+            let _ = boot::package_rom(&workspace)?;
             let path = Path::new(path).canonicalize()?;
-            let format = boot::disk_format(&path)?;
-            boot::interactive(&workspace, &path, format)?;
+            boot::run(&workspace, emulator::Mode::Interactive, &[path], &[])?;
         }
         [command, path] if command == "inspect" =>
         {
@@ -640,6 +758,8 @@ fn execute() -> Result<()>
 fn help()
 {
     println!("  cargo xtask platforms      List the platform records in this checkout");
+    println!("  cargo xtask tools          Report the host tools this platform needs");
+    println!("  cargo xtask run            Build, then run this platform in its emulator");
     println!("  cargo xtask sdk prepare    Materialize the pinned private Rust application SDK");
     println!("  cargo xtask sdk build      Compile the staged System RISC standard library");
     println!("  cargo xtask sdk app Cargo.toml  Build a std application with the private SDK");
@@ -656,7 +776,12 @@ fn help()
               FILE   Validate a native MacBinary file\n  cargo xtask package MANIFEST ELF OUT  \
               Package a native application\n  cargo xtask check          Host, disk, ROM boot \
               and graphical desktop checks");
-    println!("\n  --platform NAME           Select a known platform (default QemuRISC-V)");
+    println!("\n  --platform NAME           Select a known platform (default qemu_riscv)");
+    println!("\n  --dist DIRECTORY          Output root for this build (also SYSTEM7_DIST); the \
+              platform's own directory is created inside it. Defaults to \
+              build/system7/dist/<platform>");
+    println!("  --target-dir DIRECTORY    Cargo target directory for this build (also \
+              CARGO_TARGET_DIR); two builds running at once need both this and --dist");
     println!("\n  --build-dir DIRECTORY     Override all build/media output (also \
               SYSTEM7_BUILD_DIR)\n  check defaults to build/system7/check; normal builds use \
               build/system7");

@@ -83,7 +83,7 @@ runtime device-service claim or allocation receipt.
   The platform CPU selection explicitly enables MMU, PMP and Sv39. Firmware
   starts in M mode; resident code and trusted applications execute in S mode.
 - UART, virtio windows, flash, firmware state/stack and the separate firmware
-  heap come from checked `platforms/QemuRISC-V.json`, which generates linker
+  heap come from checked `platforms/qemu_riscv.json`, which generates linker
   symbols and Rust constants together. Actual RAM comes from the reset DTB.
 - System storage, flat application/definition arenas, firmware buffers/heap,
   module arena, display scratch and the FDT tail are disjoint reservations.

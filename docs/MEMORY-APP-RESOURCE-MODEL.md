@@ -210,7 +210,7 @@ adapter; accounting/free-list policy stays safe.
 
 As of 2026-11-02, the QEMU VM default is temporarily **2 GiB RAM** to reduce
 host memory pressure. Both VM launchers read this setting from
-`platforms/QemuRISC-V.json`. Heap and recovery budgets remain unchanged.
+`platforms/qemu_riscv.json`. Heap and recovery budgets remain unchanged.
 Earlier runtime observations retain their recorded memory configurations.
 
 The initial configurable defaults approved on 2026-10-24 are **8 GiB native
@@ -519,7 +519,7 @@ emits both linker scripts/symbols and the Rust constants code consumes, plus the
 BootInfo reservation list for the page layer. Sizes and ranges remain tunable.
 Validate overlaps/alignment and statically knowable RAM bounds at build time;
 validate resolved placement against discovered actual RAM at boot too. Current
-QemuRISC-V now defines its physical reservations, flash, image/module placement,
+qemu_riscv now defines its physical reservations, flash, image/module placement,
 relocation base, boot stack and current System heap in that record. The generated
 ROM linker script and resident constants share it; those physical carveouts no
 longer live as kernel-source address literals. Boot admission parses the DTB
@@ -1948,7 +1948,7 @@ documentation (52 crates) pass. The code-resource codec consumes only the
 allocation-free ABI contract to validate its layout fingerprint; the compiled
 boundary gate still forbids service or allocator implementations in clients.
 
-The QemuRISC-V flat heap is now 10 MiB, defined in its platform record and still
+The qemu_riscv flat heap is now 10 MiB, defined in its platform record and still
 bounded by the existing System linker reservation. At 800x600 the native
 QuickDraw-plus-Res-Edit campaign exhausted the previous 8 MiB budget while
 opening a resource document; its picker left less than 100 KiB of headroom.
@@ -3325,7 +3325,7 @@ disposal and allocation remain available. Worker computation and I/O run outside
 these short scopes. A plain spinlock shared with a preempted worker is not made
 safe by the existence of this API. Multi-hart qualification remains outstanding.
 
-The optimized QemuRISC-V/RVA23 single-hart artifact exercised two real armed
+The optimized qemu_riscv/RVA23 single-hart artifact exercised two real armed
 workers alongside Finder, a later parked worker, wake-before-park/coalescing,
 running and parked cancellation, actual broker Start/Poll/Cancel continuity,
 stale and foreign tokens, nested critical-section refusals, capture destruction,
@@ -3702,7 +3702,7 @@ their distinct restoration rule.
 
 ### Bounded native observations
 
-The optimized whole-world QemuRISC-V build used four CPUs, 8 GiB
+The optimized whole-world qemu_riscv build used four CPUs, 8 GiB
 RAM, an 800×600 display and disabled event/TextEdit input tracing. System resource
 SHA-256 was
 `4489143ae1b13e5b6c36e59d761b6de4468c78f93b55dd2c4386043a710d16c7`;
