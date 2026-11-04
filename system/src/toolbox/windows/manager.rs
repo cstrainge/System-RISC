@@ -1452,6 +1452,21 @@ impl WindowManager
                                       owned.revision =
                                           owned.revision
                                                .and_then(|revision| revision.checked_add(1));
+                                      // Bounded trace of the generic mutation stamp: a paint
+                                      // plan records this value, so when it moves between the
+                                      // plan and the replay the replay refuses. Site tag plus
+                                      // the resulting value orders it against PAINT_ADMIT.
+                                      static TRACED: core::sync::atomic::AtomicU8 =
+                                          core::sync::atomic::AtomicU8::new(0);
+                                      let seen = TRACED.fetch_add(1,
+                                                        core::sync::atomic::Ordering::Relaxed);
+                                      if seen < 24
+                                      {
+                                          serial!("REVISION_BUMP site=window_mut window={} \
+                                                   revision={:?}",
+                                                  id.0,
+                                                  owned.revision);
+                                      }
                                       &mut owned.window
                                   })
     }
