@@ -26,9 +26,12 @@ pub struct Definition
     #[serde(default)]
     pub soc:         Option<String>,
     pub boot:        Boot,
-    /// The artifact this board must be given, and the shape it must have.
+    /// The medium this board is given, by the name of a `storage` image. The
+    /// layout itself lives at the platform level so the same described medium
+    /// can also be attached to an emulator; a board does not describe its own
+    /// partition table.
     #[serde(default)]
-    pub image:       Option<ImageLayout>,
+    pub boot_image:  Option<String>,
     #[serde(default)]
     pub console:     Option<Console>,
     #[serde(default)]
@@ -94,51 +97,6 @@ pub enum FirstStage
     PlatformBootloader,
     /// The payload is the first thing the processor executes.
     None
-}
-
-/// The shape of the artifact. A raw payload at an offset, a populated
-/// filesystem image and a container are not interchangeable, so each is its own
-/// shape rather than one struct with optional fields.
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum ImageLayout
-{
-    /// A bootable disk image written whole to the medium.
-    Disk
-    {
-        artifact: String
-    },
-    /// A raw payload placed at an absolute offset.
-    Raw
-    {
-        artifact: String,
-        #[serde(default)]
-        offset:   Option<String>
-    },
-    /// A filesystem image populated with named files at named paths, the way a
-    /// board that boots from a FAT partition expects.
-    Filesystem
-    {
-        artifact:   String,
-        filesystem: String,
-        #[serde(default)]
-        files:      Vec<BootFile>
-    },
-    /// A vendor container or archive.
-    Container
-    {
-        artifact: String, format: String
-    }
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct BootFile
-{
-    /// The build artifact to place.
-    pub source: String,
-    /// Where the board's firmware looks for it.
-    pub path:   String
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -221,47 +179,19 @@ impl Definition
         {
             return Err(reject("board", "must name the board".into()));
         }
-        if let Some(image) = &self.image
+        if let Some(image) = &self.boot_image
         {
-            let artifact = image.artifact();
-            if artifact.trim().is_empty()
+            if image.trim().is_empty()
             {
-                return Err(reject("image.artifact", "must name the artifact to produce".into()));
+                return Err(reject("boot_image", "must name a storage image".into()));
             }
-            match image
-            {
-                ImageLayout::Raw { offset: None,
-                                   .. } =>
-                {
-                    return Err(reject("image.offset",
-                                      format!("raw artifact '{artifact}' must state its \
-                                               offset on the medium")));
-                }
-                ImageLayout::Filesystem { filesystem,
-                                          files,
-                                          .. } =>
-                {
-                    if filesystem.trim().is_empty()
-                    {
-                        return Err(reject("image.filesystem", "must name a filesystem".into()));
-                    }
-                    for file in files
-                    {
-                        if file.source.trim().is_empty() || file.path.trim().is_empty()
-                        {
-                            return Err(reject("image.files",
-                                              "each file needs a source and a path".into()));
-                        }
-                    }
-                }
-                ImageLayout::Container { format,
-                                         .. } if format.trim().is_empty() =>
-                {
-                    return Err(reject("image.format", "must name its container format".into()));
-                }
-                _ =>
-                {}
-            }
+        }
+        if self.boot.first_stage == FirstStage::PlatformBootloader && self.boot_image.is_none()
+        {
+            // A board this workspace boots itself needs to know which medium to
+            // write; a board booted by vendor firmware may name none.
+            return Err(reject("boot_image",
+                              "must name the storage image this board is written with".into()));
         }
         if self.boot.first_stage == FirstStage::VendorFirmware && self.device_tree.is_none()
         {
@@ -312,10 +242,10 @@ impl Definition
         &self.board
     }
 
-    /// The artifact this board must be given, if the record states its shape.
-    pub fn artifact(&self) -> Option<&str>
+    /// The storage images this board is written with, by name.
+    pub fn images(&self) -> impl Iterator<Item = &str>
     {
-        self.image.as_ref().map(ImageLayout::artifact)
+        self.boot_image.iter().map(String::as_str)
     }
 
     /// Whether this platform builds a bootloader of its own for this board.
@@ -327,22 +257,5 @@ impl Definition
     pub fn tooling(&self) -> &[String]
     {
         &self.tooling
-    }
-}
-
-impl ImageLayout
-{
-    pub fn artifact(&self) -> &str
-    {
-        match self
-        {
-            Self::Disk { artifact }
-            | Self::Raw { artifact,
-                        .. }
-            | Self::Filesystem { artifact,
-                               .. }
-            | Self::Container { artifact,
-                              .. } => artifact
-        }
     }
 }

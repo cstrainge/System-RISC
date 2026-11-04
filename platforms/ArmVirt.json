@@ -1,6 +1,43 @@
 {
   "name": "ArmVirt",
   "rust_target": "aarch64-unknown-none",
+  "storage": {
+    "images": {
+      "sd-card": {
+        "description": "Raspberry Pi SD card: an MBR with a FAT32 boot partition holding the vendor firmware config and our payload, followed by the System 7 volume",
+        "layout": {
+          "kind": "partitioned",
+          "table": { "kind": "mbr", "boot": 0 },
+          "partitions": [
+            {
+              "kind": "fat32",
+              "label": "BOOT",
+              "size": { "kind": "bytes", "bytes": "0x10000000" },
+              "files": [
+                {
+                  "source": { "kind": "board-config",
+                              "lines": [
+                                { "key": "arm_64bit", "value": "1" },
+                                { "key": "kernel", "value": "SYSTEM.IMG" },
+                                { "key": "enable_uart", "value": "1" },
+                                { "key": "uart_2ndstage", "value": "1" },
+                                { "key": "dtoverlay", "value": "disable-bt" }
+                              ] },
+                  "path": "config.txt"
+                },
+                { "source": { "kind": "artifact", "artifact": "system-image" }, "path": "SYSTEM.IMG" }
+              ]
+            },
+            {
+              "kind": "system7-filesystem",
+              "label": "SYSTEM",
+              "size": { "kind": "remaining" }
+            }
+          ]
+        }
+      }
+    }
+  },
   "emulation": {
     "description": "QEMU virt board, 4 Cortex-A72 cores, 2 GiB RAM, PCI virtio devices with a virtio GPU and ramfb display",
     "family": "qemu",
@@ -15,7 +52,8 @@
       "transport": "virtio-pci",
       "format": "raw",
       "readonly": true,
-      "capacity": 2
+      "capacity": 2,
+      "attach": [{ "image": "sd-card" }]
     },
     "display": {
       "kind": "virtio-gpu",
@@ -46,15 +84,7 @@
     "board": "raspberry-pi-4b",
     "soc": "bcm2711",
     "boot": { "medium": { "kind": "sd" }, "first_stage": "vendor-firmware" },
-    "image": {
-      "kind": "filesystem",
-      "artifact": "boot.img",
-      "filesystem": "fat32",
-      "files": [
-        { "source": "system.img", "path": "SYSTEM.IMG" },
-        { "source": "config.txt", "path": "config.txt" }
-      ]
-    },
+    "boot_image": "sd-card",
     "console": { "kind": "pl011", "device": "ttyAMA0", "baud": 115200 },
     "device_tree": { "kind": "firmware" },
     "memory": { "base": "0x0", "bytes": "0x80000000" },

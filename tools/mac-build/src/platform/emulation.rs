@@ -196,9 +196,11 @@ pub enum DiskTransport
     VirtioPci
 }
 
-/// Attachable block devices. `slots` lists the bus slots in attach order; each
-/// slot is a fixed guest-visible address, so the list is part of the contract
-/// and not a count of how many disks happen to be attached today.
+/// Attachable block devices. `slots` lists every bus slot this machine exposes
+/// to disks; each slot is a fixed guest-visible address, so the list is part of
+/// the contract and not a count of how many disks happen to be attached today.
+/// `attach` names platform media, by storage image name, at the slots the guest
+/// expects them; the remaining slots take caller-supplied media.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Disks
@@ -210,8 +212,23 @@ pub struct Disks
     pub readonly:  bool,
     #[serde(default)]
     pub slots:     Vec<u32>,
+    #[serde(default)]
+    pub attach:    Vec<Attachment>,
     #[serde(default = "four")]
     pub capacity:  NonZeroUsize
+}
+
+/// One platform medium attached to the machine.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Attachment
+{
+    /// The storage image name.
+    pub image: String,
+    /// The bus slot, required on a bus whose slots are fixed guest addresses
+    /// and forbidden on a bus that assigns its own.
+    #[serde(default)]
+    pub slot:  Option<u32>
 }
 
 fn four() -> NonZeroUsize
@@ -381,12 +398,63 @@ impl Definition
             {
                 return Err(reject("disks.format", "must name a disk format".into()));
             }
-            if disks.slots.is_empty()
+            match disks.transport
             {
-                return Err(reject("disks.slots",
-                                  "must list at least one bus slot for virtio-mmio".into()));
+                DiskTransport::VirtioMmio =>
+                {
+                    if disks.slots.is_empty() && disks.attach.is_empty()
+                    {
+                        return Err(reject("disks.slots",
+                                          "must list at least one bus slot for virtio-mmio".into()));
+                    }
+                    slots.extend(disks.slots.iter().map(|slot| (*slot, "disks.slots")));
+                }
+                DiskTransport::VirtioPci if !disks.slots.is_empty() =>
+                {
+                    return Err(reject("disks.slots",
+                                      "must be empty for virtio-pci, which assigns its own \
+                                       addresses"
+                                                 .into()));
+                }
+                DiskTransport::VirtioPci =>
+                {}
             }
-            slots.extend(disks.slots.iter().map(|slot| (*slot, "disks.slots")));
+            for (index, attachment) in disks.attach.iter().enumerate()
+            {
+                if attachment.image.trim().is_empty()
+                {
+                    return Err(reject(&format!("disks.attach[{index}].image"),
+                                      "must name a storage image".into()));
+                }
+                match (disks.transport, attachment.slot)
+                {
+                    (DiskTransport::VirtioMmio, Some(slot)) if disks.slots.contains(&slot) =>
+                    {}
+                    (DiskTransport::VirtioMmio, Some(slot)) =>
+                    {
+                        return Err(reject(&format!("disks.attach[{index}].slot"),
+                                          format!("{slot} is not one of this machine's disk \
+                                                   slots {:?}",
+                                                  disks.slots)));
+                    }
+                    (DiskTransport::VirtioMmio, None) =>
+                    {
+                        return Err(reject(&format!("disks.attach[{index}].slot"),
+                                          "must name the bus slot the guest expects on \
+                                           virtio-mmio"
+                                                       .into()));
+                    }
+                    (DiskTransport::VirtioPci, None) =>
+                    {}
+                    (DiskTransport::VirtioPci, Some(_)) =>
+                    {
+                        return Err(reject(&format!("disks.attach[{index}].slot"),
+                                          "must be omitted for virtio-pci, which assigns its \
+                                           own addresses"
+                                                         .into()));
+                    }
+                }
+            }
         }
         let devices = [("display", self.display.as_ref().map(|device| &device.transport)),
                        ("keyboard", self.keyboard.as_ref().map(|device| &device.transport)),
@@ -424,10 +492,27 @@ impl Definition
         Ok(())
     }
 
-    /// The bus slots a disk may be attached at, in attach order.
-    pub fn disk_slots(&self) -> &[u32]
+    /// The bus slots available to caller-supplied media, in attach order: every
+    /// disk slot the machine exposes that the platform does not already occupy.
+    /// A bus that assigns its own addresses has no fixed slots to hand out.
+    pub fn disk_slots(&self) -> Vec<u32>
     {
-        self.disks.as_ref().map_or(&[], |disks| disks.slots.as_slice())
+        let attached = self.attachments().filter_map(|(_, slot)| slot).collect::<Vec<_>>();
+        self.disks
+            .as_ref()
+            .map(|disks| {
+                disks.slots.iter().copied().filter(|slot| !attached.contains(slot)).collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The platform media this machine attaches, as (storage image, bus slot).
+    pub fn attachments(&self) -> impl Iterator<Item = (&str, Option<u32>)>
+    {
+        self.disks
+            .iter()
+            .flat_map(|disks| disks.attach.iter())
+            .map(|attachment| (attachment.image.as_str(), attachment.slot))
     }
 
     /// How many disks this machine accepts.
