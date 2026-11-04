@@ -15,6 +15,8 @@ use crate::{allocator,
 
 pub(crate) mod policy;
 pub(crate) mod dispatch;
+mod maintenance;
+pub(in crate::machine) use maintenance::with_system_maintenance;
 
 pub(crate) const IDLE: usize = usize::MAX;
 /// Reset-lifetime row binding for prepared metadata. Unlike HartKey, this is
@@ -195,6 +197,8 @@ pub(super) struct HartLocal
     current:       AtomicUsize,
     return_root:   AtomicUsize,
     io:            AtomicBool,
+    // Logical service caller only; physical active/current/return_root stay owned.
+    maintenance:   AtomicBool,
     idle_claimed:  AtomicBool,
     idle:          Spinlock<Option<SystemIdle>>,
     policy:        policy::State
@@ -344,6 +348,7 @@ impl HartLocal
         self.current.load(Ordering::Relaxed) == IDLE
         && self.return_root.load(Ordering::Relaxed) == 0
         && !self.io.load(Ordering::Relaxed)
+        && !self.maintenance.load(Ordering::Relaxed)
         && !self.idle_claimed.load(Ordering::Acquire)
         && !self.policy.active()
         && active_empty
@@ -357,6 +362,7 @@ impl HartLocal
                current: AtomicUsize::new(IDLE),
                return_root: AtomicUsize::new(0),
                io: AtomicBool::new(false),
+               maintenance: AtomicBool::new(false),
                idle_claimed: AtomicBool::new(false),
                idle: Spinlock::new(None),
                policy: policy::State::new() }
@@ -397,6 +403,28 @@ pub(crate) fn select_current(index: usize)
         }
     });
 }
+/// Bounded metadata operations only: no callback or escaping borrow is allowed.
+/// The physical active pin remains untouched while the genuine affine System
+/// idle Context supplies a captured maintenance turn's logical selections.
+fn with_invocation_context<R>(local: &HartLocal,
+                              operation: impl FnOnce(Option<&ThreadContext>) -> R)
+                              -> R
+{
+    if local.maintenance.load(Ordering::Relaxed)
+    {
+        let idle = local.idle.lock();
+        let Some(idle) = idle.as_ref()
+        else
+        {
+            super::super::entry_lost("System maintenance lost its canonical affine idle Context");
+        };
+        operation(Some(idle.context()))
+    }
+    else
+    {
+        operation(local.active.lock().as_deref())
+    }
+}
 pub(crate) fn current_context() -> crate::context::ContextRef
 {
     with_masked(|| {
@@ -409,7 +437,21 @@ pub(crate) fn current_context() -> crate::context::ContextRef
             }
             return crate::context::ContextRef::Bootstrap;
         }
-        let context = local.active.lock().as_ref().cloned();
+        let context = if local.maintenance.load(Ordering::Relaxed)
+        {
+            let idle = local.idle.lock();
+            let Some(idle) = idle.as_ref()
+            else
+            {
+                super::super::entry_lost("System maintenance lost its canonical affine idle \
+                                          Context");
+            };
+            Some(idle.context().clone())
+        }
+        else
+        {
+            local.active.lock().as_ref().cloned()
+        };
         match context
         {
             Some(context) => crate::context::ContextRef::thread(context),
@@ -432,12 +474,17 @@ pub(crate) fn authenticate_module(module: u64) -> Result<(), mac_abi::Status>
             }
             return crate::context::authenticate_bootstrap_module(module);
         }
-        match local.active.lock().as_ref()
-        {
-            Some(context) => context.authenticate_module(module),
-            None if bootstrap_owner(local) => crate::context::authenticate_bootstrap_module(module),
-            None => Err(mac_abi::WRONG_THREAD)
-        }
+        with_invocation_context(local, |context| {
+            match context
+            {
+                Some(context) => context.authenticate_module(module),
+                None if bootstrap_owner(local) =>
+                {
+                    crate::context::authenticate_bootstrap_module(module)
+                }
+                None => Err(mac_abi::WRONG_THREAD)
+            }
+        })
     })
 }
 pub(crate) fn module_owner(module: u64) -> Result<OwnerRef, mac_abi::Status>
@@ -452,12 +499,14 @@ pub(crate) fn module_owner(module: u64) -> Result<OwnerRef, mac_abi::Status>
             }
             return crate::context::bootstrap_module_owner(module);
         }
-        match local.active.lock().as_ref()
-        {
-            Some(context) => context.module_owner(module),
-            None if bootstrap_owner(local) => crate::context::bootstrap_module_owner(module),
-            None => Err(mac_abi::WRONG_THREAD)
-        }
+        with_invocation_context(local, |context| {
+            match context
+            {
+                Some(context) => context.module_owner(module),
+                None if bootstrap_owner(local) => crate::context::bootstrap_module_owner(module),
+                None => Err(mac_abi::WRONG_THREAD)
+            }
+        })
     })
 }
 pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(), mac_abi::Status>
@@ -472,15 +521,17 @@ pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(),
             }
             return crate::context::bootstrap_module_callback_allowed(module, address);
         }
-        match local.active.lock().as_ref()
-        {
-            Some(context) => context.module_callback_allowed(module, address),
-            None if bootstrap_owner(local) =>
+        with_invocation_context(local, |context| {
+            match context
             {
-                crate::context::bootstrap_module_callback_allowed(module, address)
+                Some(context) => context.module_callback_allowed(module, address),
+                None if bootstrap_owner(local) =>
+                {
+                    crate::context::bootstrap_module_callback_allowed(module, address)
+                }
+                None => Err(mac_abi::WRONG_THREAD)
             }
-            None => Err(mac_abi::WRONG_THREAD)
-        }
+        })
     })
 }
 pub(crate) fn critical_active() -> bool
@@ -495,11 +546,13 @@ pub(crate) fn critical_active() -> bool
         {
             return !bootstrap_owner(local) || crate::context::bootstrap_critical_active();
         }
-        match local.active.lock().as_ref()
-        {
-            Some(context) => context.critical_active(),
-            None => !bootstrap_owner(local) || crate::context::bootstrap_critical_active()
-        }
+        with_invocation_context(local, |context| {
+            match context
+            {
+                Some(context) => context.critical_active(),
+                None => !bootstrap_owner(local) || crate::context::bootstrap_critical_active()
+            }
+        })
     })
 }
 pub(crate) fn reserve_allocation(bytes: u64) -> Result<allocator::Reservation, allocator::Error>
@@ -514,13 +567,17 @@ pub(crate) fn reserve_allocation(bytes: u64) -> Result<allocator::Reservation, a
             }
             return crate::context::reserve_bootstrap_allocation(bytes);
         }
-        let active = local.active.lock();
-        match active.as_ref()
-        {
-            Some(context) => context.reserve_allocation(bytes),
-            None if bootstrap_owner(local) => crate::context::reserve_bootstrap_allocation(bytes),
-            None => Err(allocator::Error::ContextUnavailable)
-        }
+        with_invocation_context(local, |context| {
+            match context
+            {
+                Some(context) => context.reserve_allocation(bytes),
+                None if bootstrap_owner(local) =>
+                {
+                    crate::context::reserve_bootstrap_allocation(bytes)
+                }
+                None => Err(allocator::Error::ContextUnavailable)
+            }
+        })
     })
 }
 pub(crate) fn reserve_replacement(receipt: &allocator::Receipt, bytes: u64)
@@ -536,16 +593,17 @@ pub(crate) fn reserve_replacement(receipt: &allocator::Receipt, bytes: u64)
             }
             return crate::context::reserve_bootstrap_replacement(receipt, bytes);
         }
-        let active = local.active.lock();
-        match active.as_ref()
-        {
-            Some(context) => context.reserve_replacement(receipt, bytes),
-            None if bootstrap_owner(local) =>
+        with_invocation_context(local, |context| {
+            match context
             {
-                crate::context::reserve_bootstrap_replacement(receipt, bytes)
+                Some(context) => context.reserve_replacement(receipt, bytes),
+                None if bootstrap_owner(local) =>
+                {
+                    crate::context::reserve_bootstrap_replacement(receipt, bytes)
+                }
+                None => Err(allocator::Error::ContextUnavailable)
             }
-            None => Err(allocator::Error::ContextUnavailable)
-        }
+        })
     })
 }
 /// Scheduler -> local active is the only held-lock ordering. An unchanged

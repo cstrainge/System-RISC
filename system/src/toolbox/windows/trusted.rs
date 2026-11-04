@@ -701,9 +701,13 @@ impl WindowManager
             return Err(Failure::registration_mismatch(ticket));
         }
         self.retire_window_ui(&plan.window);
+        let available = handle.header.available.clone();
         self.removals.push_back(operations::RemovalDebt::Trusted { ticket,
                                                                    handle });
-        self.work_notice.request();
+        // The pump checks this original header's child before advancing it.
+        // Request after canonical ticket custody; the linked notice also wakes
+        // the common WM pump, just as explicit trusted-close admission does.
+        available.request();
         Ok(plan.window.id)
     }
 

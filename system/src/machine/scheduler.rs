@@ -40,7 +40,7 @@ pub(crate) mod accounting;
 pub(crate) use lifetime::{ReleaseThreads, specification};
 
 use super::traps::execution::{HartKey, IDLE, activate_idle_context, current, idle_frame, in_io,
-                              select_current, selected_hart};
+                              select_current, selected_hart, with_system_maintenance};
 pub(crate) use super::traps::execution::{activate_context, authenticate_module, critical_active,
                                          current_context, io_enter, io_leave,
                                          module_callback_allowed, module_owner,
@@ -866,10 +866,10 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
         }
     };
     storage.top = top;
-    *storage.backing.get_mut() = Some(ThreadBacking { cpu,
-                                                      stack,
-                                                      image:
-                                                          Some(ApplicationImageUse::Main { _image: loaded }) });
+    *storage.backing.get_mut() =
+        Some(ThreadBacking { cpu,
+                             stack,
+                             image: Some(ApplicationImageUse::Main { _image: loaded }) });
     Ok(PreparedThread { owner,
                         core: mac_object_table::retained::Read::new(core, context_released),
                         allocation,
@@ -1628,42 +1628,44 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
         }
     }
     // The admitted hart selection still names the interrupted app until a new CPU frame is
-    // selected. Generic scheduler maintenance uses permanent System authority; provider
+    // selected. A captured logical scope borrows the canonical System invocation; provider
     // callbacks must explicitly restore their own retained subject selection.
     // Maintenance may enter real owner-affine FILES/ROM/code-publication
     // services. The complete capture carries the authenticated hardware key;
     // allocation or logical app identities cannot impersonate this service hart.
     if super::paging::firmware_owner_hart() == Some(hart.number())
     {
-        wake::report_failure();
-        super::smp::report_failures();
-        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            // Device input and cursor publication precede all ordinary maintenance.
-            // Never enable nested preemption while a resident manager owns its guards.
-            let fresh_input = crate::kernel::poll_waiting_events();
-            if INPUT_PRIORITY.background_allowed(fresh_input)
-            {
-                reclaim_workers();
-                reclaim_retired();
-                crate::drivers::scheduler::pump();
-                crate::drivers::pump_jobs();
-                crate::toolbox::processes::startup::pump();
-                crate::toolbox::files::pump_provider_operations();
-                crate::toolbox::files::installed_fonts::pump();
-                crate::toolbox::runtime::Toolbox::pump_standard_file();
-                pump_recovery_backing();
-                crate::recovery::pump();
-                crate::toolbox::crashes::pump_dismissals();
-                crate::toolbox::crashes::pump_reports();
-                crate::toolbox::processes::documents::pump();
-                crate::toolbox::native_threads::pump();
-                crate::toolbox::application_heap::wait::pump();
-                crate::kernel::pump_module_images();
-                crate::toolbox::processes::retirement::pump();
-                crate::toolbox::processes::finder::pump();
-                crate::toolbox::processes::termination::pump();
-                application::pump_rights();
-            }
+        with_system_maintenance(&capture, || {
+            wake::report_failure();
+            super::smp::report_failures();
+            crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                // Device input and cursor publication precede all ordinary maintenance.
+                // Never enable nested preemption while a resident manager owns its guards.
+                let fresh_input = crate::kernel::poll_waiting_events();
+                if INPUT_PRIORITY.background_allowed(fresh_input)
+                {
+                    reclaim_workers();
+                    reclaim_retired();
+                    crate::drivers::scheduler::pump();
+                    crate::drivers::pump_jobs();
+                    crate::toolbox::processes::startup::pump();
+                    crate::toolbox::files::pump_provider_operations();
+                    crate::toolbox::files::installed_fonts::pump();
+                    crate::toolbox::runtime::Toolbox::pump_standard_file();
+                    pump_recovery_backing();
+                    crate::recovery::pump();
+                    crate::toolbox::crashes::pump_dismissals();
+                    crate::toolbox::crashes::pump_reports();
+                    crate::toolbox::processes::documents::pump();
+                    crate::toolbox::native_threads::pump();
+                    crate::toolbox::application_heap::wait::pump();
+                    crate::kernel::pump_module_images();
+                    crate::toolbox::processes::retirement::pump();
+                    crate::toolbox::processes::finder::pump();
+                    crate::toolbox::processes::termination::pump();
+                    application::pump_rights();
+                }
+            });
         });
     }
     let mut scheduler = SCHEDULER.lock();
@@ -1681,8 +1683,10 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
         {
             // A late result is discarded before any frame/claim change. Input
             // may have arrived during that elapsed interval; service it now.
-            crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-                let _ = crate::kernel::poll_waiting_events();
+            with_system_maintenance(&capture, || {
+                crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                    let _ = crate::kernel::poll_waiting_events();
+                });
             });
         }
         scheduler = SCHEDULER.lock();
