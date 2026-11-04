@@ -11,16 +11,63 @@ _start:
     mrs x0, mpidr_el1
     and x0, x0, #0xff
     cbnz x0, parked
+    mrs x1, currentel
+    lsr x1, x1, #2
+    cmp x1, #3
+    b.ne 1f
+    mov x0, #0x401
+    msr scr_el3, x0
+    mov x0, #0x80000000
+    msr hcr_el2, x0
+    mov x0, #0x3c5
+    msr spsr_el3, x0
+    adr x0, el1_entry
+    msr elr_el3, x0
+    eret
+1:  cmp x1, #2
+    b.ne el1_entry
+    mov x0, #0x80000000
+    msr hcr_el2, x0
+    mov x0, #0x3c5
+    msr spsr_el2, x0
+    adr x0, el1_entry
+    msr elr_el2, x0
+    eret
+
+el1_entry:
     ldr x0, =__stack_top
     mov sp, x0
     ldr x0, =vectors
     msr vbar_el1, x0
     isb
     bl uart_init
+    mrs x0, currentel
+    cmp x0, #0x4
+    b.ne el_bad
+    adr x0, el1_marker
+    bl uart_puts
+    bl mmu_init
+    adr x0, mmu_marker
+    bl uart_puts
+    bl physmap_check
+    cbz x0, physmap_bad
+    adr x0, physmap_marker
+    bl uart_puts
+    b physmap_done
+physmap_bad:
+    adr x0, physmap_bad_marker
+    bl uart_puts
+physmap_done:
     adr x0, ready_marker
     bl uart_puts
-1:  wfe
-    b 1b
+2:  wfe
+    b 2b
+
+el_bad:
+    adr x0, el_bad_marker
+    bl uart_puts
+3:  wfe
+    b 3b
 
 parked:
     wfe
@@ -102,8 +149,18 @@ trap:
 5:  b 5b
 
 .section .rodata
+el1_marker:
+    .asciz "BOOT_AARCH64_EL1_READY: running at EL1\n"
+el_bad_marker:
+    .asciz "BOOT_AARCH64_EL_BAD: did not reach EL1\n"
+mmu_marker:
+    .asciz "BOOT_AARCH64_MMU_READY: 39-bit three-level translation active\n"
+physmap_marker:
+    .asciz "BOOT_AARCH64_PHYSMAP_READY: physmap aliases physical RAM\n"
+physmap_bad_marker:
+    .asciz "BOOT_AARCH64_PHYSMAP_BAD: physmap does not alias physical RAM\n"
 ready_marker:
-    .asciz "BOOT_AARCH64_READY: qemu_arm64 EL1 entry reached\n"
+    .asciz "BOOT_AARCH64_READY: qemu_arm64 bootrom reached its idle loop\n"
 trap_marker:
     .asciz "BOOT_TRAP_EL1: exception taken\n"
 esr_label:
