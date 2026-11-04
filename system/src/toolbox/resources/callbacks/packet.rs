@@ -570,6 +570,7 @@ impl Packet
                                 object: self.object,
                                 surface: self.surface,
                                 original: None,
+                                custody: None,
                                 result };
             reply.validate()?;
             Ok(())
@@ -583,6 +584,7 @@ impl Packet
                            object: self.object,
                            surface: self.surface,
                            original: self.surface.map(|_| self.clone()),
+                           custody: None,
                            result })
             }
             Err(status) => Err((status, bytes))
@@ -634,14 +636,16 @@ impl Packet
 /// Owned copied user result. No pointer in its payload is ever followed.
 pub(crate) struct Reply<B = OwnedBytes>
 {
-    bytes:             B,
-    layout:            CallbackPacket,
-    object:            ObjectKind,
-    surface:           Option<SurfaceBinding>,
+    bytes:              B,
+    layout:             CallbackPacket,
+    object:             ObjectKind,
+    surface:            Option<SurfaceBinding>,
     // Paint depends on the exact original pixels. Retain their existing packet
     // carrier after real RETURN, without retaining the execution gate pin.
-    original:          Option<Arc<Packet>>,
-    pub(crate) result: i64
+    original:           Option<Arc<Packet>>,
+    pub(crate) result:  i64,
+    // LAST after owned bytes and original immutable paint/source packet.
+    pub(super) custody: Option<Arc<dyn super::CallbackCustody>>
 }
 impl Reply<OwnedBytes>
 {

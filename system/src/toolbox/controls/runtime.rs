@@ -404,6 +404,7 @@ fn publish_native(plan: ControlPlan, call: &mut ControlCall)
 
 pub(crate) enum UserOperationProgress
 {
+    ClaimWait(super::super::controls::objects::ClaimWaitTicket),
     DisposalWait(alloc::sync::Arc<super::super::controls::objects::ControlDisposal>),
     Wait(Arc<crate::toolbox::resources::definitions::callbacks::Pending>),
     Complete(Status)
@@ -418,6 +419,7 @@ pub(crate) struct UserOperation
 }
 enum UserOperationState
 {
+    ClaimAdmission(super::super::controls::objects::ClaimAdmission),
     Disposal(super::super::controls::objects::DisposalObserver),
     Working(super::super::controls::objects::ControlWork),
     Ready(super::super::controls::objects::PreparedControlOperation),
@@ -433,10 +435,90 @@ impl UserOperation
     pub(crate) fn begin(call: &ControlCall, suspension: Result<(), Status>)
                         -> Result<Option<Self>, Status>
     {
+        if let Some(operation) = Self::begin_claim_wait(call, suspension)?
+        {
+            return Ok(Some(operation));
+        }
+        Self::begin_unblocked(call, suspension, None)
+    }
+
+    fn begin_claim_wait(call: &ControlCall, suspension: Result<(), Status>)
+                        -> Result<Option<Self>, Status>
+    {
+        use mac_abi::controls::*;
+        if !matches!(call.operation,
+                     CONFIGURE_OBJECT
+                     | DRAW_OBJECT
+                     | REFLOW_OBJECT
+                     | DISPOSE_OBJECT
+                     | BEGIN_TRACKING
+                     | POLL_TRACKING
+                     | CANCEL_TRACKING
+                     | SET_STATIC_TEXT_OBJECT
+                     | SET_TABLE_LINES_OBJECT
+                     | HIT_CHILDREN_OBJECT)
+        {
+            return Ok(None);
+        }
+        if !call.surface.is_null() || call.reserved != 0 || call.reflow != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let blocked =
+            toolbox(|runtime| {
+                if !runtime.controls
+                           .admission_claims_active()
+                           .map_err(|status| service("claim presence", status))?
+                {
+                    return Ok(None);
+                }
+
+                let (recipient, storage) =
+                    runtime.service_owners().map_err(|s| service("claim wait owners", s))?;
+                let window = runtime.controls
+                                    .window(call.id, recipient.owner().incarnation())
+                                    .map_err(|s| service("claim wait window", s))?;
+                runtime.control_parent(&ControlCall { window,
+                                                      ..*call })
+                       .map_err(|s| service("claim wait parent", s))?;
+                let viewport = if window == 0
+                {
+                    Rect::ZERO
+                }
+                else
+                {
+                    runtime.windows
+                           .window(WindowId(window))
+                           .ok_or_else(|| service("claim wait live window", NOT_FOUND))?
+                           .local_bounds()
+                };
+                let wait = runtime.controls
+                                  .claim_admission(call, recipient.owner().incarnation(), viewport)
+                                  .map_err(|s| service("claim wait admission", s))?;
+                Ok(wait.map(|wait| (recipient, storage, wait)))
+            }).map_err(ControlAdmissionError::status)?;
+        let Some((recipient, storage, mut wait)) = blocked
+        else
+        {
+            return Ok(None);
+        };
+        suspension?;
+        wait.arm()?;
+        Ok(Some(Self { state: UserOperationState::ClaimAdmission(wait),
+                       recipient,
+                       storage,
+                       id: call.id,
+                       operation: call.operation }))
+    }
+
+    fn begin_unblocked(call: &ControlCall, suspension: Result<(), Status>,
+                       seal: Option<&super::super::controls::objects::ClaimAdmission>)
+                       -> Result<Option<Self>, Status>
+    {
         use mac_abi::controls::*;
         if call.operation == DISPOSE_OBJECT
         {
-            return Self::begin_disposal(call, suspension);
+            return Self::begin_disposal(call, suspension, seal);
         }
         if !matches!(call.operation,
                      CONFIGURE_OBJECT
@@ -452,18 +534,23 @@ impl UserOperation
         }
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
         {
-            let active = toolbox(|runtime| {
-                             let (recipient, _) =
-                                 runtime.service_owners()
-                                        .map_err(|status| service("tracking owners", status))?;
-                             let window =
-                                 runtime.controls
+            let active =
+                toolbox(|runtime| {
+                    if let Some(seal) = seal
+                    {
+                        seal.validate(&runtime.controls)
+                            .map_err(|status| service("original paint admission", status))?;
+                    }
+                    let (recipient, _) =
+                        runtime.service_owners()
+                               .map_err(|status| service("tracking owners", status))?;
+                    let window = runtime.controls
                                         .window(call.id, recipient.owner().incarnation())
                                         .map_err(|status| service("tracking Window", status))?;
-                             Ok(window == 0
-                                || (runtime.owner == runtime.foreground
-                                    && runtime.windows.active_window() == Some(WindowId(window))))
-                         }).map_err(ControlAdmissionError::status)?;
+                    Ok(window == 0
+                       || (runtime.owner == runtime.foreground
+                           && runtime.windows.active_window() == Some(WindowId(window))))
+                }).map_err(ControlAdmissionError::status)?;
             // Original resident path performs real cancellation, without any
             // author effects or implicit foreground change, when inactive.
             if !active
@@ -471,12 +558,17 @@ impl UserOperation
                 return Ok(None);
             }
         }
-        if let Some(operation) = Self::begin_layout(call, suspension)?
+        if let Some(operation) = Self::begin_layout(call, suspension, seal)?
         {
             return Ok(Some(operation));
         }
         let source =
             toolbox(|runtime| {
+                if let Some(seal) = seal
+                {
+                    seal.validate(&runtime.controls)
+                        .map_err(|status| service("original paint admission", status))?;
+                }
                 let (recipient, storage) =
                     runtime.service_owners()
                            .map_err(|status| service("operation owners", status))?;
@@ -520,20 +612,26 @@ impl UserOperation
         suspension?;
         // Trusted System/Module and protected modal fast paths never admit a
         // Process AccountUse. Only elected user callbacks require this proof.
-        let allocation = toolbox(|runtime| {
-                             runtime.validate_native_control_owner(call, &recipient, &storage)?;
-                             let allocation = runtime.processes
-                                                     .allocation(runtime.owner)
-                                                     .map_err(|status| {
-                                                         service("operation original account",
-                                                                 status)
-                                                     })?;
-                             if allocation.owner() != storage.owner()
-                             {
-                                 return Err(service("operation account owner", ACCESS_DENIED));
-                             }
-                             Ok(allocation)
-                         }).map_err(ControlAdmissionError::status)?;
+        let allocation =
+            toolbox(|runtime| {
+                if let Some(seal) = seal
+                {
+                    seal.validate(&runtime.controls)
+                        .map_err(|status| service("original paint admission", status))?;
+                }
+                runtime.validate_native_control_owner(call, &recipient, &storage)?;
+                let allocation =
+                    runtime.processes.allocation(runtime.owner).map_err(|status| {
+                                                                    service("operation original \
+                                                                             account",
+                                                                            status)
+                                                                })?;
+                if allocation.owner() != storage.owner()
+                {
+                    return Err(service("operation account owner", ACCESS_DENIED));
+                }
+                Ok(allocation)
+            }).map_err(ControlAdmissionError::status)?;
         let cold = bound.is_none();
         let entry = match bound
         {
@@ -551,6 +649,11 @@ impl UserOperation
         };
         let plan =
             toolbox(|runtime| {
+                if let Some(seal) = seal
+                {
+                    seal.validate(&runtime.controls)
+                        .map_err(|status| service("original paint admission", status))?;
+                }
                 runtime.validate_native_control_owner(call, &recipient, &storage)?;
                 let window = runtime.controls
                                     .window(call.id, recipient.owner().incarnation())
@@ -591,7 +694,8 @@ impl UserOperation
                        operation: call.operation }))
     }
 
-    fn begin_layout(call: &ControlCall, suspension: Result<(), Status>)
+    fn begin_layout(call: &ControlCall, suspension: Result<(), Status>,
+                    seal: Option<&super::super::controls::objects::ClaimAdmission>)
                     -> Result<Option<Self>, Status>
     {
         use mac_abi::controls::reflow as wire;
@@ -613,6 +717,11 @@ impl UserOperation
         }
         let source =
             toolbox(|runtime| {
+                if let Some(seal) = seal
+                {
+                    seal.validate(&runtime.controls)
+                        .map_err(|status| service("original paint admission", status))?;
+                }
                 let (recipient, storage) =
                     runtime.service_owners().map_err(|status| service("layout owners", status))?;
                 let owner = recipient.owner().incarnation();
@@ -701,6 +810,11 @@ impl UserOperation
         }
         let (plan, allocation) =
             toolbox(|runtime| {
+                if let Some(seal) = seal
+                {
+                    seal.validate(&runtime.controls)
+                        .map_err(|status| service("original paint admission", status))?;
+                }
                 runtime.validate_native_control_owner(call, &recipient, &storage)?;
                 if window != 0
                    && runtime.windows
@@ -751,54 +865,73 @@ impl UserOperation
 
     /// Elect an app-owned control disposal. Trusted definitions (and a
     /// non-root refusal) stay on the synchronous path by returning None.
-    fn begin_disposal(call: &ControlCall, suspension: Result<(), Status>)
+    fn begin_disposal(call: &ControlCall, suspension: Result<(), Status>,
+                      seal: Option<&super::super::controls::objects::ClaimAdmission>)
                       -> Result<Option<Self>, Status>
     {
-        let source = toolbox(|runtime| {
-                         let (recipient, storage) =
-                             runtime.service_owners()
-                                    .map_err(|status| service("disposal owners", status))?;
-                         if !runtime.controls.disposal_observed(call.id, storage.owner())
-                            && !runtime.controls
-                                       .disposal_needs_author(call, recipient.owner().incarnation())
-                                       .map_err(|status| service("disposal class", status))?
-                         {
-                             return Ok(None);
-                         }
-                         if !runtime.controls.disposal_observed(call.id, storage.owner())
-                         {
-                             runtime.control_parent(call)
-                                    .map_err(|status| service("disposal parent", status))?;
-                         }
-                         Ok(Some((recipient, storage)))
-                     }).map_err(ControlAdmissionError::status)?;
+        let source =
+            toolbox(|runtime| {
+                if let Some(seal) = seal
+                {
+                    seal.validate(&runtime.controls)
+                        .map_err(|status| service("original paint admission", status))?;
+                }
+                let (recipient, storage) =
+                    runtime.service_owners()
+                           .map_err(|status| service("disposal owners", status))?;
+                if !runtime.controls.disposal_observed(call.id, storage.owner())
+                   && !runtime.controls
+                              .disposal_needs_author(call, recipient.owner().incarnation())
+                              .map_err(|status| service("disposal class", status))?
+                {
+                    return Ok(None);
+                }
+                if !runtime.controls.disposal_observed(call.id, storage.owner())
+                {
+                    runtime.control_parent(call)
+                           .map_err(|status| service("disposal parent", status))?;
+                }
+                Ok(Some((recipient, storage)))
+            }).map_err(ControlAdmissionError::status)?;
         let Some((recipient, storage)) = source
         else
         {
             return Ok(None);
         };
         suspension?;
-        let allocation = toolbox(|runtime| {
-                             runtime.validate_native_control_owner(call, &recipient, &storage)?;
-                             let allocation = runtime.processes
-                                                     .allocation(runtime.owner)
-                                                     .map_err(|status| {
-                                                         service("disposal original account",
-                                                                 status)
-                                                     })?;
-                             if allocation.owner() != storage.owner()
-                             {
-                                 return Err(service("disposal account owner", ACCESS_DENIED));
-                             }
-                             Ok(allocation)
-                         }).map_err(ControlAdmissionError::status)?;
-        let observer = toolbox(|runtime| {
-                           runtime.validate_native_control_owner(call, &recipient, &storage)?;
-                           crate::allocator::with_target(crate::allocator::Target::Owner {
+        let allocation =
+            toolbox(|runtime| {
+                if let Some(seal) = seal
+                {
+                    seal.validate(&runtime.controls)
+                        .map_err(|status| service("original paint admission", status))?;
+                }
+                runtime.validate_native_control_owner(call, &recipient, &storage)?;
+                let allocation =
+                    runtime.processes.allocation(runtime.owner).map_err(|status| {
+                                                                    service("disposal original \
+                                                                             account",
+                                                                            status)
+                                                                })?;
+                if allocation.owner() != storage.owner()
+                {
+                    return Err(service("disposal account owner", ACCESS_DENIED));
+                }
+                Ok(allocation)
+            }).map_err(ControlAdmissionError::status)?;
+        let observer =
+            toolbox(|runtime| {
+                if let Some(seal) = seal
+                {
+                    seal.validate(&runtime.controls)
+                        .map_err(|status| service("original paint admission", status))?;
+                }
+                runtime.validate_native_control_owner(call, &recipient, &storage)?;
+                crate::allocator::with_target(crate::allocator::Target::Owner {
                 account: allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
             }, || runtime.controls.begin_control_disposal(call, &recipient))
                 .map_err(|status| service("canonical disposal",status))
-                       }).map_err(ControlAdmissionError::status)?;
+            }).map_err(ControlAdmissionError::status)?;
         let Some(observer) = observer
         else
         {
@@ -827,6 +960,101 @@ impl UserOperation
         {
             match &mut self.state
             {
+                UserOperationState::ClaimAdmission(admission) =>
+                {
+                    if !admission.returned()
+                    {
+                        return Ok(UserOperationProgress::ClaimWait(admission.ticket()?));
+                    }
+                    let blocked =
+                        toolbox(|runtime| {
+                            runtime.validate_native_control_owner(call, &self.recipient,
+                                                                  &self.storage)?;
+                            admission.validate(&runtime.controls).map_err(|s| {
+                                                                      service("claim wait \
+                                                                               original seal",
+                                                                              s)
+                                                                  })?;
+                            let window =
+                                runtime.controls
+                                       .window(call.id, self.recipient.owner().incarnation())
+                                       .map_err(|s| service("claim wait current window", s))?;
+                            let viewport = if window == 0
+                            {
+                                Rect::ZERO
+                            }
+                            else
+                            {
+                                runtime.windows
+                                       .window(WindowId(window))
+                                       .ok_or_else(|| service("claim wait window", NOT_FOUND))?
+                                       .local_bounds()
+                            };
+                            runtime.controls
+                                   .claim_blocker(call,
+                                                  self.recipient.owner().incarnation(),
+                                                  viewport)
+                                   .map_err(|s| service("claim wait blocker", s))
+                        }).map_err(ControlAdmissionError::status)?;
+                    if let Some(record) = blocked
+                    {
+                        admission.replace_record(record)?;
+                        continue;
+                    }
+                    if let Some(next) = Self::begin_unblocked(call, Ok(()), Some(admission))?
+                    {
+                        self.state = next.state;
+                        continue;
+                    }
+                    let result =
+                        toolbox(|runtime| {
+                            runtime.validate_native_control_owner(call, &self.recipient,
+                                                                  &self.storage)?;
+                            admission.validate(&runtime.controls).map_err(|s| {
+                                                                      service("resident paint \
+                                                                               wait seal",
+                                                                              s)
+                                                                  })?;
+                            let window =
+                                runtime.controls
+                                       .window(call.id, self.recipient.owner().incarnation())
+                                       .map_err(|s| service("resident claim wait window", s))?;
+                            let viewport = if window == 0
+                            {
+                                Rect::ZERO
+                            }
+                            else
+                            {
+                                runtime.windows
+                                       .window(WindowId(window))
+                                       .ok_or_else(|| service("resident live window", NOT_FOUND))?
+                                       .local_bounds()
+                            };
+                            if let Some(record) =
+                                runtime.controls
+                                       .claim_blocker(call,
+                                                      self.recipient.owner().incarnation(),
+                                                      viewport)
+                                       .map_err(|s| service("resident paint blocker", s))?
+                            {
+                                return Ok(Err(record));
+                            }
+                            Ok(Ok(runtime.control(call)))
+                        }).map_err(ControlAdmissionError::status)?;
+                    match result
+                    {
+                        Err(record) =>
+                        {
+                            admission.replace_record(record)?;
+                            continue;
+                        }
+                        Ok(status) =>
+                        {
+                            self.state = UserOperationState::Complete(status);
+                            return Ok(UserOperationProgress::Complete(status));
+                        }
+                    }
+                }
                 UserOperationState::Disposal(observer) =>
                 {
                     if observer.advance()?

@@ -146,6 +146,32 @@ struct Layout
 }
 impl Layout
 {
+    fn same_admission_snapshot(&self, other: &Self) -> bool
+    {
+        fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool
+        {
+            match (a, b)
+            {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false
+            }
+        }
+        self.sizing == other.sizing
+        && self.anchors == other.anchors
+        && self.window_border == other.window_border
+        && self.window_extent == other.window_extent
+        && self.visible == other.visible
+        && self.measured == other.measured
+        && self.intrinsic == other.intrinsic
+        && self.logical == other.logical
+        && self.hidden == other.hidden
+        && self.arrangement_pending == other.arrangement_pending
+        && same(&self.grid, &other.grid)
+        && same(&self.outlines, &other.outlines)
+        && same(&self.scroll, &other.scroll)
+    }
+
     fn new(bounds: Rect) -> Result<Self, Status>
     {
         let bounds = layout::LayoutRect::try_from(bounds).map_err(|e| e.status())?;
@@ -378,6 +404,7 @@ impl Spec
 
 pub struct Manager
 {
+    claim_presence:Arc<claim_wait::Presence>,
     objects: Store<Object, automatic::Work>,
     disposal_notice: Arc<crate::toolbox::resources::definitions::callbacks::Notice>,
     disposal_idle: Option<Arc<disposal::DisposalSlot>>,
@@ -413,19 +440,31 @@ impl Manager
 {
     pub(crate) fn new((kind, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Ok(Self { objects:         Store::owned_state_prepared(kind, storage, |_| {
-                                       Ok(automatic::Work::default())
-                                   }).map_err(pool_status)?,
-                  disposal_notice: crate::toolbox::resources::definitions::callbacks::Notice::new()?,
-                  disposal_idle:   None,
+        let claim_presence = claim_wait::Presence::prepare()?;
+        Ok(Self { claim_presence,
+                  objects: Store::owned_state_prepared(kind, storage, |_| {
+                               Ok(automatic::Work::default())
+                           }).map_err(pool_status)?,
+                  disposal_notice:
+                      crate::toolbox::resources::definitions::callbacks::Notice::new()?,
+                  disposal_idle: None,
                   disposal_active: None,
-                  publications:    Vec::new(),
-                  next_order:      1 })
+                  publications: Vec::new(),
+                  next_order: 1 })
     }
 }
+mod claim_wait;
+pub(crate) use claim_wait::{ClaimAdmission, ClaimWaitTicket, WaitNode};
+
 impl Manager
 {
-    fn get(&self, id: u64, owner: u64) -> Result<&Object, Status>
+    /// A presence hint only. Original unblocked paths perform full admission.
+    pub(crate) fn admission_claims_active(&self) -> Result<bool, Status>
+    {
+        self.claim_presence.active()
+    }
+
+    fn lookup_owner(&self, id: u64, owner: u64) -> Result<&Object, Status>
     {
         let o = match self.objects.get(id)
         {
@@ -458,8 +497,47 @@ impl Manager
             #[cfg(not(target_arch = "riscv64"))]
             return Err(ACCESS_DENIED);
         }
-        self.no_conflicting_claims(id, None)?;
         Ok(o)
+    }
+
+    fn snapshot(&self, id: u64, owner: u64) -> Result<&Object, Status>
+    {
+        let o = self.lookup_owner(id, owner)?;
+        let mut ancestor = id;
+        while ancestor != 0
+        {
+            let object = self.objects.get(ancestor).ok_or(NOT_FOUND)?;
+            if object.disposal.as_ref().is_some_and(|cell| cell.active())
+            {
+                return Err(SERVICE_BUSY);
+            }
+            ancestor = object.tree.parent;
+        }
+        Ok(o)
+    }
+
+    fn get(&self, id: u64, owner: u64) -> Result<&Object, Status>
+    {
+        let object = self.lookup_owner(id, owner)?;
+        self.no_conflicting_claims(id, None)?;
+        Ok(object)
+    }
+
+    fn snapshot_info(&self, call: &mut ControlCall, owner: u64) -> Result<(), Status>
+    {
+        let object = self.snapshot(call.id, owner)?;
+        call.window = object.window;
+        call.relation = object.tree.relation();
+        object.state.spec.write(call);
+        call.reflow = u32::from(object.state.layout.is_some());
+        call.layout.anchors = object.state.layout.as_ref().map_or(0, |l| l.anchors.into());
+        call.layout.window_border =
+            object.state.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
+        call.layout.invalidation = object.state.layout.as_ref().map_or(0, Layout::pending);
+        call.layout.status = self.layout_status(call.id);
+        call.result = 0;
+        call.flags = u32::from(object.state.tracking.is_some()) * TRACKING;
+        Ok(())
     }
 
     /// Held canonical slots and cleanup records cannot be consumed by ordinary
@@ -484,7 +562,7 @@ impl Manager
 
     pub fn window(&self, id: u64, owner: u64) -> Result<u64, Status>
     {
-        Ok(self.get(id, owner)?.window)
+        Ok(self.snapshot(id, owner)?.window)
     }
 
     /// Cancellation cannot depend on loading/validating or allocating a drawing.
@@ -574,7 +652,7 @@ impl Manager
         {
             return super::definition_id(&Spec::from_call(call, false).draw());
         }
-        super::definition_id(&self.get(call.id, owner)?.state.spec.draw())
+        super::definition_id(&self.snapshot(call.id, owner)?.state.spec.draw())
     }
 
     /// Validate the real retained object's auxiliary CDEF need before the
@@ -587,7 +665,7 @@ impl Manager
         {
             return Ok(None);
         }
-        let object = self.get(call.id, owner)?;
+        let object = self.snapshot(call.id, owner)?;
         if !call.surface.is_null()
            || call.reserved != 0
            || call.reflow != 0
@@ -638,7 +716,7 @@ impl Manager
         {
             return Ok(None);
         }
-        let object = self.get(call.id, owner)?;
+        let object = self.snapshot(call.id, owner)?;
         if call.operation == CONFIGURE_OBJECT
         {
             let previous = super::definition_id(&object.state.spec.draw())?;
@@ -771,8 +849,14 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
+        if operation == INFO_OBJECT
+        {
+            self.snapshot_info(call, owner)?;
+            return Ok(None);
+        }
         if !matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
         {
+            self.get(call.id, owner)?;
             self.preflight_tree_configuration(call, owner)?;
         }
         let (_, bound) = self.preflight_definition(recipient, storage, call)?;
@@ -852,7 +936,7 @@ impl Manager
             }
             let Spec::Standard { mut state,
                                  procedure: STATIC_TEXT_PROCEDURE } =
-                self.get(call.id, owner)?.state.spec
+                self.snapshot(call.id, owner)?.state.spec
             else
             {
                 return Err(NOT_SUPPORTED);
@@ -888,8 +972,14 @@ impl Manager
     fn configuration(&self, call: &ControlCall, owner: u64)
                      -> Result<callbacks::Configuration, Status>
     {
-        let old =
-            if call.operation == CONFIGURE_OBJECT { Some(self.get(call.id, owner)?) } else { None };
+        let old = if call.operation == CONFIGURE_OBJECT
+        {
+            Some(self.snapshot(call.id, owner)?)
+        }
+        else
+        {
+            None
+        };
         let scrollbar = old.map_or(call.operation == CREATE_SCROLLBAR, |old| {
                                old.state.spec.scrollbar().is_some()
                            });

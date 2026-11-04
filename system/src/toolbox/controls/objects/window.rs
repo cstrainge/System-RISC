@@ -184,7 +184,10 @@ impl Manager
     {
         if call.operation == HIT_CHILDREN_OBJECT
         {
-            self.table(call.id, owner)?;
+            if !self.is_table(call.id, owner)?
+            {
+                return Err(NOT_SUPPORTED);
+            }
             if call.reflow != 0
                || !call.surface.is_null()
                || call.reserved != 0
@@ -195,7 +198,7 @@ impl Manager
             let mut id = call.id;
             loop
             {
-                let object = self.get(id, owner)?;
+                let object = self.snapshot(id, owner)?;
                 if object.definition.is_process_source() || object.state.process_dependencies()
                 {
                     return Ok(true);
@@ -211,7 +214,7 @@ impl Manager
         {
             return Ok(false);
         }
-        let object = self.get(call.id, owner)?;
+        let object = self.snapshot(call.id, owner)?;
         let Some(l) = &object.state.layout
         else
         {
@@ -261,7 +264,7 @@ impl Manager
                 return Err(BAD_ARGUMENT);
             }
             if call.layout.message == wire::REVEAL_CHILD
-               && self.get(call.layout.child, owner)?.tree.parent != call.id
+               && self.snapshot(call.layout.child, owner)?.tree.parent != call.id
             {
                 return Err(BAD_ARGUMENT);
             }
@@ -328,7 +331,7 @@ impl Manager
         let mut id = call.id;
         loop
         {
-            if self.get(id, owner)?.definition.is_process_source()
+            if self.snapshot(id, owner)?.definition.is_process_source()
             {
                 return Ok(true);
             }

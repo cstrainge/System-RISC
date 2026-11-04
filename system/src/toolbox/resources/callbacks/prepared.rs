@@ -65,21 +65,18 @@ impl PreparedWindowCallback
                                        surface: None }.prepare(entry)?;
             packet.replace_window(&state)?;
             let packet = Arc::try_new(packet).map_err(|_| NO_MEMORY)?;
-            Arc::try_new(Job {
-                identity,
-                completion,
-                complete: AtomicBool::new(false),
-                state: Spinlock::new(JobState {
-                    phase: Phase::New,
-                    next: None,
-                    abandoned: false,
-                    packet: Some(packet),
-                    invocation: None,
-                    reply: None,
-                    return_storage: ReturnStorage::Ordinary,
-                }),
-            })
-            .map_err(|_| NO_MEMORY)
+            Arc::try_new(Job { identity,
+                               completion,
+                               complete: AtomicBool::new(false),
+                               state: Spinlock::new(JobState { phase:          Phase::New,
+                                                               next:           None,
+                                                               abandoned:      false,
+                                                               packet:         Some(packet),
+                                                               invocation:     None,
+                                                               reply:          None,
+                                                               return_storage:
+                                                                   ReturnStorage::Ordinary }),
+                               custody: None }).map_err(|_| NO_MEMORY)
         })?;
         // Actual code execution pin is temporary: parked cleanup must not hold
         // it and prevent genuine stopped-source Loading/quiescence admission.
@@ -238,10 +235,18 @@ impl PreparedControlDisposal
         let pending = crate::allocator::with_target(target, || {
             let packet = Arc::try_new(request.prepare(entry)?).map_err(|_| NO_MEMORY)?;
             let return_storage = ReturnStorage::prepare(packet.bytes().len())?;
-            let job = Arc::try_new(Job { identity, completion, complete: AtomicBool::new(false),
-                state: Spinlock::new(JobState { phase: Phase::New, next: None, abandoned: false,
-                    packet: Some(packet), invocation: None, reply: None,
-                    return_storage }) }).map_err(|_| NO_MEMORY)?;
+            let job = Arc::try_new(Job { identity,
+                                         completion,
+                                         complete: AtomicBool::new(false),
+                                         state: Spinlock::new(JobState { phase: Phase::New,
+                                                                         next: None,
+                                                                         abandoned: false,
+                                                                         packet:
+                                                                             Some(packet),
+                                                                         invocation: None,
+                                                                         reply: None,
+                                                                         return_storage }),
+                                         custody: None }).map_err(|_| NO_MEMORY)?;
             Arc::try_new(Pending { job }).map_err(|_| NO_MEMORY)
         })?;
         drop(invocation);

@@ -214,7 +214,7 @@ impl Manager
         {
             return Ok(false);
         }
-        let o = self.get(call.id, owner)?;
+        let o = self.snapshot(call.id, owner)?;
         Ok(match call.operation
         {
             SET_STATIC_TEXT_OBJECT if call.flags & TEXT_BOUNDS != 0 =>

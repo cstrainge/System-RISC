@@ -17,6 +17,23 @@ pub(super) struct Capture
 }
 impl Capture
 {
+    pub(super) fn same_snapshot(&self, other: &Self) -> bool
+    {
+        self.initial == other.initial
+        && self.entry == other.entry
+        && self.anchor == other.anchor
+        && self.point == other.point
+        && self.position == other.position
+        && self.clip == other.clip
+        && self.boundary == other.boundary
+        && match (&self._definition, &other._definition)
+        {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false
+        }
+    }
+
     pub(super) fn has_process_source(&self) -> bool
     {
         self._definition.as_ref().is_some_and(|source| source.is_process_source())
@@ -174,7 +191,7 @@ impl Manager
 
     pub(crate) fn splitter_capture(&self, id: u64, owner: u64) -> Result<bool, Status>
     {
-        Ok(self.get(id, owner)?.state.splitter.is_some())
+        Ok(self.snapshot(id, owner)?.state.splitter.is_some())
     }
 
     pub(crate) fn window_splitter_capture(&self, window: u64) -> bool
