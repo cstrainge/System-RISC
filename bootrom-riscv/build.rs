@@ -33,6 +33,6 @@ fn main()
                                         .expect("checked bootstrap virtual symbols")).unwrap();
     let script = out.join("boot.ld");
     mac_build::write_if_changed(&script, symbols + &fs::read_to_string(template).unwrap()).unwrap();
-    println!("cargo:rustc-link-arg-bin=bootrom=-T{}", script.display());
-    println!("cargo:rustc-link-arg-bin=bootrom=--no-relax");
+    println!("cargo:rustc-link-arg-bin=bootrom-riscv=-T{}", script.display());
+    println!("cargo:rustc-link-arg-bin=bootrom-riscv=--no-relax");
 }

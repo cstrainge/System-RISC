@@ -162,7 +162,7 @@ def prepare_pressure(output):
 
 def capture(output, cases):
     original = vm.DIST
-    before = {name: digest(original / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+    before = {name: digest(original / name) for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     observations = []
     for case in cases:
         name = case['name']
@@ -190,7 +190,7 @@ def capture(output, cases):
                 if file.get('replace'):
                     image.remove(file['replace'])
                 image.import_macbinary(Path(file['source']), file['directory'])
-            shutil.copyfile(original / 'bootrom.bin', dist / 'bootrom.bin')
+            shutil.copyfile(original / 'bootrom-riscv.bin', dist / 'bootrom-riscv.bin')
             subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                             str(dist / 'system7.qcow2')], check=True)
             vm.DIST = dist

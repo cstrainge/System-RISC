@@ -18,7 +18,7 @@ def capture(output):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     private, binary = packaging.private_disk(output, 'events-input')
     vm.DIST = private
     process, endpoint = vm.launch(output / 'vm')

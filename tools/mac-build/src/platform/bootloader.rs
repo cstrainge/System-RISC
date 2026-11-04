@@ -3,8 +3,8 @@
 //! A bootloader is inherently platform-specific: it carries its own entry
 //! assembly, its own linker script, and its own page-table crate. Several
 //! bootloaders coexist in the workspace and each platform record names the one
-//! it builds, so nothing in the build has to assume that the bootloader is
-//! called `bootrom` or that its payload is `dist/bootrom.bin`.
+//! it builds, so nothing in the build assumes a particular package name or a
+//! particular payload path: both come from the record.
 //!
 //! A platform may declare no bootloader at all. Vendor firmware as the first
 //! stage is a legitimate arrangement, and so is a board whose boot path this

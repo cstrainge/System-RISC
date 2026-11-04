@@ -120,7 +120,7 @@ def capture(output, windows=False, default_transfer=False, application=False):
                     if running(owner['companion_pid']):
                         os.kill(owner['companion_pid'], 15)
             finally:
-                for name in ['system7.qcow2', 'bootrom.bin']:
+                for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                     (state / name).unlink(missing_ok=True)
 
 

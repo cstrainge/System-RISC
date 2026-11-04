@@ -3,10 +3,10 @@
   "name": "QemuRISC-V",
   "bootloader": {
     "description": "M-mode boot ROM: executes in place from read-only pflash, probes the machine and loads the resident System from the boot disk",
-    "package": "bootrom",
-    "artifact": "bootrom",
+    "package": "bootrom-riscv",
+    "artifact": "bootrom-riscv",
     "entry": "platforms/riscv64-entry.S",
-    "linker_script": "bootrom/link.ld",
+    "linker_script": "bootrom-riscv/link.ld",
     "page_table": "mac-riscv-pages"
   },
   "storage": {

@@ -153,7 +153,7 @@ impl Workspace
         self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
                            "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef",
                            "native-table-cdef", "native-splitter-cdef"])?;
-        self.guest_build(&["mac-system", "bootrom", "vhost-transport", "vhost-filesystem",
+        self.guest_build(&["mac-system", "bootrom-riscv", "vhost-transport", "vhost-filesystem",
                            "stuffit-filesystem", "qemu-power-device", "vdagent-channel",
                            "virtio-rng", "virtio-gpu", "host-clipboard-extension",
                            "multi-scheduler-extension"])?;
@@ -584,7 +584,7 @@ fn execute() -> Result<()>
         }
         [command] if command == "rom" =>
         {
-            workspace.guest_build(&["bootrom"])?;
+            workspace.guest_build(&["bootrom-riscv"])?;
             boot::package_rom(&workspace)?;
         }
         [command] if command == "boot-check" =>
@@ -601,7 +601,7 @@ fn execute() -> Result<()>
         }
         [command, path] if command == "boot" =>
         {
-            workspace.guest_build(&["bootrom"])?;
+            workspace.guest_build(&["bootrom-riscv"])?;
             boot::package_rom(&workspace)?;
             let path = Path::new(path).canonicalize()?;
             let format = boot::disk_format(&path)?;

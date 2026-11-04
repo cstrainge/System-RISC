@@ -167,7 +167,7 @@ def capture(output):
     fs.extract('/Applications/exports/QuickDraw Test.json', output / 'native-subfolder-resources.json')
     # Rust reads the captured source catalog through the public SDK and owns
     # disposal of this offline evidence disk, including assertion failures.
-    for path in [output/'vm/system7.qcow2',output/'vm/bootrom.bin']:path.unlink(missing_ok=True)
+    for path in [output/'vm/system7.qcow2',output/'vm/bootrom-riscv.bin']:path.unlink(missing_ok=True)
     report={'frames':frames,'damage_samples':damage_samples,'token':token,'base_before':baseline,'base_after':hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest(),'assertion_owner':'mac-toolbox/tests/resedit.rs'}
     (output/'capture.json').write_text(json.dumps(report,indent=2)+'\n')
 

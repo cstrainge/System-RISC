@@ -19,7 +19,7 @@ def capture(output):
     output=Path(output).resolve()
     output.mkdir(parents=True,exist_ok=False)
     original=vm.DIST
-    hashes={name:packaging.sha(original/name) for name in ('system7.qcow2','System.rsrc','bootrom.bin')}
+    hashes={name:packaging.sha(original/name) for name in ('system7.qcow2','System.rsrc','bootrom-riscv.bin')}
     process=None
     raw=output/'volume.hfsb'
     private=output/'dist'
@@ -36,7 +36,7 @@ def capture(output):
         entries=[json.loads(line) for line in image.run('list',parent).splitlines()]
         if any(entry['name']=='Text Edit Preferences' for entry in entries):
             image.remove(parent+'/Text Edit Preferences')
-        shutil.copyfile(original/'bootrom.bin',private/'bootrom.bin')
+        shutil.copyfile(original/'bootrom-riscv.bin',private/'bootrom-riscv.bin')
         subprocess.run(['qemu-img','convert','-f','raw','-O','qcow2',str(raw),
                         str(private/'system7.qcow2')],check=True)
         raw.unlink()
@@ -174,7 +174,7 @@ def capture(output):
         if process is not None and process.poll() is None:
             vm.qmp('screendump',{'filename':str(output/'failure.ppm')},endpoint)
             vm.qmp('quit',endpoint=endpoint);process.wait(timeout=10)
-        for path in (raw,output/'vm/system7.qcow2',output/'vm/bootrom.bin',private/'system7.qcow2',private/'bootrom.bin'):
+        for path in (raw,output/'vm/system7.qcow2',output/'vm/bootrom-riscv.bin',private/'system7.qcow2',private/'bootrom-riscv.bin'):
             path.unlink(missing_ok=True)
 
 if __name__=='__main__':

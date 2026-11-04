@@ -61,7 +61,7 @@ def private_disk(output):
     sample = output / 'write-sample.bin'
     sample.write_bytes(header + data + bytes((-len(data))%128) + resource + bytes((-len(resource))%128))
     fs.import_macbinary(sample, '/')
-    shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
+    shutil.copyfile(vm.DIST / 'bootrom-riscv.bin', private / 'bootrom-riscv.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
     return private, binary
@@ -71,7 +71,7 @@ def capture(output):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
-    before = {name: sha(original / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+    before = {name: sha(original / name) for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     private, binary = private_disk(output)
     vm.DIST = private
     observations = []

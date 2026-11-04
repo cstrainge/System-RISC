@@ -86,7 +86,7 @@ def capture(output, windows=False):
         image.import_macbinary(base / 'QuickDraw Test.bin', '/Applications/Z Conflict')
         private = output / 'dist'
         private.mkdir()
-        shutil.copyfile(base / 'bootrom.bin', private / 'bootrom.bin')
+        shutil.copyfile(base / 'bootrom-riscv.bin', private / 'bootrom-riscv.bin')
         subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2',
                         str(output / 'before.raw'), str(private / 'system7.qcow2')], check=True)
         vm.DIST = private
@@ -222,7 +222,7 @@ def capture(output, windows=False):
     finally:
         stop()
         vm.DIST = base
-        for name in ['system7.qcow2', 'bootrom.bin']:
+        for name in ['system7.qcow2', 'bootrom-riscv.bin']:
             (output / 'vm' / name).unlink(missing_ok=True)
             (output / 'dist' / name).unlink(missing_ok=True)
 

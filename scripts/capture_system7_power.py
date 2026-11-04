@@ -29,7 +29,7 @@ def capture(output, windows=False):
                 subprocess.run(['qemu-img','convert','-f','qcow2','-O','raw','-S','4k',str(original/'system7.qcow2'),str(raw)],check=True)
                 Image(raw).remove('/System Folder/Drivers/Qemu Power Device')
                 subprocess.run(['qemu-img','convert','-f','raw','-O','qcow2',str(raw),str(private/'system7.qcow2')],check=True)
-                shutil.copyfile(original/'bootrom.bin',private/'bootrom.bin')
+                shutil.copyfile(original/'bootrom-riscv.bin',private/'bootrom-riscv.bin')
                 vm.DIST=private
             else:
                 vm.DIST=original

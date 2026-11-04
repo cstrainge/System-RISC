@@ -23,7 +23,7 @@ def capture(output, scenario):
     (output / 'pid').write_text(str(os.getpid()))
     original = vm.DIST
     before = {name: packaging.sha(original / name) for name in
-              ['System.bin', 'System.rsrc', 'system7.qcow2', 'bootrom.bin']}
+              ['System.bin', 'System.rsrc', 'system7.qcow2', 'bootrom-riscv.bin']}
     owners = OwnedProcesses()
     private = output / 'dist'
     process = endpoint = None
@@ -67,7 +67,7 @@ def capture(output, scenario):
         image.import_macbinary(packaged, '/System Folder')
         subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                         str(private / 'system7.qcow2')], check=True)
-        shutil.copyfile(original / 'bootrom.bin', private / 'bootrom.bin')
+        shutil.copyfile(original / 'bootrom-riscv.bin', private / 'bootrom-riscv.bin')
         vm.DIST = private
         process, endpoint = owners.launch(output / 'vm', frontend='headless')
         serial = output / 'vm/serial.log'

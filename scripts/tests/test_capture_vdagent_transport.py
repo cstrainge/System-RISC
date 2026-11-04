@@ -39,7 +39,7 @@ class CaptureMediaCleanupTests(unittest.TestCase):
         base = root / 'base'
         base.mkdir()
         (base / 'system7.qcow2').write_bytes(b'original disk')
-        (base / 'bootrom.bin').write_bytes(b'original ROM')
+        (base / 'bootrom-riscv.bin').write_bytes(b'original ROM')
         output = root / 'owned-capture'
         def run(arguments):
             Path(arguments[-1]).write_bytes(b'private generated disk')
@@ -62,7 +62,7 @@ class CaptureMediaCleanupTests(unittest.TestCase):
             with self.assertRaises(ExceptionGroup):
                 capture.capture_case(output, 'absent', base)
         self.assertEqual((base / 'system7.qcow2').read_bytes(), b'original disk')
-        self.assertEqual((base / 'bootrom.bin').read_bytes(), b'original ROM')
+        self.assertEqual((base / 'bootrom-riscv.bin').read_bytes(), b'original ROM')
         stop.assert_called_once()
         self.assertIs(stop.call_args.args[0], child)
         return output, json.loads((output / 'case.json').read_text()), stop.call_args.args[1]
@@ -79,7 +79,7 @@ class CaptureMediaCleanupTests(unittest.TestCase):
             self.assertIn('could not be positively reaped', quarantine['reason'])
             self.assertEqual(set(quarantine['media']), {str(output / 'dist/probe.raw'),
                                                       str(output / 'dist/system7.qcow2'),
-                                                      str(output / 'dist/bootrom.bin')})
+                                                      str(output / 'dist/bootrom-riscv.bin')})
             self.assertTrue(all(Path(path).is_file() for path in quarantine['media']))
             self.assertEqual((output / 'vm/pid').read_text(), '12345')
             self.assertTrue((output / 'vm/native-command.json').is_file())

@@ -48,7 +48,7 @@ members = [
     "tools/risc-forks",
     "tools/risc-host",
     "tools/xtask",
-    "bootrom",
+    "bootrom-riscv",
     "definitions/*",
     "drivers/*",
     "extensions/*",

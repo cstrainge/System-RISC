@@ -171,7 +171,7 @@ class LauncherTests(unittest.TestCase):
             state = root / 'vm'
             dist = root / 'dist'
             dist.mkdir()
-            for name in ['system7.qcow2', 'bootrom.bin']:
+            for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                 (dist / name).write_bytes(b'launcher fixture')
             def spawn(*args, **kwargs):
                 (state / 'serial.log').write_text('DESKTOP_READY\n')
@@ -203,7 +203,7 @@ class LauncherTests(unittest.TestCase):
             state = root / 'vm'
             dist = root / 'dist'
             dist.mkdir()
-            for name in ['system7.qcow2', 'bootrom.bin']:
+            for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                 (dist / name).write_bytes(b'launcher fixture')
             sources = []
             for index in range(3):
@@ -259,7 +259,7 @@ class LauncherTests(unittest.TestCase):
                 state = root / 'vm'
                 dist = root / 'dist'
                 dist.mkdir()
-                for name in ['system7.qcow2', 'bootrom.bin']:
+                for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                     (dist / name).write_bytes(b'launcher fixture')
                 executable = root / 'selected-qemu-system-riscv64.exe'
                 def spawn(*args, **kwargs):
@@ -361,7 +361,7 @@ class LauncherTests(unittest.TestCase):
             state = root / 'vm'
             dist = root / 'dist'
             dist.mkdir()
-            for name in ['system7.qcow2', 'bootrom.bin']:
+            for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                 (dist / name).write_bytes(b'launcher fixture')
             def spawn(*args, **kwargs):
                 (state / 'serial.log').write_text('DESKTOP_READY\n')
@@ -384,7 +384,7 @@ class LauncherTests(unittest.TestCase):
             state = root / 'vm'
             dist = root / 'dist'
             dist.mkdir()
-            for name in ['system7.qcow2', 'bootrom.bin']:
+            for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                 (dist / name).write_bytes(b'launcher fixture')
             process = Mock(pid=999999999, poll=Mock(side_effect=[None, None, 0]))
             def spawn(args, **kwargs):
@@ -474,7 +474,7 @@ class LauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);state=root/'vm';dist=root/'dist'
             state.mkdir();dist.mkdir()
-            for name in ['system7.qcow2','bootrom.bin']:
+            for name in ['system7.qcow2','bootrom-riscv.bin']:
                 (dist/name).write_bytes(b'current base')
             (state/'system7.qcow2').write_bytes(b'guest saved changes')
             (state/'base-disk.sha256').write_text(hashlib.sha256(b'current base').hexdigest())
@@ -495,7 +495,7 @@ class LauncherTests(unittest.TestCase):
             state = root / 'vm'
             dist = root / 'dist'
             state.mkdir();dist.mkdir()
-            for name in ['system7.qcow2', 'bootrom.bin']:
+            for name in ['system7.qcow2', 'bootrom-riscv.bin']:
                 (state/name).write_bytes(b'old saved state')
                 (dist/name).write_bytes(b'new release')
             (state/'base-disk.sha256').write_text('old hash')
@@ -505,7 +505,7 @@ class LauncherTests(unittest.TestCase):
                     vm.launch(state,preserve=True)
                 process.assert_not_called()
             self.assertEqual((state/'system7.qcow2').read_bytes(),b'old saved state')
-            self.assertEqual((state/'bootrom.bin').read_bytes(),b'old saved state')
+            self.assertEqual((state/'bootrom-riscv.bin').read_bytes(),b'old saved state')
             self.assertEqual((state/'base-disk.sha256').read_text(),'old hash')
 
     def test_custom_build_directory_reaches_builder_without_shell_splitting(self):

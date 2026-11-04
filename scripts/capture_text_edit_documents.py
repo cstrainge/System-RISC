@@ -123,7 +123,7 @@ def capture(output):
                 vm.qmp('quit', endpoint=endpoint)
                 process.wait(timeout=10)
         finally:
-            for path in [output / 'vm/system7.qcow2', output / 'vm/bootrom.bin', raw]:
+            for path in [output / 'vm/system7.qcow2', output / 'vm/bootrom-riscv.bin', raw]:
                 path.unlink(missing_ok=True)
 
 

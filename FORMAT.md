@@ -363,7 +363,7 @@ names are not substitutes for classic 68k Handle, GrafPort or MacRoman records.
 
 The separate QEMU ABI smoke harness materializes the exact packaged segment
 resources through the shared load planner into raw memory images. QEMU loads
-those raw reservations for the small ABI harness. The [boot ROM](bootrom/README.md)
+those raw reservations for the small ABI harness. The [boot ROM](bootrom-riscv/README.md)
 separately tests real virtio/HFS-B/resource/segment loading; System loads Finder and
 definition resources through its resident filesystem service. Normal disk-boot checks wait
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.

@@ -19,7 +19,7 @@ def capture(output):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     hashes = {name: packaging.sha(original / name)
-              for name in ('system7.qcow2', 'System.rsrc', 'bootrom.bin')}
+              for name in ('system7.qcow2', 'System.rsrc', 'bootrom-riscv.bin')}
     process = None
     try:
         private, binary = packaging.private_disk(output, features=('alert-tracking',))
@@ -68,8 +68,8 @@ def capture(output):
                 vm.qmp('quit', endpoint=endpoint)
             process.wait(timeout=10)
         for path in (output / 'dist/conformance.raw', output / 'dist/system7.qcow2',
-                     output / 'dist/bootrom.bin', output / 'vm/system7.qcow2',
-                     output / 'vm/bootrom.bin'):
+                     output / 'dist/bootrom-riscv.bin', output / 'vm/system7.qcow2',
+                     output / 'vm/bootrom-riscv.bin'):
             path.unlink(missing_ok=True)
 
 

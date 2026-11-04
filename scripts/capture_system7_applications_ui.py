@@ -187,7 +187,7 @@ def icon_disk(output):
     fs.remove('/Applications/QuickDraw Test')
     fs.import_macbinary(package, '/Applications')
     fs.import_macbinary(package, '/Applications', name='Z QuickDraw Copy')
-    shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
+    shutil.copyfile(vm.DIST / 'bootrom-riscv.bin', private / 'bootrom-riscv.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
     return private
@@ -199,7 +199,7 @@ def capture(output, remap_icon=False, windows=False):
     (output / 'pid').write_text(str(os.getpid()))
     original = vm.DIST
     before = {name: packaging.sha(original / name)
-              for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+              for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     private = output / 'dist'
     try:
         if remap_icon:
@@ -380,7 +380,7 @@ def capture(output, remap_icon=False, windows=False):
                 vm.qmp('quit', endpoint=endpoint)
         finally:
             process.wait(timeout=10)
-            for path in [output / 'vm/system7.qcow2', output / 'vm/bootrom.bin']:
+            for path in [output / 'vm/system7.qcow2', output / 'vm/bootrom-riscv.bin']:
                 path.unlink(missing_ok=True)
             if private.exists():
                 shutil.rmtree(private)

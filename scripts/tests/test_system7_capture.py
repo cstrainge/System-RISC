@@ -20,7 +20,7 @@ class PrivateCaptureTests(unittest.TestCase):
         folder = output / 'vm'
         folder.mkdir()
         disks = [folder / ('private' + suffix) for suffix in capture.DISK_SUFFIXES]
-        disks.append(folder / 'bootrom.bin')
+        disks.append(folder / 'bootrom-riscv.bin')
         for disk in disks:
             disk.write_bytes(b'private test media')
         (folder / 'evidence.bin').write_bytes(b'retained evidence')

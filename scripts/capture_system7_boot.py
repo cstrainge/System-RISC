@@ -18,14 +18,14 @@ def capture(output):
     for mode in ['missing', 'boot']:
         state = output / mode
         state.mkdir()
-        shutil.copyfile(vm.DIST / 'bootrom.bin', state / 'bootrom.bin')
+        shutil.copyfile(vm.DIST / 'bootrom-riscv.bin', state / 'bootrom-riscv.bin')
         if mode == 'boot':
             shutil.copyfile(vm.DIST / 'system7.qcow2', state / 'system7.qcow2')
         endpoint = {'transport': 'unix', 'path': str(state / 'qmp.sock')}
         serial = state / 'serial.log'
         args = ['qemu-system-riscv64', '-machine', 'virt', '-cpu', CPU, '-m', RAM,
                 '-smp', '1', '-bios', 'none', '-drive',
-                f'if=pflash,unit=0,format=raw,readonly=on,file={state}/bootrom.bin',
+                f'if=pflash,unit=0,format=raw,readonly=on,file={state}/bootrom-riscv.bin',
                 '-global', 'virtio-mmio.force-legacy=false', '-device', 'ramfb',
                 '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
                 '-display', 'none', '-nic', 'none', '-monitor', 'none', '-parallel', 'none',

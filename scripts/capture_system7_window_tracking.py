@@ -35,7 +35,7 @@ def private_probe_disk(output, menus=False, deferred=False):
     fs = NativeImage(raw)
     fs.remove('/System Folder/Finder')
     fs.import_macbinary(packaged / 'Finder.bin', '/System Folder')
-    shutil.copyfile(vm.DIST/'bootrom.bin',private/'bootrom.bin')
+    shutil.copyfile(vm.DIST/'bootrom-riscv.bin',private/'bootrom-riscv.bin')
     subprocess.run(['qemu-img','convert','-f','raw','-O','qcow2',str(raw),
                     str(private/'system7.qcow2')],check=True)
     raw.unlink()

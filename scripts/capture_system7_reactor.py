@@ -13,7 +13,7 @@ import system7_vm as vm
 def capture(output, frontend='headless', qmp_port=4467):
     output.mkdir(parents=True, exist_ok=False)
     original = {name: packaging.sha(vm.DIST / name)
-                for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+                for name in ['system7.qcow2', 'bootrom-riscv.bin', 'System.rsrc']}
     process = endpoint = None
     snapshots = []
     try:

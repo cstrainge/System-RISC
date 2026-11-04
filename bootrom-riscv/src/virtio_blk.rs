@@ -308,7 +308,7 @@ impl Disk
         let mut next_status_check = 10_000; // At most once per pending millisecond.
         loop
         {
-            let result = bootrom::completion::poll(self.index,
+            let result = bootrom_riscv::completion::poll(self.index,
                                                    || unsafe {
                                                        u16::from_le(read_volatile(core::ptr::addr_of!(self.queue.used.index)))
                                                    },
@@ -335,9 +335,9 @@ impl Disk
                                                    });
             match result
             {
-                bootrom::completion::Poll::Ready => break,
-                bootrom::completion::Poll::Pending => core::hint::spin_loop(),
-                bootrom::completion::Poll::Failed(reason) =>
+                bootrom_riscv::completion::Poll::Ready => break,
+                bootrom_riscv::completion::Poll::Pending => core::hint::spin_loop(),
+                bootrom_riscv::completion::Poll::Failed(reason) =>
                 {
                     // Only an actually incomplete request poisons the queue.
                     // Do not reuse DMA storage before acknowledged completion.

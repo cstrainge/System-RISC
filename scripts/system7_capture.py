@@ -85,7 +85,7 @@ class OwnedProcesses:
                 errors.append(error)
                 owners.append({'pid': process.pid, 'reaped': False, 'exit_code': None})
         media = sorted({path for folder in media_directories for path in Path(folder).rglob('*')
-                        if path.is_file() and (path.suffix in DISK_SUFFIXES or path.name == 'bootrom.bin')})
+                        if path.is_file() and (path.suffix in DISK_SUFFIXES or path.name == 'bootrom-riscv.bin')})
         report = {'owners': owners, 'media': [str(path) for path in media]}
         if all(owner['reaped'] for owner in owners):
             for path in media:

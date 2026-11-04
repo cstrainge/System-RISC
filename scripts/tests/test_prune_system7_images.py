@@ -45,13 +45,13 @@ class ImageCleanupTests(unittest.TestCase):
                for suffix in ['.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk']]
         old += [self.write('build/system7/dist/system7.hfs'),
                 self.write('build/system7/dist/obsolete/system7.hfsb'),
-                self.write('build/system7/dist/obsolete/bootrom.bin'),
+                self.write('build/system7/dist/obsolete/bootrom-riscv.bin'),
                 self.write('build/system7/failed/disk.hfs'),
-                self.write('results/system7/finished/bootrom.bin'),
+                self.write('results/system7/finished/bootrom-riscv.bin'),
                 self.write('working/system7-vm/system7-previous-123.qcow2')]
         keep = [self.write(name) for name in [
             'build/system7/dist/system7.hfsb', 'build/system7/dist/system7.qcow2',
-            'build/system7/dist/bootrom.bin', 'working/system7-vm/system7.qcow2',
+            'build/system7/dist/bootrom-riscv.bin', 'working/system7-vm/system7.qcow2',
             'original-media/Macintosh.hfs',
             'System7/crates/mac-toolbox/tests/data/original.hfs',
             'results/system7/finished/report.json', 'results/system7/finished/frame.png',
@@ -67,7 +67,7 @@ class ImageCleanupTests(unittest.TestCase):
         self.assertEqual(self.prune()['removed_files'], 0)
 
     def test_user_exports_and_stopped_persistent_disks_are_not_generated_garbage(self):
-        keep = [self.write('build/system7/user-state/snapshot/children/bootrom.bin'),
+        keep = [self.write('build/system7/user-state/snapshot/children/bootrom-riscv.bin'),
                 self.write('build/system7/check/user-state/snapshot/source.hfsb'),
                 self.write('build/system7/custom/vm/system7.qcow2')]
         self.write('build/system7/custom/vm/persistent-user-state.json', b'{"version":1}')
@@ -91,7 +91,7 @@ class ImageCleanupTests(unittest.TestCase):
         for profile in ('check', 'custom-run'):
             self.write(f'build/system7/{profile}/dist/build.json', b'{}')
             keep.extend(self.write(f'build/system7/{profile}/dist/{name}')
-                        for name in ('system7.hfsb', 'system7.qcow2', 'bootrom.bin'))
+                        for name in ('system7.hfsb', 'system7.qcow2', 'bootrom-riscv.bin'))
         old = self.write('build/system7/check/boot-checks/unblessed.hfsb')
         self.prune()
         self.assertTrue(all(path.exists() for path in keep))
@@ -104,7 +104,7 @@ class ImageCleanupTests(unittest.TestCase):
         keep = [self.write(name) for name in [
             'build/system7/check/dist/system7.hfsb',
             'build/system7/check/dist/system7.qcow2',
-            'build/system7/check/dist/bootrom.bin',
+            'build/system7/check/dist/bootrom-riscv.bin',
             'results/system7/live/dist/disk.raw',
             'build/system7/user-state/source/Finder.raw',
             'working/system7-vm/system7.qcow2',
@@ -139,7 +139,7 @@ class ImageCleanupTests(unittest.TestCase):
     def test_prepared_fixture_survives_before_a_vm_pid_exists(self):
         owner = self.write('results/system7/preparing/pid', str(os.getpid()).encode())
         disk = self.write('results/system7/preparing/dist/conformance.raw')
-        rom = self.write('results/system7/preparing/dist/bootrom.bin')
+        rom = self.write('results/system7/preparing/dist/bootrom-riscv.bin')
         report = self.prune()
         self.assertTrue(disk.exists())
         self.assertTrue(rom.exists())

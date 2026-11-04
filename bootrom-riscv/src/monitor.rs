@@ -150,7 +150,7 @@ pub(crate) struct Published
 }
 impl Published
 {
-    pub(crate) fn prepare(tree: &bootrom::devicetree::Tree<'_>, cpus: &[Cpu], primary: u64,
+    pub(crate) fn prepare(tree: &bootrom_riscv::devicetree::Tree<'_>, cpus: &[Cpu], primary: u64,
                           memory: &crate::memory::Memory)
                           -> core::result::Result<Self, Error>
     {

@@ -15,7 +15,7 @@ def capture(output, cpu):
     args = ['qemu-system-riscv64', '-machine', 'virt', '-cpu', cpu,
             '-m', RAM, '-smp', '1', '-bios', 'none', '-display', 'none',
             '-monitor', 'none', '-nic', 'none', '-serial', 'file:' + str(serial),
-            '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + str(vm.DIST/'bootrom.bin')]
+            '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + str(vm.DIST/'bootrom-riscv.bin')]
     with (output/'qemu.log').open('wb') as log:
         process = subprocess.Popen(args, stdout=log, stderr=log)
     try:
