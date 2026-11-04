@@ -20,6 +20,12 @@ fn main()
                                             .expect("the platform must declare a UART peripheral");
     let uart_base = uart["base"].as_str().expect("the UART must state its base");
     let out = Path::new(&env::var("OUT_DIR").expect("Cargo supplies OUT_DIR")).to_path_buf();
+    // The record is the author of the machine description. Both the bootloader
+    // and the kernel consume this blob, so it is emitted once at build time and
+    // linked in rather than assembled at runtime.
+    let tree = mac_build::devicetree::generate().expect("device tree generation");
+    fs::write(out.join("devicetree.dtb"), &tree).expect("device tree blob");
+    println!("cargo:rerun-if-changed={}", record_path.display());
     fs::write(out.join("platform-hardware.inc"),
               format!(".equ PL011_BASE, {uart_base}\n"))
         .expect("hardware include");

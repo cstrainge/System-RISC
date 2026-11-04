@@ -19,12 +19,10 @@ use core::ptr::{read_volatile, write_volatile};
 
 use mac_filesystem::{BlockDevice, Error, Result};
 
-const SDMA: usize = 0x00;
 const BLOCK_SIZE: usize = 0x04;
 const BLOCK_COUNT: usize = 0x06;
 const ARGUMENT: usize = 0x08;
 const TRANSFER_MODE: usize = 0x0C;
-const COMMAND: usize = 0x0E;
 const BUFFER_DATA: usize = 0x20;
 const PRESENT_STATE: usize = 0x24;
 const POWER_CONTROL: usize = 0x29;

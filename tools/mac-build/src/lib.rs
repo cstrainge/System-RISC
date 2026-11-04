@@ -1,5 +1,6 @@
 //! Host-only resource compiler and guest build support.
 //! Binary encoders/decoders live in the no_std mac-formats crate.
+pub mod devicetree;
 pub mod manifest;
 pub mod module;
 pub mod package;

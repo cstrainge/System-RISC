@@ -11,6 +11,7 @@ use core::panic::PanicInfo;
 
 use linked_list_allocator::LockedHeap;
 
+mod devicetree;
 mod sdhci;
 
 /// The filesystem code above the block device needs storage for its own
@@ -41,6 +42,11 @@ core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardwar
                         include_str!("entry.S"));
 
 include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
+
+/// The machine description, generated from the platform record at build time and
+/// linked in read-only. The bootloader is a consumer of this tree, not its
+/// author, so nothing here hardcodes a peripheral address.
+static DEVICE_TREE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devicetree.dtb"));
 
 // Translation tables live inside the declared boot window, clear of the loaded
 // image and its stack. A 39-bit regime with a 4 KiB granule starts its walk at
@@ -174,15 +180,57 @@ pub extern "C" fn sdhci_probe() -> u64
 {
     use mac_filesystem::BlockDevice;
     init_heap();
+    // Peripheral addresses come from the generated tree, not from constants, so
+    // the record remains the only place this board's hardware is written down.
+    let tree = match devicetree::Tree::new(DEVICE_TREE)
+    {
+        Some(tree) => tree,
+        None =>
+        {
+            puts("BOOT_AARCH64_DT_REFUSED: the linked tree has no valid header\n");
+            return 0;
+        }
+    };
+    let sdhci = match tree.window("sdhci")
+    {
+        Some((base, bytes)) =>
+        {
+            puts("BOOT_AARCH64_DT_SDHCI: base=");
+            puthex(base);
+            puts(" bytes=");
+            puthex(bytes);
+            puts("\n");
+            base as usize
+        }
+        None =>
+        {
+            puts("BOOT_AARCH64_DT_REFUSED: no sdhci window in the tree\n");
+            return 0;
+        }
+    };
+    match tree.window("pl011")
+    {
+        Some((base, _)) =>
+        {
+            puts("BOOT_AARCH64_DT_PL011: base=");
+            puthex(base);
+            puts("\n");
+        }
+        None =>
+        {
+            puts("BOOT_AARCH64_DT_REFUSED: no pl011 window in the tree\n");
+            return 0;
+        }
+    }
     let mut stage = 0u8;
-    let mut disk = match sdhci::Disk::probe(SDHCI_BASE as usize, &mut stage)
+    let mut disk = match sdhci::Disk::probe(sdhci, &mut stage)
     {
         Ok(disk) => disk,
         Err(_) =>
         {
             puts("BOOT_AARCH64_SD_REFUSED: stage=");
             puthex(u64::from(stage));
-            let base = SDHCI_BASE as usize;
+            let base = sdhci;
             // SAFETY: these are the controller's own registers in the declared
             // device window, which the boot MMU maps as Device memory.
             unsafe {

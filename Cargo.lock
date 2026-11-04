@@ -40,7 +40,9 @@ dependencies = [
 name = "bootrom-aarch64"
 version = "0.1.0"
 dependencies = [
+ "linked_list_allocator",
  "mac-build",
+ "mac-filesystem",
  "serde_json",
 ]
 

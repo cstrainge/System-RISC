@@ -383,6 +383,18 @@ impl Definition
 }
 impl Checked
 {
+    /// The RAM window this platform maps, for consumers that describe the
+    /// machine to something else rather than place a payload in it.
+    pub fn ram_base(&self) -> u64
+    {
+        self.ram.start
+    }
+
+    pub fn minimum_ram_bytes(&self) -> u64
+    {
+        self.ram.end - self.ram.start
+    }
+
     pub fn system_image_storage(&self) -> Range<u64>
     {
         self.images.start..self.application_primary_base

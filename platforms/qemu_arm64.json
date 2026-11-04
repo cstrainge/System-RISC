@@ -327,7 +327,7 @@
       "baud": 115200
     },
     "device_tree": {
-      "kind": "firmware"
+      "kind": "generated"
     },
     "ram": {
       "base": "0x0",

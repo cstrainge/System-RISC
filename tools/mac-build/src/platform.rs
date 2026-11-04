@@ -530,6 +530,67 @@ pub fn current() -> &'static Platform
     &PLATFORM
 }
 
+/// A peripheral window as the record declares it, keyed by the part's own name
+/// so a consumer asks for `sdhci` or `pl011` rather than an address.
+pub struct DeclaredDevice
+{
+    pub compatible: String,
+    pub base:       u64,
+    pub bytes:      u64
+}
+
+impl Platform
+{
+    /// The harts this platform describes. A record that declares no emulation
+    /// still runs somewhere, so the kernel-facing count defaults to one.
+    pub fn harts(&self) -> usize
+    {
+        self.emulation.as_ref().map(|emulation| emulation.harts.get()).unwrap_or(1)
+    }
+
+    /// Every peripheral window the record declares, with a size. The size comes
+    /// from the peripheral itself when it states one, otherwise from the MMIO
+    /// inventory entry at the same address, so one declaration of a window is
+    /// enough.
+    pub fn declared_devices(&self) -> Vec<DeclaredDevice>
+    {
+        let hardware = match self.hardware.as_ref()
+        {
+            Some(hardware) => hardware,
+            None => return Vec::new()
+        };
+        let mut devices = Vec::new();
+        for peripheral in &hardware.devices
+        {
+            let base = match peripheral.base.as_deref().and_then(parse_hex)
+            {
+                Some(base) => base,
+                None => continue
+            };
+            let declared = peripheral.bytes.as_deref().and_then(parse_hex);
+            let bytes = declared.or_else(|| {
+                                             self.mmio_devices.iter()
+                                                              .find(|device| {
+                                                                  parse_hex(&device.address)
+                                                                  == Some(base)
+                                                              })
+                                                              .map(|device| device.bytes)
+                                         })
+                                         .unwrap_or(4096);
+            devices.push(DeclaredDevice { compatible: peripheral.model.clone(),
+                                          base,
+                                          bytes });
+        }
+        devices
+    }
+}
+
+fn parse_hex(text: &str) -> Option<u64>
+{
+    let digits = text.trim().trim_start_matches("0x").trim_start_matches("0X");
+    u64::from_str_radix(digits, 16).ok()
+}
+
 /// The module contract target this platform admits. Modules carry their
 /// architecture, pointer width, endianness and feature profile in the DABI/EABI
 /// resource, and the resident kernel validates every contract against the target
