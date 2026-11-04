@@ -21,8 +21,9 @@ pub(crate) use smp::eligible_harts;
 pub(crate) mod io;
 pub(crate) mod interrupts;
 
-/// Current hardware contract; resident lifecycle code does not choose an ISA.
-pub(crate) const MODULE_TARGET: mac_module::Target = mac_module::Target::RVA23U64;
+// Current hardware contract; resident lifecycle code does not choose an ISA.
+// Generated from the platform record so a second board states its own target.
+include!(concat!(env!("OUT_DIR"), "/platform-module-target.rs"));
 
 pub(crate) mod power;
 
