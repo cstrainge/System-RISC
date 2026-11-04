@@ -103,6 +103,24 @@ impl Toolbox
 
 pub(super) fn cleanup_status(cause: crate::toolbox::handles::cleanup::Cause) -> Status
 {
+    let status = cleanup_status_of(cause);
+    if status == SERVICE_BUSY
+    {
+        // One refusal status covers many cleanup causes; a close that reports
+        // Service Busy cannot say which one held it. Name the first cause only,
+        // so a repeated close cannot flood the log.
+        static REPORTED: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
+        if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+        {
+            serial!("CLEANUP_BUSY_CAUSE cause={cause:?}");
+        }
+    }
+    status
+}
+
+fn cleanup_status_of(cause: crate::toolbox::handles::cleanup::Cause) -> Status
+{
     match cause
     {
         crate::toolbox::handles::cleanup::Cause::WindowDefinitionDisposal { reply,
