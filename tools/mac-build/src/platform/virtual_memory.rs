@@ -64,8 +64,9 @@ impl Layout for Sv39Layout
     const TARGET_DESCRIPTION: &'static str = "RV64";
 }
 
-/// The aarch64 39-bit canonical address space. Leaf sizes are the 1 GiB block,
-/// 2 MiB block and 4 KiB page the four-level format supports.
+/// The aarch64 39-bit canonical address space. With a 4 KiB granule the walk
+/// starts at level 1, so the leaves are the 1 GiB block, 2 MiB block and 4 KiB
+/// page of that three-level format.
 struct Aarch64Layout;
 impl PageLayout for Aarch64Layout
 {
