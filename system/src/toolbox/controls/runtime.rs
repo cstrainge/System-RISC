@@ -24,6 +24,12 @@ enum ControlAdmissionError
 }
 impl ControlAdmissionError
 {
+    fn status_for(self, call: &ControlCall) -> Status
+    {
+        report_tracking_refusal(call, &self);
+        self.status()
+    }
+
     fn status(self) -> Status
     {
         match self
@@ -60,6 +66,75 @@ fn service(stage: &'static str, status: Status) -> ControlAdmissionError
     ControlAdmissionError::Service { stage,
                                      status }
 }
+/// Owned scalar error context for the original synchronous CONTROL turn.
+/// A detailed producer writes only on Err; outer projections keep it intact.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TrackingStage
+{
+    DesktopOrPreparation,
+    Descriptor,
+    ManagedAdmission,
+    SplitterRequest,
+    SnapshotLookup,
+    SnapshotPendingPaint,
+    SnapshotExistingCapture,
+    SnapshotArrangement,
+    SnapshotRelease,
+    SnapshotCapture,
+    Calculate,
+    ScenePublish,
+    Outline
+}
+impl TrackingStage
+{
+    pub(crate) fn refusal(out: &mut Option<Self>, stage: Self, status: Status) -> Status
+    {
+        if out.is_none()
+        {
+            *out = Some(stage);
+        }
+        status
+    }
+}
+
+/// Called only after a producer refused and its Desktop/manager guards ended.
+/// The outer scalar defer scope and service obligation can still be installed;
+/// this reports producer context, never a promise of final copyout status.
+pub(crate) fn report_tracking_refusal(call: &ControlCall, cause: &impl fmt::Display)
+{
+    if !matches!(call.operation,
+                 mac_abi::controls::BEGIN_TRACKING
+                 | mac_abi::controls::POLL_TRACKING
+                 | mac_abi::controls::CANCEL_TRACKING)
+    {
+        return;
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        let thread = crate::context::current_thread_context();
+        if !thread.traps.tracking_refusal_reported()
+        {
+            let identity = thread.identity();
+            serial!("CONTROL_TRACKING_PRODUCER_REFUSED app={} thread={} operation={} \
+                     input_control={} cause={}",
+                    identity.app.0,
+                    identity.thread.0,
+                    call.operation,
+                    call.id,
+                    cause);
+        }
+    }
+}
+
+pub(crate) fn report_tracking_status(call: &ControlCall, stage: Option<TrackingStage>,
+                                     status: Status)
+{
+    if status < 0
+    {
+        report_tracking_refusal(call, &format_args!("{:?}: status {}", stage.unwrap_or(TrackingStage::DesktopOrPreparation), status));
+    }
+}
+
 enum Turn
 {
     Cold(i16),
@@ -312,7 +387,7 @@ fn create_native(call: &mut ControlCall) -> Result<Status, ControlAdmissionError
             {
                 return Err(service("definition source changed during preparation", SERVICE_BUSY));
             }
-            Turn::Internal => return toolbox(|runtime| Ok(runtime.control(call))),
+            Turn::Internal => return toolbox(|runtime| Ok(runtime.control(call, &mut None))),
             Turn::Process(plan) => break plan
         }
     };
@@ -496,7 +571,7 @@ impl UserOperation
                                   .claim_admission(call, recipient.owner().incarnation(), viewport)
                                   .map_err(|s| service("claim wait admission", s))?;
                 Ok(wait.map(|wait| (recipient, storage, wait)))
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let Some((recipient, storage, mut wait)) = blocked
         else
         {
@@ -550,7 +625,7 @@ impl UserOperation
                     Ok(window == 0
                        || (runtime.owner == runtime.foreground
                            && runtime.windows.active_window() == Some(WindowId(window))))
-                }).map_err(ControlAdmissionError::status)?;
+                }).map_err(|cause| cause.status_for(call))?;
             // Original resident path performs real cancellation, without any
             // author effects or implicit foreground change, when inactive.
             if !active
@@ -594,7 +669,7 @@ impl UserOperation
                               .process_control_source(call.id, recipient.owner().incarnation())
                               .map_err(|status| service("operation original source", status))?;
                 Ok(Some((recipient, storage, id, bound, old_process)))
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let Some((recipient, storage, id, bound, old_process)) = source
         else
         {
@@ -631,7 +706,7 @@ impl UserOperation
                     return Err(service("operation account owner", ACCESS_DENIED));
                 }
                 Ok(allocation)
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let cold = bound.is_none();
         let entry = match bound
         {
@@ -671,7 +746,7 @@ impl UserOperation
                 runtime.controls
                        .plan_control_operation(&recipient, &storage, call, entry, &allocation)
                        .map_err(|status| service("operation claim", status))
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let Some(plan) = plan
         else
         {
@@ -783,7 +858,7 @@ impl UserOperation
                            .needs_scrollbar_definition(call, owner)
                            .map_err(|status| service("scrollbar dependency", status))?;
                 Ok(Some((recipient, storage, window, viewport, needs_author, prepare_bar)))
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let Some((recipient, storage, window, viewport, needs_author, prepare_bar)) = source
         else
         {
@@ -845,7 +920,7 @@ impl UserOperation
                                                         &allocation)
                                   .map_err(|status| service("layout claim", status))?;
                 Ok((plan, allocation))
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let waiter = crate::context::current_thread_context().identity().thread;
         let work = match plan.prepare(waiter.into(), &allocation)
         {
@@ -892,7 +967,7 @@ impl UserOperation
                            .map_err(|status| service("disposal parent", status))?;
                 }
                 Ok(Some((recipient, storage)))
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let Some((recipient, storage)) = source
         else
         {
@@ -918,7 +993,7 @@ impl UserOperation
                     return Err(service("disposal account owner", ACCESS_DENIED));
                 }
                 Ok(allocation)
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let observer =
             toolbox(|runtime| {
                 if let Some(seal) = seal
@@ -931,7 +1006,7 @@ impl UserOperation
                 account: allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
             }, || runtime.controls.begin_control_disposal(call, &recipient))
                 .map_err(|status| service("canonical disposal",status))
-            }).map_err(ControlAdmissionError::status)?;
+            }).map_err(|cause| cause.status_for(call))?;
         let Some(observer) = observer
         else
         {
@@ -995,7 +1070,7 @@ impl UserOperation
                                                   self.recipient.owner().incarnation(),
                                                   viewport)
                                    .map_err(|s| service("claim wait blocker", s))
-                        }).map_err(ControlAdmissionError::status)?;
+                        }).map_err(|cause| cause.status_for(call))?;
                     if let Some(record) = blocked
                     {
                         admission.replace_record(record)?;
@@ -1039,8 +1114,10 @@ impl UserOperation
                             {
                                 return Ok(Err(record));
                             }
-                            Ok(Ok(runtime.control(call)))
-                        }).map_err(ControlAdmissionError::status)?;
+                            let mut stage = None;
+                            let status = runtime.control(call, &mut stage);
+                            Ok(Ok((status, stage)))
+                        }).map_err(|cause| cause.status_for(call))?;
                     match result
                     {
                         Err(record) =>
@@ -1048,8 +1125,9 @@ impl UserOperation
                             admission.replace_record(record)?;
                             continue;
                         }
-                        Ok(status) =>
+                        Ok((status, stage)) =>
                         {
+                            report_tracking_status(call, stage, status);
                             self.state = UserOperationState::Complete(status);
                             return Ok(UserOperationProgress::Complete(status));
                         }
@@ -1099,7 +1177,7 @@ impl UserOperation
                             runtime.commit_user_control_operation(ready)
                                    .map(Some)
                                    .map_err(|status| service("operation publication", status))
-                        }).map_err(ControlAdmissionError::status)?;
+                        }).map_err(|cause| cause.status_for(call))?;
                     let Some(result) = result
                     else
                     {
@@ -1144,7 +1222,7 @@ impl UserOperation
                                      runtime.commit_user_control_layout(ready)
                                             .map(Some)
                                             .map_err(|status| service("layout publication", status))
-                                 }).map_err(ControlAdmissionError::status)?;
+                                 }).map_err(|cause| cause.status_for(call))?;
                     let Some(result) = result
                     else
                     {
@@ -1182,7 +1260,7 @@ impl UserOperation
                                                             window)
                                    .map_err(|status| service("tracking cancellation", status))?;
                             Ok(OK)
-                        }).map_err(ControlAdmissionError::status)?;
+                        }).map_err(|cause| cause.status_for(call))?;
                     *call = cancel;
                     self.state = UserOperationState::Complete(result);
                     return Ok(UserOperationProgress::Complete(result));

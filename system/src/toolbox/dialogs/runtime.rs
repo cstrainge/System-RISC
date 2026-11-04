@@ -502,7 +502,7 @@ impl super::Toolbox
         {
             let mut call = alert_button(index, item);
             call.window = request.id;
-            self.managed_control(&mut call)?;
+            self.managed_control(&mut call, &mut None)?;
             self.dialogs.state_mut()?.controls[index] = Some(call.id);
         }
         self.draw_dialog()
@@ -529,7 +529,7 @@ impl super::Toolbox
                                              point,
                                              ticks: u64::from(event.when),
                                              ..Default::default() };
-                self.managed_control(&mut call)?;
+                self.managed_control(&mut call, &mut None)?;
                 if call.flags & TRACKING != 0
                 {
                     self.dialogs.state_mut()?.tracking = Some(index);
@@ -551,7 +551,7 @@ impl super::Toolbox
                                              ticks: u64::from(event.when),
                                              flags: if down { BUTTON_DOWN } else { 0 },
                                              ..Default::default() };
-                self.managed_control(&mut call)?;
+                self.managed_control(&mut call, &mut None)?;
                 if call.flags & TRACKING == 0
                 {
                     self.dialogs.state_mut()?.tracking = None;
@@ -600,7 +600,7 @@ impl super::Toolbox
             let mut call = ControlCall { operation: CANCEL_TRACKING,
                                          id,
                                          ..Default::default() };
-            self.managed_control(&mut call)?;
+            self.managed_control(&mut call, &mut None)?;
             self.dialogs.state_mut()?.tracking = None;
         }
         Ok(())
@@ -855,7 +855,8 @@ impl super::Toolbox
                         let id = self.dialogs.controls[index].ok_or(BAD_ABI)?;
                         self.managed_control(&mut ControlCall { operation: DRAW_OBJECT,
                                                                 id,
-                                                                ..Default::default() })?;
+                                                                ..Default::default() },
+                                             &mut None)?;
                     }
                     8 =>
                     {

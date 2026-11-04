@@ -1087,7 +1087,7 @@ impl super::Toolbox
                         let mut info = ControlCall { operation: INFO_OBJECT,
                                                      id,
                                                      ..Default::default() };
-                        self.managed_control(&mut info)?;
+                        self.managed_control(&mut info, &mut None)?;
                         info.standard.enabled = enabled;
                         if self.crash.control_labels[index] != label_index
                         {
@@ -1097,7 +1097,7 @@ impl super::Toolbox
                             info.standard.title_length = title.len() as u32;
                         }
                         info.operation = CONFIGURE_OBJECT;
-                        self.managed_control(&mut info)?;
+                        self.managed_control(&mut info, &mut None)?;
                         self.crash.control_enabled[index] = enabled != 0;
                         self.crash.control_labels[index] = label_index;
                     }
@@ -1118,7 +1118,7 @@ impl super::Toolbox
                                                  window,
                                                  standard,
                                                  ..Default::default() };
-                    let created = self.managed_control(&mut call);
+                    let created = self.managed_control(&mut call, &mut None);
                     if call.id != 0
                     {
                         self.crash.controls[index] = Some(call.id);
@@ -1133,7 +1133,8 @@ impl super::Toolbox
             {
                 self.managed_control(&mut ControlCall { operation: DRAW_OBJECT,
                                                         id,
-                                                        ..Default::default() })?;
+                                                        ..Default::default() },
+                                     &mut None)?;
             }
         }
         Ok(())
@@ -1313,7 +1314,8 @@ impl super::Toolbox
            && let Some(id) = self.crash.controls[index]
         {
             let _ = self.managed_control(&mut mac_abi::controls::ControlCall {
-                operation: mac_abi::controls::CANCEL_TRACKING, id, ..Default::default() });
+                operation: mac_abi::controls::CANCEL_TRACKING, id, ..Default::default() },
+                                         &mut None);
         }
     }
 
@@ -1449,7 +1451,7 @@ impl super::Toolbox
                                          ticks: u64::from(when),
                                          flags: if down { BUTTON_DOWN } else { 0 },
                                          ..Default::default() };
-            if self.managed_control(&mut call).is_err()
+            if self.managed_control(&mut call, &mut None).is_err()
             {
                 self.cancel_crash_tracking();
                 return true;
@@ -1491,7 +1493,7 @@ impl super::Toolbox
                                          point: local,
                                          ticks: u64::from(when),
                                          ..Default::default() };
-            if self.managed_control(&mut call).is_err()
+            if self.managed_control(&mut call, &mut None).is_err()
             {
                 return true;
             }

@@ -1,6 +1,7 @@
 //! One loaded Splitter CDEF supplies standalone and container drag geometry.
 //! A capture retains its initial geometry; only its outline moves until release.
 use super::*;
+use crate::toolbox::runtime::TrackingStage;
 #[derive(Clone)]
 pub(super) struct Capture
 {
@@ -200,32 +201,44 @@ impl Manager
     }
 
     pub(crate) fn prepare_splitter(&self, call: &mut ControlCall, owner: u64, paint_pending: bool,
-                                   gate: TrapGate)
+                                   gate: TrapGate, diagnostic: &mut Option<TrackingStage>)
                                    -> Result<Prepared, Status>
     {
-        let snapshot = self.snapshot_splitter(call, owner, paint_pending)?;
+        let snapshot = self.snapshot_splitter(call, owner, paint_pending, diagnostic)?;
         let author = super::super::effects::Author::trusted(gate);
-        let (prepared, output) = super::super::effects::immediate(snapshot.calculate(&author))?;
+        let (prepared, output) =
+            super::super::effects::immediate(snapshot.calculate(&author)).map_err(|status| {
+                TrackingStage::refusal(diagnostic, TrackingStage::Calculate, status)
+            })?;
         *call = output.wire();
         Ok(prepared)
     }
 
-    pub(super) fn snapshot_splitter(&self, call: &ControlCall, owner: u64, paint_pending: bool)
+    pub(super) fn snapshot_splitter(&self, call: &ControlCall, owner: u64, paint_pending: bool,
+                                    diagnostic: &mut Option<TrackingStage>)
                                     -> Result<SplitterSnapshot, Status>
     {
-        let root = self.get(call.id, owner)?;
+        let root = self.get(call.id, owner).map_err(|status| {
+                                                TrackingStage::refusal(diagnostic,
+                                                                TrackingStage::SnapshotLookup,
+                                                                status)
+                                            })?;
         if call.window != 0 && call.window != root.window
         {
             return Err(BAD_ARGUMENT);
         }
         if paint_pending
         {
-            return Err(SERVICE_BUSY);
+            return Err(TrackingStage::refusal(diagnostic,
+                                              TrackingStage::SnapshotPendingPaint,
+                                              SERVICE_BUSY));
         }
         if call.operation == BEGIN_TRACKING
            && self.objects.iter().any(|(_, o)| o.recipient == owner && o.state.tracking.is_some())
         {
-            return Err(SERVICE_BUSY);
+            return Err(TrackingStage::refusal(diagnostic,
+                                              TrackingStage::SnapshotExistingCapture,
+                                              SERVICE_BUSY));
         }
         let table = matches!(root.state.spec,
                              Spec::Standard { procedure: TABLE_PROCEDURE,
@@ -236,7 +249,10 @@ impl Manager
         {
             let assignment=ControlCall {id:call.id,operation:REFLOW_OBJECT,layout:mac_abi::controls::reflow::Payload {
                 message:mac_abi::controls::reflow::ASSIGN_RECT,rect:root.state.spec.bounds(),..Default::default()},..Default::default()};
-            self.snapshot_layout_change(&assignment, owner, false, None, None, None)?
+            self.snapshot_layout_change(&assignment, owner, false, None, None, None)
+                .map_err(|status| {
+                    TrackingStage::refusal(diagnostic, TrackingStage::SnapshotArrangement, status)
+                })?
         }
         else
         {
@@ -258,7 +274,10 @@ impl Manager
                                              false,
                                              None,
                                              None,
-                                             Some(root.state.clone()))?)
+                                             Some(root.state.clone()))
+                     .map_err(|status| {
+                         TrackingStage::refusal(diagnostic, TrackingStage::SnapshotRelease, status)
+                     })?)
         }
         else
         {
@@ -273,7 +292,7 @@ impl Manager
                               table,
                               arrange,
                               release,
-                              call: super::super::effects::DetachedCall::capture(call)? })
+                              call: super::super::effects::DetachedCall::capture(call).map_err(|status| TrackingStage::refusal(diagnostic, TrackingStage::SnapshotCapture, status))? })
     }
 }
 
