@@ -3,9 +3,9 @@
 use mac_abi::{files::*, *};
 use mac_filesystem_interface::MetadataPatch;
 // An internal continuation discriminator, never an accepted public FileCall.
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(super) const RESTORE_MODIFIED: u32 = u32::MAX;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(super) const CREATE_PRIVATE_DIRECTORY: u32 = u32::MAX - 1;
 pub(super) fn validate(call: &FileCall, comment: &str) -> Result<(), Status>
 {

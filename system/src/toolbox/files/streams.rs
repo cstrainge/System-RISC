@@ -43,7 +43,7 @@ pub(super) struct Stream
     pub parent:            u32,
     pub expected:          u32,
     pub authority:         super::subject::Authority,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(super) io_subject: Option<crate::drivers::jobs::subjects::Subject>,
     pub when:              u64,
     pub name:              Vec<u8>,
@@ -65,7 +65,7 @@ impl super::objects::Payload for Stream
 
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FSWR");
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
     {
         self.io_subject.as_ref()
@@ -148,7 +148,7 @@ impl Manager
         {
             #[cfg(test)]
             let authority = self.fixture_stream_owner(owner);
-            #[cfg(all(not(test), target_arch = "riscv64"))]
+            #[cfg(all(not(test), guest))]
             let authority = if owner == 0
             {
                 crate::toolbox::handles::system_owner()?
@@ -157,9 +157,9 @@ impl Manager
             {
                 return Err(ACCESS_DENIED);
             };
-            #[cfg(all(not(test), not(target_arch = "riscv64")))]
+            #[cfg(all(not(test), not(guest)))]
             return Err(ACCESS_DENIED);
-            #[cfg(any(test, target_arch = "riscv64"))]
+            #[cfg(any(test, guest))]
             return self.stream_request_for(owner, &authority, call, name, comment, data, output);
         }
         self.stream_request_inner(super::subject::Access::Client(owner),
@@ -195,7 +195,7 @@ impl Manager
         {
             self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FSWR"))?;
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.prepare_streams(crate::toolbox::handles::file_stream_kinds()?)?;
         self.stream_request_inner(owner, authority, call, name, comment, data, output)
     }
@@ -206,7 +206,7 @@ impl Manager
                             output: &mut [u8])
                             -> Result<(), Status>
     {
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.local_ready()?;
         if call.padding != 0
            || call.reserved != 0
@@ -257,7 +257,7 @@ impl Manager
             }
             self.streams.reserve().map_err(|_| NO_MEMORY)?;
             let handle = self.streams
-                             .insert_authorized(authority, Stream { #[cfg(target_arch = "riscv64")] io_subject: None, owner:owner.label(),
+                             .insert_authorized(authority, Stream { #[cfg(guest)] io_subject: None, owner:owner.label(),
                                               authority: authority.clone(),
                                               volume: call.volume,
                                               parent: call.parent,

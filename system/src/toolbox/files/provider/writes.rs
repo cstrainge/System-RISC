@@ -54,7 +54,7 @@ impl State
             progress.phase = Phase::Cleanup;
         }
         drop(progress);
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         super::runtime::request_write_cleanup();
     }
 }
@@ -81,7 +81,7 @@ impl Manager
         -> Result<(u64, u64), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
         if call.operation == REMOVE && self.file_pinned(call.volume, call.cnid)
@@ -115,7 +115,7 @@ impl Manager
         }
         let handle =
             self.writes.insert_authorized(authority,
-                                           Pending { #[cfg(target_arch = "riscv64")] io_subject: Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?), authority:     authority.clone(),
+                                           Pending { #[cfg(guest)] io_subject: Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?), authority:     authority.clone(),
                                                      owner:         owner.label(),
                                                      volume:        call.volume,
                                                      parent:        if call.operation == MOVE_INTO
@@ -184,7 +184,7 @@ impl Manager
         -> Result<Plan, Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, volume)?;
         self.validate_provider_mutation(volume)?;
@@ -223,7 +223,7 @@ impl Manager
                                                                        -> Result<(), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
         if call.expected_cnid != 0 && self.file_pinned(call.volume, call.expected_cnid)
@@ -245,7 +245,7 @@ impl Manager
         let mut data = Vec::new();
         data.try_reserve_exact(call.length).map_err(|_| NO_MEMORY)?;
         call.handle = self.writes.insert_authorized(authority,
-                                                     Pending { #[cfg(target_arch = "riscv64")] io_subject: Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?), authority: authority.clone(),
+                                                     Pending { #[cfg(guest)] io_subject: Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?), authority: authority.clone(),
                                                                owner: owner.label(),
                                                                volume: call.volume,
                                                                parent,

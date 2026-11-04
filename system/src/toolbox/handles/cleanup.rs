@@ -34,45 +34,45 @@ pub(crate) enum Cause
         kind:      mac_object_table::domain::KindCode,
         preparing: usize
     },
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     ThreadPreparations
     {
         preparing: usize
     },
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     NativeJoin
     {
         readers:      usize,
         preparations: usize
     },
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     ApplicationHeap(crate::toolbox::application_heap::CleanupCause),
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     NativeTls(crate::toolbox::native_threads::CleanupCause),
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     ProcessSpace(crate::machine::paging::process::CleanupCause),
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     DefinitionPending
     {
         owner: u64,
         drain: crate::toolbox::resources::definitions::Drain
     },
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     ModuleMapping(crate::machine::paging::modules::CleanupCause),
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     RequestRegistryUnavailable(crate::state::AccessError),
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     ScrapManagerUnavailable(crate::state::AccessError),
     ContextUnavailable
     {
         required: &'static str
     },
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     SchedulerPending
     {
         generation: u64
     },
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     SchedulerUnavailable(crate::state::AccessError),
     DriverInterfaceBusy
     {
@@ -96,7 +96,7 @@ pub(crate) enum Cause
         mappings: usize,
         reset:    Option<u64>
     },
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     DeviceManagerUnavailable(crate::state::AccessError),
     DriverDependencyScopeActive
     {
@@ -131,9 +131,9 @@ pub(crate) enum Cause
         pending:   usize,
         requested: usize
     },
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     MemoryManagerUnavailable(crate::state::AccessError),
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     FileManagerUnavailable(crate::state::AccessError),
     WindowDefinitionDisposal
     {
@@ -188,14 +188,14 @@ impl core::fmt::Display for Cause
                        "owner {owner:?} backing {kind:?} retains {preparing} actual prepared \
                         publications; original cleanup ticket retained")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::ThreadPreparations { preparing } =>
             {
                 write!(f,
                        "native thread backing retains {preparing} actual prepared publications; \
                         original THST ticket retained")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::NativeJoin { readers,
                                preparations } =>
             {
@@ -203,13 +203,13 @@ impl core::fmt::Display for Cause
                        "native join right retains {readers} actual readers and {preparations} \
                         prepared publications; original ticket retained")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::ApplicationHeap(cause) => cause.fmt(f),
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::NativeTls(cause) => cause.fmt(f),
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::ProcessSpace(cause) => cause.fmt(f),
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::DefinitionPending { owner,
                                       drain } =>
             {
@@ -217,16 +217,16 @@ impl core::fmt::Display for Cause
                        "definition owner {owner} awaits {drain:?}; original callable and cleanup \
                         ticket retained")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::ModuleMapping(cause) => cause.fmt(f),
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::RequestRegistryUnavailable(cause) =>
             {
                 write!(f,
                        "driver request cleanup could not enter its registry ({cause:?}); exact \
                         ticket and pending request remain retained for retry")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::ScrapManagerUnavailable(cause) =>
             {
                 write!(f,
@@ -239,14 +239,14 @@ impl core::fmt::Display for Cause
                        "registered cleanup requires the {required} context; payload and unique \
                         ticket remain retained for retry")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::SchedulerPending { generation } =>
             {
                 write!(f,
                        "scheduler registration {generation} awaits actual callback and \
                         target-owned quiescence; original payload and cleanup ticket retained")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::SchedulerUnavailable(cause) =>
             {
                 write!(f,
@@ -279,7 +279,7 @@ impl core::fmt::Display for Cause
                         (stopped={stopped}, mappings={mappings}, reset={reset:?}); claim, DMA and \
                         unique cleanup ticket remain retained for retry")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::DeviceManagerUnavailable(cause) =>
             {
                 write!(f,
@@ -342,14 +342,14 @@ impl core::fmt::Display for Cause
                         {pending} pending; protocol state and cleanup ticket remain retained for \
                         retry")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::MemoryManagerUnavailable(error) =>
             {
                 write!(f,
                        "Memory Manager cleanup could not enter its resident state ({error:?}); \
                         payload, backing and cleanup ticket remain retained for retry")
             }
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             Self::FileManagerUnavailable(error) =>
             {
                 write!(f,
@@ -410,7 +410,7 @@ impl Failure
                cause: Cause::ControlOperationPending { control } }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn definition_pending(ticket: ReleasedResource, owner: u64,
                                      drain: crate::toolbox::resources::definitions::Drain)
                                      -> Self
@@ -420,7 +420,7 @@ impl Failure
                                                  drain } }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn module_mapping(ticket: ReleasedResource,
                                  cause: crate::machine::paging::modules::CleanupCause)
                                  -> Self
@@ -429,14 +429,14 @@ impl Failure
                cause: Cause::ModuleMapping(cause) }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn thread_preparations(ticket: ReleasedResource, preparing: usize) -> Self
     {
         Self { ticket,
                cause: Cause::ThreadPreparations { preparing } }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn native_join(ticket: ReleasedResource, readers: usize, preparations: usize)
                               -> Self
     {
@@ -445,7 +445,7 @@ impl Failure
                                           preparations } }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn process_space(ticket: ReleasedResource,
                                 cause: crate::machine::paging::process::Error)
                                 -> Self
@@ -454,7 +454,7 @@ impl Failure
                cause: Cause::ProcessSpace(cause.into()) }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn native_tls(ticket: ReleasedResource,
                              cause: crate::toolbox::native_threads::CleanupCause)
                              -> Self
@@ -463,7 +463,7 @@ impl Failure
                cause: Cause::NativeTls(cause) }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn application_heap(ticket: ReleasedResource,
                                    cause: crate::toolbox::application_heap::CleanupCause)
                                    -> Self
@@ -472,14 +472,14 @@ impl Failure
                cause: Cause::ApplicationHeap(cause) }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn scheduler_pending(ticket: ReleasedResource, generation: u64) -> Self
     {
         Self { ticket,
                cause: Cause::SchedulerPending { generation } }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn scheduler_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
                                         -> Self
     {
@@ -487,7 +487,7 @@ impl Failure
                cause: Cause::SchedulerUnavailable(cause) }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn request_registry_unavailable(ticket: ReleasedResource,
                                                cause: crate::state::AccessError)
                                                -> Self
@@ -515,7 +515,7 @@ impl Failure
                                              reset } }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn devices_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
                                       -> Self
     {
@@ -523,7 +523,7 @@ impl Failure
                cause: Cause::DeviceManagerUnavailable(cause) }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn scrap_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
                                     -> Self
     {
@@ -641,7 +641,7 @@ impl Failure
                                                  requested: 4 } }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn files_unavailable(ticket: ReleasedResource, error: crate::state::AccessError)
                                     -> Self
     {
@@ -649,7 +649,7 @@ impl Failure
                cause: Cause::FileManagerUnavailable(error) }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn memory_unavailable(ticket: ReleasedResource, error: crate::state::AccessError)
                                      -> Self
     {

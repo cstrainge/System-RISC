@@ -95,7 +95,7 @@ pub fn family(manager: Manager<'_>, scope: mac_abi::resources::Scope, id: i16)
     }).map_err(status)
 }
 
-#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+#[cfg(any(guest, feature = "test-support"))]
 pub(crate) fn load_file(files: &mut crate::toolbox::files::Manager, manager: Manager<'_>,
                         call: &FileIconCall)
                         -> Result<(), Status>
@@ -183,7 +183,7 @@ pub struct Drawing
 }
 impl Drawing
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(crate) fn file_default(file_type: [u8; 4], name: &str, destination: Rect, flags: u16)
                                -> Result<Self, Status>
     {
@@ -217,7 +217,7 @@ impl Drawing
                   port: Port::default() })
     }
 
-    #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+    #[cfg(any(guest, feature = "test-support"))]
     pub(crate) fn file(files: &mut crate::toolbox::files::Manager, manager: Manager<'_>,
                        call: &FileIconCall)
                        -> Result<Self, Status>

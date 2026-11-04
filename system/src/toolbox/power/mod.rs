@@ -52,7 +52,7 @@ pub(crate) fn request(host: &mut impl Host, call: &mut PowerCall) -> Result<(), 
     Ok(())
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) fn native(call: &mut PowerCall) -> Result<(), Status>
 {
     struct Native;

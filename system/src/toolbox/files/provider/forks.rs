@@ -67,7 +67,7 @@ impl Open
 }
 fn signal_cleanup()
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     super::runtime::request_fork_cleanup();
 }
 impl Manager
@@ -122,7 +122,7 @@ impl Manager
         -> Result<(u64, u32), Status>
     {
         self.validate_creation(access, authority, crate::toolbox::handles::KindCode(*b"FFRK"))?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
         self.validate_transfer_read(access, volume, node)?;
         if node < ROOT_ID || !matches!(kind, DATA_FORK | RESOURCE_FORK)
@@ -142,14 +142,14 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         let io_subject =
             Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?);
         let description=OpenDescription::new(FileFork::Provider(Open {kind,state:spinning_top::Spinlock::new(State {length:0,phase:Phase::Opening,orphaned:false})}),kind,OPEN_READ)?;
         let handle =
             self.handles
                 .insert_authorized(authority,
-                                   OpenFile { #[cfg(target_arch = "riscv64")]
+                                   OpenFile { #[cfg(guest)]
                                               io_subject,
                                               owner: access.label(),
                                               volume,
@@ -284,7 +284,7 @@ impl Manager
         drop(state);
         let retire_local =
             file.retired.load(core::sync::atomic::Ordering::Acquire) && !file.final_handle();
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         if file.owner_stopping()
         {
             crate::toolbox::processes::retirement::resources_released();

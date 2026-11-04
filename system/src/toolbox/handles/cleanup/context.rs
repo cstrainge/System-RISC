@@ -2,7 +2,7 @@
 //! These borrowed Rust contexts never cross an independently linked ABI.
 #![forbid(unsafe_code)]
 use mac_object_table::domain::ReleasedResource;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 use mac_object_table::registry::Release;
 
 use super::Failure;
@@ -15,20 +15,20 @@ pub(crate) trait Context
                                registration: crate::toolbox::scrap::extension::Registration)
                                -> Result<(), Failure>
     {
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         {
             crate::kernel::with_scrap_owned(ticket, |ticket, manager| {
                 manager.extension_release(ticket, registration)
             }).unwrap_or_else(|(cause, ticket)| Err(Failure::scrap_unavailable(ticket, cause)))
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(guest))]
         {
             let _ = registration;
             Err(Failure::context_unavailable(ticket, "Scrap extension manager"))
         }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     fn toolbox(&mut self) -> Option<&mut crate::toolbox::runtime::Toolbox>;
 }
 
@@ -39,14 +39,14 @@ impl Context for crate::drivers::Registry
         Some(self)
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     fn toolbox(&mut self) -> Option<&mut crate::toolbox::runtime::Toolbox>
     {
         None
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 impl Context for crate::toolbox::runtime::Toolbox
 {
     fn driver_registry(&mut self) -> Option<&mut crate::drivers::Registry>
@@ -62,10 +62,10 @@ impl Context for crate::toolbox::runtime::Toolbox
 
 /// Retain the unique ticket if a callback requires a context that is not
 /// available at this point in boot/recovery. Never fabricate a desktop or ACK.
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) struct Toolbox<R>(pub R);
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 impl<R: Release<crate::toolbox::runtime::Toolbox, Failure>> Release<dyn Context, Failure>
     for Toolbox<R>
 {

@@ -1,6 +1,6 @@
 //! Legacy text conversion belongs to the resident trap boundary, never the SDK.
 //! System 7 MacRoman (including the pre-8.5 currency sign at byte DB).
-#![cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
+#![cfg_attr(not(any(guest, feature = "test-support")), allow(dead_code))]
 mod scrap;
 mod textedit;
 use alloc::{string::String, vec, vec::Vec};

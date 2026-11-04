@@ -1,7 +1,7 @@
 //! Owned bounded data-file transactions. Payload is staged fallibly, then the
 //! block filesystem or an owned provider job publishes it. Existing resource
 //! forks are preserved; no direct resource fork writer is exposed.
-#![cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
+#![cfg_attr(not(any(guest, feature = "test-support")), allow(dead_code))]
 use super::*;
 pub(crate) mod lifetime;
 impl super::objects::Payload for Pending
@@ -10,7 +10,7 @@ impl super::objects::Payload for Pending
 
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FDWR");
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
     {
         self.io_subject.as_ref()
@@ -56,7 +56,7 @@ impl lifetime::WriteHost for Manager
 pub(super) struct Pending
 {
     pub authority:         super::subject::Authority,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(super) io_subject: Option<crate::drivers::jobs::subjects::Subject>,
     pub owner:             u64,
     pub volume:            u32,
@@ -100,7 +100,7 @@ impl Manager
         {
             #[cfg(test)]
             let authority = self.fixture_write_owner(owner);
-            #[cfg(all(not(test), target_arch = "riscv64"))]
+            #[cfg(all(not(test), guest))]
             let authority = if owner == 0
             {
                 crate::toolbox::handles::system_owner()?
@@ -109,9 +109,9 @@ impl Manager
             {
                 return Err(ACCESS_DENIED);
             };
-            #[cfg(all(not(test), not(target_arch = "riscv64")))]
+            #[cfg(all(not(test), not(guest)))]
             return Err(ACCESS_DENIED);
-            #[cfg(any(test, target_arch = "riscv64"))]
+            #[cfg(any(test, guest))]
             return self.write_request_for(owner, &authority, call, name, data);
         }
         self.write_request_inner(owner, None, call, name, data)
@@ -123,7 +123,7 @@ impl Manager
                                     -> Result<(), Status>
     {
         self.validate_file_authority(owner, authority)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.write_request_inner(owner, Some(authority), call, name, data)
     }
@@ -133,7 +133,7 @@ impl Manager
                            call: &mut DataWriteCall, name: &str, data: &[u8])
                            -> Result<(), Status>
     {
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.local_ready()?;
         if call.reserved != [0; 2]
         {
@@ -187,7 +187,7 @@ impl Manager
             call.handle =
                 self.writes
                     .insert(authority,
-                            Pending { #[cfg(target_arch = "riscv64")]
+                            Pending { #[cfg(guest)]
                                       io_subject: None,
                                       authority:
                                           super::subject::Authority::Client(authority.clone()),
