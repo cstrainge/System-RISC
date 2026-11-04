@@ -23,7 +23,7 @@ pub(super) struct CanvasState
     mode:            AtomicU8,
     cancelled:       AtomicBool,
     notice:          Spinlock<Option<Arc<Notice>>>,
-    geometry_waiter: Spinlock<Option<Weak<operations::WindowJob>>>
+    mutation_waiter: Spinlock<Option<Weak<operations::WindowJob>>>
 }
 impl CanvasState
 {
@@ -32,7 +32,7 @@ impl CanvasState
         Self { mode:            AtomicU8::new(IDLE),
                cancelled:       AtomicBool::new(false),
                notice:          Spinlock::new(None),
-               geometry_waiter: Spinlock::new(None) }
+               mutation_waiter: Spinlock::new(None) }
     }
 
     fn cancel(&self)
@@ -60,7 +60,7 @@ impl CanvasState
     pub(super) fn preflight_close(&self) -> Result<(), Status>
     {
         InvocationGate::run(|| {
-            if self.geometry_waiter.lock().is_some()
+            if self.mutation_waiter.lock().is_some()
             {
                 return Err(SERVICE_BUSY);
             }
@@ -92,7 +92,7 @@ impl CanvasState
     fn available(&self) -> bool
     {
         InvocationGate::run(|| {
-            self.mode.load(Ordering::Acquire) == IDLE && self.geometry_waiter.lock().is_none()
+            self.mode.load(Ordering::Acquire) == IDLE && self.mutation_waiter.lock().is_none()
         })
     }
 
@@ -100,7 +100,7 @@ impl CanvasState
     pub(super) fn reset(&self) -> Result<(), Status>
     {
         InvocationGate::run(|| {
-            if self.geometry_waiter.lock().is_some()
+            if self.mutation_waiter.lock().is_some()
                || matches!(self.mode.load(Ordering::Acquire), CANVAS | GEOMETRY)
             {
                 return Err(SERVICE_BUSY);
@@ -232,7 +232,7 @@ impl WindowCanvasGuardian
     pub(super) fn preflight_geometry(&self) -> Result<(), Status>
     {
         InvocationGate::run(|| {
-            if self.state().geometry_waiter.lock().is_some()
+            if self.state().mutation_waiter.lock().is_some()
             {
                 return Err(SERVICE_BUSY);
             }
@@ -248,7 +248,7 @@ impl WindowCanvasGuardian
     pub(super) fn geometry(&self) -> Result<GeometryClaim, Status>
     {
         InvocationGate::run(|| {
-            if self.state().geometry_waiter.lock().is_some()
+            if self.state().mutation_waiter.lock().is_some()
             {
                 return Err(SERVICE_BUSY);
             }
@@ -261,14 +261,14 @@ impl WindowCanvasGuardian
         })
     }
 
-    pub(super) fn reserve_geometry(&self, job: &Arc<operations::WindowJob>, callback_caller: bool)
-                                   -> Result<GeometryAdmission, Status>
+    pub(super) fn reserve_mutation(&self, job: &Arc<operations::WindowJob>, callback_caller: bool)
+                                   -> Result<MutationAdmission, Status>
     {
         let weak = Arc::downgrade(job);
         InvocationGate::run(|| {
-            job.arm_geometry_admission();
+            job.arm_mutation_admission();
             let state = self.state();
-            let mut waiting = state.geometry_waiter.lock();
+            let mut waiting = state.mutation_waiter.lock();
             if waiting.is_some()
             {
                 return Err(SERVICE_BUSY);
@@ -291,19 +291,19 @@ impl WindowCanvasGuardian
             state.cancel();
             Ok(())
         })?;
-        Ok(GeometryAdmission { guardian: Some(self.clone()),
+        Ok(MutationAdmission { guardian: Some(self.clone()),
                                job:      weak,
                                active:   true })
     }
 
-    pub(super) fn geometry_reserved(&self, admission: &mut GeometryAdmission,
+    pub(super) fn geometry_reserved(&self, admission: &mut MutationAdmission,
                                     job: &Arc<operations::WindowJob>)
                                     -> Result<GeometryClaim, Status>
     {
         admission.validate(self, job)?;
         InvocationGate::run(|| {
             let state = self.state();
-            let mut waiting = state.geometry_waiter.lock();
+            let mut waiting = state.mutation_waiter.lock();
             if !waiting.as_ref().is_some_and(|actual| Weak::ptr_eq(actual, &admission.job))
             {
                 return Err(ACCESS_DENIED);
@@ -319,20 +319,69 @@ impl WindowCanvasGuardian
         })
     }
 
+    /// The reservation owns the original idle header across this borrow. All
+    /// fallible checks precede begin_release; only its real ticket permits commit.
+    pub(super) fn close_reserved<'a>(&'a self, admission: &'a mut MutationAdmission,
+                                     job: &Arc<operations::WindowJob>)
+                                     -> Result<ClosePermit<'a>, Status>
+    {
+        admission.validate(self, job)?;
+        InvocationGate::run(|| {
+            let state = self.state();
+            if !state.mutation_waiter
+                     .lock()
+                     .as_ref()
+                     .is_some_and(|actual| Weak::ptr_eq(actual, &admission.job))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            if state.mode.load(Ordering::Acquire) != IDLE
+            {
+                return Err(SERVICE_BUSY);
+            }
+            Ok(())
+        })?;
+        Ok(ClosePermit { guardian: self,
+                         admission })
+    }
+
     pub(super) fn geometry_active(&self) -> bool
     {
         self.state().mode.load(Ordering::Acquire) == GEOMETRY
     }
 }
+/// A borrowed affine proof, not an author result. The live reservation rejects
+/// every other target admission, and cannot be dropped while this permit exists.
+/// Dropping this permit has no effect if canonical begin_release refuses.
+pub(super) struct ClosePermit<'a>
+{
+    guardian:  &'a WindowCanvasGuardian,
+    admission: &'a mut MutationAdmission
+}
+impl ClosePermit<'_>
+{
+    /// Call only after obtaining the original WIND's real unique release ticket.
+    pub(super) fn commit(self)
+    {
+        InvocationGate::run(|| {
+            let state = self.guardian.state();
+            // This exact reservation was validated while IDLE and stayed
+            // borrowed. Other canvas/geometry/close/reset routes reject it.
+            *state.mutation_waiter.lock() = None;
+            state.closed();
+            self.admission.active = false;
+        });
+    }
+}
 /// This owns a single reservation on the ORIGINAL header. It carries no
 /// author completion and cannot refresh a stale Window seal.
-pub(crate) struct GeometryAdmission
+pub(crate) struct MutationAdmission
 {
     guardian: Option<WindowCanvasGuardian>,
     job:      Weak<operations::WindowJob>,
     active:   bool
 }
-impl GeometryAdmission
+impl MutationAdmission
 {
     fn validate(&self, guardian: &WindowCanvasGuardian, job: &Arc<operations::WindowJob>)
                 -> Result<(), Status>
@@ -351,9 +400,9 @@ impl GeometryAdmission
     {
         self.validate(guardian, job)?;
         InvocationGate::run(|| {
-            job.arm_geometry_admission();
+            job.arm_mutation_admission();
             let state = guardian.state();
-            if !state.geometry_waiter
+            if !state.mutation_waiter
                      .lock()
                      .as_ref()
                      .is_some_and(|actual| Weak::ptr_eq(actual, &self.job))
@@ -373,7 +422,7 @@ impl GeometryAdmission
         })
     }
 }
-impl Drop for GeometryAdmission
+impl Drop for MutationAdmission
 {
     fn drop(&mut self)
     {
@@ -381,7 +430,7 @@ impl Drop for GeometryAdmission
         {
             self.guardian.as_ref().is_some_and(|guardian| {
                                       InvocationGate::run(|| {
-                                          let mut waiting = guardian.state().geometry_waiter.lock();
+                                          let mut waiting = guardian.state().mutation_waiter.lock();
                                           if waiting.as_ref().is_some_and(|actual| {
                                                                  Weak::ptr_eq(actual, &self.job)
                                                              })
@@ -412,14 +461,14 @@ impl Drop for GeometryAdmission
         }
     }
 }
-struct GeometryReturn(Option<Weak<operations::WindowJob>>);
-impl Drop for GeometryReturn
+struct MutationReturn(Option<Weak<operations::WindowJob>>);
+impl Drop for MutationReturn
 {
     fn drop(&mut self)
     {
         if let Some(job) = self.0.as_ref().and_then(Weak::upgrade)
         {
-            let (notice, waiter) = job.geometry_return_target();
+            let (notice, waiter) = job.mutation_return_target();
             // No temporary Job/source/metadata owner survives its wake.
             drop(job);
             drop(self.0.take());
@@ -440,7 +489,7 @@ pub(crate) struct CanvasClaim
 {
     guardian:          WindowCanvasGuardian,
     returned:          ReturnEdge,
-    geometry_returned: GeometryReturn
+    mutation_returned: MutationReturn
 }
 impl CanvasClaim
 {
@@ -495,8 +544,8 @@ impl Drop for CanvasClaim
         // Readers precede this field in its canonical family owner. Notify only
         // actual claim return, never a retry of an unchanged refusal.
         self.returned.0 = notice;
-        self.geometry_returned.0 =
-            InvocationGate::run(|| self.guardian.state().geometry_waiter.lock().clone());
+        self.mutation_returned.0 =
+            InvocationGate::run(|| self.guardian.state().mutation_waiter.lock().clone());
     }
 }
 pub(super) struct GeometryClaim(WindowCanvasGuardian, ReturnEdge);
@@ -557,7 +606,7 @@ impl WindowManager
         }
         InvocationGate::run(|| {
             let state = guardian.state();
-            if state.geometry_waiter.lock().is_some()
+            if state.mutation_waiter.lock().is_some()
             {
                 return Err(SERVICE_BUSY);
             }
@@ -569,7 +618,7 @@ impl WindowManager
             *target = Some(notice);
             Ok(CanvasClaim { guardian:          guardian.clone(),
                              returned:          ReturnEdge(None),
-                             geometry_returned: GeometryReturn(None) })
+                             mutation_returned: MutationReturn(None) })
         })
     }
 

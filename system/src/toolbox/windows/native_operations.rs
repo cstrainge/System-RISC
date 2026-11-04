@@ -55,7 +55,7 @@ pub(crate) struct UserWindowOperation
 {
     operation:       WindowOperation,
     admitted:        bool,
-    geometry_wait:   Option<crate::toolbox::windows::manager::canvas::GeometryAdmission>,
+    mutation_wait:   Option<crate::toolbox::windows::manager::canvas::MutationAdmission>,
     caller_role:     CallerRole,
     kind:            u32,
     when:            u32,
@@ -169,30 +169,9 @@ impl UserWindowOperation
             }, prepare)?,
             None => prepare()?
         };
-        if kind == CLOSE_WINDOW
-        {
-            let epoch = crate::kernel::window_desktop_epoch();
-            input_callbacks::with_window_toolbox(|toolbox| {
-            if !toolbox.owns(plan.window_id())
-            {
-                return Err(ACCESS_DENIED);
-            }
-            if kind == CLOSE_WINDOW
-            {
-                toolbox.controls.prepare_remove_window(plan.window_id().0)?;
-                toolbox.drag.prepare_window_close(plan.window_id().0)?;
-                toolbox.windows.admit_user_close(operation.job(), &mut toolbox.events, when)?;
-                toolbox.observe_dialog_window_close(super::DialogCloseObserver::User(operation.job().clone()));
-            }
-            Ok(())
-        }).map_err(|cause| {
-              BeginError::Desktop { cause,
-                                    epoch }
-          })??;
-        }
         Ok(Some(Self { operation,
-                       admitted: kind == CLOSE_WINDOW,
-                       geometry_wait: None,
+                       admitted: false,
+                       mutation_wait: None,
                        caller_role,
                        kind,
                        when,
@@ -298,13 +277,34 @@ impl UserWindowOperation
             let job = self.operation.job();
             let caller = self.caller;
             let callback_caller = matches!(self.caller_role, CallerRole::NativeCallback);
-            let admission = &mut self.geometry_wait;
+            let kind = self.kind;
+            let when = self.when;
+            let admission = &mut self.mutation_wait;
             let attempt = input_callbacks::with_window_toolbox(|toolbox| {
                 if toolbox.owner != caller || !toolbox.owns(job.window_id())
                 {
                     return Err(ACCESS_DENIED);
                 }
-                toolbox.windows.admit_geometry_wait(job, admission, callback_caller)
+                if kind == CLOSE_WINDOW
+                {
+                    // Register/cancel the original canvas BEFORE checking CTRL
+                    // claims: the active painter may itself hold such a claim.
+                    if !toolbox.windows.prepare_close_wait(job, admission, callback_caller)?
+                    {
+                        return Ok(false);
+                    }
+                    toolbox.controls.prepare_remove_window(job.window_id().0)?;
+                    toolbox.drag.prepare_window_close(job.window_id().0)?;
+                    let held = admission.as_mut().ok_or(BAD_ABI)?;
+                    toolbox.windows
+                           .admit_user_close_reserved(job, held, &mut toolbox.events, when)?;
+                    toolbox.observe_dialog_window_close(super::DialogCloseObserver::User(job.clone()));
+                    Ok(true)
+                }
+                else
+                {
+                    toolbox.windows.admit_geometry_wait(job, admission, callback_caller)
+                }
             });
             if !self.desktop_result(epoch, attempt)??
             {
@@ -312,7 +312,7 @@ impl UserWindowOperation
             }
             self.admitted = true;
             // Original registration/header pins return only outside Desktop.
-            drop(self.geometry_wait.take());
+            drop(self.mutation_wait.take());
         }
         if let Some(status) = self.terminal
         {
@@ -448,7 +448,7 @@ impl UserWindowOperation
         }).map_err(|cause| cause.status())??;
         Ok(Self { operation,
                   admitted: true,
-                  geometry_wait: None,
+                  mutation_wait: None,
                   caller_role: CallerRole::SystemInput,
                   kind: if close { CLOSE_WINDOW } else { SET_WINDOW_BOUNDS },
                   when: observation.when,
