@@ -91,6 +91,9 @@ pub(crate) struct PaintPlan
     id:                WindowId,
     owner:             DomainId,
     revision:          u64,
+    /// Committed-content stamp. The manager's `revision` also advances for
+    /// bookkeeping and for job admission, neither of which changes a frame.
+    content_revision:  u64,
     window:            Window,
     domain:            PaintDomain,
     tracking:          Option<Tracking>,
@@ -528,6 +531,7 @@ impl WindowManager
         Ok(Some(PaintPlan { id,
                             owner,
                             revision: owned.revision.ok_or(BAD_ABI)?,
+                            content_revision: owned.content_revision.ok_or(BAD_ABI)?,
                             window: self.paint_window(id)?,
                             domain: PaintDomain::TrackingGrow,
                             tracking: Some(tracking),
@@ -829,12 +833,37 @@ impl WindowManager
         Ok(Some(PaintPlan { id,
                             owner,
                             revision: owned.revision.ok_or(BAD_ABI)?,
+                            content_revision: owned.content_revision.ok_or(BAD_ABI)?,
                             window,
                             domain,
                             tracking: self.paint_tracking(id, domain),
                             tracking_revision: None,
                             surface: Some(SurfacePlan::new(canvas, target)?),
                             screen: self.screen }))
+    }
+
+    /// Two windows draw and crop identically exactly when their bounds and the
+    /// definition-visible frame state agree. This replaces comparing the manager's
+    /// mutation counter, which also advances for accesses that change nothing the
+    /// frame depends on, including the paint's own admission.
+    fn same_frame(planned: &Window, live: &Window) -> bool
+    {
+        let a = planned.frame_state();
+        let b = live.frame_state();
+        planned.bounds == live.bounds
+        && a.active == b.active
+        && a.close_pressed == b.close_pressed
+        && a.zoomed == b.zoomed
+        && a.zoom_pressed == b.zoom_pressed
+        && a.content == b.content
+        && a.structure == b.structure
+        && a.close_box == b.close_box
+        && a.grow_box == b.grow_box
+        && a.zoom_box == b.zoom_box
+        && a.structure_piece_count == b.structure_piece_count
+        && a.structure_pieces == b.structure_pieces
+        && a.title_length == b.title_length
+        && a.title == b.title
     }
 
     fn validate_paint_plan(&self, plan: &PaintPlan) -> Result<(), Status>
@@ -845,7 +874,8 @@ impl WindowManager
                                  .ok_or(NOT_FOUND)?;
         if self.screen != plan.screen
            || owner != plan.owner
-           || owned.revision != Some(plan.revision)
+           || owned.content_revision != Some(plan.content_revision)
+           || !Self::same_frame(&plan.window, &owned.window)
            || !owned.binding.matches(plan.window.entry)
         {
             // Four independent causes share one refusal. Report each, first time.
@@ -853,12 +883,13 @@ impl WindowManager
                 core::sync::atomic::AtomicBool::new(false);
             if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
             {
-                serial!("PAINT_PLAN_STALE screen_same={} owner_same={} revision={:?} of {} \
-                         binding_matches={}",
+                serial!("PAINT_PLAN_STALE screen_same={} owner_same={} content_revision={:?} of \
+                         {} frame_same={} binding_matches={}",
                         self.screen == plan.screen,
                         owner == plan.owner,
-                        owned.revision,
-                        plan.revision,
+                        owned.content_revision,
+                        plan.content_revision,
+                        Self::same_frame(&plan.window, &owned.window),
                         owned.binding.matches(plan.window.entry));
             }
             return Err(SERVICE_BUSY);
