@@ -1,6 +1,7 @@
 {
   "include": "riscv_base.json",
   "name": "qemu_riscv",
+  "guest_linker": "platforms/linker/riscv64.ld",
   "install": {
     "description": "The complete System RISC desktop: every application, resident driver and System extension this platform ships",
     "applications": [

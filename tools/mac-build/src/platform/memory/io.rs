@@ -38,8 +38,8 @@ pub(super) struct Checked
 }
 impl Definition
 {
-    pub(super) fn check(&self, page: u64, ram: &Range<u64>, flash: &Range<u64>,
-                        fw_cfg: &Range<u64>)
+    pub(super) fn check(&self, page: u64, ram: &Range<u64>, flash: Option<&Range<u64>>,
+                        fw_cfg: Option<&Range<u64>>)
                         -> Result<Checked>
     {
         let uart = region("bootstrap_io.uart", &self.uart, page)?;
@@ -68,10 +68,17 @@ impl Definition
                               covering the register window and interrupt routes must not \
                               overflow"));
         }
-        let windows = [fw_cfg, &uart, &rtc, &virtio, &clint];
+        let mut windows: Vec<&Range<u64>> = Vec::new();
+        if let Some(fw_cfg) = fw_cfg
+        {
+            windows.push(fw_cfg);
+        }
+        windows.extend([&uart, &rtc, &virtio, &clint]);
         for (index, range) in windows.iter().enumerate()
         {
-            if range.end > 1 << 56 || overlaps(range, ram) || overlaps(range, flash)
+            if range.end > 1 << 56
+               || overlaps(range, ram)
+               || flash.is_some_and(|flash| overlaps(range, flash))
             {
                 return Err(error(format!("platform bootstrap MMIO {:#x}..{:#x} must fit \
                                           physical addresses outside RAM/flash",
@@ -108,10 +115,16 @@ impl Checked
          ("VIRTIO_INTERRUPT_BASE", u64::from(self.interrupt_base))].into_iter()
     }
 
-    pub(super) fn ranges_source(&self, fw_cfg: &Range<u64>) -> String
+    pub(super) fn ranges_source(&self, fw_cfg: Option<&Range<u64>>) -> String
     {
         let mut output = String::from("pub const BOOT_MMIO_REGIONS: &[(u64,u64)] = &[\n");
-        for range in [fw_cfg, &self.uart, &self.rtc, &self.virtio, &self.clint]
+        let mut windows: Vec<&Range<u64>> = Vec::new();
+        if let Some(fw_cfg) = fw_cfg
+        {
+            windows.push(fw_cfg);
+        }
+        windows.extend([&self.uart, &self.rtc, &self.virtio, &self.clint]);
+        for range in windows
         {
             writeln!(output, "({:#x},{:#x}),", range.start, range.end).unwrap();
         }
@@ -132,8 +145,8 @@ mod tests
         let check = |d: &Definition| {
             d.check(4096,
                     &(0x80000000..0x88000000),
-                    &(0x20000000..0x22000000),
-                    &(0x10100000..0x10101000))
+                    Some(&(0x20000000..0x22000000)),
+                    Some(&(0x10100000..0x10101000)))
         };
         let checked = check(&original).unwrap();
         let constants: Vec<_> = checked.constants().collect();
@@ -141,7 +154,7 @@ mod tests
         assert!(constants.contains(&("RTC_BASE", 0x101000)));
         assert!(constants.contains(&("VIRTIO_MMIO_BASE", 0x10001000)));
         assert!(constants.contains(&("VIRTIO_MMIO_SLOTS", 8)));
-        assert!(checked.ranges_source(&(0x10100000..0x10101000))
+        assert!(checked.ranges_source(Some(&(0x10100000..0x10101000)))
                        .contains("(0x10001000,0x10009000)"));
         let mut bad = original.clone();
         bad.uart.base = "0x80000000".into();

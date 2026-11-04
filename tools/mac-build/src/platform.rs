@@ -61,6 +61,12 @@ pub struct Platform
     /// build when they disagree.
     #[serde(default = "compiler_record")]
     pub toolchain:        String,
+    /// The linker script guest images link with, relative to the repository
+    /// root. The target alone cannot choose it: two targets may share an
+    /// architecture but need different section rules, and the record is the
+    /// authority for the machine's link geometry.
+    #[serde(default)]
+    pub guest_linker:     Option<String>,
     /// Which workspace packages this platform installs, and with which
     /// features. The build tool reads the graph from Cargo and the selection
     /// from here, so changing the installed set is a platform edit.
@@ -438,6 +444,16 @@ pub fn load(name: &str) -> Result<Platform>
         return Err(error(format!("platform '{name}' declares a different name '{}'",
                                  platform.name)));
     }
+    // A platform that installs guest modules links them, so it must name the
+    // script they link with. A platform with no guest set is not required to
+    // carry a linker record it never uses.
+    if !platform.install.modules.is_empty() && platform.guest_linker.is_none()
+    {
+        return Err(error(format!("platform '{}' installs guest modules but declares no \
+                                  guest_linker; set it to the linker script this target links \
+                                  with",
+                                 platform.name)));
+    }
     // Validate every section the record does declare, and nothing it does not:
     // a platform without an emulator or without a physical layout still loads.
     if platform.memory.is_some()
@@ -534,6 +550,26 @@ pub fn compiler_path(root: &Path, platform: &Platform) -> Result<PathBuf>
                                  platform.name)));
     }
     Ok(root.join("platforms").join(record))
+}
+
+/// The linker script this platform's guest images link with.
+pub fn guest_linker_path(root: &Path, platform: &Platform) -> Result<PathBuf>
+{
+    let relative = platform.guest_linker.as_deref().ok_or_else(|| {
+                                                        error(format!("platform '{}' declares no \
+                                                                       guest_linker, so its \
+                                                                       guest images cannot be \
+                                                                       linked",
+                                                                      platform.name))
+                                                    })?;
+    let path = Path::new(relative);
+    if path.is_absolute() || relative.contains("..")
+    {
+        return Err(error(format!("platform '{}' guest_linker '{}' must be a relative path \
+                                  inside the repository",
+                                 platform.name, relative)));
+    }
+    Ok(root.join(path))
 }
 
 pub fn rust_toolchain(root: &Path, platform: &Platform) -> Result<String>
@@ -828,6 +864,11 @@ mod tests
 pub struct FatalShutdown
 {
     device:        String,
+    /// The reset/control register's offset inside the named MMIO device. A
+    /// device whose finisher is not at its base declares it; zero keeps the
+    /// original whole-window behaviour.
+    #[serde(default)]
+    offset:        u32,
     failure_value: u32,
     restart_value: u32
 }
@@ -1015,7 +1056,17 @@ fn artifacts_for(device: &FatalShutdown, devices: &[devices::Checked], include_r
                               error("platform fatal-shutdown device is absent from the MMIO \
                                      inventory")
                           })?;
-    let address = hardware.address;
+    let address =
+        hardware.address.checked_add(u64::from(device.offset)).ok_or_else(|| {
+                                                                   error("platform fatal-shutdown \
+                                                                          register address \
+                                                                          overflows")
+                                                               })?;
+    if u64::from(device.offset).checked_add(4).is_none_or(|end| end > hardware.bytes)
+    {
+        return Err(error("platform fatal-shutdown offset must leave a u32 register inside the \
+                          named MMIO window"));
+    }
     if hardware.bytes < 4 || device.failure_value == 0
     {
         return Err(error("platform fatal-shutdown MMIO requires a nonzero aligned u32 register \

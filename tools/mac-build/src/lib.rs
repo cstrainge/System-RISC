@@ -127,11 +127,18 @@ pub fn build_guest() -> Result<()>
                                                               "VM_SYSTEM_STACK_STRIDE",
                                                               "VM_SYSTEM_HEAP_BASE",
                                                               "VM_SYSTEM_HEAP_LIMIT"])?)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let linker = platform::guest_linker_path(&root, platform::current())?;
+    println!("cargo:rerun-if-changed={}", linker.display());
+    let source = fs::read_to_string(&linker).map_err(|why| {
+                                                error(format!("cannot read the guest linker \
+                                                               script {}: {why}",
+                                                              linker.display()))
+                                            })?;
     let mut script =
-        include_str!("native.ld").replace("@BASE@", &format!("0x{:x}", descriptor.load_base))
-                                 .replace("@LENGTH@",
-                                          &format!("0x{:x}",
-                                                   descriptor.load_limit - descriptor.load_base));
+        source.replace("@BASE@", &format!("0x{:x}", descriptor.load_base))
+              .replace("@LENGTH@",
+                       &format!("0x{:x}", descriptor.load_limit - descriptor.load_base));
     if descriptor.role == mac_formats::native::Role::Application
     {
         // KEEP retains a selected section but cannot extract an unreferenced
