@@ -71,8 +71,8 @@ impl MonitorPolicy
 #[serde(deny_unknown_fields)]
 pub(super) struct Display
 {
-    width:  u64,
-    height: u64,
+    width:      u64,
+    height:     u64,
     /// Largest mode a display driver may apply; frame storage is reserved for it.
     /// Defaults to the initial size, which keeps the display fixed.
     max_width:  Option<u64>,
@@ -204,12 +204,13 @@ impl Definition
            || display_max_width > i16::MAX as u64
            || display_max_height > i16::MAX as u64
         {
-            return Err(error("platform display maximum must not be smaller than the initial size \
-                              and must fit signed 16-bit geometry"));
+            return Err(error("platform display maximum must not be smaller than the initial \
+                              size and must fit signed 16-bit geometry"));
         }
-        let framebuffer = display_max_width.checked_mul(display_max_height)
-                                           .and_then(|pixels| pixels.checked_mul(4))
-                                           .ok_or_else(|| error("platform display size overflows"))?;
+        let framebuffer =
+            display_max_width.checked_mul(display_max_height)
+                             .and_then(|pixels| pixels.checked_mul(4))
+                             .ok_or_else(|| error("platform display size overflows"))?;
         let framebuffer_reservation =
             framebuffer.checked_add(page - 1)
                        .map(|bytes| bytes / page * page)
@@ -223,8 +224,9 @@ impl Definition
         if display_scratch.end - display_scratch.start < display_bytes
         {
             return Err(error(format!("platform display_scratch must cover the \
-                                      {display_max_width}x{display_max_height} framebuffer and \
-                                      tracking raster and backbuffer ({display_bytes} bytes)")));
+                                      {display_max_width}x{display_max_height} framebuffer \
+                                      and tracking raster and backbuffer ({display_bytes} \
+                                      bytes)")));
         }
         let tail = address("fdt_tail_bytes", &self.fdt_tail_bytes)?;
         if tail == 0 || !tail.is_multiple_of(page) || tail >= ram.end - ram.start
@@ -382,8 +384,10 @@ impl Checked
 
     pub fn display_constants(&self) -> String
     {
-        format!("// Generated from the checked platform display record.\npub(crate) const DEFAULT_WIDTH: \
-                 usize = {};\npub(crate) const DEFAULT_HEIGHT: usize = {};\npub(crate) const MAX_WIDTH: usize = {};\npub(crate) const MAX_HEIGHT: usize = {};\n",
+        format!("// Generated from the checked platform display record.\npub(crate) const \
+                 DEFAULT_WIDTH: usize = {};\npub(crate) const DEFAULT_HEIGHT: usize = \
+                 {};\npub(crate) const MAX_WIDTH: usize = {};\npub(crate) const MAX_HEIGHT: usize \
+                 = {};\n",
                 self.display_dimensions().0,
                 self.display_dimensions().1,
                 self.display_max_width,
@@ -531,8 +535,9 @@ impl Checked
     // reservation. Linker and resident constants consume this same record.
     fn display_buffers(&self) -> [(&'static str, u64); 3]
     {
-        let stride = (self.display_max_width * self.display_max_height * 4).div_ceil(self.page_bytes)
-                     * self.page_bytes;
+        let stride =
+            (self.display_max_width * self.display_max_height * 4).div_ceil(self.page_bytes)
+            * self.page_bytes;
         [("DISPLAY_FRONTBUFFER_BASE", self.display_scratch.start),
          ("DISPLAY_TRACKING_BASE", self.display_scratch.start + stride),
          ("DISPLAY_BACKBUFFER_BASE", self.display_scratch.start + 2 * stride)]
@@ -611,8 +616,7 @@ mod tests
     use super::*;
     fn definition() -> Definition
     {
-        let json: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../platforms/QemuRISC-V.json")).unwrap();
+        let json: serde_json::Value = super::super::record("QemuRISC-V").unwrap();
         serde_json::from_value(json["memory"].clone()).unwrap()
     }
     #[test]

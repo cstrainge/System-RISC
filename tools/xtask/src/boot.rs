@@ -53,14 +53,15 @@ fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Result<Command>
     {
         return Err(error("ROM launcher supports at most four disks alongside input, RNG and GPU"));
     }
-    let mut command = Command::new("qemu-system-riscv64");
-    let harts = workspace.platform.qemu_harts.to_string();
+    let emulation = workspace.platform.require_emulation()?;
+    let mut command = Command::new(&emulation.binary);
+    let harts = emulation.harts.get().to_string();
     command.args(["-machine",
-                  "virt",
+                  emulation.machine.as_str(),
                   "-cpu",
-                  workspace.platform.qemu_cpu.as_str(),
+                  emulation.cpu.as_deref().unwrap_or_default(),
                   "-m",
-                  workspace.platform.qemu_ram.as_str(),
+                  emulation.ram.as_str(),
                   "-smp",
                   &harts,
                   "-bios",

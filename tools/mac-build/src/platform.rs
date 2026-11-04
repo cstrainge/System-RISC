@@ -1,59 +1,239 @@
 //! Current native platform selection. The Rust target selects the LP64 calling
 //! convention; the complete LLVM profile selects instructions, including V/B.
-use std::{collections::BTreeSet, env, process::Command, sync::LazyLock};
+use std::{collections::BTreeSet,
+          env, fs,
+          path::{Path, PathBuf},
+          process::Command,
+          sync::LazyLock};
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::{Result, error};
 
+pub mod emulation;
+pub mod hardware;
 pub mod memory;
 mod devices;
 pub mod virtual_memory;
 pub mod scheduling;
 
+/// The build manifest for one platform. Every section that describes a
+/// particular architecture's physical machine is optional: a platform record
+/// that only names an emulator or a board is valid, and a consumer that needs a
+/// missing section fails with a message naming it rather than receiving a
+/// default that was never declared.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Platform
 {
-    pub name:           String,
-    pub rust_target:    String,
-    pub llvm_profile:   String,
-    pub qemu_cpu:       String,
-    pub qemu_ram:       String,
-    pub qemu_harts:     core::num::NonZeroUsize,
-    pub fatal_shutdown: FatalShutdown,
-    pub mmio_devices:   Vec<devices::Definition>,
-    scheduling:         scheduling::Definition,
-    memory:             memory::Definition,
-    virtual_memory:     virtual_memory::Definition
+    pub name:         String,
+    pub rust_target:  String,
+    /// The instruction set profile as a `target-feature` value. Empty means the
+    /// architecture has no such profile, in which case no flag is emitted.
+    #[serde(default)]
+    pub llvm_profile: String,
+    /// How to run this platform under an emulator. Optional and independent of
+    /// the build; absent means this platform declares no emulation.
+    #[serde(default)]
+    pub emulation:    Option<emulation::Definition>,
+    /// How to build and run this platform on a real board. Optional and
+    /// independent of both the build and the emulation description.
+    #[serde(default)]
+    pub hardware:     Option<hardware::Definition>,
+    fatal_shutdown:   Option<FatalShutdown>,
+    #[serde(default)]
+    mmio_devices:     Vec<devices::Definition>,
+    scheduling:       Option<scheduling::Definition>,
+    memory:           Option<memory::Definition>,
+    virtual_memory:   Option<virtual_memory::Definition>
 }
 pub const DEFAULT_PLATFORM: &str = "QemuRISC-V";
 pub const PLATFORM_ENV: &str = "SYSTEM7_PLATFORM";
-pub fn load(name: &str) -> Result<Platform>
+
+/// The only directory a platform record is read from.
+fn directory() -> PathBuf
+{
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platforms")
+}
+
+/// Platform names available on this checkout, for error messages.
+fn known() -> String
+{
+    let Ok(entries) = fs::read_dir(directory())
+    else
+    {
+        return "<none>".into();
+    };
+    let mut names: Vec<String> = entries.filter_map(|entry| {
+                                            let path = entry.ok()?.path();
+                                            if path.extension()? != "json"
+                                            {
+                                                return None;
+                                            }
+                                            Some(path.file_stem()?.to_str()?.to_string())
+                                        })
+                                        .collect();
+    names.sort();
+    if names.is_empty() { "<none>".into() } else { names.join(", ") }
+}
+
+/// `include` composes platform records. A base record is merged into the record
+/// that includes it, depth first, before that record is read:
+///
+/// * scalars and plain arrays replace the included value;
+/// * objects merge key by key, recursively;
+/// * `{"$append": [...]}` appends to the included array instead of replacing it, and is equivalent
+///   to the plain array when the key is absent.
+///
+/// The path is relative to the directory of the file that names it, includes
+/// may nest to any depth, and a repeated or self-referential include is
+/// reported as a cycle rather than recursing.
+const INCLUDE: &str = "include";
+const APPEND: &str = "$append";
+
+fn document(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Value>
+{
+    let resolved =
+        path.canonicalize()
+            .map_err(|cause| {
+                error(format!("cannot read platform file {}: {cause}", path.display()))
+            })?;
+    if let Some(position) = stack.iter().position(|seen| *seen == resolved)
+    {
+        let mut chain: Vec<String> =
+            stack[position..].iter().map(|file| file.display().to_string()).collect();
+        chain.push(resolved.display().to_string());
+        return Err(error(format!("platform include cycle: {}", chain.join(" -> "))));
+    }
+    let bytes = fs::read(&resolved)?;
+    let mut value: Value = serde_json::from_slice(&bytes).map_err(|cause| {
+                                                             error(format!("invalid platform \
+                                                                            file {}: {cause}",
+                                                                           resolved.display()))
+                                                         })?;
+    let Value::Object(map) = &mut value
+    else
+    {
+        return Err(error(format!("platform file {} must be a JSON object", resolved.display())));
+    };
+    let Some(include) = map.remove(INCLUDE)
+    else
+    {
+        return Ok(value);
+    };
+    let include = include.as_str().ok_or_else(|| {
+                                       error(format!("platform include in {} must be a string \
+                                                      path",
+                                                     resolved.display()))
+                                   })?;
+    let target = resolved.parent().unwrap_or(Path::new(".")).join(include);
+    stack.push(resolved.clone());
+    let base = document(&target, stack).map_err(|cause| {
+                                           error(format!("platform {} includes '{include}': \
+                                                          {cause}",
+                                                         resolved.display()))
+                                       })?;
+    stack.pop();
+    merge(base, value)
+}
+
+fn merge(base: Value, overlay: Value) -> Result<Value>
+{
+    match (base, overlay)
+    {
+        (Value::Object(mut base), Value::Object(overlay)) =>
+        {
+            for (key, value) in overlay
+            {
+                let merged = match base.remove(&key)
+                {
+                    None =>
+                    {
+                        match value
+                        {
+                            Value::Object(mut object)
+                                if object.len() == 1 && object.contains_key(APPEND) =>
+                            {
+                                object.remove(APPEND).unwrap()
+                            }
+                            other => other
+                        }
+                    }
+                    Some(current) => merge(current, value)?
+                };
+                base.insert(key, merged);
+            }
+            Ok(Value::Object(base))
+        }
+        // A scalar or a plain array replaces what it overlays.
+        (_, overlay) => Ok(overlay)
+    }
+}
+
+/// The merged JSON record for a platform, with every include resolved.
+///
+/// This is the interpreter's view of the manifest: callers that need to read a
+/// section the typed [`Platform`] does not model (or that need the record's
+/// own spelling of a value) use this instead of re-reading the file, so
+/// include and merge semantics stay in one place.
+pub fn record(name: &str) -> Result<Value>
 {
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         return Err(error("platform name must contain only ASCII letters, digits, - or _"));
     }
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platforms")
-                                                               .join(format!("{name}.json"));
-    let bytes = std::fs::read(&path).map_err(|cause| {
-                                        error(format!("cannot select platform '{name}': {cause}; \
-                                                       known platform: {DEFAULT_PLATFORM}"))
-                                    })?;
-    let platform: Platform =
-        serde_json::from_slice(&bytes).map_err(|cause| {
-                                          error(format!("invalid platform '{name}' at {}: {cause}",
-                                                        path.display()))
-                                      })?;
+    let path = directory().join(format!("{name}.json"));
+    if !path.is_file()
+    {
+        return Err(error(format!("cannot select platform '{name}': no such platform record; \
+                                  known platforms: {}",
+                                 known())));
+    }
+    document(&path, &mut Vec::new())
+}
+
+pub fn load(name: &str) -> Result<Platform>
+{
+    let path = directory().join(format!("{name}.json"));
+    let document = record(name)?;
+    let platform: Platform = serde_json::from_value(document).map_err(|cause| {
+                                                                 error(format!("invalid platform \
+                                                                                '{name}' at {}: \
+                                                                                {cause}",
+                                                                               path.display()))
+                                                             })?;
     if platform.name != name
     {
         return Err(error(format!("platform '{name}' declares a different name '{}'",
                                  platform.name)));
     }
-    platform.device_artifacts(true)?;
-    platform.virtual_memory()?;
-    platform.scheduling()?;
+    // Validate every section the record does declare, and nothing it does not:
+    // a platform without an emulator or without a physical layout still loads.
+    if platform.memory.is_some()
+    {
+        platform.memory()?;
+    }
+    if platform.virtual_memory.is_some()
+    {
+        platform.virtual_memory()?;
+    }
+    if platform.scheduling.is_some()
+    {
+        platform.scheduling()?;
+    }
+    if !platform.mmio_devices.is_empty() || platform.fatal_shutdown.is_some()
+    {
+        platform.device_artifacts(true)?;
+    }
+    if let Some(emulation) = &platform.emulation
+    {
+        emulation.check(&platform.name)?;
+    }
+    if let Some(hardware) = &platform.hardware
+    {
+        hardware.check(&platform.name)?;
+    }
     Ok(platform)
 }
 static PLATFORM: LazyLock<Platform> = LazyLock::new(|| {
@@ -83,8 +263,11 @@ pub fn configure_for(platform: &Platform, command: &mut Command)
     {
         flags.push('\u{1f}');
     }
-    flags.push_str(&format!("-C\u{1f}target-feature=+{}\u{1f}-C\u{1f}relocation-model=pic",
-                            platform.llvm_profile));
+    if !platform.llvm_profile.is_empty()
+    {
+        flags.push_str(&format!("-C\u{1f}target-feature=+{}", platform.llvm_profile));
+    }
+    flags.push_str("\u{1f}-C\u{1f}relocation-model=pic");
     command.env(PLATFORM_ENV, &platform.name);
     command.env("CARGO_ENCODED_RUSTFLAGS", flags);
 }
@@ -251,25 +434,74 @@ impl Platform
 {
     pub fn scheduling(&self) -> Result<scheduling::Checked>
     {
-        self.scheduling.check()
+        self.scheduling.as_ref().ok_or_else(|| missing(self, "scheduling"))?.check()
     }
 
     fn device_artifacts(&self, include_restart: bool) -> Result<(String, String)>
     {
         let devices = devices::check(&self.mmio_devices, &self.memory()?)?;
-        let (mut rust, linker) = artifacts_for(&self.fatal_shutdown, &devices, include_restart)?;
+        let Some(fatal_shutdown) = &self.fatal_shutdown
+        else
+        {
+            if !devices.is_empty()
+            {
+                return Err(error(format!("platform '{}' declares MMIO devices but no \
+                                          fatal_shutdown device",
+                                         self.name)));
+            }
+            return Ok((devices::constants(&devices), String::new()));
+        };
+        let (mut rust, linker) = artifacts_for(fatal_shutdown, &devices, include_restart)?;
         rust.push_str(&devices::constants(&devices));
         Ok((rust, linker))
     }
 
     pub fn virtual_memory(&self) -> Result<virtual_memory::Checked>
     {
-        self.virtual_memory.check(&self.rust_target, &self.memory()?)
+        self.virtual_memory
+            .as_ref()
+            .ok_or_else(|| missing(self, "virtual_memory"))?
+            .check(&self.rust_target, &self.memory()?)
     }
 
     pub fn memory(&self) -> Result<memory::Checked>
     {
-        self.memory.check()
+        self.memory.as_ref().ok_or_else(|| missing(self, "memory"))?.check()
+    }
+
+    /// The emulation description, if this platform declares one.
+    pub fn emulation(&self) -> Option<&emulation::Definition>
+    {
+        self.emulation.as_ref()
+    }
+
+    /// The emulation description, or an actionable refusal. A platform that
+    /// only describes hardware cannot be emulated, and no emulator is invented
+    /// for it.
+    pub fn require_emulation(&self) -> Result<&emulation::Definition>
+    {
+        self.emulation.as_ref().ok_or_else(|| {
+                                   let hint = match &self.hardware
+                                   {
+                                       Some(hardware) =>
+                                       {
+                                           let artifact =
+                                               hardware.artifact()
+                                                       .map(|artifact| {
+                                                           format!("; write '{artifact}' to it \
+                                                                    with {}",
+                                                                   hardware.tooling().join(", "))
+                                                       })
+                                                       .unwrap_or_default();
+                                           format!(": it targets the board '{}' and cannot be \
+                                                    emulated{artifact}",
+                                                   hardware.board())
+                                       }
+                                       None => ": it declares neither emulation nor hardware".into()
+                                   };
+                                   error(format!("platform '{}' declares no emulation{hint}",
+                                                 self.name))
+                               })
     }
 
     /// Build-time origins are not runtime destinations. Every independently
@@ -322,13 +554,19 @@ impl Platform
         }
     }
 }
+
+fn missing(platform: &Platform, section: &str) -> Box<dyn std::error::Error>
+{
+    error(format!("platform '{}' declares no {section} section", platform.name))
+}
+
 pub fn memory_artifacts() -> Result<(String, String)>
 {
     let checked = current().memory()?;
     Ok((checked.system_constants(), checked.boot_constants()))
 }
 fn artifacts_for(device: &FatalShutdown, devices: &[devices::Checked], include_restart: bool)
-    -> Result<(String, String)>
+                 -> Result<(String, String)>
 {
     let hardware = devices.iter()
                           .find(|hardware| hardware.id == device.device)
@@ -377,10 +615,10 @@ mod artifact_tests
         assert!(rust.contains(&format!("FATAL_FINISHER_ADDRESS: u64 = {address}")));
         assert!(linker.contains(&format!("__platform_fatal_finisher = 0x{address:x}")));
         assert!(rust.contains(&format!("FATAL_FINISHER_FAILURE: u32 = {}",
-                                       platform.fatal_shutdown.failure_value)));
+                                       platform.fatal_shutdown.as_ref().unwrap().failure_value)));
         assert!(linker.contains(&format!("__platform_fatal_failure = 0x{:x}",
-                                         platform.fatal_shutdown.failure_value)));
-        assert_eq!(platform.fatal_shutdown.restart_value, 0x7777);
+                                         platform.fatal_shutdown.as_ref().unwrap().failure_value)));
+        assert_eq!(platform.fatal_shutdown.as_ref().unwrap().restart_value, 0x7777);
         assert!(rust.contains("FATAL_FINISHER_RESTART: u32 = 30583;"));
         assert!(linker.contains("__platform_fatal_restart = 0x7777"));
         for name in ["../QemuRISC-V", "QemuRISC-V/other", ""]
@@ -389,18 +627,22 @@ mod artifact_tests
         }
         let error = load("NoSuchBoard").err().unwrap().to_string();
         assert!(error.contains("cannot select platform 'NoSuchBoard'")
-                && error.contains("known platform: QemuRISC-V"));
+                && error.contains("known platforms: ArmVirt, QemuRISC-V, RiscVBase"));
         for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234", "0x80000000"]
         {
             let mut bad = load("QemuRISC-V").unwrap();
             bad.mmio_devices[0].address = text.into();
-            assert!(bad.device_artifacts(true).err().unwrap().to_string().contains("platform MMIO"));
+            assert!(bad.device_artifacts(true)
+                       .err()
+                       .unwrap()
+                       .to_string()
+                       .contains("platform MMIO"));
         }
         let mut bad = load("QemuRISC-V").unwrap();
-        bad.fatal_shutdown.failure_value = 0;
+        bad.fatal_shutdown.as_mut().unwrap().failure_value = 0;
         assert!(bad.device_artifacts(true).is_err());
-        bad.fatal_shutdown.failure_value = 1;
-        bad.fatal_shutdown.device = "absent".into();
+        bad.fatal_shutdown.as_mut().unwrap().failure_value = 1;
+        bad.fatal_shutdown.as_mut().unwrap().device = "absent".into();
         assert!(bad.device_artifacts(true).err().unwrap().to_string().contains("absent"));
         let mut bad = load("QemuRISC-V").unwrap();
         bad.mmio_devices.push(bad.mmio_devices[0].clone());
@@ -412,14 +654,14 @@ mod artifact_tests
         for restart in [0, 78643]
         {
             let mut platform = load("QemuRISC-V").unwrap();
-            platform.fatal_shutdown.restart_value = restart;
+            platform.fatal_shutdown.as_mut().unwrap().restart_value = restart;
             let error = platform.device_artifacts(true).unwrap_err().to_string();
             assert!(error.contains("fatal_shutdown.restart_value"), "{error}");
             assert!(error.contains("nonzero and distinct from failure_value"), "{error}");
             assert!(error.contains("board's documented reset command"), "{error}");
         }
         let mut platform = load("QemuRISC-V").unwrap();
-        platform.fatal_shutdown.restart_value = 0x1234;
+        platform.fatal_shutdown.as_mut().unwrap().restart_value = 0x1234;
         let (rust, linker) = platform.device_artifacts(true).unwrap();
         assert!(rust.contains("FATAL_FINISHER_RESTART: u32 = 4660;"));
         assert!(linker.contains("__platform_fatal_restart = 0x1234"));

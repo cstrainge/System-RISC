@@ -224,7 +224,15 @@ impl Workspace
         println!("Resident module execution spans: {module_bytes} of {} virtual bytes; payload \
                   pages admitted at runtime",
                  self.platform.virtual_memory()?.module_capacity());
-        let report = json!({"platform": self.platform.name, "target": &self.platform.rust_target, "qemu_harts": self.platform.qemu_harts.get(), "guest_profile": "release", "build_dir": self.build, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
+        let emulation = self.platform.emulation();
+        let harts = emulation.map(|emulation| emulation.harts.get());
+        let machine = emulation.map(|emulation| emulation.description.as_str());
+        let report = json!({"platform": self.platform.name, "target": &self.platform.rust_target,
+                            "harts": harts, "machine": machine, "guest_profile": "release",
+                            "build_dir": self.build,
+                            "toolchain": {"cargo": output(self.cargo().arg("--version"))?,
+                                          "rustc": output(Command::new("rustc").arg("--version"))?},
+                            "packages": reports});
         write_json(&self.build.join("dist/build.json"), &report)?;
         Ok(reports)
     }
@@ -619,7 +627,8 @@ fn help()
     println!("  cargo xtask sdk app Cargo.toml  Build a std application with the private SDK");
     println!("  cargo xtask doc            Generate Rust library documentation in docs/api");
     println!("  cargo xtask resource-map FILE  Inspect checked resource metadata as JSON");
-    println!("  cargo xtask modules-check     Validate packaged module identities without rebuilding");
+    println!("  cargo xtask modules-check     Validate packaged module identities without \
+              rebuilding");
     println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \
               resource archive\n  cargo xtask build          Build System, Finder, applications \
               and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS-B disk and \
