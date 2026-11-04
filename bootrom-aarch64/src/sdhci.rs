@@ -90,20 +90,6 @@ pub struct Disk
     relative:       u16,
     high_capacity:  bool
 }
-
-/// Last present-state value observed while polling a command. Diagnostic only:
-/// it distinguishes "the controller never started the command" from "it started
-/// and never completed".
-pub static LAST_PRESENT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// Commands attempted, so a refusal can be attributed to a specific index.
-pub static LAST_COMMAND: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// The card description response, retained so a capacity refusal names the
-/// structure value it could not interpret.
-pub static LAST_CSD: [core::sync::atomic::AtomicU32; 4] =
-    [core::sync::atomic::AtomicU32::new(0),
-     core::sync::atomic::AtomicU32::new(0),
-     core::sync::atomic::AtomicU32::new(0),
-     core::sync::atomic::AtomicU32::new(0)];
 impl Disk
 {
     /// Brings the controller and card up. `base` is the window the platform
@@ -119,7 +105,7 @@ impl Disk
         *stage = 1;
         disk.reset()?;
         *stage = 2;
-        disk.set_clock(INITIAL_HZ);
+        disk.set_clock(INITIAL_HZ)?;
         *stage = 3;
         disk.write8(POWER_CONTROL, POWER_3V3);
         disk.write8(TIMEOUT_CONTROL, TIMEOUT_MAXIMUM);
@@ -195,7 +181,7 @@ impl Disk
 
     /// SDHCI divides the base clock by twice the divider, so the divider is
     /// chosen to land at or below `hz` rather than above it.
-    fn set_clock(&mut self, hz: u32)
+    fn set_clock(&mut self, hz: u32) -> Result<()>
     {
         let base = self.base_hz();
         let mut divider = (base / (2 * hz)) as u32;
@@ -219,11 +205,16 @@ impl Disk
                 break;
             }
         }
+        if !stable
+        {
+            // Without a stable internal clock no command reaches the card, so
+            // enabling the SD clock anyway would defer the failure to the first
+            // command with a misleading timeout.
+            return Err(Error::Malformed("sdhci internal clock never stabilised"));
+        }
         self.write32(CLOCK_CONTROL,
-                     encoded
-                     | CLOCK_INTERNAL_ENABLE
-                     | (if stable { CLOCK_INTERNAL_STABLE } else { 0 })
-                     | CLOCK_SD_ENABLE);
+                     encoded | CLOCK_INTERNAL_ENABLE | CLOCK_INTERNAL_STABLE | CLOCK_SD_ENABLE);
+        Ok(())
     }
 
     fn wait_inhibit(&self) -> Result<()>
@@ -254,7 +245,6 @@ impl Disk
             self.write16(BLOCK_SIZE, SECTOR_BYTES as u16);
             self.write16(BLOCK_COUNT, 1);
         }
-        self.write16(TRANSFER_MODE, transfer);
         self.write32(ARGUMENT, argument);
         // Command index occupies bits 8-13; the response type is bits 0-1.
         let mut flags = (index << 8) | u32::from(response);
@@ -266,18 +256,14 @@ impl Disk
         {
             flags |= 1 << 5;
         }
-        // Transfer mode and command share one 32-bit write: the command register
-        // sits in the upper half of the word that begins at transfer mode.
+        // Transfer mode and command are adjacent, so one 32-bit write sets both
+        // and issues the command.
         self.write32(TRANSFER_MODE, (flags << 16) | u32::from(transfer));
-        LAST_COMMAND.store(index, core::sync::atomic::Ordering::Relaxed);
         for _ in 0..TRANSFER_POLLS
         {
-            let present = self.read32(PRESENT_STATE);
-            LAST_PRESENT.store(present, core::sync::atomic::Ordering::Relaxed);
             let status = self.read16(NORMAL_INT_STATUS);
             if status & INT_ERROR != 0
             {
-                self.read16(ERROR_INT_STATUS);
                 return Err(Error::Malformed("sdhci command failed"));
             }
             if status & INT_COMMAND_COMPLETE != 0
@@ -293,10 +279,12 @@ impl Disk
 
     fn identify(&mut self, stage: &mut u8) -> Result<()>
     {
+        // GO_IDLE_STATE resets the card, so it must precede every other command;
+        // the card ignores or rejects commands sent before it.
         *stage = 5;
-        self.command(CMD_SEND_IF_COND, 0x1AA, RESPONSE_48, false)?;
-        *stage = 6;
         self.command(CMD_GO_IDLE, 0, RESPONSE_NONE, false)?;
+        *stage = 6;
+        self.command(CMD_SEND_IF_COND, 0x1AA, RESPONSE_48, false)?;
         let mut ready = false;
         for _ in 0..INITIALISE_POLLS
         {
@@ -321,10 +309,6 @@ impl Disk
         // after SELECT_CARD times out on this controller.
         let csd_response =
             self.command(CMD_SEND_CSD, u32::from(self.relative) << 16, RESPONSE_136, false)?;
-        for (index, word) in csd_response.iter().enumerate()
-        {
-            LAST_CSD[index].store(*word, core::sync::atomic::Ordering::Relaxed);
-        }
         // SDHCI presents a 136-bit response most-significant word last, so the
         // card description reads from RESP3 down to RESP0. Taking RESP0 as the
         // high word yields a structure value no SD card uses.
