@@ -117,13 +117,17 @@ pub struct Console
     pub baud:   Option<u32>
 }
 
-/// A device tree is either supplied by board firmware, or is a file this
-/// platform must ship. Which one is a platform fact, not a build assumption.
+/// A device tree is supplied by board firmware, shipped as a file, or generated
+/// from this record at build time. Which one is a platform fact, not a build
+/// assumption: a board whose firmware passes no tree needs the record to be the
+/// author, so the bootloader and the kernel consume the same declared hardware
+/// rather than each hardcoding it.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum DeviceTree
 {
     Firmware,
+    Generated,
     File
     {
         path: String
