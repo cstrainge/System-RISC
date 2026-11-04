@@ -1,10 +1,16 @@
 //! The private Rust SDK the platform record pins.
 //!
-//! A platform names its compiler in `platforms/rust/sdk.json`: the rustup
-//! toolchain, the exact `rustc`/`cargo` commits, the target specification and
-//! the patches applied to `rust-src`. Everything here is derived from that
-//! record, so a platform that pins a different compiler gets a different SDK
-//! without the build system knowing about it.
+//! A platform names its compiler in `toolchain`, which is a path under
+//! `platforms/` and ships as `platforms/rust/sdk.json`. That record holds the
+//! rustup toolchain, the exact `rustc`/`cargo` commits, the target
+//! specification and the patches applied to `rust-src`. Everything here is
+//! derived from it, so a platform that names a different pin gets a different
+//! SDK without the build system knowing about it.
+//!
+//! One checkout still resolves one toolchain per run, because rustup picks it
+//! from `rust-toolchain.toml` before this program starts. `cargo xtask` checks
+//! that file against the record and refuses to build when they disagree, so the
+//! constraint is enforced rather than assumed.
 //!
 //! Two steps produce the SDK, and both are idempotent:
 //!
@@ -115,8 +121,10 @@ pub(super) fn compiler_proxy() -> Option<ExitCode>
     let compiler = env::var_os(PROXY_ENV)?;
     let run = || -> Result<ExitCode> {
         let sysroot = env::var_os(SYSROOT_ENV).ok_or_else(|| {
-                                                        error(format!("the SDK compiler requires                                                                        {SYSROOT_ENV}"))
-                                                    })?;
+                                                  error(format!("the SDK compiler requires \
+                                                                 {SYSROOT_ENV} to name its \
+                                                                 private sysroot"))
+                                              })?;
         let arguments: Vec<OsString> = env::args_os().skip(1).collect();
 
         // Cargo's own `--sysroot` would mean the caller expected a different
@@ -149,9 +157,9 @@ pub(super) fn compiler_proxy() -> Option<ExitCode>
          })
 }
 
-fn pin(root: &Path) -> Result<Pin>
+fn pin(root: &Path, platform: &mac_build::platform::Platform) -> Result<Pin>
 {
-    let path = root.join("platforms/rust/sdk.json");
+    let path = mac_build::platform::compiler_path(root, platform)?;
     let text = fs::read_to_string(&path).map_err(|cause| {
                                             error(format!("cannot read {}: {cause}",
                                                           path.display()))
@@ -190,7 +198,7 @@ pub fn installed(listing: &str, toolchain: &str) -> bool
 /// when something is actually missing.
 pub fn prerequisites(workspace: &Workspace) -> Result<()>
 {
-    let pin = pin(workspace.root())?;
+    let pin = pin(workspace.root(), &workspace.platform)?;
 
     let listing = run_output(rustup(workspace.root(), &["toolchain", "list"]))?;
     let missing_toolchain = !installed(&listing, &pin.rustup_toolchain);
@@ -255,10 +263,19 @@ fn toolchain_lock(root: &Path) -> Result<fs::File>
 pub(super) fn prepare(workspace: &Workspace) -> Result<Private>
 {
     let root = workspace.root();
-    let pin = pin(root)?;
+    let pin = pin(root, &workspace.platform)?;
     let compiler = resolve(root, &pin)?;
 
-    let port = root.join("platforms/rust");
+    // Patch paths are relative to the record that names them, so a platform
+    // pointing at a different pin directory moves its patches with it.
+    let port =
+        mac_build::platform::compiler_path(root, &workspace.platform)?.parent()
+                                                                      .ok_or_else(|| {
+                                                                          error("the compiler \
+                                                                                 record has no \
+                                                                                 directory")
+                                                                      })?
+                                                                      .to_path_buf();
     let upstream = compiler.sysroot.join("lib/rustlib/src/rust");
 
     if !upstream.join("library/std/Cargo.toml").is_file()
@@ -808,7 +825,26 @@ pub(super) fn applications(workspace: &Workspace, apps: &[App]) -> Result<Vec<Va
     }
 
     let target = sdk.target.display().to_string();
+    // Application artifacts are only valid against the SDK build that produced
+    // them: a changed SDK means a different `core`, and reusing the old
+    // directory then fails with "found possibly newer version of crate core".
+    // The cache key names the SDK, so a marker beside the artifacts records
+    // which one they belong to, and a change clears them. The key is not part
+    // of the path: object paths here already run close to Windows' limit, and
+    // the extra 64 characters made the host linker fail to open files that
+    // exist.
+    let sdk_key = sdk.root
+                     .file_name()
+                     .map(|name| name.to_string_lossy().into_owned())
+                     .ok_or_else(|| error("the private SDK has no cache key"))?;
     let target_dir = workspace.target().join("applications");
+    let marker = target_dir.join("sdk");
+    if fs::read_to_string(&marker).ok().as_deref() != Some(sdk_key.as_str())
+    {
+        let _ = fs::remove_dir_all(&target_dir);
+        fs::create_dir_all(&target_dir)?;
+        fs::write(&marker, &sdk_key)?;
+    }
     let artifacts = target_dir.join(&target).join("release");
     let mut command = Command::new("cargo");
 

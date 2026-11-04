@@ -17,7 +17,8 @@ import time
 import uuid
 
 from riscv_vm import native_executable, qmp as send_qmp, windows_path
-from sr_paths import SOURCE, ROOT, BUILD_DIR_ENV, build_dir, dist_dir, describe
+from sr_paths import (SOURCE, ROOT, BUILD_DIR_ENV, DEFAULT_PLATFORM, DIST_ENV, PLATFORM_ENV,
+                      build_dir, dist_dir, describe)
 from system7_host import process_options
 
 STATE = ROOT / 'working/system7-vm'
@@ -57,7 +58,7 @@ def qmp(command, arguments=None, endpoint=None):
 
 
 def build():
-    subprocess.run(['cargo', 'xtask', 'image', '--build-dir', str(build_dir())],
+    subprocess.run(['cargo', 'xtask', 'build', '--build-dir', str(build_dir())],
                    cwd=SOURCE, check=True,
                    env=dict(os.environ, SYSTEM7_VM_STATE_DIR=str(STATE), SYSTEM7_PYTHON=sys.executable))
 
@@ -551,7 +552,11 @@ def main():
     if args.build_dir:
         os.environ[BUILD_DIR_ENV] = str(args.build_dir.resolve())
     elif args.action == 'check':
-        os.environ[BUILD_DIR_ENV] = str(build_dir() / 'check')
+        # A check owns its media. The platform's output directory is the unit
+        # that moves, so the check run gets its own under the build files and
+        # the desktop's images are never opened.
+        os.environ[DIST_ENV] = str((build_dir() / 'check' / 'dist'
+                                    / os.environ.get(PLATFORM_ENV, DEFAULT_PLATFORM)).resolve())
     DIST = dist_dir()
     if args.state_dir:
         STATE = args.state_dir.resolve()

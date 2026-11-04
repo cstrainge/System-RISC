@@ -227,19 +227,42 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
     let mut recording = File::create(&serial)?;
     let collected = Arc::new(Mutex::new(String::new()));
     let sink = Arc::clone(&collected);
+    // A console that cannot be read or written is a failure of the recorder,
+    // not of the guest. It is reported here rather than left to look like a
+    // boot that never reached its marker on a log this process truncated.
+    let unrecorded: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let recorder = Arc::clone(&unrecorded);
+    let log_path = serial.clone();
     thread::spawn(move || {
         let mut buffer = [0u8; 4096];
-        while let Ok(count) = console.read(&mut buffer)
+        loop
         {
-            if count == 0
+            let count = match console.read(&mut buffer)
             {
-                break;
-            }
-            let _ = recording.write_all(&buffer[..count]);
-            let _ = recording.flush();
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(why) =>
+                {
+                    if let Ok(mut slot) = recorder.lock()
+                    {
+                        *slot = Some(format!("cannot read the guest console: {why}"));
+                    }
+                    break;
+                }
+            };
+            // The in-memory copy is what readiness is judged from, so it is
+            // updated even when the file write below fails.
             if let Ok(mut log) = sink.lock()
             {
                 log.push_str(&String::from_utf8_lossy(&buffer[..count]));
+            }
+            if let Err(why) = recording.write_all(&buffer[..count]).and_then(|()| recording.flush())
+            {
+                if let Ok(mut slot) = recorder.lock()
+                {
+                    *slot = Some(format!("cannot write {}: {why}", log_path.display()));
+                }
+                break;
             }
         }
     });
@@ -282,6 +305,10 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
         thread::sleep(std::time::Duration::from_millis(20));
     };
     drop(child);
+    if let Some(why) = unrecorded.lock().ok().and_then(|slot| slot.clone())
+    {
+        return Err(error(format!("the console log for {name} was not recorded: {why}")));
+    }
     // `boots` is about the guest OS starting, which is a different fact from the
     // ROM reaching a terminal state: a machine with no disk is expected to say
     // so and stop, and that is a pass, not a boot.
@@ -302,8 +329,7 @@ fn clone_raw(source: &Path, destination: &Path) -> Result<()>
 }
 
 
-fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alteration: &str)
-                  -> Result<()>
+fn altered_system(workspace: &Workspace, image: &Path, alteration: &str) -> Result<()>
 {
     let source = workspace.dist().join("System.bin");
     let mut file = macbinary::decode(&fs::read(source)?)?;
@@ -355,7 +381,6 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
         _ => return Err(error("unknown System alteration"))
     }
     file.resources = resource::encode_native(&resources)?;
-    let _ = directory;
     disk::edit(image, |volume| {
         let folder = volume.blessed_folder()?.id;
         let old = volume.lookup(folder, "System")?;
@@ -468,7 +493,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     }
     let large = directory.join("large-system-fork.hfsb");
     clone_raw(&raw, &large)?;
-    altered_system(workspace, &directory, &large, "large-fork")?;
+    altered_system(workspace, &large, "large-fork")?;
     cases.push(case(workspace,
                     &directory,
                     "system-resource-fork-over-4mib",
@@ -544,7 +569,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     {
         let path = directory.join(format!("bad-{alteration}.hfsb"));
         clone_raw(&raw, &path)?;
-        altered_system(workspace, &directory, &path, alteration)?;
+        altered_system(workspace, &path, alteration)?;
         cases.push(case(workspace,
                         &directory,
                         &format!("bad-{alteration}"),

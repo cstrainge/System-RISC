@@ -95,6 +95,9 @@ fn guest_build(workspace: &Workspace, packages: &[String]) -> Result<()>
     command.args(["build", "--locked", "--release", "--target", &workspace.platform.rust_target,
                   "--target-dir"])
            .arg(workspace.target());
+    // The instruction profile is the platform record's, turned into a flag here
+    // rather than repeated in .cargo/config.toml.
+    mac_build::platform::configure_for(&workspace.platform, &mut command);
     for package in packages
     {
         command.args(["--package", package]);
@@ -108,30 +111,63 @@ fn guest_build(workspace: &Workspace, packages: &[String]) -> Result<()>
         {
             command.arg("--features").arg(format!("{package}/guest"));
         }
-        for feature in workspace.platform.install.features_for(package)
+        for feature in features(workspace, package)
         {
             command.arg("--features").arg(format!("{package}/{feature}"));
         }
     }
-    // Deliberate: these three are host-side diagnostics, so they stay
-    // environment switches rather than platform data. A platform record that
-    // enabled tracing would turn it on for everyone who built that platform.
-    if packages.iter().any(|package| package == "mac-system")
-       && (workspace.checking || env::var_os("SYSTEM7_EVENT_TRACE").is_some())
-    {
-        command.args(["--features", "mac-system/event-trace"]);
-    }
-    if packages.iter().any(|package| package == "mac-system")
-       && env::var_os("SYSTEM7_DISPLAY_EVENT_DEBUG").is_some()
-    {
-        command.args(["--features", "mac-system/display-event-debug"]);
-    }
-    if packages.iter().any(|package| package == "text-edit")
-       && (workspace.checking || env::var_os("SR_TEXTEDIT_INPUT_TRACE").is_some())
-    {
-        command.args(["--features", "text-edit/input-trace"]);
-    }
     run(&mut command)
+}
+
+/// A diagnostic a caller enables, rather than one a platform ships.
+///
+/// Tracing is not platform data: a record that enabled it would turn it on for
+/// everyone who built that platform, and the shipped set would stop being the
+/// thing the record describes. So these are reached either by `cargo xtask
+/// check`, or by the environment variable named beside them, and they live in
+/// one table so a package cannot be traced by two different rules.
+struct Diagnostic
+{
+    package:  &'static str,
+    feature:  &'static str,
+    variable: &'static str,
+    /// Whether `cargo xtask check` enables it without the variable being set.
+    checking: bool
+}
+
+const DIAGNOSTICS: &[Diagnostic] = &[Diagnostic { package:  "mac-system",
+                                                  feature:  "event-trace",
+                                                  variable: "SYSTEM7_EVENT_TRACE",
+                                                  checking: true },
+                                     Diagnostic { package:  "mac-system",
+                                                  feature:  "display-event-debug",
+                                                  variable: "SYSTEM7_DISPLAY_EVENT_DEBUG",
+                                                  checking: false },
+                                     Diagnostic { package:  "text-edit",
+                                                  feature:  "input-trace",
+                                                  variable: "SR_TEXTEDIT_INPUT_TRACE",
+                                                  checking: true }];
+
+/// Every feature `package` is built with: the record's, then any diagnostic the
+/// caller asked for. The record's list is the shipped set; the diagnostics are
+/// never part of it.
+fn features(workspace: &Workspace, package: &str) -> Vec<String>
+{
+    let mut selected: Vec<String> = workspace.platform.install.features_for(package).to_vec();
+    for diagnostic in DIAGNOSTICS.iter().filter(|row| row.package == package)
+    {
+        let enabled = (diagnostic.checking && workspace.checking)
+                      || env::var_os(diagnostic.variable).is_some();
+        if enabled && !selected.iter().any(|feature| feature == diagnostic.feature)
+        {
+            selected.push(diagnostic.feature.to_string());
+        }
+    }
+    if !selected.is_empty()
+    {
+        println!("{package}: features {}", selected.join(", "));
+    }
+    selected
 }
 
 /// The applications this platform installs, with the features it asks for.
@@ -150,15 +186,7 @@ fn applications(workspace: &Workspace) -> Result<Vec<sdk::App>>
                                      entry.stage.describe())));
         }
         let resources = entry.resources()?;
-        let mut features = workspace.platform.install.features_for(name).to_vec();
-        // Deliberate: the tracing build is selected by the caller, not by the
-        // platform, so it is not in the record.
-        if name == "text-edit"
-           && (workspace.checking || env::var_os("SR_TEXTEDIT_INPUT_TRACE").is_some())
-           && !features.iter().any(|feature| feature == "input-trace")
-        {
-            features.push("input-trace".to_string());
-        }
+        let features = features(workspace, name);
         let manifest =
             entry.manifest
                  .clone()

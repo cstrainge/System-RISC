@@ -214,5 +214,6 @@
       "rpi-imager",
       "dd"
     ]
-  }
+  },
+  "toolchain": "rust/sdk.json"
 }
