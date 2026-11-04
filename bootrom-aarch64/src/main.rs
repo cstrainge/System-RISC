@@ -230,44 +230,6 @@ pub extern "C" fn sdhci_probe() -> u64
         {
             puts("BOOT_AARCH64_SD_REFUSED: stage=");
             puthex(u64::from(stage));
-            let base = sdhci;
-            // SAFETY: these are the controller's own registers in the declared
-            // device window, which the boot MMU maps as Device memory.
-            unsafe {
-                let read = |offset: usize| -> u64 {
-                    u64::from(u32::from_le(core::ptr::read_volatile((base + offset) as *const u32)))
-                };
-                puts(" present=");
-                puthex(read(0x24));
-                puts(" clock=");
-                puthex(read(0x2C));
-                puts(" capabilities=");
-                puthex(read(0x40));
-                puts(" int_status=");
-                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x30) as *const u16))));
-                puts(" error_status=");
-                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x32) as *const u16))));
-                puts(" cmdreg=");
-                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x0E) as *const u16))));
-                puts(" argument=");
-                puthex(read(0x08));
-                puts(" trnmod=");
-                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x0C) as *const u16))));
-                puts(" nisen=");
-                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x34) as *const u16))));
-                puts(" eisen=");
-                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x36) as *const u16))));
-                puts(" last_present=");
-                puthex(u64::from(sdhci::LAST_PRESENT.load(core::sync::atomic::Ordering::Relaxed)));
-                puts(" last_command=");
-                puthex(u64::from(sdhci::LAST_COMMAND.load(core::sync::atomic::Ordering::Relaxed)));
-                puts(" csd=");
-                for word in sdhci::LAST_CSD.iter()
-                {
-                    puthex(u64::from(word.load(core::sync::atomic::Ordering::Relaxed)));
-                    puts("_");
-                }
-            }
             puts("\n");
             return 0;
         }
