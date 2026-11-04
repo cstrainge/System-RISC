@@ -1068,7 +1068,7 @@ mod artifact_tests
         }
         let error = load("NoSuchBoard").err().unwrap().to_string();
         assert!(error.contains("cannot select platform 'NoSuchBoard'")
-                && error.contains("known platforms: arm_virt, qemu_riscv"));
+                && error.contains("known platforms: qemu_arm64, qemu_riscv"));
         for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234", "0x80000000"]
         {
             let mut bad = load("qemu_riscv").unwrap();

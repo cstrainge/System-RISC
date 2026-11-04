@@ -1,10 +1,16 @@
 {
-  "name": "arm_virt",
+  "name": "qemu_arm64",
   "rust_target": "aarch64-unknown-none",
+  "toolchain": "rust/sdk.json",
+  "install": {
+    "description": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
+    "applications": [],
+    "modules": []
+  },
   "storage": {
     "images": {
       "sd-card": {
-        "description": "Raspberry Pi SD card: an MBR with a FAT32 boot partition holding the vendor firmware config and our payload, followed by the System RISC volume",
+        "description": "SD medium: an MBR with a FAT32 boot partition holding the firmware configuration and the System payload, followed by the System RISC volume",
         "output": "sd-card.img",
         "layout": {
           "kind": "partitioned",
@@ -35,7 +41,7 @@
                       },
                       {
                         "key": "kernel",
-                        "value": "SYSTEM.IMG"
+                        "value": "kernel8.img"
                       },
                       {
                         "key": "enable_uart",
@@ -44,10 +50,6 @@
                       {
                         "key": "uart_2ndstage",
                         "value": "1"
-                      },
-                      {
-                        "key": "dtoverlay",
-                        "value": "disable-bt"
                       }
                     ]
                   },
@@ -58,7 +60,7 @@
                     "kind": "artifact",
                     "artifact": "system-image"
                   },
-                  "path": "SYSTEM.IMG"
+                  "path": "kernel8.img"
                 }
               ]
             },
@@ -75,22 +77,20 @@
     }
   },
   "emulation": {
-    "description": "QEMU virt board, 4 Cortex-A72 cores, 2 GiB RAM, PCI virtio devices with a virtio GPU and ramfb display",
+    "description": "BCM2837-class SoC machine, 4x Cortex-A53, 1 GiB RAM, PL011 UART console, sdhci SD storage, bcm2835 RNG and a VideoCore mailbox framebuffer",
     "family": "qemu",
     "binary": "qemu-system-aarch64",
-    "machine": "virt",
-    "cpu": "cortex-a72",
-    "ram": "2G",
+    "machine": "raspi3b",
+    "ram": "1G",
     "harts": 4,
     "firmware": "none",
     "boot_medium": {
-      "kind": "direct"
+      "kind": "sd"
     },
     "disks": {
-      "transport": "virtio-pci",
+      "transport": "sdhci",
       "format": "raw",
       "readonly": true,
-      "capacity": 2,
       "attach": [
         {
           "image": "sd-card",
@@ -99,29 +99,11 @@
       ]
     },
     "display": {
-      "kind": "virtio-gpu",
-      "framebuffer": "ramfb",
-      "transport": {
-        "kind": "virtio-pci"
-      }
-    },
-    "keyboard": {
-      "kind": "virtio-keyboard",
-      "transport": {
-        "kind": "virtio-pci"
-      }
-    },
-    "pointer": {
-      "kind": "tablet",
-      "transport": {
-        "kind": "virtio-pci"
-      }
+      "kind": "videocore-mailbox",
+      "framebuffer": "videocore-mailbox"
     },
     "entropy": {
-      "kind": "virtio-rng",
-      "transport": {
-        "kind": "virtio-pci"
-      }
+      "kind": "bcm2835-rng"
     },
     "network": {
       "kind": "none"
@@ -151,9 +133,9 @@
     }
   },
   "hardware": {
-    "description": "Raspberry Pi 4B booted from an SD card by the board's own firmware",
-    "board": "raspberry-pi-4b",
-    "soc": "bcm2711",
+    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware",
+    "board": "bcm2837-class",
+    "soc": "bcm2837",
     "boot": {
       "medium": {
         "kind": "sd"
@@ -171,49 +153,44 @@
     },
     "ram": {
       "base": "0x0",
-      "bytes": "0x80000000"
+      "bytes": "0x40000000"
     },
     "devices": [
       {
         "kind": "uart",
         "model": "pl011",
-        "base": "0xfe201000",
-        "bytes": "0x200",
-        "interrupt": 153
+        "base": "0x3f201000",
+        "bytes": "0x1000",
+        "interrupt": 57
       },
       {
         "kind": "storage",
         "model": "sdhci",
-        "base": "0xfe340000",
-        "bytes": "0x200",
-        "interrupt": 158
+        "base": "0x3f300000",
+        "bytes": "0x1000",
+        "interrupt": 62
       },
       {
         "kind": "gpio-mailbox",
         "model": "bcm2835-mailbox",
-        "base": "0xfe00b880",
+        "base": "0x3f00b880",
         "bytes": "0x40",
-        "interrupt": 97
+        "interrupt": 1
       },
       {
-        "kind": "network",
-        "model": "genet",
-        "base": "0x7d580000",
-        "bytes": "0x10000",
-        "interrupt": 189
+        "kind": "display",
+        "model": "videocore-mailbox-framebuffer"
       },
       {
-        "kind": "pcie",
-        "model": "brcmstb-pcie",
-        "base": "0x7d500000",
-        "bytes": "0x9310",
-        "interrupt": 143
+        "kind": "entropy",
+        "model": "bcm2835-rng",
+        "base": "0x3f104000",
+        "bytes": "0x10",
+        "interrupt": 61
       }
     ],
     "tooling": [
-      "rpi-imager",
       "dd"
     ]
-  },
-  "toolchain": "rust/sdk.json"
+  }
 }

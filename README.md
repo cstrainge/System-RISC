@@ -613,7 +613,7 @@ HFS-B/qcow2 installation and boot ROM under the selected external build director
 `--build-dir` keeps private checks separate. The platform name is recorded in the
 build report and propagated to guest builds and VM helpers. Unknown names fail
 before creating installation output. qemu_riscv is currently the supported
-platform; future Pi partitioned-media and ARM backends remain roadmap work.
+platform; future BCM2837-class partitioned-media and ARM backends remain roadmap work.
 
 The platform's `qemu_harts` selects four physical harts for the normal VM.
 Only the primary runs System code; the others remain ROM-parked until the SMP

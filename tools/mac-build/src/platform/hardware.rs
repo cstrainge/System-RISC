@@ -58,7 +58,7 @@ pub struct Boot
 {
     pub medium:      Medium,
     /// What runs before this platform's payload. A board whose first stage is
-    /// vendor firmware — a Raspberry Pi, for example — has no bootloader
+    /// vendor firmware — a BCM2837-class board, for example — has no bootloader
     /// package of ours at all, and that is a normal configuration.
     pub first_stage: FirstStage
 }
@@ -166,7 +166,8 @@ pub enum PeripheralKind
     Pcie,
     Timer,
     InterruptController,
-    Display
+    Display,
+    Entropy
 }
 
 impl Definition
