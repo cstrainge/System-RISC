@@ -30,8 +30,10 @@ impl Workspace
     fn new(build: Option<PathBuf>, checking: bool, platform: mac_build::platform::Platform)
            -> Result<Self>
     {
-        let root =
-            Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
+        let root = mac_build::paths::canonical(Path::new(env!("CARGO_MANIFEST_DIR")).parent()
+                                                                                    .unwrap()
+                                                                                    .parent()
+                                                                                    .unwrap())?;
         let repo = root.parent().unwrap().to_path_buf();
         let build = match build
         {
@@ -43,7 +45,7 @@ impl Workspace
             }
         };
         fs::create_dir_all(&build)?;
-        let build = build.canonicalize()?;
+        let build = mac_build::paths::canonical(&build)?;
         if build.starts_with(&root)
         {
             return Err(error("build output must be outside the OS source repository"));

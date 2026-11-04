@@ -19,6 +19,40 @@ pub fn dist_dir(workspace: &Path) -> PathBuf
     build_dir(workspace).join("dist")
 }
 
+/// `fs::canonicalize` returns a verbatim (`\\?\`) path on Windows. The MSVC
+/// linker mangles a verbatim input that contains a space, so a Cargo target
+/// directory below a spaced path cannot link host proc macros; a verbatim path
+/// also never compares equal to a plain source root.
+pub fn canonical(path: &Path) -> crate::Result<PathBuf>
+{
+    Ok(plain(path.canonicalize()?))
+}
+
+#[cfg(windows)]
+fn plain(path: PathBuf) -> PathBuf
+{
+    let Some(text) = path.to_str()
+    else
+    {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\")
+    {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\")
+    {
+        Some(rest) => PathBuf::from(rest),
+        None => path
+    }
+}
+
+#[cfg(not(windows))]
+fn plain(path: PathBuf) -> PathBuf
+{
+    path
+}
+
 
 /// Cargo normally keeps final binaries beside the profile's `build` directory.
 /// A caller separating its intermediate build-dir must name the actual final
