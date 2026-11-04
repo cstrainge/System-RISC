@@ -85,6 +85,19 @@ fn witness(text: &str) -> Result<Option<Size>>
                       Extent::from_wide(i64::from(effects)).map_err(|_| Error::BadArgument)?)))
 }
 
+const PENDING_TITLE: &str = "pending-probe/ask-size";
+
+/// Only this exact, explicitly armed native ASK_SIZE enters the nonreturning
+/// author body. CREATE and ordinary/default measurements stay nonspinning.
+#[inline(never)]
+fn pending_control_ask_size() -> !
+{
+    loop
+    {
+        core::hint::spin_loop();
+    }
+}
+
 #[mac_definition::cdef_main]
 fn main<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> Result<Reply>
 {
@@ -92,7 +105,9 @@ fn main<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> Res
     {
         Message::Validate(state) =>
         {
-            if target(state.text).is_some() || witness(state.text)?.is_some()
+            if state.text == PENDING_TITLE
+               || target(state.text).is_some()
+               || witness(state.text)?.is_some()
             {
                 return Ok(Reply::Done);
             }
@@ -126,7 +141,7 @@ fn main<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> Res
         }
         Message::Reflow { state,
                           request,
-                          .. } =>
+                          creation } =>
         {
             if services.reflow() != mac_definition::Reflow::Yes
             {
@@ -134,8 +149,21 @@ fn main<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> Res
             }
             match request
             {
-                reflow::Message::AskSize(_) =>
+                reflow::Message::AskSize(constraints) =>
                 {
+                    if state.text == PENDING_TITLE
+                    {
+                        if matches!(constraints.width, reflow::AxisConstraint::Exact(width)
+                                                       if width.pixels() == 173)
+                           && matches!(constraints.height, reflow::AxisConstraint::AtMost(height)
+                                                           if height.pixels() == 79)
+                        {
+                            pending_control_ask_size();
+                        }
+                        return mac_definition::leaf_reflow(reflow::Message::AskSize(constraints),
+                                                           creation,
+                                                           Size::default());
+                    }
                     let size = witness(state.text)?.ok_or(Error::NotSupported)?;
                     let requirements = Requirements::new(size, size);
                     Ok(Reply::Measurement(Measurement { intrinsic:   requirements,

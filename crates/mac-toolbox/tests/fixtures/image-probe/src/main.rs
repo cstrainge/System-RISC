@@ -6,6 +6,7 @@ extern crate alloc;
 use mac_toolbox::{Error, System};
 mod isolation;
 mod offscreen_controls;
+mod pending_control;
 mod window_definition;
 #[path = "../../../image_lifetimes_cases.rs"]
 mod image_lifetimes;

@@ -328,6 +328,11 @@ pub(super) fn run(system: &System<'_>) -> Result<bool, Error>
         super::window_definition::run(system, mode)?;
         return Ok(true);
     }
+    if mode == "pending-control-ask-size-stop"
+    {
+        super::pending_control::run(system)?;
+        return Ok(true);
+    }
     if mode == "control-definition-dispose-panic"
     {
         let window=system.windows().create_owned(mac_toolbox::windows::WindowSpec::new(
