@@ -854,34 +854,12 @@ impl WindowManager
            || !plan.window.draws_same_frame_as(&owned.window)
            || !owned.binding.matches(plan.window.entry)
         {
-            // Four independent causes share one refusal. Report each, first time.
-            static REPORTED: core::sync::atomic::AtomicBool =
-                core::sync::atomic::AtomicBool::new(false);
-            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
-            {
-                serial!("PAINT_PLAN_STALE screen_same={} owner_same={} content_revision={:?} of \
-                         {} frame_same={} binding_matches={}",
-                        self.screen == plan.screen,
-                        owner == plan.owner,
-                        owned.content_revision,
-                        plan.content_revision,
-                        plan.window.draws_same_frame_as(&owned.window),
-                        owned.binding.matches(plan.window.entry));
-            }
             return Err(SERVICE_BUSY);
         }
         if self.paint_tracking(plan.id, plan.domain) != plan.tracking
            || (plan.domain == PaintDomain::TrackingGrow
                && self.tracking_revision != plan.tracking_revision)
         {
-            static REPORTED: core::sync::atomic::AtomicBool =
-                core::sync::atomic::AtomicBool::new(false);
-            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
-            {
-                serial!("PAINT_PLAN_TRACKING_STALE tracking_same={} revision_same={}",
-                        self.paint_tracking(plan.id, plan.domain) == plan.tracking,
-                        self.tracking_revision == plan.tracking_revision);
-            }
             return Err(SERVICE_BUSY);
         }
         Ok(())
@@ -889,19 +867,6 @@ impl WindowManager
 
     pub(crate) fn admit_paint(&self, plan: PaintPlan) -> Result<Arc<PaintOwner>, Status>
     {
-        // Bounded admission trace: a paint plan is validated against the window
-        // revision it records, so how far that revision moves is the difference
-        // between a stale plan and revision churn. First few admissions only.
-        {
-            static TRACED: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-            let seen = TRACED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if seen < 12
-            {
-                let live = self.windows.get(plan.id.0).and_then(|owned| owned.revision);
-                serial!("PAINT_ADMIT window={} plan_revision={} live_revision={:?}", plan.id.0,
-                        plan.revision, live);
-            }
-        }
         self.validate_paint_plan(&plan)?;
         let owner =
             self.windows.get(plan.id.0).and_then(|owned| owned.paint.as_ref()).ok_or(BAD_ABI)?;
@@ -946,17 +911,6 @@ impl WindowManager
         self.validate_canvas_claim(&loan.data.as_ref().ok_or(BAD_ABI)?.canvas)?;
         if !Arc::ptr_eq(owner, &loan.owner) || !owner.active() || owner.cancelled()
         {
-            // Same identity/state refusal with three separate causes; report each
-            // rather than the OR that produced it. First refusal only.
-            static REPORTED: core::sync::atomic::AtomicBool =
-                core::sync::atomic::AtomicBool::new(false);
-            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
-            {
-                serial!("PAINT_LOAN_REFUSED same_owner={} owner_active={} owner_cancelled={}",
-                        Arc::ptr_eq(owner, &loan.owner),
-                        owner.active(),
-                        owner.cancelled());
-            }
             return Err(SERVICE_BUSY);
         }
         Ok(())

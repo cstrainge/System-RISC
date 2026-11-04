@@ -605,25 +605,6 @@ impl Manager
         if self.disposal_pending_window(window)
            || self.objects.iter().any(|(_, object)| object.window == window && object.claimed())
         {
-            // Two causes: a disposal still pending, or a claimed control object.
-            // Report the first refusal of each separately so a close that keeps
-            // refusing says which one holds it.
-            static PENDING: core::sync::atomic::AtomicBool =
-                core::sync::atomic::AtomicBool::new(false);
-            static CLAIMED: core::sync::atomic::AtomicBool =
-                core::sync::atomic::AtomicBool::new(false);
-            let pending = self.disposal_pending_window(window);
-            let claimed = self.objects
-                              .iter()
-                              .any(|(_, object)| object.window == window && object.claimed());
-            let slot = if pending { &PENDING } else { &CLAIMED };
-            if !slot.swap(true, core::sync::atomic::Ordering::Relaxed)
-            {
-                serial!("PREPARE_REMOVE_REFUSED window={} pending={} claimed={}",
-                        window,
-                        pending,
-                        claimed);
-            }
             return Err(SERVICE_BUSY);
         }
         Ok(())

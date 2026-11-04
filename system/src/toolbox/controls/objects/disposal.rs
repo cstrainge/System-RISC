@@ -1062,41 +1062,17 @@ impl Manager
     /// canonical Window owner. Busy retains every original child and ticket.
     pub(crate) fn request_window_disposal(&mut self, window: u64) -> Result<(), Status>
     {
-        // Three different outcomes share SERVICE_BUSY, and arming a disposal then
-        // reporting busy is indistinguishable from being stuck. Name the branch,
-        // and how often each is taken, so a retry loop is visible.
-        fn branch(tag: &'static str, window: u64)
-        {
-            use core::sync::atomic::{AtomicU8, Ordering};
-            static PENDING: AtomicU8 = AtomicU8::new(0);
-            static DIRECT: AtomicU8 = AtomicU8::new(0);
-            static ARMED: AtomicU8 = AtomicU8::new(0);
-            let counter = match tag
-            {
-                "already-pending" => &PENDING,
-                "direct" => &DIRECT,
-                _ => &ARMED
-            };
-            let seen = counter.fetch_add(1, Ordering::Relaxed);
-            if seen < 6
-            {
-                serial!("DISPOSAL_BRANCH branch={} window={} count={}", tag, window, seen + 1);
-            }
-        }
         if self.disposal_pending_window(window)
         {
-            branch("already-pending", window);
             return Err(SERVICE_BUSY);
         }
         if !self.objects
                 .retained_values()
                 .any(|object| object.window == window && object.definition.is_process_source())
         {
-            branch("direct", window);
             return self.prepare_remove_window(window);
         }
         self.request_matching_disposals(|object| object.window == window)?;
-        branch("armed", window);
         Err(SERVICE_BUSY)
     }
 
