@@ -882,6 +882,19 @@ impl WindowManager
 
     pub(crate) fn admit_paint(&self, plan: PaintPlan) -> Result<Arc<PaintOwner>, Status>
     {
+        // Bounded admission trace: a paint plan is validated against the window
+        // revision it records, so how far that revision moves is the difference
+        // between a stale plan and revision churn. First few admissions only.
+        {
+            static TRACED: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+            let seen = TRACED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if seen < 12
+            {
+                let live = self.windows.get(plan.id.0).and_then(|owned| owned.revision);
+                serial!("PAINT_ADMIT window={} plan_revision={} live_revision={:?}", plan.id.0,
+                        plan.revision, live);
+            }
+        }
         self.validate_paint_plan(&plan)?;
         let owner =
             self.windows.get(plan.id.0).and_then(|owned| owned.paint.as_ref()).ok_or(BAD_ABI)?;
