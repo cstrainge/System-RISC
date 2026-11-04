@@ -272,7 +272,10 @@ def build_app(args, sdk: dict, application: tuple) -> None:
     identity = hashlib.sha256(str(manifest).encode()).hexdigest()
     output = args.build_dir.resolve() / "applications" / identity[:16]
     output.mkdir(parents=True, exist_ok=True)
-    target = output / sdk["key"][:16]
+    # One shared target directory for every application: the Toolbox and the
+    # shared crates compile once instead of once per application.
+    target = args.build_dir.resolve() / "target/applications"
+    target.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     for name in list(env):
         if name.startswith("CARGO_PROFILE_") or name in (
