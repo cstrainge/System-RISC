@@ -454,6 +454,7 @@ pub fn load(name: &str) -> Result<Platform>
                                   with",
                                  platform.name)));
     }
+    platform.install.check(&platform.name)?;
     // Validate every section the record does declare, and nothing it does not:
     // a platform without an emulator or without a physical layout still loads.
     if platform.memory.is_some()

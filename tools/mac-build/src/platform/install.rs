@@ -12,6 +12,21 @@ use serde::Deserialize;
 
 use crate::{Result, error};
 
+/// Whether a platform intentionally installs no guest packages.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Set
+{
+    /// The platform installs the packages its arrays name; an empty array is a
+    /// record defect.
+    #[default]
+    Packages,
+    /// The platform intentionally has no guest set yet. It must give a reason,
+    /// and every build stage that would be empty refuses with that reason
+    /// instead of stamping a silent success.
+    None
+}
+
 /// An ordered selection of workspace packages plus per-package features and
 /// the guest folders they are installed into.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -21,6 +36,14 @@ pub struct Install
     /// What this platform's installed set is for. Optional prose.
     #[serde(default)]
     pub description:  String,
+    /// Whether the installed set is a real selection or an intentional empty
+    /// set. The default keeps existing records honest: an empty package list
+    /// under `packages` is rejected rather than passing as success.
+    #[serde(default)]
+    pub set:          Set,
+    /// Why the platform installs no guest set. Required when `set` is `none`.
+    #[serde(default)]
+    pub reason:       String,
     /// Application packages, in the order they should be installed.
     #[serde(default)]
     pub applications: Vec<String>,
@@ -107,6 +130,52 @@ fn extensions_folder() -> String
 
 impl Install
 {
+    /// Validate that the record says which kind of installed set it is.
+    ///
+    /// An empty package list is not success: it is either an intentional
+    /// `none` set with a reason, or a record defect. The build stages refuse
+    /// an empty stage with this declaration, so a later typo that empties an
+    /// array cannot silently produce a green build.
+    pub fn check(&self, platform: &str) -> Result<()>
+    {
+        match self.set
+        {
+            Set::None =>
+            {
+                if !self.applications.is_empty() || !self.modules.is_empty()
+                {
+                    return Err(error(format!("platform '{platform}' install.set is none but \
+                                              install.applications or install.modules names \
+                                              packages; remove them or set install.set to \
+                                              packages")));
+                }
+                if !self.features.is_empty() || !self.exceptions.is_empty()
+                {
+                    return Err(error(format!("platform '{platform}' install.set is none but \
+                                              install.features or install.exceptions is \
+                                              populated; remove them")));
+                }
+                if self.reason.trim().is_empty()
+                {
+                    return Err(error(format!("platform '{platform}' install.set is none \
+                                              requires a nonempty install.reason explaining \
+                                              why this platform has no guest set")));
+                }
+            }
+            Set::Packages =>
+            {
+                if self.applications.is_empty() && self.modules.is_empty()
+                {
+                    return Err(error(format!("platform '{platform}' install.set is packages \
+                                              but lists no applications or modules; add the \
+                                              packages or set install.set to none with a \
+                                              reason")));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Every selected package, applications first.
     pub fn packages(&self) -> impl Iterator<Item = &String>
     {
