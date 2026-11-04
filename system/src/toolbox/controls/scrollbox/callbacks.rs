@@ -364,7 +364,7 @@ impl Manager
                            bounds: object.view.spec.viewport,
                            raster: object.view.raster.clone(),
                            bar,
-                           #[cfg(target_arch = "riscv64")]
+                           #[cfg(guest)]
                            _recovery_origin: object._recovery_origin.clone() });
         Ok(())
     }

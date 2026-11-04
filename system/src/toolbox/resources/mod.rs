@@ -2,15 +2,15 @@
 pub use mac_abi::ResourceKey;
 pub use mac_formats::{code, resource};
 pub(crate) mod definitions;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) mod loader;
 
 pub mod manager;
-#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+#[cfg(any(guest, feature = "test-support"))]
 pub(crate) mod file;
 
-#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+#[cfg(any(guest, feature = "test-support"))]
 pub(crate) mod native;
 
-#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+#[cfg(any(guest, feature = "test-support"))]
 pub(crate) mod inspect;

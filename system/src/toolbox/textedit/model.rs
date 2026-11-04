@@ -139,7 +139,7 @@ impl Editor
         let mut text = String::new();
         text.try_reserve_exact(end - start).map_err(|_| NO_MEMORY)?;
         text.push_str(&self.text[start..end]);
-        #[cfg(all(target_arch = "riscv64", feature = "event-trace"))]
+        #[cfg(all(guest, feature = "event-trace"))]
         crate::trace::record(crate::trace::TEXTEDIT, 0, 1, text.len() as u64, 1, 0);
         let source = Arc::new(text);
         self.snapshot = Some((self.info.content_revision, start..end, source.clone()));
@@ -224,7 +224,7 @@ impl Editor
         {
             layout::replacement(&self.text, &self.lines, start, end, input, width, &self.font)?
         };
-        #[cfg(all(target_arch = "riscv64", feature = "event-trace"))]
+        #[cfg(all(guest, feature = "event-trace"))]
         crate::trace::record(crate::trace::TEXTEDIT,
                              0,
                              0,

@@ -169,7 +169,7 @@ impl Watches
         if self.get_mut(lease.watch).is_none()
         {
             self.finish_released(lease);
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(guest)]
             if !lease.state.owner.accepting()
             {
                 crate::toolbox::processes::retirement::resources_released();
@@ -191,7 +191,7 @@ impl Drop for Watches
     }
 }
 
-#[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
+#[cfg_attr(not(guest), allow(dead_code))]
 pub(super) struct Watch
 {
     volume:            u32,
@@ -214,7 +214,7 @@ impl Watch
 }
 impl Manager
 {
-    #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+    #[cfg(all(feature = "test-support", not(guest)))]
     pub(crate) fn begin_fixture_probe(&mut self, owner: &OwnerRef, id: u32)
                                       -> Result<ProbeLease, Status>
     {
@@ -244,7 +244,7 @@ impl Manager
                         state })
     }
 
-    #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+    #[cfg(all(feature = "test-support", not(guest)))]
     pub(crate) fn finish_fixture_probe(&mut self, lease: &ProbeLease) -> Result<(), Status>
     {
         let _ = self.watches.validate_lease(lease)?;
@@ -286,7 +286,7 @@ impl Manager
                 }
                 let probes = match self.volumes.get(call.volume).ok_or(NOT_FOUND)?
                 {
-                    #[cfg(target_arch = "riscv64")]
+                    #[cfg(guest)]
                     Mounted::Operating(_) => return Err(SERVICE_BUSY),
                     Mounted::Block(_) =>
                     {
@@ -327,7 +327,7 @@ impl Manager
                                                            fingerprint: None,
                                                            error: None,
                                                            last_error: None })?;
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(guest)]
                 background::wake();
                 Ok(())
             }
@@ -364,18 +364,18 @@ impl Manager
 
     fn transfer_holds_notices(&self, volume: u32) -> bool
     {
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         {
             self.transfers.iter().any(|(_, entry)| entry.holds_notices(volume))
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(guest))]
         {
             let _ = volume;
             false
         }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(super) fn release_transfer_notices(&mut self)
     {
         let transfers = &self.transfers;
@@ -400,7 +400,7 @@ impl Manager
 
     pub(super) fn notify_directory_at(&mut self, volume: u32, directory: u32, revision: u64)
     {
-        #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+        #[cfg(any(guest, feature = "test-support"))]
         self.file_icons.invalidate(volume, directory);
         let held = self.transfer_holds_notices(volume);
         for watch in self.watches.values_mut()
@@ -431,7 +431,7 @@ impl Manager
         {
             return;
         };
-        #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+        #[cfg(any(guest, feature = "test-support"))]
         for &parent in &mark.parents
         {
             self.file_icons.invalidate(volume, parent);
@@ -463,7 +463,7 @@ impl lifetime::WatchHost for Manager
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 mod background
 {
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -786,5 +786,5 @@ mod background
                      work });
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) use background::pump;

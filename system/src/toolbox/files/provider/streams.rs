@@ -18,7 +18,7 @@ impl Manager
         -> Result<(u64, u64), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FSWR"))?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         self.prepare_streams(crate::toolbox::handles::file_stream_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
         if call.expected_cnid != 0
@@ -57,11 +57,11 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(guest)]
         let io_subject =
             Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?);
         let handle = self.streams
-                         .insert_authorized(authority, Stream { #[cfg(target_arch = "riscv64")] io_subject, owner:owner.label(),
+                         .insert_authorized(authority, Stream { #[cfg(guest)] io_subject, owner:owner.label(),
                                           authority: authority.clone(),
                                           volume: call.volume,
                                           parent: call.parent,

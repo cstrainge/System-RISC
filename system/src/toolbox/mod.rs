@@ -9,7 +9,7 @@ pub mod controls;
 pub mod resources;
 pub mod files;
 pub(crate) mod power;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) mod entropy;
 pub mod memory;
 pub(crate) mod inspection;
@@ -19,27 +19,27 @@ pub mod menus;
 pub mod crashes;
 pub mod dialogs;
 pub mod classic;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) mod runtime;
 
 pub(crate) mod strings;
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub mod processes;
 
 pub mod standard_file;
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "riscv64")))]
+#[cfg(all(test, feature = "test-support", not(guest)))]
 #[path = "processes/menu.rs"]
 pub(crate) mod test_application_menu;
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "riscv64")))]
+#[cfg(all(test, feature = "test-support", not(guest)))]
 #[path = "processes/presentation.rs"]
 pub(crate) mod test_process_presentation;
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) mod application_heap;
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) mod native_threads;
 pub(crate) mod font_suitcases;

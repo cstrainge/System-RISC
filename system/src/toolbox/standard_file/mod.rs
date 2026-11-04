@@ -11,9 +11,9 @@
 pub mod layout;
 pub(super) mod page;
 pub(super) mod view;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) mod templates;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 mod preparation;
 use alloc::vec::Vec;
 
@@ -22,11 +22,11 @@ use mac_abi::{files::{self, CatalogInfo, FileCall, ROOT_ID, VolumeInfo},
               standard_file::*,
               *};
 use page::Page;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) use preparation::{BeginError, PreparedDialog};
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) use templates::prepare as prepare_templates;
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) use templates::{Vectors, return_vectors};
 use view::Text;
 
@@ -186,14 +186,14 @@ pub struct Dialog
     create_when:                  u64,
     pub(super) main_widgets:      Widgets,
     pub(super) auxiliary_widgets: Widgets,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(super) subject:           Option<crate::drivers::jobs::subjects::Subject>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(super) recovery_activity: Option<crate::recovery::Activity>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     vector_lease:                 Option<crate::recovery::StandardFileVectorsLease>
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 impl Drop for Dialog
 {
     fn drop(&mut self)

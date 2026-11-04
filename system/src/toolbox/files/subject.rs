@@ -1,7 +1,7 @@
 //! File-service subject authority. An operation's identity is its resource scope,
 //! not an integer masquerading as a process or drawing from the System ledger.
 #![forbid(unsafe_code)]
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 use mac_abi::Status;
 use mac_object_table::scope;
 
@@ -51,7 +51,7 @@ impl Access<'_>
         }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(guest)]
     pub(super) fn authority(self) -> Result<Authority, Status>
     {
         match self

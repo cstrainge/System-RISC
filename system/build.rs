@@ -1,5 +1,6 @@
 fn main()
 {
+    println!("cargo:rustc-check-cfg=cfg(guest)");
     println!("cargo:rerun-if-env-changed={}", mac_build::platform::PLATFORM_ENV);
     let platform = mac_build::platform::current();
     let definition =

@@ -2,7 +2,7 @@
 mod manager;
 pub(crate) mod lifetime;
 pub use manager::{Manager, Notice};
-#[cfg(target_arch = "riscv64")]
+#[cfg(guest)]
 pub(crate) use manager::{PreparedReceiver, ReceiverError, ReceiverPlan, ReceiverRetired,
                          ReceiverTarget};
 pub mod native;
