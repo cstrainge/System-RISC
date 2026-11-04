@@ -609,6 +609,18 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         finish_user_call(user_call.take(), result)
     };
     finish_service(frame, completion, result);
+    // Output delivery and the original service obligation have both ended.
+    // Replay/deferred branches returned above; Yield/Exit do not return here
+    // to the user. Never inspect request memory for a report.
+    if user_origin
+       && action == super::scheduler::service::RequestAction::Return
+       && frame.registers[8] as isize == SERVICE_BUSY as isize
+       && !thread.traps.terminal_busy_reported()
+    {
+        let identity = thread.identity();
+        serial!("NATIVE_SERVICE_BUSY app={} thread={} trap={:#x} status={}", identity.app.0,
+                identity.thread.0, number, SERVICE_BUSY);
+    }
     if physical_depth == 1
        && matches!(action,
                    super::scheduler::service::RequestAction::Yield

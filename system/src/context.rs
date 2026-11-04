@@ -88,12 +88,14 @@ pub(crate) struct EventWaiter
 #[cfg(any(target_arch = "riscv64", test))]
 pub struct ThreadTrapState
 {
-    depth:            core::sync::atomic::AtomicUsize,
+    depth:                  core::sync::atomic::AtomicUsize,
     #[cfg(target_arch = "riscv64")]
-    reported:         core::sync::atomic::AtomicBool,
+    reported:               core::sync::atomic::AtomicBool,
     #[cfg(target_arch = "riscv64")]
-    refusal_reported: core::sync::atomic::AtomicBool,
-    deferred:         spinning_top::Spinlock<Option<DeferredIo>>
+    refusal_reported:       core::sync::atomic::AtomicBool,
+    #[cfg(target_arch = "riscv64")]
+    terminal_busy_reported: core::sync::atomic::AtomicBool,
+    deferred:               spinning_top::Spinlock<Option<DeferredIo>>
 }
 #[cfg(any(target_arch = "riscv64", test))]
 impl ThreadTrapState
@@ -108,7 +110,11 @@ impl ThreadTrapState
                #[cfg(target_arch = "riscv64")]
                refusal_reported:
                    core::sync::atomic::AtomicBool::new(false),
-               deferred:                                         spinning_top::Spinlock::new(None) }
+               #[cfg(target_arch = "riscv64")]
+               terminal_busy_reported:
+                   core::sync::atomic::AtomicBool::new(false),
+               deferred:
+                   spinning_top::Spinlock::new(None) }
     }
 
     pub fn enter(&self) -> TrapScope<'_>
@@ -170,6 +176,14 @@ impl ThreadTrapState
     pub fn nesting_reported(&self) -> bool
     {
         self.reported.swap(true, core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Bound the native terminal-service diagnostic to this actual thread.
+    /// This flag carries no service readiness or completion authority.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn terminal_busy_reported(&self) -> bool
+    {
+        self.terminal_busy_reported.swap(true, core::sync::atomic::Ordering::Relaxed)
     }
 }
 #[cfg(any(target_arch = "riscv64", test))]
