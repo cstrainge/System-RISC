@@ -65,7 +65,7 @@ fn terminal(scenario: &str)
     assert_eq!(replaced,
                if scenario == "definition" { 1 } else { 3 },
                "only CDEF plus RV64/NABI should change");
-    for text in ["DEFINITION_PANIC_FATAL: kind=CDEF id=-32759",
+    for text in ["DEFINITION_PANIC_FATAL: kind=CDEF id=18",
                  "DEFINITION_PANIC_PROBE: safe author body reached",
                  "ordinary_execution=abandoned", "SYSTEM_EMERGENCY_DIAGNOSTIC ",
                  "SYSTEM_EMERGENCY_RESTART_REQUEST"]
@@ -84,7 +84,7 @@ fn terminal(scenario: &str)
     {
         "definition" =>
         {
-            assert!(diagnostic.contains("Definition panic: CDEF -32759"), "{diagnostic}");
+            assert!(diagnostic.contains("Definition panic: CDEF 18"), "{diagnostic}");
             assert!(serial.contains("src/main.rs:"), "panic source lost: {serial}");
         }
         "system-panic" =>

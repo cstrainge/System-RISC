@@ -267,8 +267,8 @@ still open. Automatic position saves also advance through stepped groups.
 The original labels, bounds and font policy are recorded in
 `provenance/finder-copy-window.json`; the renderer now follows the traced original CODE174 frame, colour and
 monochrome paths; live interaction/pixel parity remains deferred. New definitions are
-`definitions/progress-bar` (`CDEF_PROGRESS_BAR`, resource -32760, “Progress Bar”)
-and `definitions/static-text` (`CDEF_STATIC_TEXT`, resource -32759, “Static Text”).
+`definitions/progress-bar` (`CDEF_PROGRESS_BAR`, resource 5, “Progress Bar”)
+and `definitions/static-text` (`CDEF_STATIC_TEXT`, resource 18, “Static Text”).
 The System boot panel now uses the same managed Progress Bar and loaded CDEF;
 the old bootstrap-only bar implementation has been removed.
 

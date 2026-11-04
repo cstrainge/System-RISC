@@ -190,7 +190,7 @@ impl Author
         let reply = self.invoke(reference,
                                 Request { kind: CDEF,
                                           id,
-                                          variation: variation(call.procedure, id),
+                                          variation: variation(call.procedure),
                                           message: payload.message,
                                           reflow: 1,
                                           object: if id == 1
@@ -332,7 +332,7 @@ impl Author
         let reply = self.invoke(reference,
                                 Request { kind: CDEF,
                                           id,
-                                          variation: variation(call.procedure, id),
+                                          variation: variation(call.procedure),
                                           message: if tracking { 2 } else { 1 },
                                           reflow: call.reflow,
                                           object: if id == 1

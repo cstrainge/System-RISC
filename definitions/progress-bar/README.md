@@ -1,10 +1,12 @@
 # Progress Bar CDEF
 
-`CDEF_PROGRESS_BAR` is System resource `CDEF -32760`, named **Progress Bar**.
+`CDEF_PROGRESS_BAR` is System resource `CDEF 5`, named **Progress Bar**.
 The independently relocatable resource owns the frame, fill, range validation
-and changed-pixel geometry. Native procedure `PROGRESS_BAR_PROCEDURE` is a
-native request discriminator, not a classic procID. The original 68k adapter
-is unchanged.
+and changed-pixel geometry. `PROGRESS_BAR_PROCEDURE` is classic procID 80
+(resource 5, variation 0). Monochrome presentation uses `ProgressStyle` and an
+explicit native state flag; procID 81 is reserved for the Appearance relevance
+bar and is not repurposed. The native UTF-8/state ABI remains separate from a
+classic 68k ControlRecord.
 
 Applications use `Controls::create_progress_bar` and the RAII `ProgressBar` owner.
 `Progress::Preparing` shows an empty framed track until a denominator is known. `Determinate` accepts checked

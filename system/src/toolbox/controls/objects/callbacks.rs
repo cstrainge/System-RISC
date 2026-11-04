@@ -859,9 +859,7 @@ impl Configuration
     {
         let call =
             if self.validate { author.validate(self.call, reference).await? } else { self.call };
-        let title = if !self.scrollbar
-                       && !matches!(call.procedure,
-                                    PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
+        let title = if !self.scrollbar && call.procedure != PROGRESS_BAR_PROCEDURE
         {
             Some(super::super::snapshot::Title::admit(&call.standard,
                                                       self.previous_title.as_ref())?)

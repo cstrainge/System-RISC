@@ -458,7 +458,7 @@ fn body<'a>(drawing: &'a Drawing, bounds: Option<Rect>, corner: bool) -> Result<
     Ok(Call { source: Source::Retained(&drawing.source),
               input,
               id,
-              variation: variation(drawing.variation, id),
+              variation: variation(drawing.variation),
               reflow: drawing.reflow,
               grid: drawing.grid.as_ref().filter(|_| !corner),
               gate: drawing.gate })

@@ -18,7 +18,8 @@ enum State
     Progress
     {
         bounds:   Rect,
-        progress: ProgressRange
+        progress: ProgressRange,
+        flags:    i16
     },
     Standard(snapshot::Standard)
 }
@@ -30,10 +31,12 @@ impl State
         {
             Self::Standard(s) => Some(s.wire()),
             Self::Progress { bounds,
-                             progress } =>
+                             progress,
+                             flags } =>
             {
                 Some(ControlDefinitionState { bounds: *bounds,
                                               progress: *progress,
+                                              flags: *flags,
                                               ..Default::default() })
             }
             _ => None
@@ -124,7 +127,7 @@ impl Drawing
     async fn change_from_with(&mut self, before: ControlDefinitionState, author: &effects::Author)
                               -> Result<(), Status>
     {
-        if !matches!(self.variation, PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
+        if self.variation != PROGRESS_BAR_PROCEDURE
         {
             return Ok(());
         }
@@ -216,28 +219,18 @@ fn standard_definition(procedure: i16) -> Result<i16, Status>
 {
     match procedure
     {
-        0..=2 | 8..=10 => Ok(0),
-        PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE => Ok(CDEF_PROGRESS_BAR),
-        STATIC_TEXT_PROCEDURE => Ok(CDEF_STATIC_TEXT),
-        TABLE_PROCEDURE => Ok(CDEF_TABLE),
-        SPLITTER_PROCEDURE => Ok(CDEF_SPLITTER),
+        0..=2
+        | 8..=10
+        | PROGRESS_BAR_PROCEDURE
+        | STATIC_TEXT_PROCEDURE
+        | TABLE_PROCEDURE
+        | SPLITTER_PROCEDURE => Ok(procedure >> 4),
         _ => Err(NOT_SUPPORTED)
     }
 }
-fn variation(procedure: i16, id: i16) -> i16
+fn variation(procedure: i16) -> i16
 {
-    if id == 0
-    {
-        procedure
-    }
-    else if procedure == MONOCHROME_PROGRESS_BAR_PROCEDURE
-    {
-        1
-    }
-    else
-    {
-        0
-    }
+    procedure & 15
 }
 pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
 {
@@ -299,7 +292,7 @@ pub(crate) fn preflight(call: &ControlCall) -> Result<i16, Status>
     }
     else
     {
-        mac_definition::validation::standard(id, variation(call.procedure, id), &call.standard)
+        mac_definition::validation::standard(id, variation(call.procedure), &call.standard)
             .map_err(|e| e.status())?;
     }
     Ok(id)
@@ -321,7 +314,7 @@ pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapG
                                           header: Header::for_type::<DefinitionCall>(),
                                           kind: CDEF,
                                           id,
-                                          variation: variation(call.procedure, id),
+                                          variation: variation(call.procedure),
                                           message: VALIDATE_DEFINITION,
                                           reserved: 0,
                                           param: 0,
@@ -366,7 +359,7 @@ pub(crate) fn user_validation_request(
     let id = preflight(&validation_state(call))?;
     Ok(Request { kind: CDEF,
                  id,
-                 variation: variation(call.procedure, id),
+                 variation: variation(call.procedure),
                  message: VALIDATE_DEFINITION,
                  reflow: call.reflow,
                  object: if id == 1
@@ -389,7 +382,7 @@ pub(crate) fn user_disposal_request(
     use crate::toolbox::resources::definitions::callbacks::packet::{Arguments, Object, Request};
     Request { kind: CDEF,
               id,
-              variation: variation(call.procedure, id),
+              variation: variation(call.procedure),
               message: mac_abi::definitions::DISPOSE,
               reflow: call.reflow,
               object: if id == 1
@@ -460,7 +453,7 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGa
                                           header: Header::for_type::<DefinitionCall>(),
                                           kind: CDEF,
                                           id,
-                                          variation: variation(call.procedure, id),
+                                          variation: variation(call.procedure),
                                           message: if matches!(call.operation,
                                                                TRACK_SCROLLBAR | TRACK_SPLITTER)
                                           {
@@ -503,7 +496,8 @@ fn drawing_validated(call: &ControlCall, entry: DefinitionRef, gate: TrapGate,
                  else if id == CDEF_PROGRESS_BAR
                  {
                      State::Progress { bounds:   call.standard.bounds,
-                                       progress: call.standard.progress }
+                                       progress: call.standard.progress,
+                                       flags:    call.standard.flags }
                  }
                  else
                  {
