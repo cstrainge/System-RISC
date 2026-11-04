@@ -759,3 +759,60 @@ Still missing for a real platform
    image` with a partitioned record.
 4. VideoCore mailbox framebuffer driver (Layer 3) and boot-check integration
    (Layer 4) are not started.
+
+MMU milestone - 2026-11-04
+--------------------------
+The bootrom now drops from EL3 to EL1 and installs a checked 39-bit
+translation regime. The EL3 drop needs HCR_EL2.RW=1 as well as SCR_EL3.RW=1;
+without it EL1 is AArch32 and the eret is rejected as an illegal execution
+state (ESR 0x0e/0x3a000000, SPSR 0x1003cd, ELR at the EL1 entry). The 39-bit
+4 KiB regime starts its walk at level 1, so TTBR0/TTBR1 name the level-1 tables
+directly and the layout is three-level, not four. The build-system layout's doc
+comment was corrected to match.
+
+Tables: 2 MiB normal write-back blocks for RAM 0x0..0x3f000000, Device-nGnRnE
+blocks with UXN/PXN for the 0x3f000000..0x40000000 aperture (PL011, sdhci,
+mailbox, RNG, PM), and the declared physmap at 0xffffffe000000000 over RAM.
+Every descriptor sets AF. The physmap check reads the boot window through both
+the identity and physmap windows and takes the positive branch; a wrong mapping
+takes the negative branch or reports ESR_EL1/ELR_EL1/FAR_EL1 from the vector
+table.
+
+Verified serial log (QEMU 11.1.0, -machine raspi3b -m 1G -kernel <elf>):
+  BOOT_AARCH64_EL1_READY: running at EL1
+  BOOT_AARCH64_MMU_READY: 39-bit three-level translation active
+  BOOT_AARCH64_PHYSMAP_READY: physmap aliases physical RAM
+  BOOT_AARCH64_READY: qemu_arm64 bootrom reached its idle loop
+
+qemu_riscv boot-check after the change: 17/17 ROM checks, 0 skips, fresh
+raw-hfs-b.serial.log (2026-11-04 14:24:48) with
+BOOT_SYSTEM_READY: services=0xffffffd0008af4a8 and DESKTOP_READY: Finder and
+native Window Manager.
+
+Still blocking BOOT_SYSTEM_READY on qemu_arm64
+----------------------------------------------
+1. The System kernel has no aarch64 path: its trap entry, page-table use,
+   CLINT/timer and device access are RISC-V. The bootrom admits EL1 but does
+   not load or enter a System image.
+2. The bootrom does not read the SD/FAT32 System image through sdhci, and the
+   record still has install.set none with no bootloader section, so no
+   aarch64 System image is produced.
+3. Shared bare-metal gating is still target_arch = "riscv64"; mac-traps has
+   only the ecall invoke, no aarch64 svc path.
+4. The VideoCore mailbox framebuffer, the boot visual/handoff and the
+   driver module crates are not implemented. No frame has been captured, so
+   there is no frame_report.py result for a splash or a desktop.
+
+Contract answer (probe/claim design)
+------------------------------------
+mac_module::ClassId is a [u8; 4] wrapper; there are no named ClassId
+constants for video/storage/console/entropy in mac-module. The classes are
+strings in each driver's module.json and are packed into the DABI/EABI
+contract resource. The declared interface classes in the tree are VIDO
+(virtio-gpu), ENTR (virtio-rng), POWR (qemu-power-device), FSYS
+(stuffit/vhost filesystem), HDIR (vhost-transport), VBYT (vdagent-channel);
+services are VDEV and FORK. The contract's Offer (interface) is the device
+class the driver supports, so it is provider semantics; Service is what the
+driver publishes; a consumer declares a Dependency. The provider/consumer
+distinction is therefore sound. Probe-and-claim, exclusive claims and the
+probe-refused markers are not implemented yet.
