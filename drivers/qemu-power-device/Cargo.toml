@@ -6,7 +6,7 @@ publish.workspace = true
 [features]
 guest = []
 [[bin]]
-name = "QemuPowerDevice"
+name = "PlatformPowerController"
 path = "src/main.rs"
 required-features = ["guest"]
 test = false

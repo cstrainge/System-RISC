@@ -275,7 +275,7 @@ impl Refusal
             }
             Self::Initialization(NOT_SUPPORTED | NOT_FOUND) | Self::Device =>
             {
-                "enable compatible required QEMU facilities or install the declared service, then \
+                "enable the required platform facilities or install the declared service, then \
                  restart; otherwise disable the extension"
             }
             Self::Initialization(SERVICE_BUSY) =>

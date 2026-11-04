@@ -94,8 +94,8 @@ impl fmt::Display for Error
             }
             Self::Signature =>
             {
-                f.write_str("RAMFB fw_cfg signature is not QEMU; select the correct platform \
-                             register window")
+                f.write_str("RAMFB fw_cfg signature does not match the expected device; select \
+                             the correct platform register window")
             }
             Self::DmaSignature =>
             {

@@ -151,7 +151,7 @@ fn missing_artwork_uses_theme_refusal_draws_x_and_failed_presentation_retries_ex
     {
         panic!("refusal was invented as loaded")
     };
-    assert!(cause.cause().contains("channel") && cause.action().contains("QEMU"));
+    assert!(cause.cause().contains("channel") && cause.action().contains("platform facilities"));
     let mut wrong = [0x123456; 10];
     assert_eq!(strip.paint_pending(&mut wrong), Err(Error::Frame));
     assert_eq!(wrong, [0x123456; 10]);
