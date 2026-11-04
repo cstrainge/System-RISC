@@ -40,6 +40,12 @@ el1_entry:
     ldr x0, =vectors
     msr vbar_el1, x0
     isb
+    // The platform's instruction profile includes NEON, and the compiler uses
+    // it for ordinary slice copies. FPEN is 0 at reset, so without this the
+    // first vector instruction raises a trap.
+    mov x0, #(3 << 20)
+    msr cpacr_el1, x0
+    isb
     bl uart_init
     mrs x0, currentel
     cmp x0, #0x4
@@ -58,6 +64,7 @@ physmap_bad:
     adr x0, physmap_bad_marker
     bl uart_puts
 physmap_done:
+    bl sdhci_probe
     adr x0, ready_marker
     bl uart_puts
 2:  wfe
