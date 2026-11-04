@@ -326,3 +326,35 @@ Not verified, and not claimed:
   - The full Save/Save As exhaustion work and production Finder OOM restart,
     which are OS qualification, not build work.
   - A second emulator family renderer; B18 records the decision as revisitable.
+
+10. Commits, and the one suite that is still red
+----------------------------------------------
+The work is committed on the branch `cstrainge-platform-driven-build`, which
+is separate from `main`, in two commits and not pushed:
+
+  21d0ea02 Host tool: restore the no-replace rename without std's removed API
+  0d19602a Build: make the platform record the build manifest
+
+`git status --porcelain` is empty and `cargo check -p mac-build -p xtask -p
+risc-host` is green from that commit.
+
+The capture/check Python suite under `scripts/tests` is not green: 92 ran,
+13 failed and 4 errored. Two causes, both consequences of the schema change
+rather than of the scripts' logic:
+
+  - `system7_platform.py` read top-level `rust_target`, `qemu_cpu`,
+    `qemu_ram`, `qemu_harts`. It now resolves `include` with the same merge
+    rules as the build tool and reads `emulation.cpu`, `emulation.ram` and
+    `emulation.harts`, which is what makes every capture and check script
+    import again.
+  - The remaining failures assert the pre-rewrite contract, for example
+    `test_default_cargo_profile_matches_shared_selection`, which expects
+    `.cargo/config.toml` to carry only `target-feature=+<profile>` while the
+    configuration now also sets `relocation-model=pic` for the guest target.
+    Others exercise `system7_vm.py`'s QEMU command construction against the
+    old `qemu_*` keys.
+
+The spec places the capture, check and test scripts out of scope, so they are
+reported rather than rewritten. Until they are updated, `cargo xtask check`
+cannot pass on this host for two independent reasons: that suite, and the
+absence of QEMU. `cargo xtask doc` is fixed and verified.
