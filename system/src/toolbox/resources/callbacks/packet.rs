@@ -213,6 +213,35 @@ impl PreparedSurface
                     .checked_mul(canvas.height)
                     .is_none_or(|count| count > canvas.pixels.len())
         {
+            // The plan and the capture disagree about the parent surface, so
+            // the retained crop cannot be trusted. Name the field that moved:
+            // without it the same refusal is indistinguishable from a held
+            // geometry claim or an unfinished author. First refusal only, so a
+            // repeated attempt cannot flood the log.
+            static REPORTED: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+            {
+                serial!("SURFACE_CAPTURE_REFUSED size={}x{} of {}x{} origin={},{} of {},{} \
+                         clip={},{},{},{} of {},{},{},{} pixels={}",
+                        canvas.width,
+                        canvas.height,
+                        p.parent_width,
+                        p.parent_height,
+                        canvas.origin().h,
+                        canvas.origin().v,
+                        p.parent_origin.h,
+                        p.parent_origin.v,
+                        canvas.clip().left,
+                        canvas.clip().top,
+                        canvas.clip().right,
+                        canvas.clip().bottom,
+                        p.parent_clip.left,
+                        p.parent_clip.top,
+                        p.parent_clip.right,
+                        p.parent_clip.bottom,
+                        canvas.pixels.len());
+            }
             return Err((SERVICE_BUSY, self));
         }
         let r = p.destination;
