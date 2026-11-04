@@ -1,5 +1,6 @@
-//! Canonical, privately owned supervisor process roots. This is not U-mode
-//! isolation: payload pointers and the service ABI retain their trusted contract.
+//! Canonical privately owned Process roots. Application leaves are User;
+//! System/module aliases remain Supervisor. Physical/table receipts and actual
+//! translation completion remain authoritative through retirement.
 use alloc::{sync::Arc, vec::Vec};
 use core::{fmt,
            sync::atomic::{AtomicBool, Ordering}};
@@ -17,7 +18,6 @@ pub(crate) mod lifetime;
 type Store = mac_object_table::store::Store<Arc<Root>, InvocationGate>;
 static MANAGER: spin::Once<Spinlock<Store>> = spin::Once::new();
 static ROOTS: Spinlock<Option<Arc<Root>>> = Spinlock::new(None);
-static WAITING_PINS: AtomicBool = AtomicBool::new(false);
 static WAITING_MONITOR: AtomicBool = AtomicBool::new(false);
 static RETIREMENT_PENDING: AtomicBool = AtomicBool::new(false);
 pub(super) fn monitor_released()
@@ -263,13 +263,18 @@ pub(crate) struct Root
     pub(super) owner:      OwnerRef,
     pub(super) allocation: AllocationAuthority,
     image:                 crate::images::Binding,
+    pub(super) user:       Spinlock<super::user::Registry>,
+    user_ready:            AtomicBool,
     next:                  Spinlock<Option<Arc<Root>>>,
     closing:               AtomicBool,
     registered:            AtomicBool,
     retired:               AtomicBool,
     retirement_requested:  AtomicBool,
     retirement_claimed:    AtomicBool,
-    retirement_failure:    Spinlock<Option<CleanupCause>>
+    retirement_failure:    Spinlock<Option<CleanupCause>>,
+    // Separate notification storage carries no Root/Space/source backreference.
+    // A Pin's last field can consult it only AFTER both real owners drop.
+    pin_waiters:           Arc<AtomicBool>
 }
 impl Root
 {
@@ -278,9 +283,21 @@ impl Root
         self.owner.owner()
     }
 
+    pub(super) fn image_id(&self) -> u64
+    {
+        self.image.id()
+    }
+
     pub(crate) fn register(&self) -> usize
     {
         self.register
+    }
+
+    pub(crate) fn admitting(&self) -> bool
+    {
+        self.owner.accepting()
+        && !self.closing.load(Ordering::Acquire)
+        && !self.retirement_claimed.load(Ordering::Acquire)
     }
 
     pub(crate) fn matches(&self, owner: &OwnerRef, image: crate::images::Binding) -> bool
@@ -298,12 +315,15 @@ pub(crate) struct Pin
     root:      Arc<Root>,
     _released: PinReleased
 }
-struct PinReleased;
+struct PinReleased(Arc<AtomicBool>);
 impl Drop for PinReleased
 {
     fn drop(&mut self)
     {
-        if WAITING_PINS.swap(false, Ordering::AcqRel)
+        // Paired with the original Root's AcqRel arm. Do not test before the
+        // actual Space/Root fields drop, or upgrade a Weak<Root> observer here:
+        // either would let a waiter see a count still held by its own signal.
+        if self.0.swap(false, Ordering::AcqRel)
         {
             retirement_changed();
             crate::toolbox::processes::retirement::resources_released();
@@ -314,6 +334,7 @@ impl Pin
 {
     fn try_new(root: Arc<Root>, retirement_snapshot: bool) -> Result<Self, Error>
     {
+        let released = PinReleased(root.pin_waiters.clone());
         let space = interrupts::with_masked(|| {
             let backing = root.backing.lock();
             if root.retirement_claimed.load(Ordering::Acquire)
@@ -332,14 +353,14 @@ impl Pin
             {
                 Ok(Self { space,
                           root,
-                          _released: PinReleased })
+                          _released: released })
             }
             Err(cause) =>
             {
                 // This actual temporary Arc may have blocked a concurrent
                 // claim. Notify only after it is really released.
                 drop(root);
-                drop(PinReleased);
+                drop(released);
                 Err(cause)
             }
         }
@@ -356,7 +377,7 @@ impl Clone for Pin
     {
         Self { space:     self.space.clone(),
                root:      self.root.clone(),
-               _released: PinReleased }
+               _released: PinReleased(self._released.0.clone()) }
     }
 }
 impl core::ops::Deref for Pin
@@ -605,7 +626,7 @@ fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
         }
         return if root.registered.load(Ordering::Acquire) && !root.closing.load(Ordering::Acquire)
         {
-            Ok(root)
+            install_user_image(root)
         }
         else
         {
@@ -617,28 +638,36 @@ fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
                                                        mac_kernel_model::policy::MemoryClass::Kernel };
     source.with_metadata(|| {
               crate::allocator::with_target(target, || {
+                  let user = super::user::Registry::image(image.user_read()
+                      .map_err(|status|Error::DefinitionVisibility{status})?,image.range())
+                      .map_err(|status|Error::DefinitionVisibility{status})?;
+                  // Preadmit the original root's post-release signal before any
+                  // publication/translation effects, under this same account.
+                  let pin_waiters =
+                      Arc::try_new(AtomicBool::new(false)).map_err(|_| Error::Metadata)?;
                   let permit = permit(owner)?;
                   let lease = crate::machine::monitor::prepare_translation_invalidation()
                 .map_err(Error::Monitor)?;
-                  let space = clone_space(owner, allocation, image.range(), source.clone(), &lease)?;
+                  let space = clone_space(owner, allocation, source.clone(), &lease)?;
                   let register = space.register;
                   // Move the sole backing Arc into canonical Root. No unobserved local
                   // Space clone survives publication or a failed execution-pin admission.
                   let space = Arc::try_new(space).map_err(|_| Error::Metadata)?;
-                  let root = Arc::try_new(Root {
-                backing: Spinlock::new(Some(space)),
-                register,
-                owner: owner.clone(),
-                allocation: allocation.clone(),
-                image: image.binding(),
-                next: Spinlock::new(None),
-                closing: AtomicBool::new(false),
-                registered: AtomicBool::new(false),
-                retired: AtomicBool::new(false),
-                retirement_requested: AtomicBool::new(false),
-                retirement_claimed: AtomicBool::new(false),
-                retirement_failure: Spinlock::new(None)
-            }).map_err(|_| Error::Metadata)?;
+                  let root = Arc::try_new(Root { backing: Spinlock::new(Some(space)),
+                                                 register,
+                                                 owner: owner.clone(),
+                                                 allocation: allocation.clone(),
+                                                 image: image.binding(),
+                                                 user: Spinlock::new(user),
+                                                 user_ready: AtomicBool::new(false),
+                                                 next: Spinlock::new(None),
+                                                 closing: AtomicBool::new(false),
+                                                 registered: AtomicBool::new(false),
+                                                 retired: AtomicBool::new(false),
+                                                 retirement_requested: AtomicBool::new(false),
+                                                 retirement_claimed: AtomicBool::new(false),
+                                                 retirement_failure: Spinlock::new(None),
+                                                 pin_waiters }).map_err(|_| Error::Metadata)?;
                   match interrupts::with_masked(|| {
                             manager.lock().publish_prepared(permit, root.clone())
                         })
@@ -649,7 +678,7 @@ fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
                           let _ = publication.into_parts();
                           link(&root);
                           drop(lease);
-                          Pin::try_new(root, false)
+                          install_user_image(Pin::try_new(root, false)?)
                       }
                       Err(failure) =>
                       {
@@ -662,8 +691,34 @@ fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
           })
 }
 
-fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::ops::Range<u64>,
-               source: BackingSource, lease: &crate::machine::monitor::TranslationLease)
+fn install_user_image(root: Pin) -> Result<Pin, Error>
+{
+    if root.user_ready.load(Ordering::Acquire)
+    {
+        return Ok(root);
+    }
+    let region = interrupts::with_masked(|| root.user.lock().image_region());
+    if !super::user::image_acknowledged(&region)
+    {
+        let lease =
+            crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
+        // Canonical Root and its actual image reader already own every effect.
+        super::user::publish_image(&region,&root,&lease).map_err(|error|Error::DefinitionVisibility{status:error.status()})?;
+        if let Err(cause) = lease.finish()
+        {
+            super::user::quarantine_image(&region, &cause);
+            return Err(quarantine(&root, cause));
+        }
+        super::user::acknowledge_image(&region);
+    }
+    crate::machine::monitor::publish_instructions().map_err(Error::Monitor)?;
+    super::user::confirm_image(&region);
+    root.user_ready.store(true, Ordering::Release);
+    Ok(root)
+}
+
+fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, source: BackingSource,
+               lease: &crate::machine::monitor::TranslationLease)
                -> Result<Space, Error>
 {
     let spaces = SPACES.get().ok_or(Error::Missing)?;
@@ -689,7 +744,7 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
     // new root is actually published/linked. No stale clone can escape this gate.
     modules::admit_process_workspace(lease, registered, private_pages, eligible)
         .map_err(Error::Workspace)?;
-    let physical = copy_table(&mut tables, source, 2, 0, &image, owner.owner(), &definitions)?;
+    let physical = copy_table(&mut tables, source, 2, 0, owner.owner(), &definitions)?;
     if tables.count > footprint.tables
     {
         // Frames still owns every table and original charge. Refusal drops the
@@ -707,13 +762,12 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
                leaves: 0,
                _root_charge: charge })
 }
-fn keep_low(base: u64, end: u64, image: &core::ops::Range<u64>, overlap: bool) -> bool
+fn keep_low(base: u64, end: u64, overlap: bool) -> bool
 {
     let keep = |start: u64, limit: u64| {
         if overlap { base < limit && start < end } else { base >= start && end <= limit }
     };
-    keep(image.start, image.end)
-    || keep(DEFINITION_BASE, DEFINITION_LIMIT)
+    keep(DEFINITION_BASE, DEFINITION_LIMIT)
     || BOOT_MMIO_REGIONS.iter().any(|&(start, limit)| keep(start, limit))
     || crate::machine::power::platform::PLATFORM_MMIO_DEVICES.iter()
                                                              .any(|&(_, _, start, bytes, _, _)| {
@@ -728,8 +782,7 @@ fn keep_low(base: u64, end: u64, image: &core::ops::Range<u64>, overlap: bool) -
 }
 
 fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u64,
-              image: &core::ops::Range<u64>, owner: DomainId,
-              definitions: &[crate::toolbox::resources::definitions::Range])
+              owner: DomainId, definitions: &[crate::toolbox::resources::definitions::Range])
               -> Result<PhysicalAddress, Error>
 {
     let target=tables.allocate_zeroed().map_err(|e|Error::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(e))))?;
@@ -758,12 +811,11 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
                                                                       .bytes());
                 if address >= VM_APPLICATION_START
                    && end <= VM_APPLICATION_END
-                   && !keep_low(address, end, image, true)
+                   && !keep_low(address, end, true)
                 {
                     continue;
                 }
-                let child =
-                    copy_table(tables, physical, level - 1, address, image, owner, definitions)?;
+                let child = copy_table(tables, physical, level - 1, address, owner, definitions)?;
                 Entry::table(child,global,mac_kernel_model::pages::PageOwnership::Automatic).map_err(Error::Encoding)?
             }
             Decoded::Leaf { physical,
@@ -773,7 +825,7 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
             {
                 let end = address.checked_add(size.bytes()).unwrap_or(u64::MAX);
                 let low = address < VM_APPLICATION_END && end > VM_APPLICATION_START;
-                if low && !keep_low(address, end, image, false)
+                if low && !keep_low(address, end, false)
                 {
                     continue;
                 }
@@ -831,7 +883,7 @@ impl Retirement
         {
             return Err(Error::Retirement(cause));
         }
-        WAITING_PINS.store(true, Ordering::Release);
+        root.pin_waiters.swap(true, Ordering::AcqRel);
         if interrupts::with_masked(|| crate::machine::scheduler::has_threads(self.owner))
         {
             return Err(Error::Threads);
@@ -961,7 +1013,7 @@ pub(crate) fn retirement() -> Option<Retirement>
                      // Readiness is observed before taking any command lease. Arm
                      // genuine pin releases before checking; skip each blocked row so
                      // one old owner cannot starve another ready canonical root.
-                     WAITING_PINS.store(true, Ordering::Release);
+                     root.pin_waiters.swap(true, Ordering::AcqRel);
                      if crate::machine::scheduler::has_threads(root.owner.owner().incarnation())
                      {
                          return false;
@@ -996,4 +1048,30 @@ fn retain_failure(root: &Root, cause: CleanupCause) -> Error
         *held.get_or_insert(cause)
     });
     Error::Retirement(retained)
+}
+
+/// Resolve only a real canonical Process root matching this original image
+/// source. Neither an owner number nor ambient execution can substitute.
+pub(crate) fn pin_definition(source: &crate::images::Read) -> Result<Pin, Error>
+{
+    let owner = source.owner();
+    if owner.owner().kind() != DomainKind::Process || !owner.accepting()
+    {
+        return Err(Error::Authority);
+    }
+    let root = interrupts::with_masked(|| {
+        MANAGER.get()
+               .ok_or(Error::Missing)?
+               .lock()
+               .retained_values()
+               .find(|root| root.matches(owner, source.binding()))
+               .cloned()
+               .ok_or(Error::Missing)
+    })?;
+    let pin = Pin::try_new(root, false)?;
+    if !pin.user_ready.load(Ordering::Acquire)
+    {
+        return Err(Error::Busy);
+    }
+    Ok(pin)
 }

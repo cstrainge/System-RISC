@@ -12,8 +12,10 @@ impl super::Toolbox
                     | mac_abi::events::OS_PEEK
                     | mac_abi::events::OS_GET)
         {
-            self.presentation.cursor_dirty |= self.pointer.responsiveness.foreground(self.foreground, Self::when());
-            self.presentation.cursor_dirty |= self.pointer.responsiveness.polled(self.owner, Self::when());
+            self.presentation.cursor_dirty |=
+                self.pointer.responsiveness.foreground(self.foreground, Self::when());
+            self.presentation.cursor_dirty |=
+                self.pointer.responsiveness.polled(self.owner, Self::when());
             self.automatic_control_layout();
         }
         self.poll_inputs();

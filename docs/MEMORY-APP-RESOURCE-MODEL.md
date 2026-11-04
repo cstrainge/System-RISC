@@ -10,9 +10,12 @@ page-backed application heaps and shared application startup/allocation are
 implemented; bounded native observations are recorded below. Applications,
 modules and definitions now own page-backed segment charges, atomic PTE
 transactions, actual translation receipts and original-ticket retirement.
-Processes have independent supervisor page tables; their bodies still run as
-trusted supervisor code. Temporary application placement policy remains, while
-shared immutable execution frames and user-mode privilege isolation remain open.
+Native processes have independent Sv39 page tables and enter user mode with
+private writable image, heap and stack mappings. Application-provided definitions
+use the owning process's user callback thread. Executable project manifests no
+longer choose application placement; the checked platform supplies the common
+link origin and NABI records the actual image extent. Shared immutable application
+execution frames and broad isolation qualification remain open.
 Module allocation forwarding, genuine invocation/resource scopes and module-owned
 workers are implemented; bounded native observations are recorded below. The
 Host Clipboard and SMP development prerequisites are published; complete
@@ -20,6 +23,15 @@ recovery-service qualification and broader SMP stress/timing remain open.
 Kernel self-virtualization uses owned Sv39 roots and a guarded
 System stack. Graphical boot now pins an independent terminal panic/OOM kit;
 complete Save/Alert/Finder recovery kits and module/privilege gates remain open.
+
+Qualification notice: the implementation description above and historical notes
+below cover different source snapshots. Host Rust pass counts do not establish
+shipping OS correctness. Current native isolation admits one active hart while
+exposing four physical CPUs; multi-hart isolation, translation and reclamation
+need separate target qualification. Finite guest observations qualify only their
+recorded artifacts, configuration and exercised paths. See
+[Process isolation](PROCESS-ISOLATION.md) for the current boundary and remaining
+qualification requirements.
 This document describes the implemented foundations,
 architectural decisions and remaining migration gates.
 
@@ -3444,14 +3456,20 @@ Private process roots/privilege separation, executable-image physical charging,
 full protected recovery services and application std remain open. TE2/common-
 control migration is still deferred.
 
-Once applications are completely isolated in private address spaces, remove
-their manifest `load_base` and `load_limit` fields. The build and loader must
-derive application placement from the checked platform policy and actual image
-segments, updating all application producers and consumers together. Shared
-supervisor application mappings still require explicit placement today. System,
-drivers, extensions and every native definition family instead derive link
-geometry from the checked platform; their manifests and embedded native-code
-payloads do not supply addresses. Runtime placement remains System's decision.
+Application `resources.json` projects no longer contain `load_base` or
+`load_limit`. Their common link origin comes from the checked platform virtual
+Process layout (4 MiB on QemuRISC-V), and packaging derives the exclusive NABI
+limit from actual page-rounded ELF segment memory lengths, including BSS.
+Application instances occupy private Process roots, so a preferred virtual
+address is neither a physical reservation nor a cross-Process exclusion.
+Firmware/System admission checks the platform application link origin and range;
+actual mapped destinations and original physical/account receipts stay separate.
+System, drivers, extensions and every native definition family likewise derive
+link geometry from the checked platform; embedded native-code payloads do not
+supply addresses. Stale project keys are rejected; rebuild all packages and media
+together at native ABI 1. ResEdit's lossless archive mode preserves raw
+NABI/RV64/RLOC/URTM resources instead of synthesizing layout from a manifest.
+This source contract does not extend recorded native runtime qualification.
 Position-independent executable text and checked prepublication pointer-data
 relocation are required for independently loadable code, including WDEF, CDEF,
 MDEF, LDEF and future registered families.

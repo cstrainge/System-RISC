@@ -18,6 +18,7 @@ pub(crate) enum CleanupCause
     },
     Mutation,
     Fault(heap::Error),
+    UserMapping(crate::machine::paging::modules::CleanupCause),
     Remaining
     {
         allocations: usize,
@@ -50,6 +51,7 @@ impl core::fmt::Display for CleanupCause
                 out.write_str("Application allocation still has an exclusive mutation or \
                                unpublished payload")
             }
+            Self::UserMapping(cause) => cause.fmt(out),
             Self::Fault(cause) =>
             {
                 write!(out, "Application heap cleanup retains original backing after {cause}")

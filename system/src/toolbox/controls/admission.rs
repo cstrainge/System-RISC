@@ -125,20 +125,23 @@ impl Intent
 
 pub(crate) struct ControlPlan
 {
-    publication: PublicationPlan<Object, InvocationGate, automatic::Work>,
-    recipient:   OwnerRef,
-    storage:     OwnerRef,
-    intent:      Intent,
-    validated:   Spec,
-    scrollbar:   bool,
-    entry:       DefinitionRef,
-    gate:        TrapGate,
-    allocation:  AllocationAuthority
+    publication:    PublicationPlan<Object, InvocationGate, automatic::Work>,
+    cleanup_notice: Arc<crate::toolbox::resources::definitions::callbacks::Notice>,
+    cleanup:        Option<super::disposal::ControlCleanup>,
+    recipient:      OwnerRef,
+    storage:        OwnerRef,
+    intent:         Intent,
+    validated:      Spec,
+    scrollbar:      bool,
+    entry:          DefinitionRef,
+    gate:           TrapGate,
+    allocation:     AllocationAuthority
 }
 #[must_use = "retain or dispose control preparation outside Desktop"]
 pub(crate) struct ControlPreparation
 {
     object:     Object,
+    cleanup:    Option<Arc<super::disposal::DisposalSlot>>,
     capacity:   ControlCapacity,
     recipient:  OwnerRef,
     storage:    OwnerRef,
@@ -150,6 +153,7 @@ pub(crate) struct ControlPreparation
 pub(crate) struct PreparedControl
 {
     object:     Object,
+    cleanup:    Option<Arc<super::disposal::DisposalSlot>>,
     admission:  RetiredCapacity<Object, InvocationGate, automatic::Work>,
     permit:     PublicationPermit<InvocationGate>,
     recipient:  OwnerRef,
@@ -188,6 +192,17 @@ pub(crate) struct ControlCommit
 
 impl ControlPlan
 {
+    pub(crate) fn attach_cleanup(&mut self, cleanup: super::disposal::ControlCleanup)
+                                 -> Result<(), (Status, super::disposal::ControlCleanup)>
+    {
+        if self.cleanup.is_some() || !cleanup.matches(&self.storage, self.entry)
+        {
+            return Err((ACCESS_DENIED, cleanup));
+        }
+        self.cleanup = Some(cleanup);
+        Ok(())
+    }
+
     pub(crate) fn prepare(self) -> Result<ControlPreparation, CreationError>
     {
         validate_authority(&self.recipient, &self.storage, &self.allocation)?;
@@ -210,10 +225,10 @@ impl ControlPlan
             let capacity = ControlCapacity {
                 publication: self.publication.prepare().map_err(CreationError::Facility)?
             };
-            let object = Object::new(self.intent.window, self.recipient.owner().incarnation(),
-                                     self.validated, title, definition, self.intent.reflow, 0, false)
+            let (object,cleanup) = Object::new(self.intent.window, self.recipient.owner().incarnation(),
+                                     self.validated, title, definition, self.intent.reflow, 0, false, self.cleanup_notice.clone(),&self.storage,self.cleanup)
                 .map_err(CreationError::Validation)?;
-            Ok(ControlPreparation { object, recipient: self.recipient, storage: self.storage,
+            Ok(ControlPreparation { object, cleanup, recipient: self.recipient, storage: self.storage,
                                     allocation: self.allocation.clone(), intent: self.intent,
                                     gate: self.gate, capacity })
         })
@@ -366,9 +381,45 @@ impl Manager
         let (validated, scrollbar) =
             self.validate_spec(recipient.owner().incarnation(), call, entry, gate)
                 .map_err(CreationError::Validation)?;
+        self.plan_validated_process(recipient, storage, allocation, intent, validated, scrollbar,
+                                    entry, gate)
+    }
+
+    pub(crate) fn plan_process_user_create(&self, recipient: &OwnerRef, storage: &OwnerRef,
+                                           allocation: &AllocationAuthority, call: &ControlCall,
+                                           validated: &ControlCall, entry: DefinitionRef,
+                                           gate: TrapGate)
+                                           -> Result<ControlPlan, CreationError>
+    {
+        let intent = Intent::new(call);
+        self.validate_process_intent(recipient, storage, allocation, &intent)?;
+        if !call.surface.is_null() || call.reserved != 0
+           || !crate::toolbox::resources::definitions::is_user(entry).map_err(CreationError::Binding)?
+        { return Err(CreationError::InvalidRequest); }
+        // The admitted intent remains CREATE; the returned state is DRAW-shaped.
+        // Select the original family without reinterpreting that constructor.
+        let id = super::super::creation_definition_id(call).map_err(CreationError::Validation)?;
+        if super::super::preflight(validated).map_err(CreationError::Validation)? != id
+        {
+            return Err(CreationError::InvalidRequest);
+        }
+        let scrollbar = call.operation == CREATE_SCROLLBAR;
+        let validated = Spec::from_call(validated, scrollbar);
+        self.plan_validated_process(recipient, storage, allocation, intent, validated, scrollbar,
+                                    entry, gate)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_validated_process(&self, recipient: &OwnerRef, storage: &OwnerRef,
+                              allocation: &AllocationAuthority, intent: Intent, validated: Spec,
+                              scrollbar: bool, entry: DefinitionRef, gate: TrapGate)
+                              -> Result<ControlPlan, CreationError>
+    {
         let publication =
             self.objects.plan_publication(storage).map_err(CreationError::Facility)?;
-        Ok(ControlPlan { recipient: recipient.clone(),
+        Ok(ControlPlan { cleanup_notice: self.disposal_notice.clone(),
+                         cleanup: None,
+                         recipient: recipient.clone(),
                          storage: storage.clone(),
                          allocation: allocation.clone(),
                          intent,
@@ -388,6 +439,7 @@ impl Manager
         self.validate_process_intent(&value.recipient, &value.storage, &value.allocation,
                                      &value.intent)?;
         let Some(ControlPreparation { object,
+                                      cleanup,
                                       recipient,
                                       storage,
                                       allocation,
@@ -403,6 +455,7 @@ impl Manager
             Ok((permit, admission)) =>
             {
                 Ok(PreparedControl { object,
+                                     cleanup,
                                      recipient,
                                      storage,
                                      allocation,
@@ -414,6 +467,7 @@ impl Manager
             Err(failure) =>
             {
                 *input = Some(ControlPreparation { object,
+                                                   cleanup,
                                                    recipient,
                                                    storage,
                                                    allocation,
@@ -449,6 +503,7 @@ impl Manager
         let next_order =
             self.next_order.checked_add(1).ok_or(CreationError::Validation(NO_MEMORY))?;
         let Some(PreparedControl { mut object,
+                                   cleanup,
                                    recipient,
                                    storage,
                                    allocation,
@@ -468,6 +523,7 @@ impl Manager
         {
             Ok((publication, retired)) =>
             {
+                self.publish_disposal_slot(cleanup, publication.into_parts().1, call.window);
                 call.id = publication.id();
                 self.next_order = next_order;
                 self.schedule_layout(call.id);
@@ -487,6 +543,7 @@ impl Manager
             Err(failure) =>
             {
                 *input = Some(PreparedControl { object: failure.value,
+                                                cleanup,
                                                 recipient,
                                                 storage,
                                                 allocation,

@@ -47,10 +47,6 @@ pub struct Manifest
     pub creator:           String,
     pub role:              String,
     pub abi_version:       u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub load_base:         Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub load_limit:        Option<String>,
     #[serde(skip)]
     pub cargo_version:     String,
     pub description:       String,
@@ -159,15 +155,6 @@ pub fn fourcc(text: &str) -> Result<[u8; 4]>
                                       error("a resource type or creator must contain exactly four \
                                              Mac Roman bytes")
                                   })
-}
-
-fn address(value: &str) -> Result<u64>
-{
-    Ok(u64::from_str_radix(value.strip_prefix("0x")
-                                .ok_or_else(|| {
-                                    error("application link addresses must start with 0x")
-                                })?,
-                           16)?)
 }
 
 /// Cargo resolves both explicit versions and `version.workspace = true`.
@@ -349,7 +336,12 @@ impl Manifest
 {
     pub fn read(path: &Path) -> Result<Self>
     {
-        let mut manifest: Self = serde_json::from_slice(&fs::read(path)?)?;
+        let mut manifest: Self = serde_json::from_slice(&fs::read(path)?).map_err(|cause| {
+                                     error(format!("invalid resource project {}: {cause}; update \
+                                                    resources.json for the current SDK and \
+                                                    rebuild",
+                                                   path.display()))
+                                 })?;
         if !manifest.archive
         {
             manifest.cargo_version = package_version(path)?;
@@ -406,7 +398,11 @@ impl Manifest
             return Err(error("lossless archives require raw hex payloads"));
         }
         self.service_requirements()?;
-        let mut keys = BTreeSet::from([(*b"RV64", 0), (*b"NABI", 0), (*b"RLOC", 0), (*b"vers", 1)]);
+        let mut keys = BTreeSet::from([(*b"RV64", 0),
+                                       (*b"NABI", 0),
+                                       (*b"RLOC", 0),
+                                       (*b"URTM", 0),
+                                       (*b"vers", 1)]);
         if let Some(kind) = crate::module::kind(self)
         {
             keys.insert((kind.code_type(), self.module_code_id()));
@@ -541,32 +537,7 @@ impl Manifest
             "code_resource" => Role::CodeResource,
             _ => return Err(error("role must be system, application or code_resource"))
         };
-        let range = match role
-        {
-            Role::Application =>
-            {
-                let base = self.load_base.as_deref().ok_or_else(|| {
-                                                         error("application placement requires \
-                                                                load_base until private process \
-                                                                mappings are active")
-                                                     })?;
-                let limit = self.load_limit.as_deref().ok_or_else(|| {
-                                                           error("application placement requires \
-                                                                  load_limit until private \
-                                                                  process mappings are active")
-                                                       })?;
-                address(base)?..address(limit)?
-            }
-            Role::System | Role::CodeResource =>
-            {
-                if self.load_base.is_some() || self.load_limit.is_some()
-                {
-                    return Err(error("System/modules/definitions derive link geometry from the \
-                                      checked platform; remove load_base/load_limit and rebuild"));
-                }
-                crate::platform::current().link_range(role)?
-            }
-        };
+        let range = crate::platform::current().link_range(role)?;
         let d = Descriptor { role,
                              abi_version: self.abi_version,
                              load_base: range.start,
@@ -574,7 +545,7 @@ impl Manifest
                              entry: range.start };
         if d.load_base & 4095 != 0 || d.load_limit & 4095 != 0
         {
-            return Err(error("load reservations must be page aligned"));
+            return Err(error("native link geometry must be page aligned"));
         }
         d.encode()?;
         Ok(d)
@@ -654,11 +625,72 @@ impl Manifest
             let mut descriptor = self.descriptor()?;
             let image = mac_formats::elf::decode(elf, descriptor.load_base, descriptor.load_limit)?;
             descriptor.entry = image.entry;
-            if descriptor.role == Role::CodeResource
+            if matches!(descriptor.role, Role::Application | Role::CodeResource)
             {
                 descriptor.load_limit = descriptor.load_base.checked_add(mac_formats::elf::relocation::span(&image, descriptor.load_base)?).ok_or_else(|| error("native code extent overflows"))?;
             }
             let code = compact_code(elf, &image, &descriptor)?;
+            let runtime_section=mac_formats::elf::relocation::named_section_view(
+                elf,mac_formats::native::runtime::LINKED_SECTION)?;
+            if descriptor.role == Role::Application
+            {
+                let section = runtime_section.ok_or_else(|| {
+                                                 error("application has no user runtime entries; \
+                                                        rebuild with the current System RISC SDK")
+                                             })?;
+                let bytes = mac_formats::native::runtime::LINKED_BYTES as u64;
+                // PIC pointer sections may carry SHF_WRITE for relocation. Only
+                // actual PT_LOAD flags below govern final native permissions;
+                // writable/executable load spans are never accepted here.
+                if section.data.len() != mac_formats::native::runtime::LINKED_BYTES
+                   || section.flags & 2 == 0
+                   || section.flags & 4 != 0
+                   || section.alignment < 8
+                   || !section.alignment.is_power_of_two()
+                   || !section.address.is_multiple_of(8)
+                   || !section.file_offset.is_multiple_of(8)
+                   || !image.segments.iter().any(|segment| {
+                                                segment.flags == mac_formats::native::image::READ
+                                                && section.address
+                                                          .checked_sub(segment.address)
+                                                          .is_some_and(|offset| {
+                                                              offset.checked_add(bytes)
+                                                                    .is_some_and(|end| {
+                                                                        end <= segment.file_size
+                                                                    })
+                                                              && segment.offset.checked_add(offset)
+                                                                 == Some(section.file_offset)
+                                                          })
+                                            })
+                {
+                    return Err(error("user runtime table must be two aligned native addresses \
+                                      in allocated initialized payload mapped read-only and \
+                                      nonexecutable by its actual PT_LOAD"));
+                }
+                let runtime =
+                    mac_formats::native::runtime::Descriptor::from_linked(section.data,
+                                                                          descriptor.load_base)?;
+                runtime.resolve(descriptor.load_base, descriptor.load_limit, |entry| {
+                           image.segments.iter().any(|segment| {
+                                                    segment.flags
+                                                    & mac_formats::native::image::EXECUTE
+                                                    != 0
+                                                    && entry.checked_sub(segment.address)
+                                                            .is_some_and(|offset| {
+                                                                offset < segment.file_size
+                                                            })
+                                                })
+                       })?;
+                resources.push(Resource { kind:       mac_formats::native::runtime::RESOURCE_KIND,
+                                          id:         mac_formats::native::runtime::RESOURCE_ID,
+                                          name:       Some(b"User runtime entries".to_vec()),
+                                          attributes: 0,
+                                          data:       runtime.encode()?.to_vec() });
+            }
+            else if runtime_section.is_some()
+            {
+                return Err(error("user runtime entry tables are application-only"));
+            }
             resources.extend([Resource { kind:       *b"RV64",
                                          id:         0,
                                          name:       Some(b"Native executable".to_vec()),

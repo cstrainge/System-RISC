@@ -367,7 +367,7 @@ impl super::Toolbox
                                                    window: window.0,
                                                    standard,
                                                    ..Default::default() };
-            self.managed_control(&mut call)?;
+            self.managed_control(&mut call, &mut None)?;
             widgets.buttons[index] = call.id;
         }
         if sheet == Sheet::Main
@@ -443,15 +443,15 @@ impl super::Toolbox
         let mut call = controls::ControlCall { operation: controls::INFO_OBJECT,
                                                id: control,
                                                ..Default::default() };
-        self.managed_control(&mut call)?;
+        self.managed_control(&mut call, &mut None)?;
         if call.standard.enabled != u32::from(enabled)
         {
             call.operation = controls::CONFIGURE_OBJECT;
             call.standard.enabled = u32::from(enabled);
-            self.managed_control(&mut call)?;
+            self.managed_control(&mut call, &mut None)?;
         }
         call.operation = controls::DRAW_OBJECT;
-        self.managed_control(&mut call)
+        self.managed_control(&mut call, &mut None)
     }
 
     fn sf_wrapped_text(&mut self, window: u64, bounds: Rect, text: &str) -> Result<(), Status>
@@ -1114,7 +1114,7 @@ impl super::Toolbox
                                         ticks: u64::from(when),
                                         flags: if down { controls::BUTTON_DOWN } else { 0 },
                                         ..Default::default() };
-            self.managed_control(&mut call)?;
+            self.managed_control(&mut call, &mut None)?;
             if call.flags & controls::HANDLED != 0
             {
                 self.sf_widgets_mut(id)?.tracking =

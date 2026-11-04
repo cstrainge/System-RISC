@@ -91,7 +91,7 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
                     {
                         return Err(Error::Authority);
                     }
-                    WAITING_PINS.store(true, Ordering::Release);
+                    root.pin_waiters.swap(true, Ordering::AcqRel);
                     let _registry = ROOTS.lock();
                     let count = Arc::strong_count(root);
                     if count != 1

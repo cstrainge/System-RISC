@@ -98,6 +98,13 @@ impl Workspace
             }
         };
         fs::create_dir_all(&build)?;
+        // Canonicalise the build directory as well as the root, so two
+        // spellings of the same place cannot become two directories. The
+        // isolation branch added this, and it is kept: the old guard beside it
+        // in `main.rs` - "build output must be outside the OS source
+        // repository" - is deliberately *not* kept, because B13 reversed that
+        // rule and the build now lives inside the checkout.
+        let build = mac_build::paths::canonical(&build)?;
         // One meaning for the output directory, stated once here and
         // implemented once here: `dist` is the platform's own directory.
         // `--dist` names the root to create it inside, because a flag typed on

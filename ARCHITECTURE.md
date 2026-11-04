@@ -6,13 +6,13 @@ rendering engine, font strikes or heap. `mac-toolbox` groups them behind a
 loader-initialized `System` handle. `mac-abi` has no dependencies and defines
 the versioned C layouts, protocol constants and shared value types.
 
-The native dispatch path is:
+The native application and application-owned definition dispatch path is:
 
 ```text
 Finder / native application / definition resource
   -> public Toolbox binding
   -> mac-traps typed request
-  -> loader-supplied gate -> RV64 ECALL
+  -> SDK-local gate -> RV64 ECALL (U-mode to System)
   -> System machine trap entry
   -> system::toolbox::<manager>
 ```
@@ -20,7 +20,10 @@ Finder / native application / definition resource
 The RV64 gate uses `a7` for the operation, `a0` for the request pointer and `a1`
 for its byte size. The development ABI stays at version 1 until the first
 proper release; rebuild the entire world when a contract changes. ABI 1 supplies
-one gate and capability bits in the 24-byte `SystemServices` structure. [FORMAT.md](FORMAT.md) describes the exact contract.
+an immutable, process-readable 16-byte `SystemServices` descriptor containing its
+header and capability bits. Callable gate code stays in the SDK; no resident
+function pointer is exposed in that descriptor. [FORMAT.md](FORMAT.md) describes
+the exact contract.
 Applications and System must be rebuilt together when this ABI changes.
 
 ## Unreleased compatibility policy
@@ -40,9 +43,11 @@ supported external formats remains part of the product requirements.
 ## Memory-model rewrite and platform separation
 
 The [first-cut memory/application/resource model](docs/MEMORY-APP-RESOURCE-MODEL.md)
-adds safe, host-testable structures in `crates/mac-kernel-model` and next-model
-domain metadata in the existing shared handle facility. These are staged shapes;
-the runtime limits described below remain in force until their migration gates.
+defines production policy, accounting and lifetime contracts in
+`crates/mac-kernel-model` and domain metadata in the shared handle facility.
+Resident implementations use those contracts; shared source or host execution
+does not qualify the native allocator, trap, scheduling or cleanup paths. Each
+migration retains its stated implementation and target-runtime evidence gates.
 The [extension trait design](docs/EXTENSION-TRAITS-DESIGN.md) records the proposed
 composition boundaries and unresolved conflicts with earlier extension plans.
 
@@ -85,8 +90,10 @@ an explicit architecture invocation gate, including lease Drop. Local masking
 precedes every metadata lock; native retirement retains actual reader/CPU
 barriers. The ROM admits Sv39 and enters S mode with mapped RAM before resident owners
 exist. The System builds separate page-lease-owned kernel and firmware roots,
-and maps its 4 MiB System stack between unmapped guard pages. Per-process roots,
-U-mode isolation and multi-hart synchronization remain separate gates.
+and maps its 4 MiB System stack between unmapped guard pages. Native applications
+now enter U-mode through private Sv39 roots with private writable image, heap and
+guarded stack mappings. System and trusted modules remain privileged. Broader
+isolation and multi-hart qualification remain separate gates.
 
 See [LLVM RISC-V profiles](https://llvm.org/docs/RISCVUsage.html) and the
 [ratified RVA23 source](https://github.com/riscv/riscv-profiles/blob/main/src/rva23-profile.adoc)
@@ -96,8 +103,9 @@ required in addition to compiler support.
 ## Native application execution
 
 Finder and disk-loaded native applications run on separate OS-scheduled threads.
-The one-hart RV64 scheduler uses supervisor timer preemption, independent
-page-backed stacks (configurable 4 MiB default) and complete integer/FP/vector
+The current QemuRISC-V configuration exposes four physical CPUs while its checked
+scheduling policy admits only one active hart. The RV64 scheduler uses supervisor
+timer preemption, independent page-backed stacks (configurable 4 MiB default) and complete integer/FP/vector
 trap state (VLEN-scaled vector storage). Registered thread storage grows fallibly
 with memory; no fixed application-count limit is imposed. Application progress does not depend on
 `WaitNextEvent` or cooperative yield calls. Kernel traps execute with interrupts
@@ -148,7 +156,8 @@ CPU addresses and DMA bus addresses are separate contracts. The native bus
 binding proves contiguous device-visible storage before the Device Manager
 publishes a mapping; a translation refusal leaves the claim available for retry.
 The architecture converts checked System-image and physmap aliases to bus
-addresses; temporary trusted flat application/module arenas are explicit.
+addresses. Application virtual addresses are Process-relative; devices receive
+only storage admitted through the trusted mapping/ownership boundary.
 Manager policy never reinterprets an arbitrary pointer as a physical address. This does not yet qualify page pinning or an IOMMU.
 
 ROM and System share one RAMFB binding with an explicit register window from
@@ -163,17 +172,16 @@ Original presentation and actual multi-app input behavior have their own
 
 The loader validates NABI descriptors, compact RV64 segment streams and RLOC
 patches. ELF is confined to build-time extraction. System retains its fixed board
-reservation; independently loaded definitions relocate into a disjoint module
-pool, and Finder owns
-`0x81000000..0x82000000`. Native application manifests specify preferred ranges.
-The image registry reserves each application's full declared page-aligned span and
-can relocate new `RLOC` packages into a free span in `0x83000000..0x87000000`.
-All pointer patches validate before destination memory is written. Different
-files get separate code/data/BSS, including copies of the same executable.
-An eight-slot immutable image cache includes Finder; relaunch of a stopped file
-zeros its reservation and restores its segments. Launch of a running volume/CNID activates its existing
-process. This does not provide MMU isolation, hot replacement, general dynamic
-linking or original68k translation. Native code remains trusted shared S-mode.
+reservation; independently loaded definitions use the native mapping and resource
+ownership contracts. Application manifests no longer reserve physical load ranges.
+The checked platform supplies the application link origin (4 MiB on QemuRISC-V),
+and NABI records the actual compact memory extent. Each Process has its own user
+mappings, so applications can use the same preferred virtual layout while keeping
+writable image data/BSS, heaps and stacks private. Read/execute code and
+read-only data remain distinct from non-executable writable mappings. All pointer
+patches validate before publication. This implementation does not establish hot
+replacement, general dynamic linking, original 68k translation or completion of
+the remaining [P13 qualification gates](docs/PROCESS-ISOLATION.md).
 
 ## Resident implementation
 
@@ -218,10 +226,14 @@ invocation and transport. The runtime borrows desktop state under a reentrancy
 guard; stateful recursive calls fail. Drawing/font traps can nest during a WDEF
 call without reborrowing the runtime. System/font storage is published once, and
 each cached application resource image is immutable. Resource queries select the
-trusted caller or retained-window owner. Readonly resource queries also bypass the mutable desktop borrow, including
+authenticated caller or retained-window owner. Readonly resource queries also bypass the mutable desktop borrow, including
 queries nested inside a definition. Resource data moved into the font manager
-remains visible through the System resource scope. The current trusted S-mode
-environment has shared memory; these checks are ABI validation, not process isolation.
+remains visible through the System resource scope. User requests cross checked
+copy/pin boundaries; owner/generation and ABI validation remain necessary
+alongside the private page tables. Application-owned definitions execute through
+user callback threads; System definitions and kernel modules retain their trusted
+privileged paths. Each callback and cleanup path still needs its own native
+qualification.
 
 ## Planned control panels and kernel extensions
 
@@ -255,16 +267,20 @@ apps may use std while System, definitions and kernel extensions stay no_std.
 The plan stages runtime, concurrency, document/Finder and network acceptance;
 neither a custom target nor a linked unsupported backend establishes std support.
 
-## Planned terminal, hosted tools, isolation and drivers
+## Terminal, hosted tools, isolation and driver workstreams
 
 [P11](docs/TERMINAL.md) adds a Terminal APPL and terminal-only CLAP process class,
 with checked session ownership and JSON preference-defined base environments.
 [P12](docs/HOSTED-TOOLCHAIN.md) stages hosted Rust tools after the actual std,
 storage, child-process and linker prerequisites.
 
-[P13](docs/PROCESS-ISOLATION.md) replaces the current trusted shared S-mode app execution
-with protected user processes and checked syscall/callback boundaries. This is
-planned hardware protection, separate from today's owner/generation checks.
+[P13](docs/PROCESS-ISOLATION.md) implements private Process roots, U-mode
+application entry and checked syscall/callback boundaries. Its qualification is
+in progress: finite single-active-hart fault, transport and writable-state
+observations do not cover every callback/cleanup path, pressure, SMP, general
+account closure or arbitrary privileged-fault recovery. The latest custom
+definition retirement correction still awaits native qualification. Owner and
+generation checks remain required alongside hardware protection.
 [P14](docs/DRIVERS.md) keeps block storage built in and moves other drivers into
 trusted in-kernel extension modules. Driver packages require DRVR classification
 and mandatory DABI build-contract metadata checked before code entry; resource
@@ -375,14 +391,16 @@ hardware CPU IDs in reserved firmware data. ROM and System share allocation-free
 topology validation; sparse IDs are preserved, duplicates and an absent primary
 are refused. DT structural/count/primary preflight precedes fallible firmware
 metadata allocation and sorting. This list is discovery metadata, separate from
-sscratch-authenticated execution ownership. All secondary harts remain in the
-ROM park; discovery itself enables no secondary dispatch. The mandatory monitor
+sscratch-authenticated execution ownership. Secondary harts require authenticated
+System idle admission; discovery itself enables no secondary dispatch. The
+current four-CPU configuration retains idle peers and caps active scheduling at
+one hart pending U-mode SMP qualification. The mandatory monitor
 directory identifies independently reserved M-mode control/stack storage and
 checked DT-derived CLINT routes. The ROM joins parked receivers before System
 entry. Instruction publication waits for matching remote fence acknowledgements;
 terminal takeover stops peers through independent sticky cells before borrowing
 its private kit. The platform explicitly requires whole-machine reset; CPU-only
-restart/hotplug and secondary S-mode release remain unsupported. DiskInfo carries
+restart/hotplug remain unsupported. DiskInfo carries
 capacity, read-only state and the
 driver icon resource identity. System serializes firmware access through its I/O
 owner guard on the resident System stack. A hart-local RAII root scope
@@ -509,7 +527,8 @@ migration. These
 service-level ownership checks are not MMU isolation.
 Per-app menus, events, dialogs, worlds, editor records and legacy compatibility
 state are disposed at exit; the system clipboard and immutable cached images
-remain system-owned. These are service-level ownership contracts in trusted
-shared memory, not MMU-enforced isolation. Additional native threads sharing an
-AppId, original cooperative contexts and original low-memory virtualization still
-require their own context and synchronization contracts.
+remain system-owned. These resident service-level ownership contracts supplement
+the application's private user address space; they do not replace page-table
+permissions. Threads of one Process share that Process's mappings. Original
+cooperative contexts and low-memory virtualization still require their own
+context and synchronization contracts.

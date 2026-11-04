@@ -6,6 +6,9 @@ use mac_traps::Client;
 
 use crate::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
+#[path = "callbacks.rs"]
+mod callbacks;
+
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(crate::ptr::null_mut());
 static MAIN_THREAD: AtomicU64 = AtomicU64::new(0);
 
@@ -19,7 +22,7 @@ pub extern "C" fn __system_risc_services_v1() -> *const SystemServices
 
 /// # Safety
 /// The native loader enters this once, with a readable aligned services table
-/// and immutable callbacks pinned until all application threads have quiesced.
+/// and immutable descriptor storage pinned until all application threads quiesce.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status

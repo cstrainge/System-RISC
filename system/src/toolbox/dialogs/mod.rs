@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::{string::String, vec::Vec};
 
-use mac_abi::{dialogs::*, *, geometry::Rect};
+use mac_abi::{dialogs::*, geometry::Rect, *};
 
 use super::resources::manager::Manager;
 #[cfg(target_arch = "riscv64")]
@@ -253,6 +253,8 @@ pub fn load(resources: Manager<'_>, call: &DialogCall) -> Result<Alert, Status>
 mod modal;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use modal::Manager as Alerts;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use modal::Released as ReleasedAlert;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use modal::{ReleaseAlerts, ReleaseStorage, specification};
 

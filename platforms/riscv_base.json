@@ -14,6 +14,7 @@
     "zbs"
   ],
   "scheduling": {
+    "maximum_active_harts": 1,
     "quantum_microseconds": 250,
     "callback_budget_microseconds": 1000
   },

@@ -27,6 +27,8 @@ fn main()
                                         .expect("checked virtual map")
                                         .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE",
                                                               "VM_SYSTEM_IMAGE_LIMIT",
+                                                              "VM_APPLICATION_IMAGE_BASE",
+                                                              "VM_APPLICATION_END",
                                                               "VM_PHYSMAP_START",
                                                               "VM_PHYSMAP_END",
                                                               "VM_PHYSMAP_PHYSICAL_BASE"])

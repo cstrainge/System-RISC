@@ -1,6 +1,5 @@
 {
   "name": "Finder", "binary_name": "Finder", "file_type": "FNDR", "creator": "MACS",
-  "role": "application", "abi_version": 1, "load_base": "0x81000000", "load_limit": "0x82000000",
-  "description": "Classic StuffIt filesystem public SDK conformance",
+  "role": "application", "abi_version": 1, "description": "Classic StuffIt filesystem public SDK conformance",
   "resources": []
 }

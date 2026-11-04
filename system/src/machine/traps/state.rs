@@ -2,13 +2,15 @@
 //! Only the native entry/restore boundary consumes these raw frame pointers.
 use super::TrapFrame;
 use crate::machine::pages::{Backing, Error, Storage};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) struct SavedState
 {
     backing: Storage,
     frame:   usize,
     bytes:   usize,
-    stride:  usize
+    stride: usize,
+    published: AtomicBool
 }
 impl SavedState
 {
@@ -48,7 +50,7 @@ impl SavedState
         Ok(Self { backing: Storage::Ordinary(backing),
                   frame,
                   bytes,
-                  stride })
+                  stride, published: AtomicBool::new(false) })
     }
 
     pub(crate) fn from_recovery(mut piece: crate::machine::scheduler::recovery::FinderPiece,
@@ -82,7 +84,26 @@ impl SavedState
         Self { backing: Storage::Recovery(piece),
                frame,
                bytes,
-               stride }
+               stride, published: AtomicBool::new(false) }
+    }
+
+    /// Complete an exclusively owned CPU frame before publishing it to any
+    /// hart. The physical vector/FP backup remains the original zeroed stock.
+    pub(crate) fn initialize(&mut self, initial: TrapFrame) -> Result<(), Error>
+    {
+        if self.published.load(Ordering::Acquire)
+        {
+            return Err(Error::AlreadyInitialized);
+        }
+        // SAFETY: this unique SavedState has not been published. Its private
+        // aligned fixed-frame pointer still refers to its original backing.
+        unsafe { self.frame().write(initial); }
+        Ok(())
+    }
+
+    pub(super) fn published(&self)
+    {
+        self.published.store(true, Ordering::Release);
     }
 
     /// Compare this independently measured CPU against the actual admitted

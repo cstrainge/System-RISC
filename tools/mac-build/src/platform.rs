@@ -852,7 +852,21 @@ impl Platform
 {
     pub fn scheduling(&self) -> Result<scheduling::Checked>
     {
-        self.scheduling.as_ref().ok_or_else(|| missing(self, "scheduling"))?.check()
+        let scheduling =
+            self.scheduling.as_ref().ok_or_else(|| missing(self, "scheduling"))?;
+        // The policy caps how many harts may schedule at once, so the check
+        // needs the machine's hart count. A platform that declares no emulation
+        // has no emulated hart count to compare against, and a cap that cannot
+        // be compared is not a cap: the number is still required to be nonzero,
+        // and the record is told to declare its machine rather than have the
+        // comparison silently skipped.
+        let harts = self.emulation()
+                        .map(|emulation| emulation.harts)
+                        .ok_or_else(|| {
+                            error(format!("platform '{}' declares scheduling limits but no                                            emulation, so scheduling.maximum_active_harts has no                                            machine hart count to validate against",
+                                          self.name))
+                        })?;
+        scheduling.check(harts)
     }
 
     fn device_artifacts(&self, include_restart: bool) -> Result<(String, String)>
@@ -925,7 +939,8 @@ impl Platform
     }
 
     /// Build-time origins are not runtime destinations. Every independently
-    /// loadable definition/driver/extension shares the same checked link range.
+    /// loadable definition/driver/extension shares the code-resource range; apps
+    /// share the checked private Process image origin.
     pub fn link_range(&self, role: mac_formats::native::Role) -> Result<std::ops::Range<u64>>
     {
         match role
@@ -934,8 +949,7 @@ impl Platform
             mac_formats::native::Role::CodeResource => Ok(self.memory()?.code_link_range()),
             mac_formats::native::Role::Application =>
             {
-                Err(error("application link range still comes from its manifest until private \
-                           mappings are active"))
+                Ok(self.virtual_memory()?.application_image_range())
             }
         }
     }
@@ -970,7 +984,13 @@ impl Platform
         }
         else
         {
-            self.memory()?.validate_image_storage(role, base, limit)
+            let expected = self.virtual_memory()?.application_image_range();
+            if base != expected.start || limit != expected.end
+            {
+                return Err(error("application link geometry differs from the checked private \
+                                  Process layout; rebuild with the current SDK"));
+            }
+            Ok(())
         }
     }
 }

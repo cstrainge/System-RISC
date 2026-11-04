@@ -174,7 +174,12 @@
           "The power device refused System restart. The report is retained.",
           "System restart failed. The report is retained.",
           "Application error",
-          "The application returned an error. You can inspect or copy the report."
+          "The application returned an error. You can inspect or copy the report.",
+          "Application access fault",
+          "An invalid memory access stopped the application. Inspect or copy the report.",
+          "Application exception",
+          "A processor exception stopped the application. Inspect or copy the report.",
+          "Application name:"
         ]
       }
     },

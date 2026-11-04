@@ -112,7 +112,7 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                let owner = system_owner_checked()?;
                                let mut registry = Resident::new();
                                registry.register(&owner,
-                                         crate::toolbox::controls::objects::specification(), cleanup::context::Toolbox(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseControls)))
+                                         crate::toolbox::controls::objects::specification(), cleanup::context::Toolbox(crate::toolbox::controls::objects::ReleaseControls))
                                .map_err(|error| {
                                    serial!("KIND_REGISTRATION_REFUSED: {error}");
                                    KindAccessError::Registry(error)

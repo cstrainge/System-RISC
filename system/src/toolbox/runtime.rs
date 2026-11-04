@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
+pub(crate) use control_runtime::{TrackingStage, report_tracking_status};
 use mac_abi::{events::{CMD_KEY, Event, EventKind},
               geometry::{Point, Rect},
               *};
@@ -13,7 +14,7 @@ use super::quickdraw::{SurfaceExt,
                        retained::{Content, RenderCommand, SceneTarget},
                        service};
 use crate::{platform,
-            toolbox::{events::{BTN_STATE, EventManager,
+            toolbox::{events::{EventManager,
                                input::{Decoder, Input}},
                       handles::InvocationGate,
                       quickdraw::{Canvas, WHITE, font::GENEVA_9},
@@ -53,6 +54,9 @@ mod crash_runtime;
 mod standard_file_runtime;
 #[path = "dialogs/runtime.rs"]
 mod dialog_runtime;
+#[path = "dialogs/close.rs"]
+mod dialog_close;
+pub(crate) use dialog_close::{DialogCloseObserver, UserDialogClose};
 #[path = "events/runtime.rs"]
 mod event_runtime;
 #[path = "drag/runtime.rs"]
@@ -62,6 +66,9 @@ pub(crate) use drag_runtime::native_drag;
 mod textedit_runtime;
 #[path = "quickdraw/ordinary_underlay.rs"]
 mod ordinary_underlay;
+#[path = "quickdraw/ordinary_transaction.rs"]
+mod ordinary_transaction;
+pub(crate) use ordinary_transaction::pump_ordinary_paint;
 #[path = "controls/window_layout.rs"]
 mod window_layout;
 use ordinary_underlay::OrdinaryUnderlay;
@@ -74,10 +81,31 @@ pub(crate) use local::{FinderAdmission, FinderCapacityError, FinderPreparation,
                                        pump as pump_system_report}};
 #[path = "windows/runtime.rs"]
 mod window_runtime;
-pub(crate) use window_runtime::native_window;
+#[path = "windows/input_callbacks.rs"]
+mod input_callbacks;
+#[path = "windows/tracking_grow.rs"]
+mod tracking_grow;
+#[path = "windows/close_ui.rs"]
+mod close_ui;
+pub(crate) use input_callbacks::pump_window_input;
+#[path = "windows/native_operations.rs"]
+mod native_operations;
+pub(crate) use native_operations::{BeginError as WindowBeginError, TrustedWindowClose,
+                                   UserWindowOperation};
+pub(crate) use window_runtime::{BirthProgress as UserWindowProgress, UserBirth as UserWindowBirth,
+                                native_window};
 #[path = "controls/runtime.rs"]
 mod control_runtime;
-pub(crate) use control_runtime::native_control;
+pub(crate) use control_runtime::{admit_offscreen, offscreen_toolbox};
+#[path = "controls/scrollbox/runtime.rs"]
+mod scroll_box_runtime;
+pub(crate) use control_runtime::{AutomaticPrelude as AutomaticControlPrelude,
+                                 AutomaticProgress as AutomaticControlProgress,
+                                 UserBirth as UserControlBirth,
+                                 UserOperation as UserControlOperation,
+                                 UserOperationProgress as UserControlOperationProgress,
+                                 native_control};
+pub(crate) use scroll_box_runtime::UserOperation as UserScrollBoxOperation;
 fn note_recovery_input_refusal(owner: u64, status: Status)
 {
     use core::sync::atomic::{AtomicI32, Ordering};
@@ -99,12 +127,15 @@ pub(in crate::toolbox) struct Presentation
     content_cache:                         super::quickdraw::content_cache::ContentCache,
     ordinary_underlay:                     OrdinaryUnderlay,
     menu_cache:                            super::quickdraw::menu_cache::MenuBarCache,
+    pending_video_mode:                    Option<mac_video_interface::Size>,
+    video_mode_wait:                       bool,
     redraw:                                bool,
     content_damage:                        Vec<(SceneTarget, super::quickdraw::region::Region)>,
     presentation_damage:                   Vec<Rect>,
     presentation_copy_full:                bool,
     pub(in crate::toolbox) feedback_dirty: bool,
     feedback:                              super::quickdraw::feedback::Feedback,
+    tracking_grow:                         Arc<tracking_grow::State>,
     outline_clip:                          super::quickdraw::feedback::VisibilityCache,
     highlight_clip:                        super::quickdraw::feedback::VisibilityCache,
     cursor_dirty:                          bool,
@@ -171,7 +202,8 @@ pub struct Toolbox
     locals:                              Vec<local::Saved>,
     pub(in crate::toolbox) processes:    super::processes::Manager,
     menu_feedback:                       Option<menu_feedback::Feedback>,
-    app_menu:                            super::processes::menu::ApplicationMenu
+    app_menu:                            super::processes::menu::ApplicationMenu,
+    window_input:                        Arc<input_callbacks::State>
 }
 
 impl super::controls::objects::ControlHost for Toolbox
@@ -437,6 +469,17 @@ impl Toolbox
                             region: super::quickdraw::region::Region)
     {
         let id = id.into();
+        if region.is_empty()
+        {
+            return;
+        }
+        if let Ok(window) = id.window()
+        {
+            // This changes only the canonical render dependency, not geometry
+            // or object identity. Exhaustion disables author-paint reuse; the
+            // accessor reports BAD_ABI instead of ever reusing an old stamp.
+            let _ = self.windows.content_changed(window);
+        }
         if !self.system_scene(id)
         {
             self.presentation.ordinary_underlay.changed();
@@ -494,7 +537,8 @@ impl Toolbox
         Ok(())
     }
 
-    fn apply_control_outline(&mut self, window: u64, next: Option<Rect>) -> Result<(), Status>
+    pub(crate) fn apply_control_outline(&mut self, window: u64, next: Option<Rect>)
+                                        -> Result<(), Status>
     {
         self.presentation.feedback_dirty |= self.windows.control_outline(WindowId(window), next)?;
         Ok(())
@@ -568,6 +612,12 @@ impl Toolbox
                 super::menus::SystemBar::new(mdef, crate::machine::traps::gateway, resources)
             }).ok_or(NOT_SUPPORTED)??;
         system_bar.reset(finder);
+        let windows = WindowManager::with_kinds(super::handles::window_kinds()?,
+                                                crate::machine::traps::gateway)?;
+        let window_input =
+            shared_scene_allocation(|| input_callbacks::State::new(windows.operation_notice()))?;
+        let tracking_grow =
+            shared_scene_allocation(|| tracking_grow::State::new(windows.operation_notice()))?;
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   system_report: None,
@@ -592,12 +642,12 @@ impl Toolbox
                                      responsiveness: Default::default(), automatic_cursor: None },
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
-                  windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
+                  windows,
                   events,
                   drag: { let (sessions, receivers) = super::handles::drag_kinds()?;
                           super::drag::Manager::new(sessions, receivers)? },
                   textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
-                  presentation: Presentation { content: Vec::new(), pending_content: Vec::new(), content_cache: Default::default(), ordinary_underlay: Default::default(), menu_cache: Default::default(), redraw: true, content_damage, presentation_damage, presentation_copy_full:false, feedback_dirty: false, feedback: Default::default(), outline_clip: Default::default(), highlight_clip: Default::default(), cursor_dirty: true, frame_incomplete: false, cursor_bounds: Rect::ZERO, presentations: 0, compositions: 0, },
+                  presentation: Presentation { content: Vec::new(), pending_content: Vec::new(), content_cache: Default::default(), ordinary_underlay: Default::default(), menu_cache: Default::default(), pending_video_mode: None, video_mode_wait: false, redraw: true, content_damage, presentation_damage, presentation_copy_full:false, feedback_dirty: false, feedback: Default::default(), tracking_grow, outline_clip: Default::default(), highlight_clip: Default::default(), cursor_dirty: true, frame_incomplete: false, cursor_bounds: Rect::ZERO, presentations: 0, compositions: 0, },
                   decoders: [Decoder::new(), Decoder::new()],
                   revision: 0,
                   updates: 0,
@@ -608,6 +658,7 @@ impl Toolbox
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   cdef,system_cdef,mdef,owner:finder,foreground:finder,locals,
                   processes,
+                  window_input,
                   app_menu:crate::kernel::with_resources(|resources| super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,resources)).ok_or(NOT_SUPPORTED)?? })
     }
 
@@ -765,6 +816,53 @@ impl Toolbox
         {
             CLOSE_WINDOW =>
             {
+                #[cfg(target_arch = "riscv64")]
+                if match self.windows.plan_trusted_close(id)
+                {
+                    Ok(plan) => plan.is_some(),
+                    Err(status) => return status
+                }
+                {
+                    return match self.request_trusted_window_close(id)
+                    {
+                        Ok(handle) =>
+                        {
+                            match handle.poll_result()
+                            {
+                                Some(Ok(_)) => OK,
+                                Some(Err(super::windows::manager::CloseError::NotFound(_))) =>
+                                {
+                                    NOT_FOUND
+                                }
+                                Some(Err(super::windows::manager::CloseError::Cleanup(cause))) =>
+                                {
+                                    close_ui::cleanup_status(cause)
+                                }
+                                None => SERVICE_BUSY
+                            }
+                        }
+                        Err(status) => status
+                    };
+                }
+                if let Err(status) = self.controls.prepare_remove_window(id.0)
+                {
+                    // This close already planned its canonical job and armed the
+                    // window's definition disposal. The kernel completes it with
+                    // no further call from this application: window_work::pump
+                    // advances that same job, and control_work::pump drains the
+                    // disposal, both from the scheduler maintenance path. A stock
+                    // application reads Service Busy as a terminal failure and
+                    // abandons the close it just started, so report the in-flight
+                    // close as accepted. Creation against the window is refused
+                    // while its disposal is pending, so no caller can observe a
+                    // half-disposed window, and a stuck advance still reports
+                    // CONTROL_DISPOSAL_RETAINED with its canonical job and tickets.
+                    if status == SERVICE_BUSY && self.controls.disposal_pending_window(id.0)
+                    {
+                        return OK;
+                    }
+                    return status;
+                }
                 if let Err(status) = self.drag.prepare_window_close(id.0)
                 {
                     return status;
@@ -779,86 +877,13 @@ impl Toolbox
                     Err(super::windows::manager::CloseError::Cleanup(cause)) =>
                     {
                         serial!("WINDOW_CLOSE_REFUSED: owner={} {cause}", self.owner);
-                        result = match cause
-                        {
-                            super::handles::cleanup::Cause::WindowDefinitionDisposal { reply,
-                                                                                       .. } =>
-                            {
-                                i32::try_from(reply).unwrap_or(BAD_ABI)
-                            }
-                            #[cfg(target_arch = "riscv64")]
-                            super::handles::cleanup::Cause::ProcessSpace(cause) => cause.status(),
-                            #[cfg(target_arch = "riscv64")]
-                            super::handles::cleanup::Cause::ModuleMapping(cause) => match cause {
-                                crate::machine::paging::modules::CleanupCause::Pending { .. } => SERVICE_BUSY,
-                                _ => BAD_ABI,
-                            },
-                            #[cfg(target_arch = "riscv64")]
-                            super::handles::cleanup::Cause::NativeTls(cause) => match cause {
-                                super::native_threads::CleanupCause::Contract => BAD_ABI,
-                                super::native_threads::CleanupCause::Unavailable => NOT_SUPPORTED,
-                                super::native_threads::CleanupCause::Threads
-                                | super::native_threads::CleanupCause::Readers { .. }
-                                | super::native_threads::CleanupCause::Preparing { .. } => SERVICE_BUSY,
-                            },
-                            #[cfg(target_arch = "riscv64")]
-                            super::handles::cleanup::Cause::ApplicationHeap(cause) =>
-                            {
-                                match cause
-                                {
-                                    super::application_heap::CleanupCause::Unavailable => NOT_SUPPORTED,
-                                    super::application_heap::CleanupCause::Fault(_) => BAD_ABI,
-                                    super::application_heap::CleanupCause::Threads
-                                    | super::application_heap::CleanupCause::Readers { .. }
-                                    | super::application_heap::CleanupCause::Mutation
-                                    | super::application_heap::CleanupCause::Remaining { .. } => SERVICE_BUSY
-                                }
-                            }
-                            super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
-                            #[cfg(target_arch = "riscv64")]
-                            super::handles::cleanup::Cause::ThreadPreparations { .. }
-                            | super::handles::cleanup::Cause::DefinitionPending { .. }
-                            | super::handles::cleanup::Cause::NativeJoin { .. } => SERVICE_BUSY,
-                            super::handles::cleanup::Cause::PublicationPreparations { .. }
-                            | super::handles::cleanup::Cause::Alias(_)
-                            | super::handles::cleanup::Cause::ContextUnavailable { .. }
-                            | super::handles::cleanup::Cause::DriverInterfaceBusy { .. }
-                            | super::handles::cleanup::Cause::DriverDependencyBusy { .. }
-                            | super::handles::cleanup::Cause::DriverDependencyScopeActive { .. }
-                            | super::handles::cleanup::Cause::DriverReplyPending { .. }
-                            | super::handles::cleanup::Cause::DriverCancellationUncertain { .. }
-                            | super::handles::cleanup::Cause::SchedulerPending { .. }
-                            | super::handles::cleanup::Cause::DeviceStop { .. }
-                            | super::handles::cleanup::Cause::DevicePending { .. } => SERVICE_BUSY,
-                            super::handles::cleanup::Cause::DragEffectStorage { .. }
-                            | super::handles::cleanup::Cause::RetirementStorage { .. } => NO_MEMORY,
-                            super::handles::cleanup::Cause::MemoryManagerUnavailable(error)
-                            | super::handles::cleanup::Cause::FileManagerUnavailable(error)
-                            | super::handles::cleanup::Cause::RequestRegistryUnavailable(error)
-                            | super::handles::cleanup::Cause::DeviceManagerUnavailable(error)
-                            | super::handles::cleanup::Cause::SchedulerUnavailable(error)
-                            | super::handles::cleanup::Cause::ScrapManagerUnavailable(error) =>
-                            {
-                                error.status()
-                            }
-                        };
+                        result = close_ui::cleanup_status(cause);
                     }
                 }
-                let before = self.drag.feedback();
-                let drag_cleanup = self.drag.forget_window(id.0, when);
-                self.drag_effects(before);
-                if let Err(status) = drag_cleanup
+                if let Err(status) = self.remove_closed_window_content(id, when)
                 {
-                    serial!("DRAG_WINDOW_CLEANUP_DEFERRED window={} status={status}", id.0);
+                    return status;
                 }
-                self.scroll_boxes.remove_window(id.0);
-                self.controls.remove_window(id.0);
-                self.presentation.content.retain(|content| content.id != id);
-                self.presentation.content_damage.retain(|(target, _)| *target != id);
-                self.presentation.ordinary_underlay.forget(SceneTarget::from(id));
-                self.presentation.pending_content.retain(|content| content.id != id);
-                self.forget_cursor_window(id);
-                self.last_action = "CLOSE";
                 if let Some(alert) = alert
                 {
                     let restored = self.restore_alert_focus(alert.previous);
@@ -910,14 +935,18 @@ impl Toolbox
             }
             SET_WINDOW_BOUNDS =>
             {
+                if let Err(status) = self.preflight_resident_window_geometry(id,
+                    super::windows::manager::operations::Geometry::Bounds(request.bounds))
+                { return status; }
                 return match self.set_window_bounds(id, request.bounds)
                 {
-                    Some(action) =>
+                    Ok(Some(action)) =>
                     {
                         self.action(action, when);
                         OK
                     }
-                    None => OK
+                    Ok(None) => OK,
+                    Err(status) => status
                 };
             }
             SET_STANDARD_BOUNDS =>
@@ -928,6 +957,9 @@ impl Toolbox
                     1 => None,
                     _ => return BAD_ARGUMENT
                 };
+                if let Err(status) = self.preflight_resident_window_geometry(id,
+                    super::windows::manager::operations::Geometry::Standard(bounds))
+                { return status; }
                 return self.windows.set_standard_bounds(id, bounds).map_or_else(|e| e, |()| OK);
             }
             SET_WINDOW_TITLE =>
@@ -1288,50 +1320,43 @@ impl Toolbox
             }
         }
 
-        if let Some(drawing) = drawing
+        let mut drawing = drawing;
+        if drawing.is_some()
         {
-            let bounds = drawing.bounds();
-            let mut old_bounds = None;
-            let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            let size = drawing.storage();
-            let id = drawing.id;
-            let content = self.content_mut(window)?;
-            let previous = content.iter_commands_mut().find(|command| {
-                matches!(command, RenderCommand::ScrollBox(old) if old.id == id)
-            });
-            if let Some(command) = previous
-            {
-                if let RenderCommand::ScrollBox(old) = command
-                {
-                    old_bounds = Some(old.bounds());
-                }
-                if used - command.storage() + size > limit
-                {
-                    return Err(NO_MEMORY);
-                }
-                *command = RenderCommand::ScrollBox(drawing);
-            }
-            else
-            {
-                if used + size > limit || content.commands.len() >= 512
-                {
-                    return Err(NO_MEMORY);
-                }
-                content.record(RenderCommand::ScrollBox(drawing))?;
-            }
-            if !self.presentation
-                    .pending_content
-                    .iter()
-                    .any(|content| content.id == SceneTarget::from(window))
-            {
-                for rect in old_bounds.into_iter().flatten().chain(bounds)
-                {
-                    self.content_changed_rect(window, rect);
-                }
-                self.present();
-            }
+            let retired = self.publish_scroll_box_drawing(window, &mut drawing)?;
+            // Existing synchronous trusted path; owned User continuations take
+            // this same actual displaced command outside Desktop before Drop.
+            drop(retired);
         }
         Ok(None)
+    }
+
+    fn publish_scroll_box_drawing(&mut self, window: u64,
+                                  drawing: &mut Option<super::controls::scrollbox::Drawing>)
+                                  -> Result<Option<RenderCommand>, Status>
+    {
+        let next = drawing.as_ref().ok_or(BAD_ARGUMENT)?;
+        let bounds = next.bounds();
+        let (used, limit) = self.retained_admission(SceneTarget::from(window));
+        let content = self.content_mut(window)?;
+        let retired = content.replace_scroll_box(drawing, used, limit)?;
+        let old_bounds = match &retired
+        {
+            Some(RenderCommand::ScrollBox(old)) => Some(old.bounds()),
+            _ => None
+        };
+        if !self.presentation
+                .pending_content
+                .iter()
+                .any(|content| content.id == SceneTarget::from(window))
+        {
+            for rect in old_bounds.into_iter().flatten().chain(bounds)
+            {
+                self.content_changed_rect(window, rect);
+            }
+            self.present();
+        }
+        Ok(retired)
     }
 
     fn clear_control_highlight(&mut self, window: u64, id: u64, scroll_box: bool)
@@ -1377,7 +1402,9 @@ impl Toolbox
         }
     }
 
-    fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Result<(), Status>
+    fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall,
+                       diagnostic: &mut Option<TrackingStage>)
+                       -> Result<(), Status>
     {
         use mac_abi::controls::*;
         if !call.surface.is_null()
@@ -1418,18 +1445,14 @@ impl Toolbox
         }
         if call.operation == CANCEL_TRACKING
         {
-            let split = self.controls.splitter_capture(call.id, owner)?;
-            self.controls.cancel(call, owner)?;
-            if split
-            {
-                self.apply_control_outline(window, None)?;
-                self.present();
-            }
-            self.clear_control_highlight(window, call.id, false);
-            return Ok(());
+            return self.cancel_control_tracking(call, owner, window);
         }
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
-           && self.controls.splitter_request(call, owner, crate::machine::traps::gateway)?
+           && self.controls
+                  .splitter_request(call, owner, crate::machine::traps::gateway)
+                  .map_err(|status| {
+                      TrackingStage::refusal(diagnostic, TrackingStage::SplitterRequest, status)
+                  })?
         {
             let pending =
                 self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
@@ -1437,11 +1460,9 @@ impl Toolbox
                                                            owner,
                                                            pending,
                                                            crate::machine::traps::gateway,
-                                                           |id| {
-                                                               crate::toolbox::runtime::Toolbox::control_definition(id)
-                                                           })?;
+                                                           diagnostic)?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            return self.publish_control_layout(window, prepared, used, limit);
+            return self.publish_control_layout(window, prepared, used, limit, diagnostic);
         }
         if call.operation == NEXT_CHILD_OBJECT
         {
@@ -1450,20 +1471,8 @@ impl Toolbox
         if call.operation == HIT_CHILDREN_OBJECT
         {
             let (child, part) =
-                self.controls.hit_children(call.id,
-                                            owner,
-                                            call.point,
-                                            crate::machine::traps::gateway,
-                                            |state| {
-                                                let id = super::controls::definition_id(state)?;
-                                                let entry =
-                                                    crate::toolbox::runtime::Toolbox::control_definition(id)?;
-                                                let mut state = *state;
-                                                super::controls::prepare(&mut state,
-                                                           entry,
-                                                           crate::machine::traps::gateway)?;
-                                                Ok(state.result as i16)
-                                            })?;
+                self.controls
+                    .hit_children(call.id, owner, call.point, crate::machine::traps::gateway)?;
             call.layout.child = child;
             call.result = i32::from(part);
             return Ok(());
@@ -1507,7 +1516,7 @@ impl Toolbox
                                                              crate::toolbox::runtime::Toolbox::control_definition(id)
                                                          })?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            return self.publish_control_layout(window, prepared, used, limit);
+            return self.publish_control_layout(window, prepared, used, limit, diagnostic);
         }
         if call.operation == REFLOW_OBJECT
            && matches!(call.layout.message,
@@ -1536,12 +1545,9 @@ impl Toolbox
                                                          viewport,
                                                          pending,
                                                          Some((call, owner)),
-                                                         crate::machine::traps::gateway,
-                                                         |id| {
-                                                             crate::toolbox::runtime::Toolbox::control_definition(id)
-                                                         })?;
+                                                         crate::machine::traps::gateway)?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            return self.publish_control_layout(window, prepared, used, limit);
+            return self.publish_control_layout(window, prepared, used, limit, diagnostic);
         }
         if call.operation == REFLOW_OBJECT
            && matches!(call.layout.message, reflow::ASK_SIZE | reflow::ASSIGN_RECT)
@@ -1554,12 +1560,9 @@ impl Toolbox
                                                          owner,
                                                          paint_pending,
                                                          crate::machine::traps::gateway,
-                                                         |id| {
-                                                             crate::toolbox::runtime::Toolbox::control_definition(id)
-                                                         },
                                                          None)?;
             call.layout.measurement = prepared.measurement;
-            self.publish_control_layout(window, prepared, used, limit)?;
+            self.publish_control_layout(window, prepared, used, limit, diagnostic)?;
             return Ok(());
         }
         if self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
@@ -1596,44 +1599,28 @@ impl Toolbox
                           .iter_mut()
                           .chain(&mut self.presentation.content)
                           .find(|content| content.id == SceneTarget::from(window));
-        let drawing = self.controls.request_with(&recipient,
-                                                  &storage,
-                                                  call,
-                                                  entry,
-                                                  crate::machine::traps::gateway,
-                                                  |drawing| {
-            if window == 0
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            let content = content.ok_or(NOT_FOUND)?;
-            let bounds = drawing.bounds();
-            let damage = drawing.damage();
-            let size = drawing.storage();
-            let old = content.iter_commands_mut()
-                .find(|command| matches!(command, RenderCommand::Control(old) if old.id == drawing.id));
-            let old_bounds = if let Some(command) = old
-            {
-                if used - command.storage() + size > limit
-                {
-                    return Err(NO_MEMORY);
-                }
-                let RenderCommand::Control(previous) = command else { return Err(BAD_ABI) };
-                let bounds = previous.bounds();
-                *command = RenderCommand::Control(drawing);
-                Some(bounds)
-            }
-            else
-            {
-                if used + size > limit || content.commands.len() >= 512
-                {
-                    return Err(NO_MEMORY);
-                }
-                content.record(RenderCommand::Control(drawing))?;
-                None
-            };
-            Ok((bounds, damage, old_bounds))
-        })?;
+        let drawing =
+            self.controls.request_with(&recipient,
+                                        &storage,
+                                        call,
+                                        entry,
+                                        crate::machine::traps::gateway,
+                                        |drawing| {
+                                            if window == 0
+                                            {
+                                                return Err(BAD_ARGUMENT);
+                                            }
+                                            let content = content.ok_or(NOT_FOUND)?;
+                                            let mut staging = Some(drawing);
+                                            let (result, retired) =
+                                                control_runtime::publish_drawing(content,
+                                                                                 &mut staging,
+                                                                                 used, limit)?;
+                                            // Preserve the ordinary call's existing destruction
+                                            // boundary.
+                                            drop(retired);
+                                            Ok(result)
+                                        })?;
         if split_before && !self.controls.splitter_capture(call.id, owner)?
         {
             self.apply_control_outline(window, None)?;
@@ -1836,7 +1823,7 @@ impl Toolbox
         }
     }
 
-    fn remove_dead_control_drawings(&mut self, window: u64)
+    pub(crate) fn remove_dead_control_drawings(&mut self, window: u64)
     {
         let mut removed = Vec::new();
         let mut coalesced = None;
@@ -1895,11 +1882,13 @@ impl Toolbox
         }
     }
 
-    pub fn control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Status
+    pub(crate) fn control(&mut self, call: &mut mac_abi::controls::ControlCall,
+                          diagnostic: &mut Option<TrackingStage>)
+                          -> Status
     {
         if call.operation >= mac_abi::controls::CREATE_STANDARD
         {
-            return self.managed_control(call).map_or_else(|e| e, |_| OK);
+            return self.managed_control(call, diagnostic).map_or_else(|status| TrackingStage::refusal(diagnostic, TrackingStage::ManagedAdmission, status), |_| OK);
         }
         if !call.surface.is_null() || call.reflow != 0
         {
@@ -2246,8 +2235,9 @@ impl Toolbox
     }
 
     /// The foreground application owns cursor policy; only an exposed editor
-    /// content region can request an automatic I-beam. WDEF hit-testing excludes
-    /// chrome and covered windows, while TextEdit accounts for its port clip.
+    /// content region can request an automatic I-beam. Retained window geometry
+    /// excludes chrome/occlusion without author HIT on mouse motion; TextEdit
+    /// accounts for its port clip. This advisory result never admits input.
     fn automatic_cursor_at_mouse(&self) -> Option<u32>
     {
         if !self.pointer.cursors.is_automatic()
@@ -2263,8 +2253,7 @@ impl Toolbox
         }
         let window = self.windows.window(id)?;
         let local = window.global_to_local(self.events.mouse);
-        let hit = self.windows.find_window(self.events.mouse);
-        let hover = hit.part == WindowPart::Content && hit.window == Some(id);
+        let hover = self.windows.cached_content_window(self.events.mouse) == Some(id);
         if let Some(axis) = self.controls.splitter_axis_at(id.0, local, hover)
         {
             return Some(if axis == 0 { 17 } else { 21 });
@@ -2557,6 +2546,14 @@ impl Toolbox
 
     fn action(&mut self, action: Action, when: u32)
     {
+        self.action_at_input(action, when, self.events.mouse, self.events.modifiers);
+    }
+
+    fn action_at_input(&mut self, action: Action, when: u32, point: Point, modifiers: u16)
+    {
+        let context = Event { where_: point,
+                              modifiers,
+                              ..self.events.null_event(when) };
         // Held drag motion changes only the frontbuffer outline. Accepted
         // geometry/close changes are the point where the real scene changes.
         self.presentation.redraw |= !matches!(action, Action::CloseRequest(_));
@@ -2565,7 +2562,7 @@ impl Toolbox
             self.events.post_system(Event { kind: EventKind::OsEvent,
                                             message: mac_abi::events::WINDOW_GEOMETRY_CHANGED,
                                             window: id.0,
-                                            ..self.events.null_event(when) });
+                                            ..context });
         }
         self.last_action = match action
         {
@@ -2588,24 +2585,25 @@ impl Toolbox
                                                 message: WINDOW_CLOSE_REQUEST,
                                                 window: id.0,
                                                 when,
-                                                ..self.events.null_event(when) });
+                                                ..context });
                 "CLOSE_REQUEST"
             }
             Action::Close(id, closed_owner) =>
             {
-                self.scroll_boxes.remove_window(id.0);
-                self.controls.remove_window(id.0);
-                self.presentation.content.retain(|content| content.id != id);
-                self.presentation.content_damage.retain(|(target, _)| *target != id);
-                self.presentation.ordinary_underlay.forget(SceneTarget::from(id));
-                self.presentation.pending_content.retain(|content| content.id != id);
-                self.forget_cursor_window(id);
+                if let Err(status) = self.remove_closed_window_content(id, when)
+                {
+                    serial!("WINDOW_CLOSE_UI_REFUSED window={} status={status}; child owners \
+                             retained",
+                            id.0);
+                    self.last_action = "CLOSE_UI_REFUSED";
+                    return;
+                }
                 self.events.post_system_for(closed_owner,
                                             Event { kind: EventKind::OsEvent,
                                                     message: 0x02000000,
                                                     window: id.0,
                                                     when,
-                                                    ..self.events.null_event(when) });
+                                                    ..context });
                 // The trusted notice retained its owner before disposal;
                 // routing does not depend on a second ownership directory.
                 self.route_events();
@@ -2616,22 +2614,29 @@ impl Toolbox
 
     fn input(&mut self, input: Input, when: u32)
     {
-        // Resolve this real ButtonDown once. Motion/keys/ticks use the actual
-        // report focus/capture and never add definition HIT calls.
-        let hit = if self.system_report_needs_hit()
-                     && !self.menus.is_tracking()
-                     && !self.windows.is_tracking()
-                     && let Input::Button { point,
-                                            down: true } = input
-                     && point.v >= self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT
+        self.observe_window_input_intent(input);
+        if self.capture_window_input_tail(input, when)
         {
-            Some(self.windows.find_window(point))
+            return;
         }
-        else
+        let hit = match self.plan_physical_hit(input, when)
         {
-            None
+            input_callbacks::HitAdmission::Deferred => return,
+            input_callbacks::HitAdmission::Ready(hit) => hit
         };
-        match self.system_report_input(input, when, hit)
+        self.input_with_observation(input, when, hit, None);
+    }
+
+    fn input_with_observation(&mut self, input: Input, when: u32,
+                              hit: Option<super::windows::Hit>,
+                              observation: Option<input_callbacks::ObservedInput>)
+    {
+        let report = match observation
+        {
+            Some(observation) => self.system_report_observed_input(observation, hit),
+            None => self.system_report_input(input, when, hit)
+        };
+        match report
         {
             Ok(true) => return,
             Err(status) =>
@@ -2646,82 +2651,66 @@ impl Toolbox
         {
             let kind =
                 crate::recovery::active(self.owner, crate::recovery::Kind::CoreAlert).is_some();
-            if let Err(status) = activity.run(|| {
-                                             if kind
-                                             {
-                                                 self.with_core_dialogs(|toolbox| {
-                                                         toolbox.input_impl_with_hit(input, when,
-                                                                                     hit)
-                                                     });
-                                             }
-                                             else
-                                             {
-                                                 self.input_impl_with_hit(input, when, hit);
-                                             }
-                                         })
+            if let Err(status) =
+                activity.run(|| {
+                            if kind
+                            {
+                                self.with_core_dialogs(|toolbox| {
+                                        toolbox.input_observed_or_physical(input, when, hit,
+                                                                           observation)
+                                    });
+                            }
+                            else
+                            {
+                                self.input_observed_or_physical(input, when, hit, observation);
+                            }
+                        })
             {
                 note_recovery_input_refusal(activity.owner(), status);
             }
         }
         else
         {
-            self.input_impl_with_hit(input, when, hit);
+            self.input_observed_or_physical(input, when, hit, observation);
+        }
+    }
+
+    fn input_observed_or_physical(&mut self, input: Input, when: u32,
+                                  hit: Option<super::windows::Hit>,
+                                  observation: Option<input_callbacks::ObservedInput>)
+    {
+        match observation
+        {
+            Some(observation) => self.route_observed_input(observation, hit),
+            None => self.input_impl_with_hit(input, when, hit)
         }
     }
 
     fn input_impl_with_hit(&mut self, input: Input, when: u32,
                            admitted_hit: Option<super::windows::Hit>)
     {
-        let (kind, a, b, c) = match input
+        let observed = self.observe_physical_input(input, when);
+        self.route_observed_input(observed, admitted_hit);
+    }
+
+    fn route_observed_input(&mut self, observation: input_callbacks::ObservedInput,
+                            admitted_hit: Option<super::windows::Hit>)
+    {
+        let before = self.windows.tracking_visual();
+        self.route_observed_input_inner(observation, admitted_hit);
+        self.invalidate_tracking_feedback(before);
+    }
+
+    fn route_observed_input_inner(&mut self, observation: input_callbacks::ObservedInput,
+                                  admitted_hit: Option<super::windows::Hit>)
+    {
+        let input_callbacks::ObservedInput { input,
+                                             when,
+                                             modifiers,
+                                             key: observed } = observation;
+        if !self.observe_drag_release(observation, admitted_hit)
         {
-            Input::Move(point) => (1, point.h as u64, point.v as u64, 0),
-            Input::Button { point,
-                            down } => (2, point.h as u64, point.v as u64, down as u64),
-            Input::Key { mac_code,
-                         character,
-                         down,
-                         repeat,
-                         modifiers } =>
-            {
-                (3,
-                 ((mac_code as u64) << 8) | character as u64,
-                 down as u64 | ((repeat as u64) << 1),
-                 modifiers as u64)
-            }
-        };
-        crate::trace::record(crate::trace::INPUT, self.owner, kind, a, b, c);
-        let observed = self.events.observe_input(input, when);
-        if let Input::Button { point,
-                               down } = input
-        {
-            if down
-            {
-                // Modal/menu/control clicks invalidate the old observation too.
-                self.drag.reset_pointer_press();
-            }
-            else if self.drag.awaiting_pointer_release()
-            {
-                let hot = self.drag_hot(point);
-                self.drag.observe_pointer_release(point, self.events.modifiers, hot, when);
-            }
-        }
-        if let Input::Move(point)
-        | Input::Button { point,
-                               .. } = input
-        {
-            // Clear obscuring at input time, even if several queued moves
-            // bring the pointer back before the next framebuffer is painted.
-            self.observe_cursor_motion(point);
-        }
-        self.activity = self.activity.wrapping_add(1);
-        // Key delivery does not change window pixels. Repainting here stalls
-        // dispatch on an obsolete frame before the application handles the key.
-        // Pointer movement damages the cursor, not the retained scene. Tracking
-        // overlays or a changed stacking plane have their own scene damage.
-        if !matches!(input, Input::Key { .. })
-        {
-            self.presentation.cursor_dirty = true;
-            self.presentation.redraw |= self.windows.tracking_repaints_scene();
+            return;
         }
         #[cfg(feature = "display-event-debug")]
         if let Input::Key { mac_code,
@@ -2736,7 +2725,13 @@ impl Toolbox
             let full =
                 Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16);
             let reduced = Rect::new(0, 0, full.right * 3 / 4, full.bottom * 3 / 4);
-            self.display_changed(if self.screen == full { reduced } else { full });
+            let bounds = if self.screen == full { reduced } else { full };
+            match self.windows
+                      .preflight_fit_to_screen(bounds, mac_abi::menus::MENU_BAR_HEIGHT as i16)
+            {
+                Ok(()) => self.display_changed(bounds),
+                Err(status) => serial!("DISPLAY_DEBUG_FIT_REFUSED status={status}")
+            }
             return;
         }
         let report_scope = !self.system_report_selected()
@@ -2761,7 +2756,7 @@ impl Toolbox
             self.dialog_input(input, when);
             return;
         }
-        if self.drag_input(input, when)
+        if self.drag_input_observed(input, when, admitted_hit, modifiers)
         {
             return;
         }
@@ -2769,11 +2764,14 @@ impl Toolbox
         {
             return;
         }
+        if self.stage_tracking_release(observation)
+        {
+            return;
+        }
         match input
         {
             Input::Move(point) =>
             {
-                self.events.mouse = point;
                 if self.menus.is_tracking()
                 {
                     self.presentation.redraw |=
@@ -2788,15 +2786,6 @@ impl Toolbox
             Input::Button { point,
                             down } =>
             {
-                self.events.mouse = point;
-                if down
-                {
-                    self.events.modifiers &= !BTN_STATE;
-                }
-                else
-                {
-                    self.events.modifiers |= BTN_STATE;
-                }
                 if down
                 {
                     if self.menus.begin(point, &self.system_bar, &self.app_menu)
@@ -2810,7 +2799,12 @@ impl Toolbox
                         // starting capture or activating the desktop behind it.
                         return;
                     }
-                    let hit = admitted_hit.unwrap_or_else(|| self.windows.find_window(point));
+                    let hit =
+                        match admitted_hit.or_else(|| self.resolve_observed_press(observation))
+                        {
+                            Some(hit) => hit,
+                            None => return
+                        };
                     let active_before = self.windows.active_window();
                     let owner = hit.window
                                    .and_then(|id| self.window_owner(id))
@@ -2823,13 +2817,7 @@ impl Toolbox
                     if let Some(id) = hit.window
                     {
                         let active = active_before == Some(id);
-                        self.presentation.redraw |= hit.part != WindowPart::Drag
-                                                    && (!active
-                                                        || matches!(hit.part,
-                                                                    WindowPart::Grow
-                                                                    | WindowPart::GoAway
-                                                                    | WindowPart::ZoomIn
-                                                                    | WindowPart::ZoomOut));
+                        self.presentation.redraw |= hit.part != WindowPart::Drag && !active;
                         // DragWindow activates a background window only after a
                         // successful release; Command-drag preserves its plane.
                         if hit.part != WindowPart::Drag
@@ -2843,8 +2831,7 @@ impl Toolbox
                                     | WindowPart::ZoomIn
                                     | WindowPart::ZoomOut)
                         {
-                            self.windows
-                                .start_tracking_with_modifiers(hit, point, self.events.modifiers);
+                            self.windows.start_tracking_with_modifiers(hit, point, modifiers);
                         }
                         else if hit.part == WindowPart::Content
                                   && (active
@@ -2885,15 +2872,14 @@ impl Toolbox
                                                                                    .modifiers });
                                 }
                             }
-                            self.drag.observe_pointer_press(self.owner, id.0, point,
-                                                            self.events.modifiers);
+                            self.drag.observe_pointer_press(self.owner, id.0, point, modifiers);
                             self.events.post_system(Event { payload: 0,
                                                             kind: EventKind::MouseDown,
                                                             message: 0,
                                                             window: id.0,
                                                             when,
                                                             where_: point,
-                                                            modifiers: self.events.modifiers });
+                                                            modifiers });
                             self.last_action = "CONTENT";
                         }
                         else
@@ -2903,14 +2889,13 @@ impl Toolbox
                     }
                     else
                     {
-                        self.drag
-                            .observe_pointer_press(self.owner, 0, point, self.events.modifiers);
+                        self.drag.observe_pointer_press(self.owner, 0, point, modifiers);
                         self.events.post_system(Event { payload: 0,
                                                         kind: EventKind::MouseDown,
                                                         message: 0,
                                                         when,
                                                         where_: point,
-                                                        modifiers: self.events.modifiers,
+                                                        modifiers,
                                                         window: 0 });
                     }
                 }
@@ -2941,7 +2926,7 @@ impl Toolbox
                                                     message: 0,
                                                     when,
                                                     where_: point,
-                                                    modifiers: self.events.modifiers,
+                                                    modifiers,
                                                     window: 0 });
                 }
             }
@@ -2991,28 +2976,72 @@ impl Toolbox
         self.next_with_presence(mask, true)
     }
 
+    /// A genuine source/canvas return can unblock the retained settled mode.
+    /// This only arms the existing video service; no geometry or I/O runs here.
+    pub(crate) fn window_resources_returned(&mut self)
+    {
+        self.presentation.ordinary_underlay.source_returned();
+        self.presentation.tracking_grow.source_returned();
+        if self.presentation.pending_video_mode.is_some()
+        {
+            self.presentation.video_mode_wait = false;
+        }
+    }
+
     /// Presents video damage and applies a settled host size. Returns true when
     /// the display mode changed. Driver refusals leave the current mode alone.
     fn service_video(&mut self) -> bool
     {
         use mac_video_interface::{Outcome, Size};
 
-        let settled = match crate::machine::video::service()
+        match crate::machine::video::service()
         {
-            Ok(Some(size)) => size,
-            Ok(None) => return false,
+            Ok(Some(size)) =>
+            {
+                self.presentation.pending_video_mode = Some(size);
+                self.presentation.video_mode_wait = false;
+            }
+            Ok(None) => (),
             Err(status) =>
             {
                 serial!("VIDEO_SERVICE_FAILED status={status}");
                 return false;
             }
         };
+        let Some(settled) = self.presentation.pending_video_mode
+        else
+        {
+            return false;
+        };
+        if self.presentation.video_mode_wait
+        {
+            return false;
+        }
         let width =
             (settled.width as usize).clamp(crate::display::MIN_WIDTH, crate::display::MAX_WIDTH);
         let height =
             (settled.height as usize).clamp(crate::display::MIN_HEIGHT, crate::display::MAX_HEIGHT);
         if width == crate::display::width() && height == crate::display::height()
         {
+            self.presentation.pending_video_mode = None;
+            self.presentation.video_mode_wait = false;
+            return false;
+        }
+        // SERVICE reports a settled size once. Retain that actual request on
+        // refusal and retry after a real source/canvas return, never each input.
+        // Arm before preflight so a racing return cannot be discarded later.
+        self.presentation.video_mode_wait = true;
+        let bounds = Rect::new(0, 0, width as i16, height as i16);
+        if let Err(status) =
+            self.windows.preflight_fit_to_screen(bounds, mac_abi::menus::MENU_BAR_HEIGHT as i16)
+        {
+            if status != SERVICE_BUSY
+            {
+                serial!("VIDEO_MODE_ADMISSION_REFUSED {}x{}: window geometry refused; \
+                         status={status}",
+                        width,
+                        height);
+            }
             return false;
         }
         let size = Size { width:  width as u32,
@@ -3070,6 +3099,8 @@ impl Toolbox
         }
         prepared.commit();
         menu_layout.commit();
+        self.presentation.pending_video_mode = None;
+        self.presentation.video_mode_wait = false;
         self.presentation.menu_cache.invalidate();
         serial!("DISPLAY_MODE_CHANGED {}x{}", width, height);
         self.display_changed(mac_abi::geometry::Rect::new(0, 0, width as i16, height as i16));
@@ -3274,8 +3305,9 @@ impl Toolbox
             // queue and its capacity in place. Every take below has a restore.
             let mut damage = core::mem::take(&mut self.presentation.content_damage);
             let ordinary_damage = damage.iter().any(|(id, _)| !self.system_scene(*id));
+            let system_damage = damage.iter().any(|(id, _)| self.system_scene(*id));
+            let mut scene_changed = full || self.presentation.frame_incomplete || system_damage;
             let started = crate::trace::clock();
-            self.revision = self.revision.wrapping_add(1);
             self.presentation.compositions = self.presentation.compositions.wrapping_add(1);
             let cache_budget = super::quickdraw::content_cache::PIXEL_BUDGET
                 .saturating_sub(self.scroll_boxes.raster_storage())
@@ -3287,8 +3319,9 @@ impl Toolbox
             {
                 // Refusal retains the exact owned ordinary regions. The
                 // committed base stays available for genuine System rendering.
-                let _ = self.update_ordinary_underlay(&mut damage, full, available, &mut damaged,
-                                                      &mut copy_full);
+                scene_changed |= self.update_ordinary_underlay(&mut damage, full, available,
+                                                               &mut damaged, &mut copy_full)
+                                     .is_ok_and(|changed| changed);
             }
             let rendered = if full || self.presentation.frame_incomplete
             {
@@ -3314,6 +3347,7 @@ impl Toolbox
             self.presentation.content_damage = damage;
             if full || self.menus.is_tracking()
             {
+                scene_changed = true;
                 let menu_paint = crate::context::without_recovery(|| {
                     let mut canvas = Canvas::new(platform::back_buffer(),
                                                  crate::display::width(),
@@ -3350,12 +3384,13 @@ impl Toolbox
             }
             self.presentation.redraw = false;
             self.presentation.frame_incomplete = false;
-            crate::platform::with_tracking_mask(|scratch| {
-                let mut canvas = Canvas::new(platform::back_buffer(),
-                                             crate::display::width(),
-                                             crate::display::height());
-                self.windows.draw_tracking(&mut canvas, scratch);
-            });
+
+            if scene_changed
+            {
+                // A waiting author stage has not published ordinary pixels.
+                // Readiness alone must not advance the visible scene stamp.
+                self.revision = self.revision.wrapping_add(1);
+            }
             crate::trace::record(crate::trace::RENDER,
                                  caller,
                                  started,
@@ -3431,11 +3466,19 @@ impl Toolbox
     {
         use super::quickdraw::{feedback::{Clip, ClippedOutline, Feedback, Highlight},
                                presentation::Outline};
-        // A pending geometry change has not reached the retained scene yet.
-        // Keep its old visibility snapshot until composition commits it.
+        let grow = self.presentation.tracking_grow.overlay();
+        // Preserve the ordinary feedback geometry while a scene is pending,
+        // but release/cancel must still erase its actual accepted grow mask.
         if !full && self.presentation.redraw
         {
-            return self.presentation.feedback.clone();
+            let mut feedback = self.presentation.feedback.clone();
+            feedback.grow = grow;
+            return feedback;
+        }
+        if grow.is_some()
+        {
+            return Feedback { grow,
+                              ..Feedback::default() };
         }
         if full
         {
@@ -3546,6 +3589,9 @@ impl Toolbox
         }
         self.acknowledge_menu_feedback();
         self.presentation.feedback = feedback;
+        // Only after present-time transition stopped reading the previous mask
+        // may its same backing be reused or its original account be refunded.
+        self.presentation.tracking_grow.erased();
         self.presentation.feedback_dirty = !full && self.presentation.redraw;
         if self.presentation.presentation_damage.is_empty()
            && self.presentation.presentation_damage.capacity() < damaged.capacity()
@@ -3729,7 +3775,39 @@ impl super::windows::lifetime::WindowHost for Toolbox
             return Err(super::handles::cleanup::Failure::drag_effect_storage(ticket,
                                                                            self.drag.pending_effects()));
         }
+        // User DISPOSE is asynchronous. Accepted custody belongs to the SAME
+        // WM debt/job; only its later affine close receipt may remove UI children
+        // or release a dialog parent. Do not run that suffix at ticket adoption.
+        if self.windows.releasing_uses_process_definition(&ticket) == Some(true)
+        {
+            return self.windows.release(ticket).map(|_| ());
+        }
+        let children = match id
+        {
+            Some(id) =>
+            {
+                match self.controls.prepare_window_removal(id.0)
+                {
+                    Ok(children) => Some(children),
+                    Err(_) =>
+                    {
+                        return Err(super::handles::cleanup::Failure::window_controls_pending(ticket));
+                    }
+                }
+            }
+            None => None
+        };
+        let canonical = self.windows.releasing_has_trusted_close(&ticket);
         let result = self.windows.release(ticket);
+        if canonical
+        {
+            drop(children);
+            return result.map(|_| ());
+        }
+        if let Some(children) = children
+        {
+            children.commit();
+        }
         if let Some(id) = id
         {
             // A window can be walked before its Alert parent. End that protocol
@@ -3744,7 +3822,6 @@ impl super::windows::lifetime::WindowHost for Toolbox
                 serial!("DRAG_WINDOW_CLEANUP_DEFERRED window={} status={status}", id.0);
             }
             self.scroll_boxes.remove_window(id.0);
-            self.controls.remove_window(id.0);
             self.presentation.content.retain(|content| content.id != id);
             self.presentation.content_damage.retain(|(target, _)| *target != id);
             self.presentation.ordinary_underlay.forget(SceneTarget::from(id));

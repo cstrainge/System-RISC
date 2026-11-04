@@ -7,6 +7,9 @@ use core::{alloc::{GlobalAlloc, Layout},
 
 use mac_traps::emergency as machine;
 pub(crate) use machine::abort;
+#[cfg(feature = "application")]
+#[path = "application_callbacks.rs"]
+mod callbacks;
 
 #[cfg(feature = "application")]
 use crate::{Client, System, SystemServices, ToolboxResult, abi, panic};
@@ -29,16 +32,16 @@ pub fn exit(code: i32) -> !
 #[cfg(feature = "application")]
 pub unsafe fn enter(services: *const SystemServices,
                     run: impl FnOnce(&System<'static>) -> ToolboxResult<()>)
-                    -> abi::Status
+                    -> !
 {
     if let Err(status) = unsafe { panic::install(services) }
     {
-        return status;
+        machine::abort(format_args!("APPLICATION_STARTUP_REFUSED status={status}"));
     }
     let Some(client) = panic::installed_client()
     else
     {
-        return abi::BAD_ABI;
+        machine::abort(format_args!("APPLICATION_STARTUP_MISSING_SERVICES"));
     };
     let system = System { client };
     let result = run(&system);
@@ -50,13 +53,13 @@ pub unsafe fn enter(services: *const SystemServices,
     }
     match result
     {
-        Ok(()) => abi::OK,
+        Ok(()) => exit(0),
         Err(error) =>
         {
             panic::diagnostic(client,
                               format_args!("APPLICATION_RETURNED_ERROR status={} cause={error}\n",
                                            error.status()));
-            error.status()
+            exit(error.status())
         }
     }
 }

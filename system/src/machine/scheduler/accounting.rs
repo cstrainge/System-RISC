@@ -227,10 +227,24 @@ impl ThreadCharges
 
 /// Destruction frees physical backing before refunding its original account.
 /// No mutable dereference or extraction can detach the value from its receipt.
-pub(super) struct Charged<T>
+pub(crate) struct Charged<T>
 {
     value:   T,
     _charge: Committed<NativeInvocationGate>
+}
+impl<T> Charged<T>
+{
+    pub(crate) fn owner(&self) -> mac_object_table::domain::DomainId
+    {
+        self._charge.owner()
+    }
+}
+impl Charged<SavedState>
+{
+    pub(super) fn initialize(&mut self, frame: TrapFrame) -> Result<(), pages::Error>
+    {
+        self.value.initialize(frame)
+    }
 }
 impl<T> Deref for Charged<T>
 {

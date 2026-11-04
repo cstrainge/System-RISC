@@ -77,7 +77,17 @@ pub(super) fn grid_axis(entry: DefinitionRef, gate: TrapGate,
     {
         return Err(if result < 0 { Status::try_from(result).unwrap_or(BAD_ABI) } else { BAD_ABI });
     }
-    if axis.minimum < 0 || axis.preferred < axis.minimum
+    validate_axis(axis.minimum, axis.preferred, constraint, tracks, items)
+}
+
+pub(super) fn validate_axis(minimum_reply: i64, preferred_reply: i64,
+                            constraint: mac_abi::controls::reflow::AxisConstraint,
+                            tracks: &[mac_abi::controls::reflow::GridTrack],
+                            items: &[mac_abi::controls::reflow::GridItem])
+                            -> Result<(i64, i64), Status>
+{
+    use mac_abi::controls::reflow as wire;
+    if minimum_reply < 0 || preferred_reply < minimum_reply
     {
         return Err(BAD_ABI);
     }
@@ -108,7 +118,7 @@ pub(super) fn grid_axis(entry: DefinitionRef, gate: TrapGate,
                              .and_then(|n| n.checked_add(track.gap))
                              .ok_or(BAD_ABI)?;
     }
-    if (minimum, preferred) != (axis.minimum, axis.preferred)
+    if (minimum, preferred) != (minimum_reply, preferred_reply)
     {
         return Err(BAD_ABI);
     }
@@ -129,5 +139,5 @@ pub(super) fn grid_axis(entry: DefinitionRef, gate: TrapGate,
             return Err(BAD_ABI);
         }
     }
-    Ok((axis.minimum, axis.preferred))
+    Ok((minimum_reply, preferred_reply))
 }

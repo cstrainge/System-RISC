@@ -61,8 +61,9 @@ The compositor may reduce optional whole-window caching using a conservative
 viewport estimate, but that estimate neither reserves memory nor refuses scroll
 boxes. Shared row/table ownership uses `Arc::try_new`, including the small
 reference-count allocation.
-Fault-injected public calls verify both allocation stages return an error and
-leave the control usable; they cannot abort the kernel on shared-owner OOM.
+Both shared-owner allocation stages must return `NO_MEMORY` and preserve the
+previous control state on refusal. Native pressure and exhaustion coverage
+remains a separate qualification gate.
 
 A stable DRAW damages only the viewport and scrollbar, never the parent window
 or neighboring controls. Moving/reconfiguring or disposing a published control

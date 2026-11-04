@@ -8,18 +8,27 @@ use crate::{Result, error};
 #[serde(deny_unknown_fields)]
 pub(super) struct Definition
 {
+    maximum_active_harts:         u32,
     quantum_microseconds:         u64,
     callback_budget_microseconds: u64
 }
 pub struct Checked
 {
-    quantum:         u32,
-    callback_budget: u64
+    maximum_active_harts: u32,
+    quantum:              u32,
+    callback_budget:      u64
 }
 impl Definition
 {
-    pub(super) fn check(&self) -> Result<Checked>
+    pub(super) fn check(&self, qemu_harts: core::num::NonZeroUsize) -> Result<Checked>
     {
+        if self.maximum_active_harts == 0
+           || usize::try_from(self.maximum_active_harts).ok()
+                                                      .is_none_or(|count| count > qemu_harts.get())
+        {
+            return Err(error("platform scheduling.maximum_active_harts must be nonzero and no \
+                              greater than qemu_harts"));
+        }
         let quantum = u32::try_from(self.quantum_microseconds).ok()
                                                               .filter(|v| *v != 0)
                                                               .ok_or_else(|| {
@@ -35,7 +44,8 @@ impl Definition
                               nonzero; a callback budget is a late-return check, not \
                               non-return recovery"));
         }
-        Ok(Checked { quantum,
+        Ok(Checked { maximum_active_harts: self.maximum_active_harts,
+                     quantum,
                      callback_budget: self.callback_budget_microseconds })
     }
 }
@@ -43,8 +53,9 @@ impl Checked
 {
     pub fn rust_constants(&self) -> String
     {
-        format!("// Generated from the checked platform scheduling policy.\nconst \
-                 QUANTUM_MICROSECONDS: u64 = {};\nconst CALLBACK_BUDGET_MICROSECONDS: u64 = {};\n",
-                self.quantum, self.callback_budget)
+        format!("// Generated from the checked platform scheduling policy.\npub(crate) const \
+                 MAXIMUM_ACTIVE_HARTS: u32 = {};\nconst QUANTUM_MICROSECONDS: u64 = {};\nconst \
+                 CALLBACK_BUDGET_MICROSECONDS: u64 = {};\n",
+                self.maximum_active_harts, self.quantum, self.callback_budget)
     }
 }

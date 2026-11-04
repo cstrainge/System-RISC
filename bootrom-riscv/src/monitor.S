@@ -146,8 +146,42 @@ __monitor_vector:
     add sp,t0,t1
     csrw mscratch,t0
     csrr t1,mcause
+    li t2,3
+    beq t1,t2,.Lmonitor_user_breakpoint
     li t2,((1<<63)|3)
     bne t1,t2,__monitor_fatal
+    j 6f
+.Lmonitor_user_breakpoint:
+    # Breakpoint remains undelegated because trusted S firmware uses it for
+    # independent terminal failure. A genuine U breakpoint must instead reach
+    # the System's per-Process fault path. Only hardware MPP=U permits forwarding.
+    ld t1,{status}(t0)
+    li t2,(3<<11)
+    and t2,t1,t2
+    bnez t2,__monitor_fatal
+    csrr t2,stvec
+    andi t2,t2,-4
+    beqz t2,__monitor_fatal
+    ld t3,{pc}(t0)
+    csrw sepc,t3
+    li t3,3
+    csrw scause,t3
+    csrr t3,mtval
+    csrw stval,t3
+    # Emulate the delegated S trap status: SPP=U, SPIE=prior SIE, SIE=0.
+    # MRET enters the validated S vector; its first instruction still receives
+    # every original U register/SP from this monitor's complete integer frame.
+    andi t3,t1,2
+    slli t3,t3,4
+    li t4,((3<<11)|(1<<8)|(1<<5)|(1<<1))
+    not t4,t4
+    and t1,t1,t4
+    or t1,t1,t3
+    li t3,(1<<11)
+    or t1,t1,t3
+    sd t1,{status}(t0)
+    sd t2,{pc}(t0)
+    j .Lmonitor_restore
 6:  ld t1,{msip}(t0)
     sw zero,0(t1)
     fence iorw,iorw

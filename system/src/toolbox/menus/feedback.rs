@@ -2,7 +2,7 @@
 use mac_abi::{geometry::{Point, Rect},
               menus::Selection};
 
-use super::{Toolbox, Input};
+use super::{Input, Toolbox};
 use crate::toolbox::{events::BTN_STATE, menus::Command, quickdraw::Canvas};
 
 const PHASE_TICKS: u32 = 3;
@@ -217,7 +217,8 @@ impl Toolbox
         let mut changed = false;
         if !feedback.painted
            && !self.presentation.frame_incomplete
-           && self.presentation.presentation_damage.len() < self.presentation.presentation_damage.capacity()
+           && self.presentation.presentation_damage.len()
+              < self.presentation.presentation_damage.capacity()
         {
             let selected = feedback.phase % 2 != 0;
             let mut canvas = Canvas::new(crate::platform::back_buffer(),

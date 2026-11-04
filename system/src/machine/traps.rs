@@ -6,6 +6,7 @@ use mac_abi::{traps::*, *};
 use crate::toolbox;
 mod state;
 mod definition_services;
+pub(crate) mod user;
 mod hart;
 pub(crate) use hart::{Error as EntryError, OuterCapture, PreparedEntry, PreparedHart,
                       StartingHart, activity as cpus, admit_bootstrap, execution,
@@ -49,8 +50,8 @@ pub(crate) struct TrapFrame
     pub registers:     [usize; 30],
     pub pc:            usize,
     pub status:        usize,
-    cause:             usize,
-    value:             usize,
+    pub(super) cause:  usize,
+    pub(super) value:  usize,
     floating:          [u64; 32],
     fcsr:              usize,
     vl:                usize,
@@ -65,6 +66,9 @@ pub(crate) struct TrapFrame
 const _: () = assert!(core::mem::offset_of!(TrapFrame, pc) == 240
                       && core::mem::offset_of!(TrapFrame, status) == 248);
 pub(crate) const INITIAL_STATUS: usize = 0x120 | 0x6600;
+// FS/VS and SPIE are enabled, while SPP/SUM/MXR remain clear. User frames
+// may only be published after their own executable and stack maps exist.
+pub(crate) const USER_STATUS: usize = (INITIAL_STATUS & !(1 << 8)) & !((1 << 18) | (1 << 19));
 /// Validate the selected sizes against this CPU before allocating pools or
 /// starting services. This is policy admission, not System-stack activation.
 pub(crate) fn validate_stack_configuration(
@@ -300,7 +304,25 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         return Dispatch::Schedule;
     }
 
-    if frame.cause != 9
+    let user_origin = frame.status & (1 << 8) == 0;
+    if user_origin && frame.cause & (1usize << 63) == 0 && frame.cause != 8
+    {
+        if frame.prior_depth != 0
+        {
+            entry_lost("hardware user fault arrived inside a privileged nested service");
+        }
+        match super::scheduler::capture_fault(frame)
+        {
+            Ok(()) => return Dispatch::Schedule,
+            Err(status) =>
+            {
+                super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                        format_args!("User fault lost its genuine running \
+                                                      Process claim: status {status}."))
+            }
+        }
+    }
+    if !matches!((user_origin, frame.cause), (true, 8) | (false, 9))
     {
         super::emergency::serial(format_args!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}",
                                               frame.cause, frame.pc, frame.value));
@@ -313,6 +335,15 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                                              frame.cause, frame.pc, frame.value));
     }
     let number = frame.registers[15] as u32;
+    if user_origin
+       && (frame.prior_depth != 0
+           || number == mac_module::abi::worker::TRAP
+           || number == super::scheduler::service::host::TRAP)
+    {
+        frame.registers[8] = ACCESS_DENIED as usize;
+        frame.pc = frame.pc.wrapping_add(4);
+        return Dispatch::Resume;
+    }
     if execution::policy::deny(execution::policy::Operation::Service)
     {
         // Refuse before a request pointer or an executor-owned trap scope is
@@ -372,8 +403,58 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         return Dispatch::Resume;
     }
     let number = frame.registers[15] as u32;
-    let request = frame.registers[8] as *mut ();
-    let size = frame.registers[9];
+    let user_pointer = frame.registers[8] as *mut ();
+    let user_size = frame.registers[9];
+    let identity = super::scheduler::service::request_identity(frame);
+    let mut user_call = if user_origin
+    {
+        match user::prepare_or_resume(identity, number, user_pointer, user_size)
+        {
+            Ok(call) => Some(call),
+            Err(status) =>
+            {
+                drop(scope);
+                finish_service(frame, completion, i64::from(status));
+                return Dispatch::Resume;
+            }
+        }
+    }
+    else
+    {
+        None
+    };
+    if number == DEFINITION_PANIC
+       && let Some(call) = user_call.as_mut()
+    {
+        let result = call.definition_panic(frame);
+        drop(scope);
+        // No return/copyout obligation survives a successful nonreturning
+        // Process failure capture. Its original inflight Job is retained until
+        // the actual callback THRD can no longer run or resume.
+        let status = result.as_ref().map_or_else(|status| *status, |()| OK);
+        drop(user_call.take());
+        finish_service(frame, completion, i64::from(status));
+        return if result.is_ok() { Dispatch::Schedule } else { Dispatch::Resume };
+    }
+    let captured = match user_call.as_mut()
+    {
+        Some(call) => call.request(),
+        None => Ok((user_pointer, user_size))
+    };
+    let (request, size) = match captured
+    {
+        Ok(request) => request,
+        Err(status) =>
+        {
+            drop(scope);
+            // The original Call owns its continuation and checked buffers.
+            // Failed snapshot access never starts dispatch or copies output;
+            // dropping it cancels the same owned operation and surface loan.
+            drop(user_call.take());
+            finish_service(frame, completion, i64::from(status));
+            return Dispatch::Resume;
+        }
+    };
     #[cfg(feature = "event-trace")]
     let started = crate::platform::ticks();
     let admission = if thread.is_module_worker() && number != LOG
@@ -395,10 +476,32 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         (WRONG_THREAD as i64, super::scheduler::service::RequestAction::Return)
     }
+    else if user_call.is_some() && number == USER_CALLBACK
+    {
+        let suspension = super::scheduler::service::request_suspension_allowed(frame);
+        let response = hart::service_scope(physical_depth == 1, || {
+            match user_call.as_mut()
+            {
+                Some(call) => call.dispatch_callback(suspension),
+                None => super::scheduler::service::RequestResult::done(BAD_ABI)
+            }
+        });
+        (i64::from(response.status), response.action)
+    }
+    else if let Some(response) =
+        user_call.as_mut().and_then(|call| {
+                              let suspension =
+                                  super::scheduler::service::request_suspension_allowed(frame);
+                              hart::service_scope(physical_depth == 1, || {
+                                  call.dispatch_definition(suspension)
+                              })
+                          })
+    {
+        (i64::from(response.status), response.action)
+    }
     else if matches!(number, NATIVE_THREAD | ADDRESS_WAIT)
               || (number == PROCESS && size == size_of::<mac_abi::processes::NativeExitCall>())
     {
-        let identity = super::scheduler::service::request_identity(frame);
         let suspension = super::scheduler::service::request_suspension_allowed(frame);
         let response = hart::service_scope(physical_depth == 1, || unsafe {
             dispatch_native_request(number, request, size, identity, suspension)
@@ -450,30 +553,74 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                     crate::drivers::abandon_deferred_job(thread.identity().thread.0, handle)
                 }
             }
-            finish_service(frame, completion, BAD_ABI as i64);
+            let result = finish_user_call(user_call.take(), BAD_ABI as i64);
+            finish_service(frame, completion, result);
             return Dispatch::Resume;
         }
-        // All request slices, legacy conversion temporaries and manager guards
-        // are gone. Preserve original request registers/PC for a fresh borrow
-        // when the completion wakes the same generation-tagged OS thread.
+        // All service borrows ended. User requests retain the same owned
+        // snapshot and physical pins; replay never rereads mutable app data.
+        retain_user_call(user_call.take());
         match super::scheduler::wait_io(job)
         {
             Ok(true) => return Dispatch::Schedule,
             Ok(false) => return Dispatch::Resume, // completion won the race; replay now
             Err(error) =>
             {
-                finish_service(frame, completion, error as i64);
+                let call = if user_origin
+                {
+                    match thread.take_user_call(identity, number, user_pointer.addr(), user_size)
+                    {
+                        Ok(call) => call,
+                        Err(status) =>
+                        {
+                            super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                                    format_args!("Owned user I/O lost its \
+                                                                  original request binding: \
+                                                                  status {status}."))
+                        }
+                    }
+                }
+                else
+                {
+                    None
+                };
+                let result = finish_user_call(call, i64::from(error));
+                finish_service(frame, completion, result);
                 return Dispatch::Resume;
             }
         }
     }
     if action == super::scheduler::service::RequestAction::Replay
     {
+        retain_user_call(user_call.take());
         // Every Call/executor/manager borrow has ended. The original PC and
         // request identity remain owned by this same canonical continuation.
         return Dispatch::Schedule;
     }
+    let result = if action == super::scheduler::service::RequestAction::Exit
+    {
+        // A nonreturning exit has no user output obligation. Release its
+        // original request pins after every service/manager borrow has ended.
+        drop(user_call.take());
+        result
+    }
+    else
+    {
+        finish_user_call(user_call.take(), result)
+    };
     finish_service(frame, completion, result);
+    // Output delivery and the original service obligation have both ended.
+    // Replay/deferred branches returned above; Yield/Exit do not return here
+    // to the user. Never inspect request memory for a report.
+    if user_origin
+       && action == super::scheduler::service::RequestAction::Return
+       && frame.registers[8] as isize == SERVICE_BUSY as isize
+       && !thread.traps.terminal_busy_reported()
+    {
+        let identity = thread.identity();
+        serial!("NATIVE_SERVICE_BUSY app={} thread={} trap={:#x} status={}", identity.app.0,
+                identity.thread.0, number, SERVICE_BUSY);
+    }
     if physical_depth == 1
        && matches!(action,
                    super::scheduler::service::RequestAction::Yield
@@ -488,6 +635,33 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         return Dispatch::Schedule;
     }
     Dispatch::Resume
+}
+
+fn finish_user_call(call: Option<user::Call>, result: i64) -> i64
+{
+    match call.map(user::Call::finish)
+    {
+        Some(Err(status)) =>
+        {
+            serial!("USER_COPYOUT_REFUSED status={status} service_status={result}");
+            i64::from(status)
+        }
+        _ => result
+    }
+}
+
+fn retain_user_call(call: Option<user::Call>)
+{
+    if let Some(call) = call
+       && let Err((status, _held)) = call.retain()
+    {
+        // The validated request owns the vacant slot on this same THRD. A
+        // lost internal binding cannot free an in-flight buffer: the returned
+        // envelope remains live on this terminal, nonunwinding path.
+        super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                format_args!("Owned user request lost its native continuation: \
+                                              status {status}."));
+    }
 }
 
 /// The service has finished and every manager/request borrow ended. Preserve
@@ -1116,14 +1290,19 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             {
                 return toolbox::runtime::native_control(call) as i64;
             }
-            definition_request(|runtime| {
-                if let Some(id) = runtime.preflight_control(call)?
+            let mut diagnostic = None;
+            let status = definition_request(|runtime| {
+                let prepared = runtime.preflight_control(call).map_err(|status| {
+                    crate::toolbox::runtime::TrackingStage::refusal(&mut diagnostic, crate::toolbox::runtime::TrackingStage::Descriptor, status)
+                })?;
+                if let Some(id) = prepared
                 {
-                    return Ok(DefinitionTurn::Prepare { kind: *b"CDEF",
-                                                        id });
+                    return Ok(DefinitionTurn::Prepare { kind: *b"CDEF", id });
                 }
-                Ok(DefinitionTurn::Complete(runtime.control(call)))
-            }).unwrap_or_else(|status| status) as i64
+                Ok(DefinitionTurn::Complete(runtime.control(call, &mut diagnostic)))
+            }).unwrap_or_else(|status| status);
+            crate::toolbox::runtime::report_tracking_status(call, diagnostic, status);
+            status as i64
         }
         GEOMETRY => toolbox::quickdraw::geometry::dispatch(read_request!(GeometryCall)) as i64,
         SURFACE =>
@@ -1131,7 +1310,10 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         QUICKDRAW | FONT | REGION | COPY_BITS | WORLD | CURSOR | MAPPING | RESOURCE | PICTURE
         | ICON | IMAGE =>
         unsafe {
-            toolbox::quickdraw::native::dispatch(number, pointer, size, crate::kernel::fonts().as_deref())
+            toolbox::quickdraw::native::dispatch(number,
+                                                 pointer,
+                                                 size,
+                                                 crate::kernel::fonts().as_deref())
         },
         WINDOW =>
         {
@@ -1203,21 +1385,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         }
         DEFINITION =>
         {
-            let call = read_request!(DefinitionCall);
-            if !call.header.supports::<DefinitionCall>()
-            {
-                return BAD_ABI as i64;
-            }
-            call.gate = gateway;
-            match crate::loader::prepare_definition(call.kind.to_be_bytes(), call.id)
-            {
-                Ok(entry) => toolbox::resources::definitions::invoke(entry, call),
-                Err(cause) =>
-                {
-                    serial!("DEFINITION_UNAVAILABLE: {}", cause);
-                    crate::loader::status(cause) as i64
-                }
-            }
+            let call = read_request!(mac_abi::definitions::UserCall);
+            // Only the S-origin path reaches this dispatcher with a direct
+            // DTO. U calls use the envelope's captured definition binding and
+            // checked family copies or their own user callback queue.
+            unsafe { toolbox::resources::definitions::callbacks::dispatch_supervisor(call) }
         }
         CLASSIC =>
         {
@@ -1267,6 +1439,7 @@ pub(crate) fn worker_resume_status(state: &SavedState, status: Status)
 }
 pub(crate) fn publish_cpu(state: &SavedState)
 {
+    state.published();
     hart::publish(state)
 }
 pub(super) fn entry_lost(reason: &str) -> !
