@@ -1,30 +1,56 @@
 //! Control Manager client bindings; standard CDEF drawing lives in System.
 #![no_std]
 #![forbid(unsafe_code)]
-pub use mac_abi::{geometry::{Point, Rect}, WindowId, controls::ScrollbarState,
-                  definitions::ControlDefinitionState as StandardState, quickdraw::FontSelection};
+pub use mac_abi::{WindowId,
+                  controls::ScrollbarState,
+                  definitions::ControlDefinitionState as StandardState,
+                  geometry::{Point, Rect},
+                  quickdraw::FontSelection};
 pub use sr_control_reflow_handling::{Anchors, AxisConstraint, BorderOffsets, Constraints,
                                      Error as LayoutError, Extent, Fill, Invalidation, LayoutRect,
                                      Measurement, Reflow, Requirements, Size, SizeBounds,
                                      SizePreferences, SizeUnit, Span};
+/// Supported standard-control procIDs, using the classic CDEF*16+variation
+/// encoding. Scroll bars use their dedicated typed state/API.
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandardKind
 {
-    Button                = 0,
-    Checkbox              = 1,
-    Radio                 = 2,
-    WindowFontButton      = 8,
-    WindowFontCheckbox    = 9,
-    WindowFontRadio       = 10,
+    Button             = 0,
+    Checkbox           = 1,
+    Radio              = 2,
+    WindowFontButton   = 8,
+    WindowFontCheckbox = 9,
+    WindowFontRadio    = 10,
     /// Prefer the typed ProgressBar owner for byte counts and unknown totals.
-    ProgressBar           = mac_abi::controls::PROGRESS_BAR_PROCEDURE,
-    MonochromeProgressBar = mac_abi::controls::MONOCHROME_PROGRESS_BAR_PROCEDURE,
+    ProgressBar        = mac_abi::controls::PROGRESS_BAR_PROCEDURE,
     /// Prefer the typed StaticText owner for UTF-8 text and justification.
-    StaticText            = mac_abi::controls::STATIC_TEXT_PROCEDURE,
+    StaticText         = mac_abi::controls::STATIC_TEXT_PROCEDURE,
     /// Grid container; prefer the typed Table owner for child placement.
-    Table                 = mac_abi::controls::TABLE_PROCEDURE,
-    Splitter              = mac_abi::controls::SPLITTER_PROCEDURE
+    Table              = mac_abi::controls::TABLE_PROCEDURE,
+    Splitter           = mac_abi::controls::SPLITTER_PROCEDURE
+}
+impl TryFrom<i16> for StandardKind
+{
+    type Error = mac_traps::Error;
+
+    fn try_from(procedure: i16) -> Result<Self>
+    {
+        match procedure
+        {
+            0 => Ok(Self::Button),
+            1 => Ok(Self::Checkbox),
+            2 => Ok(Self::Radio),
+            8 => Ok(Self::WindowFontButton),
+            9 => Ok(Self::WindowFontCheckbox),
+            10 => Ok(Self::WindowFontRadio),
+            mac_abi::controls::PROGRESS_BAR_PROCEDURE => Ok(Self::ProgressBar),
+            mac_abi::controls::STATIC_TEXT_PROCEDURE => Ok(Self::StaticText),
+            mac_abi::controls::TABLE_PROCEDURE => Ok(Self::Table),
+            mac_abi::controls::SPLITTER_PROCEDURE => Ok(Self::Splitter),
+            _ => Err(mac_traps::Error::NotSupported)
+        }
+    }
 }
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

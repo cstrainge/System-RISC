@@ -46,16 +46,19 @@ pub const CHANGED: u32 = 16;
 
 /// Native CDEF state validation before retained drawing; no surface required.
 pub const VALIDATE_DEFINITION: i16 = 5;
-/// Native-only passive control procedures. These are not classic procIDs.
-pub const PROGRESS_BAR_PROCEDURE: i16 = i16::MIN;
-pub const STATIC_TEXT_PROCEDURE: i16 = i16::MIN + 1;
-pub const MONOCHROME_PROGRESS_BAR_PROCEDURE: i16 = i16::MIN + 2;
-pub const TABLE_PROCEDURE: i16 = i16::MIN + 3;
-pub const CDEF_PROGRESS_BAR: i16 = -32760;
-pub const CDEF_STATIC_TEXT: i16 = -32759;
-pub const CDEF_TABLE: i16 = -32758;
-pub const SPLITTER_PROCEDURE: i16 = i16::MIN + 4;
-pub const CDEF_SPLITTER: i16 = -32757;
+/// System CDEF resource IDs occupy 0..=127. Procedure IDs use the classic
+/// encoding: resource ID in the upper bits, variation in the low four bits.
+pub const CDEF_PROGRESS_BAR: i16 = 5;
+pub const CDEF_STATIC_TEXT: i16 = 18;
+pub const CDEF_TABLE: i16 = 27;
+pub const CDEF_SPLITTER: i16 = 28;
+pub const PROGRESS_BAR_PROCEDURE: i16 = CDEF_PROGRESS_BAR << 4;
+pub const STATIC_TEXT_PROCEDURE: i16 = CDEF_STATIC_TEXT << 4;
+pub const TABLE_PROCEDURE: i16 = CDEF_TABLE << 4;
+pub const SPLITTER_PROCEDURE: i16 = CDEF_SPLITTER << 4;
+/// Native progress presentation flag, independent of the classic procedure.
+/// Procedure 81 belongs to the Appearance relevance bar, not monochrome mode.
+pub const PROGRESS_MONOCHROME: i16 = 1;
 pub const SPLITTER_PART: i16 = 130;
 pub const SPLITTER_HORIZONTAL: i16 = 1;
 pub const SPLITTER_RANGE: i16 = 2;

@@ -8,7 +8,7 @@
   "resources": [
     {
       "type": "CDEF",
-      "id": -32759,
+      "id": 18,
       "name": "Private Static Text Panic Probe",
       "payload": {
         "format": "native_code",

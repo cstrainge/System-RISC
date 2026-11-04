@@ -105,7 +105,7 @@ fn main()
         definition_elf.parent()).expect("package native disposal-counter CDEF");
     let mut resources = mac_formats::resource::decode(&file.resources).expect("decode probe fork");
     let definition = definitions.into_iter()
-                                .find(|r| r.kind == *b"CDEF" && r.id == -32759)
+                                .find(|r| r.kind == *b"CDEF" && r.id == 18)
                                 .expect("native disposal actor supplies the Static Text CDEF");
     resources.push(definition);
     if let Some(elf) = &window_definition
