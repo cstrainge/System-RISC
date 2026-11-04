@@ -227,7 +227,7 @@ Vec ownership and the same resident deallocation path.
 
 ## Bounded native observations — 2026-10-29
 
-The optimized QemuRISC-V/RVA23 build ran in private QEMU virt guests with 8 GiB
+The optimized qemu_riscv/RVA23 build ran in private QEMU virt guests with 8 GiB
 RAM, 800×600 display, event/input tracing disabled and one or four physical CPUs.
 The shared System resource SHA-256 was
 `56553d920e9f0791191400c7d6b3c6e5df023966cc3d5f811dbfd404d8e5e952`;
@@ -294,7 +294,7 @@ provider readiness or correct pending-document replay. Its updated native wire
 was exercised separately in the bounded observations below; previous artifact
 observations above remain scoped to their recorded earlier layouts.
 
-An optimized QemuRISC-V whole-world build ran in private QEMU
+An optimized qemu_riscv whole-world build ran in private QEMU
 virt guests with four CPUs, 8 GiB RAM and event/TextEdit input tracing disabled.
 System resource SHA-256 was
 `2f23cf112f75dda00feef4b4af3903581cd2f7eb2a742d8083a2b3b5b73cc629`;

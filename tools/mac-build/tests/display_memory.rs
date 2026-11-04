@@ -3,7 +3,7 @@ use mac_build::platform::Platform;
 #[test]
 fn display_policy_refuses_two_frames_when_the_resident_backbuffer_needs_a_third()
 {
-    let mut definition: serde_json::Value = mac_build::platform::record("QemuRISC-V").unwrap();
+    let mut definition: serde_json::Value = mac_build::platform::record("qemu_riscv").unwrap();
     definition["memory"]["display_scratch"]["bytes"] = serde_json::json!("0x3aa000");
     let platform: Platform = serde_json::from_value(definition).unwrap();
     let error = platform.memory().err().expect("two-frame reservation must be refused");

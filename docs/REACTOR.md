@@ -135,7 +135,7 @@ unique implementation remains in each relocatable code resource.
 
 ## Native System-ledger observations
 
-A frozen optimized no_std RV64 build on a four-CPU QemuRISC-V machine exercised
+A frozen optimized no_std RV64 build on a four-CPU qemu_riscv machine exercised
 the public SDK against the real resident inspection path. Its diagnostic read
 System 0 with 25 pools and 94 live resources in that boot scenario, checked four
 canonical idle THRDs against the four actual service-stack mappings, required

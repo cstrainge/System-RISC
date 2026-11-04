@@ -1,6 +1,6 @@
 {
-  "include": "RiscVBase.json",
-  "name": "QemuRISC-V",
+  "include": "riscv_base.json",
+  "name": "qemu_riscv",
   "bootloader": {
     "description": "M-mode boot ROM: executes in place from read-only pflash, probes the machine and loads the resident System from the boot disk",
     "package": "bootrom-riscv",
@@ -13,6 +13,7 @@
     "images": {
       "system-disk": {
         "description": "Bare HFS-B System 7 volume over the whole 500 MiB medium, with no partition table, which is what the resident disk driver expects",
+        "output": "system7.hfsb",
         "layout": {
           "kind": "filesystem",
           "filesystem": "system7",

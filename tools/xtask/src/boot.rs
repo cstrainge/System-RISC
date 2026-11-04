@@ -1,40 +1,124 @@
-//! Flash-ROM packaging, serial-console launch and actual disk boot checks.
+//! Boot payload packaging, the interactive launcher and disk boot checks.
 use std::{fs::{self, File, OpenOptions},
           io::{Read, Seek, SeekFrom, Write},
-          path::Path,
+          path::{Path, PathBuf},
           process::{Child, Command, Stdio},
           thread,
-          time::{Duration, Instant}};
+          time::Instant};
 
 use mac_build::{Result, error, package};
 use mac_formats::{macbinary, native::Descriptor, resource};
 use serde_json::{Value, json};
 
-use crate::{Workspace, disk, output, run, write_json};
+use crate::{Workspace, disk, elf, emulator, output, run as run_command, tools, write_json};
 
-pub fn package_rom(workspace: &Workspace) -> Result<Value>
+/// The boot payload this platform produces, derived from the bootloader its
+/// record declares. Nothing here names a package or an artifact.
+pub fn payload(platform: &mac_build::platform::Platform, dist: &Path) -> Result<PathBuf>
 {
-    let dist = workspace.build.join("dist");
-    fs::create_dir_all(&dist)?;
-    let elf = workspace.build
-                       .join("target")
-                       .join(&workspace.platform.rust_target)
-                       .join("release/bootrom-riscv");
-    let rom = dist.join("bootrom-riscv.bin");
-    run(Command::new("llvm-objcopy").args(["-O", "binary"]).arg(&elf).arg(&rom))?;
-    let length = rom.metadata()?.len();
-    let memory = workspace.platform.memory()?;
-    if length == 0 || length > memory.flash_bytes()
+    let bootloader =
+        platform.bootloader.as_ref().ok_or_else(|| {
+                                         error(format!("platform '{}' declares no bootloader, so \
+                                                        it produces no boot payload. Declare a \
+                                                        `bootloader` section naming the package \
+                                                        that builds one, or build the medium \
+                                                        with `cargo xtask image` for a platform \
+                                                        whose first stage is vendor firmware.",
+                                                       platform.name))
+                                     })?;
+    Ok(dist.join(format!("{}.bin", bootloader.artifact)))
+}
+
+/// A platform storage image, by the name the record gives it.
+pub fn media(platform: &mac_build::platform::Platform, dist: &Path, image: &str)
+             -> Result<PathBuf>
+{
+    let storage = platform.storage.as_ref().ok_or_else(|| {
+                                                error(format!("platform '{}' attaches storage \
+                                                               image '{image}' but declares no \
+                                                               storage section",
+                                                              platform.name))
+                                            })?;
+    let medium =
+        storage.images.get(image).ok_or_else(|| {
+                                      let declared: Vec<&str> =
+                                          storage.images.keys().map(String::as_str).collect();
+                                      error(format!("platform '{}' attaches storage image \
+                                                     '{image}', which it does not declare; it \
+                                                     declares: {}",
+                                                    platform.name,
+                                                    declared.join(", ")))
+                                  })?;
+    Ok(dist.join(medium.file(image)))
+}
+
+pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
+{
+    let Some(bootloader) = workspace.platform.bootloader.clone()
+    else
     {
-        return Err(error("ROM payload does not fit the selected platform flash bank"));
+        println!("Platform '{}' declares no bootloader; no boot payload is produced.",
+                 workspace.platform.name);
+        return Ok(None);
+    };
+    let dist = workspace.dist().to_path_buf();
+    fs::create_dir_all(&dist)?;
+    let elf = workspace.target()
+                       .join(&workspace.platform.rust_target)
+                       .join("release")
+                       .join(&bootloader.package);
+    if !elf.is_file()
+    {
+        return Err(error(format!("platform '{}' declares bootloader package '{}', which did \
+                                  not produce {}; build that package or correct the platform \
+                                  record",
+                                 workspace.platform.name,
+                                 bootloader.package,
+                                 elf.display())));
     }
+    let memory = workspace.platform.memory()?;
+    let flattened = elf::flatten(&fs::read(&elf)?, memory.flash_bytes())?;
+    let rom = dist.join(format!("{}.bin", bootloader.artifact));
+    fs::write(&rom, &flattened.bytes)?;
     OpenOptions::new().write(true).open(&rom)?.set_len(memory.flash_bytes())?;
-    fs::copy(&elf, dist.join("bootrom-riscv.elf"))?;
-    let report = json!({"image": workspace.describe(&rom), "elf": workspace.describe(&dist.join("bootrom-riscv.elf")), "flash_base": memory.flash_base(), "payload_size": length, "flash_bank_size": memory.flash_bytes(), "sha256": package::sha256(&fs::read(rom)?), "source": "System7/bootrom-riscv", "execution": "M-mode execute-in-place from read-only QEMU virt pflash"});
-    write_json(&dist.join("bootrom-riscv.json"), &report)?;
-    println!("Packaged boot ROM: {length} bytes in {} MiB platform flash bank.",
+    let elf_copy = dist.join(format!("{}.elf", bootloader.artifact));
+    fs::copy(&elf, &elf_copy)?;
+    let report = json!({"image": workspace.describe(&rom),
+                        "elf": workspace.describe(&elf_copy),
+                        "bootloader": bootloader.package,
+                        "flash_base": memory.flash_base(),
+                        "load_base": flattened.base,
+                        "entry": flattened.entry,
+                        "payload_size": flattened.bytes.len(),
+                        "flash_bank_size": memory.flash_bytes(),
+                        "sha256": package::sha256(&fs::read(&rom)?),
+                        "source": format!("System7/{}", bootloader.package),
+                        "execution": bootloader.description});
+    write_json(&dist.join(format!("{}.json", bootloader.artifact)), &report)?;
+    println!("Packaged {}: {} bytes at 0x{:x} in {} MiB platform flash bank.",
+             bootloader.package,
+             flattened.bytes.len(),
+             flattened.base,
              memory.flash_bytes() / (1024 * 1024));
-    Ok(report)
+    Ok(Some(report))
+}
+
+/// The packaging report for the declared bootloader, if the platform has one.
+pub fn bootloader_report(workspace: &Workspace) -> Result<PathBuf>
+{
+    let bootloader =
+        workspace.platform.bootloader.as_ref().ok_or_else(|| {
+                                                   error(format!("platform '{}' declares no \
+                                                                  bootloader, so there is no \
+                                                                  packaging report",
+                                                                 platform_name(workspace)))
+                                               })?;
+    Ok(workspace.dist().join(format!("{}.json", bootloader.artifact)))
+}
+
+fn platform_name(workspace: &Workspace) -> &str
+{
+    &workspace.platform.name
 }
 
 pub fn disk_format(path: &Path) -> Result<&'static str>
@@ -44,53 +128,31 @@ pub fn disk_format(path: &Path) -> Result<&'static str>
     Ok(if magic == *b"QFI\xfb" { "qcow2" } else { "raw" })
 }
 
-fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Result<Command>
+/// Start the platform's machine. The invocation, the device set and the
+/// readiness contract all come from the platform record.
+pub fn run(workspace: &Workspace, mode: emulator::Mode, media: &[PathBuf], extra: &[String])
+           -> Result<()>
 {
-    // Input, entropy and GPU have fixed nonoverlapping platform slots. Keep
-    // the public ROM launcher on the same real devices as normal std startup.
-    let slots = [0, 3, 4, 7];
-    if disks.len() > slots.len()
+    let invocation = emulator::invocation(&workspace.platform,
+                                          &workspace.root,
+                                          workspace.dist(),
+                                          media,
+                                          mode,
+                                          emulator::Serial::Stdio,
+                                          extra)?;
+    println!("Booting {} through {}. Ctrl+C stops the emulator.",
+             workspace.platform
+                      .emulation()
+                      .map(|emulation| emulation.description.as_str())
+                      .unwrap_or("the declared machine"),
+             invocation.describe());
+    let status = invocation.command().status()?;
+    if !status.success()
     {
-        return Err(error("ROM launcher supports at most four disks alongside input, RNG and GPU"));
+        return Err(error(format!("emulator exited with {status}; the boot payload is {}",
+                                 payload(&workspace.platform, workspace.dist())?.display())));
     }
-    let emulation = workspace.platform.require_emulation()?;
-    let mut command = Command::new(&emulation.binary);
-    let harts = emulation.harts.get().to_string();
-    command.args(["-machine",
-                  emulation.machine.as_str(),
-                  "-cpu",
-                  emulation.cpu.as_deref().unwrap_or_default(),
-                  "-m",
-                  emulation.ram.as_str(),
-                  "-smp",
-                  &harts,
-                  "-bios",
-                  "none",
-                  "-drive"])
-           .arg(format!("if=pflash,unit=0,format=raw,readonly=on,file={}",
-                        workspace.build.join("dist/bootrom-riscv.bin").display()))
-           .args(["-global", "virtio-mmio.force-legacy=false", "-display", "none", "-monitor",
-                  "none", "-nic", "none", "-device", "virtio-gpu-device,bus=virtio-mmio-bus.6",
-                  "-device", "ramfb", "-device", "virtio-keyboard-device,bus=virtio-mmio-bus.1",
-                  "-device", "virtio-tablet-device,bus=virtio-mmio-bus.2", "-object",
-                  "rng-builtin,id=system-rng", "-device",
-                  "virtio-rng-device,rng=system-rng,bus=virtio-mmio-bus.5"]);
-    for (index, (path, format)) in disks.iter().enumerate()
-    {
-        command.arg("-drive")
-               .arg(format!("if=none,id=disk{index},readonly=on,format={format},file={}",
-                            path.display()))
-               .arg("-device")
-               .arg(format!("virtio-blk-device,drive=disk{index},bus=virtio-mmio-bus.{}",
-                            slots[index]));
-    }
-    Ok(command)
-}
-
-pub fn interactive(workspace: &Workspace, path: &Path, format: &str) -> Result<()>
-{
-    println!("Booting read-only disk through flash ROM. Ctrl+C stops QEMU.");
-    run(command(workspace, &[(path, format)])?.args(["-serial", "stdio"]))
+    Ok(())
 }
 
 struct Guest(Child);
@@ -103,8 +165,8 @@ impl Drop for Guest
     }
 }
 
-fn case(workspace: &Workspace, directory: &Path, name: &str, disks: &[(&Path, &str)],
-        expected: &[&str], boots: bool)
+fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], expected: &[&str],
+        boots: bool)
         -> Result<Value>
 {
     let serial = directory.join(format!("{name}.serial.log"));
@@ -112,35 +174,30 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, disks: &[(&Path, &s
     // Do not accept a readiness marker left by a previous invocation while the
     // new QEMU process is still opening its serial backend.
     File::create(&serial)?;
-    let mut command = command(workspace, disks)?;
-    command.arg("-serial")
-           .arg(format!("file:{}", serial.display()))
-           .stdin(Stdio::null())
-           .stdout(Stdio::null())
-           .stderr(File::create(&stderr)?);
-    let launch = format!("{command:?}");
+    let invocation = emulator::invocation(&workspace.platform,
+                                          &workspace.root,
+                                          workspace.dist(),
+                                          media,
+                                          emulator::Mode::Headless,
+                                          emulator::Serial::File(serial.clone()),
+                                          &[])?;
+    let mut command = invocation.command();
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(File::create(&stderr)?);
+    let launch = emulator::render(&invocation);
     let mut child = Guest(command.spawn()?);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + invocation.timeout;
     let log = loop
     {
         let log = fs::read_to_string(&serial).unwrap_or_default();
         // UART output can be observed halfway through a formatted line. Wait
         // for its newline before validating markers or stopping the guest.
-        if log.split_inclusive('\n').any(|line| {
-                                        line.ends_with('\n')
-                                        && (line.contains("DESKTOP_READY:")
-                                            || line.contains("BOOT_NO_SYSTEM:"))
-                                    })
+        if log.split_inclusive('\n').any(|line| line.ends_with('\n') && invocation.booted_by(line))
         {
             break log;
         }
-        if log.contains("BOOT_TRAP:")
-           || log.contains("BOOT_PANIC:")
-           || log.contains("BOOT_ALLOCATION_FAILED:")
-           || log.contains("SYSTEM_PANIC:")
-           || log.contains("SYSTEM_ALLOCATION_FAILED:")
-           || (log.contains("SYSTEM_STARTUP_FAILED:")
-               && !expected.iter().any(|marker| marker.contains("SYSTEM_STARTUP_FAILED:")))
+        let failing = log.split_inclusive('\n')
+                         .any(|line| line.ends_with('\n') && invocation.failed_by(line));
+        if (failing && !expected.iter().any(|marker| invocation.failed_by(marker)))
            || Instant::now() >= deadline
            || child.0.try_wait()?.is_some()
         {
@@ -148,33 +205,32 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, disks: &[(&Path, &s
                                      serial.display(),
                                      stderr.display())));
         }
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(std::time::Duration::from_millis(20));
     };
     drop(child);
     if expected.iter().any(|marker| !log.contains(marker))
-       || log.contains("DESKTOP_READY:") != boots
+       || invocation.booted_by(&log) != boots
        || (!boots
            && log.contains("BOOT: entering System")
-           && !expected.iter().any(|marker| marker.contains("SYSTEM_STARTUP_FAILED:")))
+           && !expected.iter().any(|marker| invocation.failed_by(marker)))
     {
         return Err(error(format!("unexpected ROM result for {name}:\n{log}")));
     }
     println!("ROM check {name}: passed");
     Ok(json!({"name": name, "status": "passed", "booted": boots, "command": launch, "expected_markers": expected, "serial": workspace.describe(&serial), "log": log}))
 }
-
 fn clone_raw(source: &Path, destination: &Path) -> Result<()>
 {
-    run(Command::new("qemu-img").args(["convert", "-f", "raw", "-O", "raw", "-S", "4k"])
-                                .arg(source)
-                                .arg(destination))
+    run_command(Command::new("qemu-img").args(["convert", "-f", "raw", "-O", "raw", "-S", "4k"])
+                                        .arg(source)
+                                        .arg(destination))
 }
 
 
 fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alteration: &str)
                   -> Result<()>
 {
-    let source = workspace.build.join("dist/System.bin");
+    let source = workspace.dist().join("System.bin");
     let mut file = macbinary::decode(&fs::read(source)?)?;
     let mut resources = resource::decode(&file.resources)?;
     match alteration
@@ -201,7 +257,7 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
         "elf-resource" =>
         {
             resources.iter_mut().find(|r| r.kind == *b"RV64").unwrap().data =
-                fs::read(workspace.build.join("dist/System.runtime.elf"))?;
+                fs::read(workspace.dist().join("System.runtime.elf"))?;
         }
         "obsolete-nabi" =>
         {
@@ -286,8 +342,8 @@ pub fn check(workspace: &Workspace) -> Result<Value>
 {
     let directory = workspace.build.join("boot-checks");
     fs::create_dir_all(&directory)?;
-    let raw = workspace.build.join("dist/system7.hfsb");
-    let qcow = workspace.build.join("dist/system7.qcow2");
+    let raw = workspace.dist().join("system7.hfsb");
+    let qcow = workspace.dist().join("system7.qcow2");
     let hash_before = package::sha256(&fs::read(&qcow)?);
     let mut cases = vec![case(workspace,
                               &directory,
@@ -298,14 +354,14 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                          case(workspace,
                               &directory,
                               "raw-hfs-b",
-                              &[(&raw, "raw")],
+                              &[raw.clone()],
                               &["System RISC Boot ROM v1 at 0x200", "CNID=16",
                                 "System: native service table ready", "BOOT_SYSTEM_READY:"],
                               true)?,
                          case(workspace,
                               &directory,
                               "qcow2-hfs-b",
-                              &[(&qcow, "qcow2")],
+                              &[qcow.clone()],
                               &["BOOT_SYSTEM_READY:"],
                               true)?,];
     let large = directory.join("large-system-fork.hfsb");
@@ -314,14 +370,14 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     cases.push(case(workspace,
                     &directory,
                     "system-resource-fork-over-4mib",
-                    &[(&large, "raw")],
+                    &[large.clone()],
                     &["BOOT_SYSTEM_READY:", "DESKTOP_READY:"],
                     true)?);
     let classic = workspace.root.join("crates/mac-toolbox/tests/data/files/dates-2026.hfs");
     cases.push(case(workspace,
                     &directory,
                     "classic-hfs-is-not-native-startup",
-                    &[(&classic, "raw")],
+                    &[classic.clone()],
                     &["native boot requires HFS-B; recreate System disk", "BOOT_NO_SYSTEM:"],
                     false)?);
     let renamed = directory.join("renamed.hfsb");
@@ -334,7 +390,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     cases.push(case(workspace,
                     &directory,
                     "renamed-blessed-folder",
-                    &[(&renamed, "raw")],
+                    &[renamed.clone()],
                     &["blessed folder 'Renamed Startup' CNID=16", "BOOT_SYSTEM_READY:"],
                     true)?);
     let unblessed = directory.join("unblessed.hfsb");
@@ -346,7 +402,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     cases.push(case(workspace,
                     &directory,
                     "unblessed",
-                    &[(&unblessed, "raw")],
+                    &[unblessed.clone()],
                     &["blessed System Folder CNID is missing", "BOOT_NO_SYSTEM:"],
                     false)?);
     let missing = directory.join("missing.hfsb");
@@ -360,7 +416,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     cases.push(case(workspace,
                     &directory,
                     "missing-system",
-                    &[(&missing, "raw")],
+                    &[missing.clone()],
                     &["startup file is missing", "BOOT_NO_SYSTEM:"],
                     false)?);
     let missing_finder = directory.join("missing-finder.hfsb");
@@ -374,7 +430,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     cases.push(case(workspace,
                     &directory,
                     "missing-finder",
-                    &[(&missing_finder, "raw")],
+                    &[missing_finder.clone()],
                     &["startup file is missing", "BOOT_NO_SYSTEM:"],
                     false)?);
     for (alteration, expected) in
@@ -390,7 +446,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
         cases.push(case(workspace,
                         &directory,
                         &format!("bad-{alteration}"),
-                        &[(&path, "raw")],
+                        &[path.clone()],
                         &[expected, "BOOT_NO_SYSTEM:"],
                         false)?);
     }
@@ -399,28 +455,28 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     cases.push(case(workspace,
                     &directory,
                     "apple-partition-map",
-                    &[(&partitioned, "raw")],
+                    &[partitioned.clone()],
                     &["at sector 2048", "BOOT_SYSTEM_READY:"],
                     true)?);
     // Explicit bus placement makes the unblessed disk the first one scanned.
     cases.push(case(workspace,
                     &directory,
                     "disk-fallback",
-                    &[(&unblessed, "raw"), (&raw, "raw")],
+                    &[unblessed.clone(), raw.clone()],
                     &["blessed System Folder CNID is missing", "BOOT_SYSTEM_READY:"],
                     true)?);
     let malformed = directory.join("bad-code.hfsb");
     cases.push(case(workspace,
                     &directory,
                     "invalid-system-fallback",
-                    &[(&malformed, "raw"), (&raw, "raw")],
+                    &[malformed.clone(), raw.clone()],
                     &["invalid RV64 segment resource header", "BOOT_SYSTEM_READY:"],
                     true)?);
     if package::sha256(&fs::read(&qcow)?) != hash_before
     {
         return Err(error("boot checks changed the generated qcow2"));
     }
-    let report = json!({"status": "passed", "method": "QEMU cold reset to read-only pflash; virtio-block reads HFS-B and loads System, Finder, WDEF and CDEF resources entirely inside the guest", "cases": cases, "disk_boot_tested": true, "finder_launched": true, "rom": serde_json::from_slice::<Value>(&fs::read(workspace.build.join("dist/bootrom-riscv.json"))?)?, "qcow2_unchanged": true, "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?});
+    let report = json!({"status": "passed", "method": "QEMU cold reset to read-only pflash; virtio-block reads HFS-B and loads System, Finder, WDEF and CDEF resources entirely inside the guest", "cases": cases, "disk_boot_tested": true, "finder_launched": true, "rom": serde_json::from_slice::<Value>(&fs::read(bootloader_report(workspace)?)?)?, "qcow2_unchanged": true, "qemu": output(Command::new(tools::resolve(&workspace.platform.require_emulation()?.binary)?).arg("--version"))?});
     write_json(&workspace.repo.join("results/system7/boot-checks.json"), &report)?;
     println!("{} ROM boot checks passed.", cases.len());
     Ok(report)

@@ -17,7 +17,7 @@ import uuid
 
 from hfs_b_tool import tool
 from riscv_vm import qmp, image_executable
-from system7_paths import ROOT, build_dir
+from system7_paths import ROOT, build_dir, dist_dir
 from system7_host import exclusive_lock, process_exists, sync_directory, sync_file, windows_process_name
 
 TREES = {'Preferences': ('/System Folder/Preferences', '/System Folder'),
@@ -196,7 +196,7 @@ def prepare(build, state):
                 return
             snapshot_disk(root, disk)
         elif current(root) is None:
-            base = build / 'dist/system7.qcow2'
+            base = dist_dir() / 'system7.qcow2'
             if base.exists():
                 snapshot_disk(root, base)
 

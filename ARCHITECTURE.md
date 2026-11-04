@@ -55,7 +55,7 @@ Use one validated layout input for Rust and linker output; keep pointer access a
 ## Native ISA floor
 
 The current platform is **RVA23S64 hardware**, compiling the complete RVA23U64
-instruction profile. `platforms/QemuRISC-V.json` selects that profile and the QEMU
+instruction profile. `platforms/qemu_riscv.json` selects that profile and the QEMU
 CPU; both Linux and native Windows launchers consume its explicit MMU, PMP
 and Sv39 properties. QEMU profile CPUs inherit [bare-CPU defaults](https://github.com/qemu/qemu/blob/v10.1.0/target/riscv/cpu.c),
 so the ISA profile name alone does not enable those machine facilities. The installed Rust target

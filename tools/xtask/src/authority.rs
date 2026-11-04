@@ -29,7 +29,7 @@ pub(super) fn install(workspace: &Workspace, reports: &mut [Value]) -> Result<()
         return Err(error("unsupported application authority policy version; rebuild System \
                           policy"));
     }
-    let dist = workspace.build.join("dist");
+    let dist = workspace.dist();
     let mut grants = Vec::new();
     for grant in policy.grants
     {

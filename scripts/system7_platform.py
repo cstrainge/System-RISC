@@ -4,12 +4,12 @@ import os
 from pathlib import Path
 import shlex
 
-NAME = os.environ.get('SYSTEM7_PLATFORM', 'QemuRISC-V')
+NAME = os.environ.get('SYSTEM7_PLATFORM', 'qemu_riscv')
 if not NAME or not all(c.isascii() and (c.isalnum() or c in '-_') for c in NAME):
     raise ValueError('Invalid platform name: expected ASCII letters, digits, - or _')
 DEFINITION = Path(__file__).resolve().parents[1] / 'platforms' / (NAME + '.json')
 if not DEFINITION.is_file():
-    raise ValueError(f"Unknown platform {NAME!r}; known platform: QemuRISC-V")
+    raise ValueError(f"Unknown platform {NAME!r}; known platform: qemu_riscv")
 PLATFORM = json.loads(DEFINITION.read_text())
 if PLATFORM['name'] != NAME:
     raise ValueError(f"Platform {NAME!r} declares a different name")

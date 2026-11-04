@@ -594,18 +594,18 @@ source or generated target directories.
 
 
 Select the current named native platform explicitly with
-`cargo xtask image --platform QemuRISC-V`. The optimized build emits the 500 MiB
+`cargo xtask image --platform qemu_riscv`. The optimized build emits the 500 MiB
 HFS-B/qcow2 installation and boot ROM under the selected external build directory;
 `--build-dir` keeps private checks separate. The platform name is recorded in the
 build report and propagated to guest builds and VM helpers. Unknown names fail
-before creating installation output. QemuRISC-V is currently the supported
+before creating installation output. qemu_riscv is currently the supported
 platform; future Pi partitioned-media and ARM backends remain roadmap work.
 
 The platform's `qemu_harts` selects four physical harts for the normal VM.
 Only the primary runs System code; the others remain ROM-parked until the SMP
 safety gates pass. Use `start --harts COUNT` to override the physical CPU count.
 
-The QemuRISC-V platform currently defaults to an 800×600 guest framebuffer.
+The qemu_riscv platform currently defaults to an 800×600 guest framebuffer.
 `memory.display` in the platform JSON fixes the build-time width and height;
 mac-build validates geometry and scratch capacity before emitting the boot and
 System constants. Shared host conformance code uses that same checked record.

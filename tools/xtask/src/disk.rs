@@ -33,7 +33,7 @@ const PACKAGES: &[(&str, &str)] = &[("System Folder", "System"),
 
 pub(super) fn validate_modules(workspace: &Workspace) -> Result<()>
 {
-    crate::modules::validate_identities(&workspace.build.join("dist"),
+    crate::modules::validate_identities(&workspace.dist(),
                                         PACKAGES.iter()
                                                 .filter(|(directory, _)| {
                                                     matches!(*directory,
@@ -134,7 +134,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                 when)?;
             // Derive the persistent key from the actual packaged EABI identity,
             // just as resident MPRE does. Display names confer no storage scope.
-            let bytes = fs::read(workspace.build.join("dist/Host Clipboard.bin"))?;
+            let bytes = fs::read(workspace.dist().join("Host Clipboard.bin"))?;
             let module = macbinary::decode(&bytes)?;
             let resources = mac_formats::resource::decode(&module.resources)?;
             let package = mac_formats::module::Package::inspect(&resources, module.file_type)?;
@@ -164,7 +164,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
             "System Folder/Extensions" => extensions,
             _ => return Err(error("installed package has an unknown destination folder"))
         };
-        let bytes = fs::read(workspace.build.join("dist").join(format!("{name}.bin")))?;
+        let bytes = fs::read(workspace.dist().join(format!("{name}.bin")))?;
         let original = macbinary::decode(&bytes)?;
         let entry = hfs_b::import_macbinary_at(&mut volume, parent, &original, name, when)?;
         let mut data = Vec::new();
@@ -221,7 +221,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     {
         return Err(error("qcow2 virtual size mismatch"));
     }
-    let dist = workspace.build.join("dist");
+    let dist = workspace.dist();
     fs::rename(&raw, dist.join("system7.hfsb"))?;
     fs::rename(&qcow, dist.join("system7.qcow2"))?;
     let finished = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -255,7 +255,7 @@ mod tests
             PathBuf::from(env::var_os("SYSTEM7_REBUILD_OUTPUT").expect("private output directory"));
         assert!(!output.exists(), "refuse to overwrite existing test/user data");
         let workspace = Workspace::new(Some(output), false, mac_build::platform::load(&mac_build::platform::current().name).unwrap()).unwrap();
-        let dist = workspace.build.join("dist");
+        let dist = workspace.dist();
         fs::create_dir_all(&dist).unwrap();
         for entry in fs::read_dir(packages).unwrap()
         {

@@ -73,7 +73,7 @@ bounded UTF-8 diagnostic (with explicit truncation/format-failure flags), names
 the host-owned active resource and shuts down. It does not borrow Desktop,
 allocate, unwind arbitrary privileged frames or pretend the invocation recovered.
 The current board's failure register is generated into Rust constants and linker
-symbols from platforms/QemuRISC-V.json. Device provenance is
+symbols from platforms/qemu_riscv.json. Device provenance is
 [QEMU virt's map](https://github.com/qemu/qemu/blob/v10.1.0/hw/riscv/virt.c),
 [finisher constants](https://github.com/qemu/qemu/blob/v10.1.0/include/hw/misc/sifive_test.h)
 and [shutdown behavior](https://github.com/qemu/qemu/blob/v10.1.0/hw/misc/sifive_test.c).

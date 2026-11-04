@@ -56,7 +56,7 @@ there is no hard-coded MMIO address in the package. The safe request engine
 rejects unsupported classes, phases, operations and payloads before touching
 hardware. Only the small machine adapter accesses registers.
 
-The QemuRISC-V JSON platform definition lists MMIO devices, and its fatal signal
+The qemu_riscv JSON platform definition lists MMIO devices, and its fatal signal
 references that same checked device record. Build validation rejects malformed,
 overlapping, misaligned and RAM/flash-overlapping ranges. One record emits both
 discovery constants and the existing fatal-signal linker symbols. The device
