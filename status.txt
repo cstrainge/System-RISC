@@ -462,3 +462,41 @@ without lengthening the paths.
 `cargo xtask doc` also emitted `rustdoc::invalid_html_tags` for
 `/Volumes/<unique mounted name>/...`, which rustdoc reads as a tag; the path is
 in backticks now.
+
+13. The pushed commit builds on its own
+--------------------------------------
+There was nothing uncommitted when this section was written: the working tree
+was clean and `origin/cstrainge-platform-driven-build` was already at
+`d046ee17`. What follows is evidence about that pushed commit, recorded here
+because it is the reason the push is meaningful.
+
+The commit was extracted with `git archive HEAD` into a directory that
+contains no untracked file, no build output and no git metadata, and then used
+directly:
+
+  cargo check -p mac-build -p xtask -p risc-host     exit 0 in the extract
+  cargo run -p xtask -- platforms                    exit 0, both records listed
+  cargo run -p xtask -- tools --platform qemu_riscv  exit 0, ninja resolved
+                                                     through Visual Studio, QEMU
+                                                     reported missing with its
+                                                     install command
+  cargo run -p xtask -- sdk prepare                  exit 0, "prepared the private
+                                                     SDK from 1 patch(es) touching
+                                                     26 file(s)"
+
+The A1 acceptance was then repeated from the extract alone, to show the record
+is the only authority in the committed sources as well:
+
+  set platforms/riscv_base.json llvm_profile to rva22u64, then
+  cargo run -p xtask -- stage guest                  exit 1, with
+      "compiler does not implement the full rva22u64 profile
+       (rva22u64/v/d/f/zba/zbb/zbs required)"
+  restore rva23u64, then
+  cargo run -p xtask -- stage guest                  exit 0, 7m33s
+
+So the committed tree is self-contained, and the one-source-of-truth property
+holds there rather than depending on anything left in this worktree.
+
+No merge of main was attempted: `origin/main` is `c6b9b2a5`, already an
+ancestor of this branch, and the integration order is being sequenced
+elsewhere.
