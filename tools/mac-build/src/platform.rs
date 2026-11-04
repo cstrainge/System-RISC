@@ -530,6 +530,46 @@ pub fn current() -> &'static Platform
     &PLATFORM
 }
 
+/// The module contract target this platform admits. Modules carry their
+/// architecture, pointer width, endianness and feature profile in the DABI/EABI
+/// resource, and the resident kernel validates every contract against the target
+/// of the machine it is running on. The record's `rust_target` is the single
+/// source of that fact, so a second board states its own target rather than
+/// inheriting a hardcoded one.
+pub fn module_target() -> Result<mac_module::Target>
+{
+    let platform = current();
+    match platform.rust_target.as_str()
+    {
+        "riscv64imac-unknown-none-elf" => Ok(mac_module::Target::RVA23U64),
+        "aarch64-unknown-none" => Ok(mac_module::Target::AARCH64),
+        target =>
+        {
+            Err(error(format!("platform '{}' declares rust_target {target:?}, which has no module \
+                               contract target; add its architecture to \
+                               mac_module::Target",
+                              platform.name)))
+        }
+    }
+}
+
+/// The resident kernel's copy of the module contract target, generated into the
+/// build output so the kernel compares module contracts against the machine the
+/// record describes rather than a constant chosen at authoring time.
+pub fn module_target_constants() -> Result<String>
+{
+    let target = module_target()?;
+    Ok(format!("// Generated from the platform record's module contract target.\n\
+                pub(crate) const MODULE_TARGET: mac_module::Target = mac_module::Target {{ \
+                architecture: {architecture}, pointer_bits: {pointer_bits}, endian: {endian}, \
+                convention: {convention}, features: {features} }};\n",
+               architecture = target.architecture,
+               pointer_bits = target.pointer_bits,
+               endian = target.endian,
+               convention = target.convention,
+               features = target.features))
+}
+
 /// The rustup channel this checkout's compiler pin names.
 ///
 /// The pin lives in `platforms/rust/sdk.json` beside the target specification
