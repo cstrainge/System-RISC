@@ -685,14 +685,14 @@ impl WindowJob
 
     /// Clear before the actual original guardian check/registration. A real
     /// return after this point survives the scheduler park handshake.
-    pub(super) fn arm_geometry_admission(&self)
+    pub(super) fn arm_mutation_admission(&self)
     {
         self.available.take();
     }
 
     /// The actual return edge extracts this original target, drops its temporary
     /// Job/source reader, then notifies outside all manager/SCHED guards.
-    pub(super) fn geometry_return_target(&self) -> (Arc<Notice>, Option<ThreadId>)
+    pub(super) fn mutation_return_target(&self) -> (Arc<Notice>, Option<ThreadId>)
     {
         (self.available.clone(), self.waiter)
     }
@@ -1236,7 +1236,7 @@ impl WindowManager
     }
 
     pub(crate) fn admit_geometry_wait(&mut self, job: &Arc<WindowJob>,
-                                      admission: &mut Option<super::canvas::GeometryAdmission>,
+                                      admission: &mut Option<super::canvas::MutationAdmission>,
                                       callback_caller: bool)
                                       -> Result<bool, Status>
     {
@@ -1252,7 +1252,7 @@ impl WindowManager
         let guardian = self.canvas_guardian(job.window_id())?;
         if admission.is_none()
         {
-            *admission = Some(guardian.reserve_geometry(job, callback_caller)?);
+            *admission = Some(guardian.reserve_mutation(job, callback_caller)?);
         }
         let held = admission.as_mut().ok_or(BAD_ABI)?;
         if !held.ready(&guardian, job)?
@@ -1263,8 +1263,32 @@ impl WindowManager
         Ok(true)
     }
 
+    /// Retain the same fresh native CloseJob while its original target painter
+    /// drains. No WIND ticket or closing state exists until final admission.
+    pub(crate) fn prepare_close_wait(&self, job: &Arc<WindowJob>,
+                                     admission: &mut Option<super::canvas::MutationAdmission>,
+                                     callback_caller: bool)
+                                     -> Result<bool, Status>
+    {
+        if !matches!(job.plan().purpose, Purpose::Dispose)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.validate_seal(job.plan().seal)?;
+        if !Arc::ptr_eq(&job.notice, &self.work_notice)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let guardian = self.canvas_guardian(job.window_id())?;
+        if admission.is_none()
+        {
+            *admission = Some(guardian.reserve_mutation(job, callback_caller)?);
+        }
+        admission.as_ref().ok_or(BAD_ABI)?.ready(&guardian, job)
+    }
+
     fn admit_operation_inner(&mut self, job: &Arc<WindowJob>,
-                             mut admission: Option<&mut super::canvas::GeometryAdmission>)
+                             mut admission: Option<&mut super::canvas::MutationAdmission>)
                              -> Result<(), Status>
     {
         if matches!(job.plan().purpose, Purpose::Dispose | Purpose::Initialize(_))
@@ -2080,12 +2104,31 @@ impl WindowManager
                                    when: u32)
                                    -> Result<WindowId, Status>
     {
+        self.admit_user_close_inner(job, None, events, when)
+    }
+
+    pub(crate) fn admit_user_close_reserved(&mut self, job: &Arc<WindowJob>,
+                                            admission: &mut super::canvas::MutationAdmission,
+                                            events: &mut EventManager, when: u32)
+                                            -> Result<WindowId, Status>
+    {
+        self.admit_user_close_inner(job, Some(admission), events, when)
+    }
+
+    fn admit_user_close_inner(&mut self, job: &Arc<WindowJob>,
+                              mut admission: Option<&mut super::canvas::MutationAdmission>,
+                              events: &mut EventManager, when: u32)
+                              -> Result<WindowId, Status>
+    {
         if !matches!(job.plan().purpose, Purpose::Dispose)
         {
             return Err(BAD_ARGUMENT);
         }
         self.validate_seal(job.plan().seal)?;
-        self.exclude_paint(job.plan().seal.id)?;
+        if admission.is_none()
+        {
+            self.exclude_paint(job.plan().seal.id)?;
+        }
         if job.plan().tracking.is_some()
            && (self.tracking != job.plan().tracking
                || self.tracking_revision != job.plan().tracking_revision)
@@ -2096,7 +2139,12 @@ impl WindowManager
         {
             return Err(ACCESS_DENIED);
         }
-        if self.removals.len() == self.removals.capacity()
+        // The SAME retained WIND is its birth-admitted directory credit.
+        // Other births include retained/detached/Birth/ACK/publication credits
+        // before installing capacity. Recheck that bound in this final turn,
+        // before creating any unique release ticket or invalidating its ID.
+        let required = self.removal_capacity_required(0).map_err(|_| NO_MEMORY)?;
+        if self.removals.capacity() < required || self.removals.len() == self.removals.capacity()
         {
             return Err(NO_MEMORY);
         }
@@ -2129,9 +2177,22 @@ impl WindowManager
                             {
                                 return Err(BAD_ABI);
                             }
-                            donor.canvas.preflight_close()?;
+                            let guardian = super::canvas::WindowCanvasGuardian::user(donor.clone());
+                            let permit = match admission.as_deref_mut()
+                            {
+                                Some(held) => Some(guardian.close_reserved(held, job)?),
+                                None =>
+                                {
+                                    donor.canvas.preflight_close()?;
+                                    None
+                                }
+                            };
                             let ticket = self.windows.begin_release(id.0).ok_or(NOT_FOUND)?;
-                            donor.canvas.closed();
+                            match permit
+                            {
+                                Some(permit) => permit.commit(),
+                                None => donor.canvas.closed()
+                            }
                             destination.prepared = stock.prepared.take();
                             destination.acknowledgement = stock.acknowledgement.take();
                             if let Some(ack) = &mut destination.acknowledgement
