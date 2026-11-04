@@ -500,3 +500,74 @@ holds there rather than depending on anything left in this worktree.
 No merge of main was attempted: `origin/main` is `c6b9b2a5`, already an
 ancestor of this branch, and the integration order is being sequenced
 elsewhere.
+
+14. Merging main's isolation branch
+----------------------------------
+`origin/main` moved to `2ddd6ae9` (the isolation branch, 40 commits, 223
+files). The merge produced three conflicts, plus two defects that only appeared
+once the merged tree was compiled and run.
+
+Conflicts, resolved for behaviour:
+
+  THREADING.md          their SMP/isolation prose kept in full, with the
+                        platform named qemu_riscv rather than QemuRISC-V.
+  platform.rs           `Platform::scheduling()` supplies their new hart-cap
+                        check with `emulation.harts`. A record that declares
+                        scheduling limits and no emulation is an explicit
+                        error, so the cap is never silently unvalidated. Their
+                        `application_image_range` geometry change auto-merged
+                        and is intact.
+  main.rs               my extracted module tree and record-driven tool list.
+                        Their `paths::canonical` for the build directory moved
+                        into `workspace.rs`. Their neighbouring guard - "build
+                        output must be outside the OS source repository" - is
+                        deliberately *not* carried, because B13 reversed that
+                        rule; the comment says so.
+
+The platform record resolved itself: git followed the rename from
+`QemuRISC-V.json` to `riscv_base.json` and carried their
+`scheduling.maximum_active_harts: 1` into it beside `llvm_profile`,
+`toolchain` and `profile_requires`.
+
+Merge fallout found by building, not by reading:
+
+  1. Every application failed with "invalid ELF section table". User-mode
+     isolation needs a linked user-runtime section, and a driver's module
+     contract section; both exist only in a section header table, which
+     `compact_elf` drops. `compact_code` rebuilds the packaged payload from
+     `PT_LOAD` rather than copying it, so packaging now reads the full linked
+     ELF and produces the same payload.
+  2. Every application then failed with "native executable memory reservations
+     overlap". Applications now link at the same private Process image origin
+     - all eight report base 0x400000 - and map into their own Process roots,
+     so the pairwise exclusion was rejecting a correct build. It is removed
+     with its reason recorded in place, and the unused placement vector went
+     with it; the packaging line now prints each package's role so that field
+     still has a reader.
+  3. `sdk app` parsed a manifest with `str::parse`, which reads one TOML value
+     rather than a document, so every `Cargo.toml` was rejected at
+     `[package]`. It uses `toml::from_str`.
+  4. Two diagnostics carried their line indentation inside the literal,
+     rendering runs of spaces mid-sentence. Both use continuations; the
+     rendered message was checked for space runs and has none.
+
+A stale process, not a build defect: the first rebuild after the merge failed
+with "Access is denied (os error 5)" writing the volume because a QEMU from an
+unrelated interactive trial, and a pre-rewrite `xtask.exe`, still held
+`dist/qemu_riscv/system7.hfsb`. Both were stopped and the build succeeded.
+
+Verified on the merged tree:
+  cargo check -p mac-build -p xtask -p risc-host   exit 0
+  cargo fmt -p mac-build -p xtask                  clean
+  cargo xtask build --platform qemu_riscv          exit 0, five stamps, empty
+                                                   stderr, bootrom 33,554,432 B,
+                                                   System 8,945,664 B, image
+                                                   524,288,000 B
+  cargo xtask boot-check (WSL, QEMU 10.1.0)        exit 0, 17 of 17 cases, no
+                                                   skips; seven fresh serial logs
+                                                   contain BOOT_SYSTEM_READY: and
+                                                   DESKTOP_READY:
+  results/system7/boot-checks.json                 status passed, 17 cases
+
+Pushed as c5ebbea9 (the merge) and cdfc3f85 (the fallout fixes). Main has not
+been fast-forwarded; that is the coordinator's call.
