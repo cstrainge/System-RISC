@@ -10,9 +10,22 @@ fn step<T>(name: &'static str, result: Result<T, Status>) -> Result<T, Status>
 {
     if let Err(status) = &result
     {
-        static REPORTED: core::sync::atomic::AtomicBool =
-            core::sync::atomic::AtomicBool::new(false);
-        if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+        // One latch per step: a shared latch would be consumed by the first
+        // refusing step and hide every later one.
+        static SEEN: [core::sync::atomic::AtomicBool; 8] =
+            [const { core::sync::atomic::AtomicBool::new(false) }; 8];
+        let slot = match name
+        {
+            "removal-window" => 0,
+            "request-window-disposal" => 1,
+            "prepare-remove-window" => 2,
+            "restore-alert-focus" => 3,
+            "remove-closed-content" => 4,
+            "remove-window" => 5,
+            "close-window-activity" => 6,
+            _ => 7
+        };
+        if !SEEN[slot].swap(true, core::sync::atomic::Ordering::Relaxed)
         {
             serial!("CLOSE_STEP_REFUSED step={} status={}", name, status);
         }
