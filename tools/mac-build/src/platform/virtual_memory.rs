@@ -271,7 +271,8 @@ mod tests
     use super::*;
     fn definition() -> Definition
     {
-        serde_json::from_value(serde_json::from_str::<serde_json::Value>(include_str!("../../../../platforms/QemuRISC-V.json")).unwrap()["virtual_memory"].clone()).unwrap()
+        serde_json::from_value(super::super::record("QemuRISC-V").unwrap()["virtual_memory"]
+                               .clone()).unwrap()
     }
     #[test]
     fn approved_layout_emits_identical_rust_and_linker_values()

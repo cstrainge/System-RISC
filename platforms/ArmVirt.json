@@ -1,0 +1,70 @@
+{
+  "name": "ArmVirt",
+  "rust_target": "aarch64-unknown-none",
+  "emulation": {
+    "description": "QEMU virt board, 4 Cortex-A72 cores, 2 GiB RAM, PCI virtio devices with a virtio GPU and ramfb display",
+    "family": "qemu",
+    "binary": "qemu-system-aarch64",
+    "machine": "virt",
+    "cpu": "cortex-a72",
+    "ram": "2G",
+    "harts": 4,
+    "firmware": "none",
+    "boot_medium": { "kind": "direct" },
+    "disks": {
+      "transport": "virtio-pci",
+      "format": "raw",
+      "readonly": true,
+      "capacity": 2
+    },
+    "display": {
+      "kind": "virtio-gpu",
+      "framebuffer": "ramfb",
+      "transport": { "kind": "virtio-pci" }
+    },
+    "keyboard": { "kind": "virtio-keyboard", "transport": { "kind": "virtio-pci" } },
+    "pointer": { "kind": "tablet", "transport": { "kind": "virtio-pci" } },
+    "entropy": { "kind": "virtio-rng", "transport": { "kind": "virtio-pci" } },
+    "network": { "kind": "none" },
+    "screen": { "interactive": "window", "headless": "none" },
+    "console": { "interactive": "stdio", "headless": "file" },
+    "readiness": {
+      "timeout_seconds": 20,
+      "booted": ["DESKTOP_READY:", "BOOT_NO_SYSTEM:"],
+      "failed": [
+        "BOOT_TRAP:",
+        "BOOT_PANIC:",
+        "BOOT_ALLOCATION_FAILED:",
+        "SYSTEM_PANIC:",
+        "SYSTEM_ALLOCATION_FAILED:",
+        "SYSTEM_STARTUP_FAILED:"
+      ]
+    }
+  },
+  "hardware": {
+    "description": "Raspberry Pi 4B booted from an SD card by the board's own firmware",
+    "board": "raspberry-pi-4b",
+    "soc": "bcm2711",
+    "boot": { "medium": { "kind": "sd" }, "first_stage": "vendor-firmware" },
+    "image": {
+      "kind": "filesystem",
+      "artifact": "boot.img",
+      "filesystem": "fat32",
+      "files": [
+        { "source": "system.img", "path": "SYSTEM.IMG" },
+        { "source": "config.txt", "path": "config.txt" }
+      ]
+    },
+    "console": { "kind": "pl011", "device": "ttyAMA0", "baud": 115200 },
+    "device_tree": { "kind": "firmware" },
+    "memory": { "base": "0x0", "bytes": "0x80000000" },
+    "devices": [
+      { "kind": "uart", "model": "pl011", "base": "0xfe201000", "bytes": "0x200", "interrupt": 153 },
+      { "kind": "storage", "model": "sdhci", "base": "0xfe340000", "bytes": "0x200", "interrupt": 158 },
+      { "kind": "gpio-mailbox", "model": "bcm2835-mailbox", "base": "0xfe00b880", "bytes": "0x40", "interrupt": 97 },
+      { "kind": "network", "model": "genet", "base": "0x7d580000", "bytes": "0x10000", "interrupt": 189 },
+      { "kind": "pcie", "model": "brcmstb-pcie", "base": "0x7d500000", "bytes": "0x9310", "interrupt": 143 }
+    ],
+    "tooling": ["rpi-imager", "dd"]
+  }
+}

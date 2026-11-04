@@ -1,145 +1,53 @@
 {
+  "include": "RiscVBase.json",
   "name": "QemuRISC-V",
-  "rust_target": "riscv64imac-unknown-none-elf",
-  "llvm_profile": "rva23u64",
-  "qemu_cpu": "rva23s64,mmu=on,pmp=on,sv39=on",
-  "qemu_ram": "2G",
-  "qemu_harts": 4,
-  "scheduling": {
-    "quantum_microseconds": 250,
-    "callback_budget_microseconds": 1000
-  },
-  "fatal_shutdown": {
-    "failure_value": 78643,
-    "restart_value": 30583,
-    "device": "sifive-test"
-  },
-  "memory": {
-    "page_bytes": 4096,
-    "ram_base": "0x80000000",
-    "minimum_ram_bytes": "0x10000000",
-    "flash": {
-      "base": "0x20000000",
-      "bytes": "0x2000000"
-    },
-    "fw_cfg": {
-      "base": "0x10100000",
-      "bytes": "0x1000"
-    },
-    "bootstrap_io": {
-      "uart": { "base": "0x10000000", "bytes": "0x1000" },
-      "rtc": { "base": "0x101000", "bytes": "0x1000" },
-      "clint": { "base": "0x2000000", "bytes": "0x10000" },
-      "virtio_mmio": {
-        "base": "0x10001000",
-        "stride": "0x1000",
-        "slots": 8,
-        "interrupt_base": 1
-      }
-    },
-    "boot": {
-      "base": "0x80130000",
-      "bytes": "0xd0000"
-    },
-    "firmware_heap": {
-      "base": "0x87000000",
-      "bytes": "0x800000"
-    },
-    "images": {
-      "base": "0x80200000",
-      "bytes": "0x6881000"
-    },
-    "application_relocation_base": "0x83000000",
-    "fdt_tail_bytes": "0x200000",
-    "boot_stack_bytes": "0x40000",
-    "monitor_stack_bytes": "0x1000",
-    "machine_monitor": {
-      "reset": "whole-machine",
-      "binding": "legacy-clint",
-      "compatible": ["sifive,clint0", "riscv,clint0"]
-    },
-    "system_heap_bytes": "0x20000000",
-    "system_recovery_bytes": "0x2000000",
-    "application_primary_base": "0x81000000",
-    "definitions": {
-      "base": "0x82000000",
-      "bytes": "0x1000000"
+  "emulation": {
+    "description": "QEMU virt board, 4 RVA23 harts, 2 GiB RAM, virtio-MMIO devices with a virtio GPU and ramfb display",
+    "family": "qemu",
+    "binary": "qemu-system-riscv64",
+    "machine": "virt",
+    "cpu": "rva23s64,mmu=on,pmp=on,sv39=on",
+    "ram": "2G",
+    "harts": 4,
+    "firmware": "none",
+    "boot_medium": { "kind": "flash", "unit": 0, "format": "raw", "readonly": true },
+    "disks": {
+      "transport": "virtio-mmio",
+      "format": "raw",
+      "readonly": true,
+      "slots": [0, 3, 4, 7]
     },
     "display": {
-      "width": 800,
-      "height": 600,
-      "max_width": 1920,
-      "max_height": 1200
+      "kind": "virtio-gpu",
+      "framebuffer": "ramfb",
+      "transport": { "kind": "virtio-mmio", "slot": 6 }
     },
-    "display_scratch": {
-      "base": "0x88000000",
-      "bytes": "0x1b00000"
+    "keyboard": {
+      "kind": "virtio-keyboard",
+      "transport": { "kind": "virtio-mmio", "slot": 1 }
     },
-    "module_accounts": {
-      "kernel_bytes": "0x1000000",
-      "worker_stack_bytes": "0x400000"
+    "pointer": {
+      "kind": "tablet",
+      "transport": { "kind": "virtio-mmio", "slot": 2 }
     },
-    "tls": { "key_capacity": 256 },
-    "application_heap": {
-      "minimum_extent_bytes": "0x10000"
+    "entropy": {
+      "kind": "virtio-rng",
+      "transport": { "kind": "virtio-mmio", "slot": 5 }
     },
-    "process_accounts": {
-      "kernel_bytes": "0x1000000",
-      "application_bytes": "0x4000000"
-    },
-    "stacks": {
-      "system": {
-        "minimum": "0x40000",
-        "default": "0x400000",
-        "maximum": "0x800000"
-      },
-      "application": {
-        "minimum": "0x10000",
-        "default": "0x400000",
-        "maximum": "0x800000"
-      }
+    "network": { "kind": "none" },
+    "screen": { "interactive": "window", "headless": "none" },
+    "console": { "interactive": "stdio", "headless": "file" },
+    "readiness": {
+      "timeout_seconds": 15,
+      "booted": ["DESKTOP_READY:", "BOOT_NO_SYSTEM:"],
+      "failed": [
+        "BOOT_TRAP:",
+        "BOOT_PANIC:",
+        "BOOT_ALLOCATION_FAILED:",
+        "SYSTEM_PANIC:",
+        "SYSTEM_ALLOCATION_FAILED:",
+        "SYSTEM_STARTUP_FAILED:"
+      ]
     }
-  },
-  "mmio_devices": [
-    {
-      "id": "sifive-test",
-      "bus": "MMIO",
-      "key": "7369666976652c746573743100000000",
-      "address": "0x100000",
-      "bytes": 4096,
-      "interrupt": 0,
-      "flags": 2
-    }
-  ],
-  "virtual_memory": {
-    "mode": "sv39",
-    "application": {
-      "start": "0x0000000000400000",
-      "end": "0x0000002000000000"
-    },
-    "process_kernel": {
-      "start": "0xffffffc000000000",
-      "end": "0xffffffc800000000"
-    },
-    "modules": {
-      "start": "0xffffffc800000000",
-      "end": "0xffffffd000000000"
-    },
-    "system": {
-      "start": "0xffffffd000000000",
-      "end": "0xfffffffffffff000"
-    },
-    "physmap": {
-      "start": "0xffffffe000000000",
-      "end": "0xfffffff000000000"
-    },
-    "application_image_base": "0x0000000000400000",
-    "system_image_base": "0xffffffd000200000",
-    "system_heap_base": "0xffffffd040000000",
-    "system_stacks": {
-      "start": "0xffffffd010000000",
-      "end": "0xffffffd020000000"
-    },
-    "physmap_physical_base": "0x0"
   }
 }

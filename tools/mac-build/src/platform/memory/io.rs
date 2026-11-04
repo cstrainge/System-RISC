@@ -126,8 +126,7 @@ mod tests
     #[test]
     fn checked_bootstrap_windows_generate_one_set_of_facts_and_refuse_bad_maps()
     {
-        let json: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../../platforms/QemuRISC-V.json")).unwrap();
+        let json: serde_json::Value = super::super::super::record("QemuRISC-V").unwrap();
         let original: Definition =
             serde_json::from_value(json["memory"]["bootstrap_io"].clone()).unwrap();
         let check = |d: &Definition| {
