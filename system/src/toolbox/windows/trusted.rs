@@ -356,7 +356,9 @@ impl TrustedCloseHandle
 
     pub(crate) fn ready(&self) -> bool
     {
-        self.header.available.ready()
+        // Result/UI/ACK edges share this child. They do not by themselves
+        // authorize another attempt at the same retained author refusal.
+        self.header.available.ready() && self.header.with_state(|state| !state.blocked)
     }
 
     pub(crate) fn wait_ready(&self) -> bool
@@ -818,25 +820,30 @@ impl WindowManager
                     }
                     _ => None
                 };
-                handle.header.with_state(|s| {
-                                 s.blocked = true;
-                                 if let Some(reply) = author
-                                 {
-                                     if s.result.is_none()
+                let changed =
+                    handle.header.with_state(|s| {
+                                     s.blocked = true;
+                                     let mut changed = false;
+                                     if let Some(reply) = author
                                      {
-                                         s.result = Some(Err(CloseError::Cleanup(cause)));
+                                         if s.result.is_none()
+                                         {
+                                             s.result = Some(Err(CloseError::Cleanup(cause)));
+                                             changed = true;
+                                         }
+                                         if s.ui == Ui::BeforeReply
+                                         {
+                                             s.ui = Ui::Pending;
+                                             s.reason = Some(CleanupReason::Author(reply));
+                                             changed = true;
+                                         }
                                      }
-                                     if s.ui == Ui::BeforeReply
-                                     {
-                                         s.ui = Ui::Pending;
-                                         s.reason = Some(CleanupReason::Author(reply));
-                                     }
-                                 }
-                             });
+                                     changed
+                                 });
                 self.removals.insert(index,
                                      operations::RemovalDebt::Trusted { ticket,
                                                                         handle: actual });
-                if author.is_some()
+                if changed
                 {
                     handle.header.available.request();
                 }
