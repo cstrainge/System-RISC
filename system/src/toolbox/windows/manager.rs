@@ -269,6 +269,12 @@ enum UserInitialization
 }
 impl Window
 {
+    /// The definition-visible frame state. A paint plan captures the frame this
+    /// describes, so a plan is stale only when these values or the committed
+    /// content moved; the manager's mutation counter also advances for
+    /// bookkeeping that changes nothing a frame depends on.
+    pub(crate) fn frame_state(&self) -> WindowDefinitionState { self.state }
+
     /// Classification only; this does not authorize any caller or object ID.
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn uses_system_resources(&self) -> bool
