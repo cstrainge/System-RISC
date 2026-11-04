@@ -905,6 +905,17 @@ impl WindowManager
         self.validate_canvas_claim(&loan.data.as_ref().ok_or(BAD_ABI)?.canvas)?;
         if !Arc::ptr_eq(owner, &loan.owner) || !owner.active() || owner.cancelled()
         {
+            // Same identity/state refusal with three separate causes; report each
+            // rather than the OR that produced it. First refusal only.
+            static REPORTED: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+            {
+                serial!("PAINT_LOAN_REFUSED same_owner={} owner_active={} owner_cancelled={}",
+                        Arc::ptr_eq(owner, &loan.owner),
+                        owner.active(),
+                        owner.cancelled());
+            }
             return Err(SERVICE_BUSY);
         }
         Ok(())
