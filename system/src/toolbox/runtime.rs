@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
+pub(crate) use control_runtime::{TrackingStage, report_tracking_status};
 use mac_abi::{events::{CMD_KEY, Event, EventKind},
               geometry::{Point, Rect},
               *};
@@ -1386,7 +1387,9 @@ impl Toolbox
         }
     }
 
-    fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Result<(), Status>
+    fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall,
+                       diagnostic: &mut Option<TrackingStage>)
+                       -> Result<(), Status>
     {
         use mac_abi::controls::*;
         if !call.surface.is_null()
@@ -1430,15 +1433,21 @@ impl Toolbox
             return self.cancel_control_tracking(call, owner, window);
         }
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
-           && self.controls.splitter_request(call, owner, crate::machine::traps::gateway)?
+           && self.controls
+                  .splitter_request(call, owner, crate::machine::traps::gateway)
+                  .map_err(|status| {
+                      TrackingStage::refusal(diagnostic, TrackingStage::SplitterRequest, status)
+                  })?
         {
             let pending =
                 self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
-            let prepared =
-                self.controls
-                    .prepare_splitter(call, owner, pending, crate::machine::traps::gateway)?;
+            let prepared = self.controls.prepare_splitter(call,
+                                                           owner,
+                                                           pending,
+                                                           crate::machine::traps::gateway,
+                                                           diagnostic)?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            return self.publish_control_layout(window, prepared, used, limit);
+            return self.publish_control_layout(window, prepared, used, limit, diagnostic);
         }
         if call.operation == NEXT_CHILD_OBJECT
         {
@@ -1492,7 +1501,7 @@ impl Toolbox
                                                              crate::toolbox::runtime::Toolbox::control_definition(id)
                                                          })?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            return self.publish_control_layout(window, prepared, used, limit);
+            return self.publish_control_layout(window, prepared, used, limit, diagnostic);
         }
         if call.operation == REFLOW_OBJECT
            && matches!(call.layout.message,
@@ -1523,7 +1532,7 @@ impl Toolbox
                                                          Some((call, owner)),
                                                          crate::machine::traps::gateway)?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            return self.publish_control_layout(window, prepared, used, limit);
+            return self.publish_control_layout(window, prepared, used, limit, diagnostic);
         }
         if call.operation == REFLOW_OBJECT
            && matches!(call.layout.message, reflow::ASK_SIZE | reflow::ASSIGN_RECT)
@@ -1538,7 +1547,7 @@ impl Toolbox
                                                          crate::machine::traps::gateway,
                                                          None)?;
             call.layout.measurement = prepared.measurement;
-            self.publish_control_layout(window, prepared, used, limit)?;
+            self.publish_control_layout(window, prepared, used, limit, diagnostic)?;
             return Ok(());
         }
         if self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
@@ -1858,11 +1867,13 @@ impl Toolbox
         }
     }
 
-    pub fn control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Status
+    pub(crate) fn control(&mut self, call: &mut mac_abi::controls::ControlCall,
+                          diagnostic: &mut Option<TrackingStage>)
+                          -> Status
     {
         if call.operation >= mac_abi::controls::CREATE_STANDARD
         {
-            return self.managed_control(call).map_or_else(|e| e, |_| OK);
+            return self.managed_control(call, diagnostic).map_or_else(|status| TrackingStage::refusal(diagnostic, TrackingStage::ManagedAdmission, status), |_| OK);
         }
         if !call.surface.is_null() || call.reflow != 0
         {

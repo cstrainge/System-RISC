@@ -1290,14 +1290,19 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             {
                 return toolbox::runtime::native_control(call) as i64;
             }
-            definition_request(|runtime| {
-                if let Some(id) = runtime.preflight_control(call)?
+            let mut diagnostic = None;
+            let status = definition_request(|runtime| {
+                let prepared = runtime.preflight_control(call).map_err(|status| {
+                    crate::toolbox::runtime::TrackingStage::refusal(&mut diagnostic, crate::toolbox::runtime::TrackingStage::Descriptor, status)
+                })?;
+                if let Some(id) = prepared
                 {
-                    return Ok(DefinitionTurn::Prepare { kind: *b"CDEF",
-                                                        id });
+                    return Ok(DefinitionTurn::Prepare { kind: *b"CDEF", id });
                 }
-                Ok(DefinitionTurn::Complete(runtime.control(call)))
-            }).unwrap_or_else(|status| status) as i64
+                Ok(DefinitionTurn::Complete(runtime.control(call, &mut diagnostic)))
+            }).unwrap_or_else(|status| status);
+            crate::toolbox::runtime::report_tracking_status(call, diagnostic, status);
+            status as i64
         }
         GEOMETRY => toolbox::quickdraw::geometry::dispatch(read_request!(GeometryCall)) as i64,
         SURFACE =>

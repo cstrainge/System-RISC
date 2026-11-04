@@ -1701,7 +1701,7 @@ impl Manager
                                         .. })
         {
             return Ok(TrackingSnapshot::Split(self.snapshot_splitter(call, owner,
-                                                                     paint_pending)?));
+                                                                     paint_pending, &mut None)?));
         }
         let splitter = if object.state
                                 .layout
@@ -1710,7 +1710,7 @@ impl Manager
                                 .is_some_and(|grid| grid.dividers.is_some())
                           && call.operation == BEGIN_TRACKING
         {
-            Some(self.snapshot_splitter(call, owner, paint_pending))
+            Some(self.snapshot_splitter(call, owner, paint_pending, &mut None))
         }
         else
         {

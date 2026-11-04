@@ -177,16 +177,20 @@ pub(super) fn publish_prepared_window_layout(content: &mut [Content], controls: 
 impl Toolbox
 {
     pub(super) fn publish_control_layout(&mut self, window: u64, prepared: Prepared, used: usize,
-                                         limit: usize)
+                                         limit: usize, diagnostic: &mut Option<TrackingStage>)
                                          -> Result<(), Status>
     {
         let feedback = prepared.feedback;
-        let damage = publish(&mut self.presentation.content, &mut self.controls, window,
-                             prepared, used, limit)?;
+        let damage = publish(&mut self.presentation.content, &mut self.controls, window, prepared,
+                             used, limit).map_err(|status| {
+                                             TrackingStage::refusal(diagnostic,
+                                                                    TrackingStage::ScenePublish,
+                                                                    status)
+                                         })?;
         let changed = !damage.is_empty() || feedback.is_some();
         if let Some(feedback) = feedback
         {
-            self.apply_control_outline(window, feedback)?;
+            self.apply_control_outline(window, feedback).map_err(|status| TrackingStage::refusal(diagnostic, TrackingStage::Outline, status))?;
         }
         for rect in damage.into_iter().filter(|r| !r.is_empty())
         {
