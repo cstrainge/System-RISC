@@ -58,7 +58,6 @@ impl<'a> Tree<'a>
         let mut cursor = 0usize;
         let mut matches = false;
         let mut window = None;
-        let mut depth = 0usize;
         while cursor + 4 <= self.structure.len()
         {
             let token = self.word(&mut cursor)?;
@@ -67,7 +66,6 @@ impl<'a> Tree<'a>
                 BEGIN_NODE =>
                 {
                     self.skip_name(&mut cursor);
-                    depth += 1;
                     matches = false;
                     window = None;
                 }
@@ -80,7 +78,6 @@ impl<'a> Tree<'a>
                             return Some(found);
                         }
                     }
-                    depth = depth.saturating_sub(1);
                 }
                 PROP =>
                 {

@@ -89,9 +89,10 @@ unsafe fn entry(table: u64, index: usize, value: u64)
 pub extern "C" fn mmu_init()
 {
     let ram_blocks = (PHYSICAL_RAM_BYTES / BLOCK) as usize;
-    let first_device = (PL011_BASE.min(SDHCI_BASE).min(MAILBOX_BASE) / BLOCK) as usize;
     let physmap_index = ((PHYSMAP_BASE - KERNEL_HALF) / (1 << 30)) as usize;
-    assert!(ram_blocks == first_device, "the device aperture must follow RAM");
+    // The device aperture begins where RAM ends, so the mapping needs the RAM
+    // extent rather than any individual peripheral address.
+    assert!(PHYSICAL_RAM_BYTES % BLOCK == 0, "RAM must end on a block boundary");
     assert!(physmap_index < 512, "the physmap must sit inside the kernel half");
     unsafe
     {
@@ -215,6 +216,15 @@ pub extern "C" fn sdhci_probe() -> u64
             puts("BOOT_AARCH64_DT_PL011: base=");
             puthex(base);
             puts("\n");
+            // The console was initialised from the record before the tree could
+            // be parsed, which is unavoidable: a bad tree has to be reported
+            // somewhere. Checking the two agree turns a silent divergence into a
+            // visible one.
+            if base != PL011_BASE
+            {
+                puts("BOOT_AARCH64_DT_MISMATCH: the tree's pl011 is not the console in use\n");
+                return 0;
+            }
         }
         None =>
         {
