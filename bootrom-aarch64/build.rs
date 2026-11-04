@@ -11,7 +11,7 @@ fn main()
         serde_json::from_slice(&fs::read(&record_path).expect("platform record"))
             .expect("valid platform record");
     let boot = &record["memory"]["boot"];
-    let base = boot["base"].as_str().expect("memory.boot.base");
+    let boot_base = boot["base"].as_str().expect("memory.boot.base");
     let bytes = boot["bytes"].as_str().expect("memory.boot.bytes");
     let uart = record["hardware"]["devices"].as_array()
                                             .expect("hardware.devices")
@@ -23,8 +23,32 @@ fn main()
     fs::write(out.join("platform-hardware.inc"),
               format!(".equ PL011_BASE, {uart_base}\n"))
         .expect("hardware include");
+    let memory = &record["memory"];
+    let ram_base = memory["ram_base"].as_str().expect("memory.ram_base");
+    let ram_bytes = memory["minimum_ram_bytes"].as_str().expect("memory.minimum_ram_bytes");
+    let physmap_base = record["virtual_memory"]["physmap"]["start"].as_str()
+                             .expect("virtual_memory.physmap.start");
+    let devices = record["hardware"]["devices"].as_array().expect("hardware.devices");
+    let base = |kind: &str, model: &str| -> String {
+        devices.iter()
+               .find(|device| device["kind"] == kind && device["model"] == model)
+               .and_then(|device| device["base"].as_str())
+               .unwrap_or_else(|| panic!("the platform must declare {kind}/{model}"))
+               .to_string()
+    };
+    let pl011 = base("uart", "pl011");
+    let sdhci = base("storage", "sdhci");
+    let mailbox = base("gpio-mailbox", "bcm2835-mailbox");
+    fs::write(out.join("platform-memory.rs"),
+              format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
+                       pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
+                       pub const PHYSMAP_BASE: u64 = {physmap_base};\n\
+                       pub const PL011_BASE: u64 = {pl011};\n\
+                       pub const SDHCI_BASE: u64 = {sdhci};\n\
+                       pub const MAILBOX_BASE: u64 = {mailbox};\n"))
+        .expect("memory constants");
     let linker = format!("OUTPUT_ARCH(aarch64)\nENTRY(_start)\nMEMORY {{ ram (rwx) : ORIGIN = \
-                          {base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \
+                          {boot_base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \
                           KEEP(*(.text.entry)) *(.text .text.*) }} > ram\n.rodata : ALIGN(4096) \
                           {{ *(.rodata .rodata.* .srodata .srodata.*) }} > ram\n.data : \
                           ALIGN(4096) {{ *(.data .data.* .sdata .sdata.* .got .got.*) }} > \
