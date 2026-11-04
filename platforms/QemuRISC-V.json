@@ -1,6 +1,26 @@
 {
   "include": "RiscVBase.json",
   "name": "QemuRISC-V",
+  "bootloader": {
+    "description": "M-mode boot ROM: executes in place from read-only pflash, probes the machine and loads the resident System from the boot disk",
+    "package": "bootrom",
+    "artifact": "bootrom",
+    "entry": "platforms/riscv64-entry.S",
+    "linker_script": "bootrom/link.ld",
+    "page_table": "mac-riscv-pages"
+  },
+  "storage": {
+    "images": {
+      "system-disk": {
+        "description": "Bare HFS-B System 7 volume over the whole 500 MiB medium, with no partition table, which is what the resident disk driver expects",
+        "layout": {
+          "kind": "filesystem",
+          "filesystem": "system7",
+          "size": { "kind": "bytes", "bytes": "0x1f400000" }
+        }
+      }
+    }
+  },
   "emulation": {
     "description": "QEMU virt board, 4 RVA23 harts, 2 GiB RAM, virtio-MMIO devices with a virtio GPU and ramfb display",
     "family": "qemu",
@@ -15,7 +35,9 @@
       "transport": "virtio-mmio",
       "format": "raw",
       "readonly": true,
-      "slots": [0, 3, 4, 7]
+      "slots": [0, 3, 4, 7],
+      "attach": [{ "image": "system-disk", "slot": 0 }],
+      "capacity": 4
     },
     "display": {
       "kind": "virtio-gpu",

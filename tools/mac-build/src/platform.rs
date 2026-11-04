@@ -11,10 +11,12 @@ use serde_json::Value;
 
 use crate::{Result, error};
 
+pub mod bootloader;
 pub mod emulation;
 pub mod hardware;
 pub mod memory;
 mod devices;
+pub mod storage;
 pub mod virtual_memory;
 pub mod scheduling;
 
@@ -41,6 +43,15 @@ pub struct Platform
     /// independent of both the build and the emulation description.
     #[serde(default)]
     pub hardware:     Option<hardware::Definition>,
+    /// The media this platform produces, attaches and writes. Storage lives
+    /// here rather than under `emulation` or `hardware` because one described
+    /// medium has to serve both.
+    #[serde(default)]
+    pub storage:      Option<storage::Storage>,
+    /// The bootloader this platform builds. Optional: a board whose first stage
+    /// is vendor firmware declares none.
+    #[serde(default)]
+    pub bootloader:   Option<bootloader::Definition>,
     fatal_shutdown:   Option<FatalShutdown>,
     #[serde(default)]
     mmio_devices:     Vec<devices::Definition>,
@@ -76,6 +87,40 @@ fn known() -> String
                                         .collect();
     names.sort();
     if names.is_empty() { "<none>".into() } else { names.join(", ") }
+}
+
+/// Every platform record in this checkout, with a one-line summary for
+/// `cargo xtask platforms`. Each record is loaded and validated, so a broken
+/// record is reported instead of being listed as if it were usable.
+pub fn catalogue() -> Result<Vec<(String, String)>>
+{
+    let mut names: Vec<String> =
+        fs::read_dir(directory())?.filter_map(|entry| {
+                                      let path = entry.ok()?.path();
+                                      if path.extension()? != "json"
+                                      {
+                                          return None;
+                                      }
+                                      Some(path.file_stem()?.to_str()?.to_string())
+                                  })
+                                  .collect();
+    names.sort();
+    let mut listed = Vec::new();
+    for name in names
+    {
+        let platform = load(&name)?;
+        let summary = platform.emulation()
+                              .map(|emulation| emulation.description.clone())
+                              .or_else(|| {
+                                  platform.hardware.as_ref().map(|hardware| {
+                                                                format!("{}; no emulation declared",
+                                                                        hardware.description())
+                                                            })
+                              })
+                              .unwrap_or_else(|| "no emulation or hardware description".into());
+        listed.push((name, summary));
+    }
+    Ok(listed)
 }
 
 /// `include` composes platform records. A base record is merged into the record
@@ -140,6 +185,26 @@ fn document(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Value>
 
 fn merge(base: Value, overlay: Value) -> Result<Value>
 {
+    // `$append` extends an array rather than replacing it.
+    if let Value::Object(object) = &overlay
+    {
+        if let Some(append) = object.get(APPEND).filter(|_| object.len() == 1)
+        {
+            let Value::Array(items) = append
+            else
+            {
+                return Err(error(format!("'{APPEND}' must be an array")));
+            };
+            let Value::Array(mut existing) = base
+            else
+            {
+                return Err(error(format!("'{APPEND}' appends to an array, but the included value \
+                                          is not one")));
+            };
+            existing.extend(items.iter().cloned());
+            return Ok(Value::Array(existing));
+        }
+    }
     match (base, overlay)
     {
         (Value::Object(mut base), Value::Object(overlay)) =>
@@ -148,18 +213,9 @@ fn merge(base: Value, overlay: Value) -> Result<Value>
             {
                 let merged = match base.remove(&key)
                 {
-                    None =>
-                    {
-                        match value
-                        {
-                            Value::Object(mut object)
-                                if object.len() == 1 && object.contains_key(APPEND) =>
-                            {
-                                object.remove(APPEND).unwrap()
-                            }
-                            other => other
-                        }
-                    }
+                    // An absent key takes the overlay value; `$append` is then
+                    // equivalent to the plain array it wraps.
+                    None => plain(value)?,
                     Some(current) => merge(current, value)?
                 };
                 base.insert(key, merged);
@@ -168,6 +224,25 @@ fn merge(base: Value, overlay: Value) -> Result<Value>
         }
         // A scalar or a plain array replaces what it overlays.
         (_, overlay) => Ok(overlay)
+    }
+}
+
+/// The value an overlay contributes when it overlays nothing.
+fn plain(value: Value) -> Result<Value>
+{
+    let Value::Object(mut object) = value
+    else
+    {
+        return Ok(value);
+    };
+    if object.len() != 1 || !object.contains_key(APPEND)
+    {
+        return Ok(Value::Object(object));
+    }
+    match object.remove(APPEND).unwrap()
+    {
+        Value::Array(items) => Ok(Value::Array(items)),
+        _ => Err(error(format!("'{APPEND}' must be an array")))
     }
 }
 
@@ -233,6 +308,44 @@ pub fn load(name: &str) -> Result<Platform>
     if let Some(hardware) = &platform.hardware
     {
         hardware.check(&platform.name)?;
+    }
+    if let Some(storage) = &platform.storage
+    {
+        storage.check(&platform.name)?;
+    }
+    if let Some(bootloader) = &platform.bootloader
+    {
+        bootloader.check(&platform.name)?;
+    }
+    // A medium referenced by name must exist; a silently missing disk looks
+    // exactly like a guest that fails to find its boot volume.
+    if let (Some(storage), Some(emulation)) = (&platform.storage, &platform.emulation)
+    {
+        for (image, _) in emulation.attachments()
+        {
+            if storage.image(image).is_none()
+            {
+                return Err(error(format!("platform '{}' emulation.disks.attach names image \
+                                          '{image}', which storage does not declare; declared \
+                                          images: {}",
+                                         platform.name,
+                                         storage.names())));
+            }
+        }
+    }
+    if let (Some(storage), Some(hardware)) = (&platform.storage, &platform.hardware)
+    {
+        for image in hardware.images()
+        {
+            if storage.image(image).is_none()
+            {
+                return Err(error(format!("platform '{}' hardware.boot.image names image \
+                                          '{image}', which storage does not declare; declared \
+                                          images: {}",
+                                         platform.name,
+                                         storage.names())));
+            }
+        }
     }
     Ok(platform)
 }
@@ -400,6 +513,63 @@ mod tests
                                                                      .contains("native guest \
                                                                                 target must be"));
     }
+
+    /// Include composition is the schema's only inheritance mechanism, so its
+    /// rules are checked rather than trusted: scalars and plain arrays replace,
+    /// objects merge key by key, `$append` extends an array, a missing include
+    /// and a cycle are errors that name the files involved.
+    #[test]
+    fn includes_merge_by_the_documented_rules()
+    {
+        let root = env::temp_dir().join(format!("platform-include-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("base.json"),
+                  br#"{"name":"base","scalar":"base","list":[1,2],"object":{"a":1,"b":2}}"#)
+            .unwrap();
+        fs::write(root.join("nested/leaf.json"), br#"{"leaf":true}"#).unwrap();
+        fs::write(root.join("mid.json"),
+                  br#"{"include":"nested/leaf.json","object":{"c":3}}"#).unwrap();
+        fs::write(root.join("over.json"),
+                  br#"{"include":"mid.json","scalar":"over","list":{"$append":[3]},
+                       "object":{"b":20}}"#)
+            .unwrap();
+        fs::write(root.join("extends.json"),
+                  br#"{"include":"base.json","list":{"$append":[3]},"object":{"b":20}}"#).unwrap();
+        fs::write(root.join("cycle-a.json"), br#"{"include":"cycle-b.json"}"#).unwrap();
+        fs::write(root.join("cycle-b.json"), br#"{"include":"cycle-a.json"}"#).unwrap();
+
+        let merged = document(&root.join("extends.json"), &mut Vec::new()).unwrap();
+        assert_eq!(merged["scalar"], serde_json::json!("base"), "an absent key keeps the base");
+        assert_eq!(merged["list"], serde_json::json!([1, 2, 3]), "$append extends the base array");
+        assert_eq!(merged["object"],
+                   serde_json::json!({"a":1,"b":20}),
+                   "objects merge key by key and a scalar leaf overrides");
+
+        let recursive = document(&root.join("over.json"), &mut Vec::new()).unwrap();
+        assert_eq!(recursive["scalar"], serde_json::json!("over"), "a scalar overrides");
+        assert_eq!(recursive["object"],
+                   serde_json::json!({"c":3,"b":20}),
+                   "nested includes merge before the including record is applied");
+        assert_eq!(recursive["leaf"], serde_json::json!(true), "includes resolve recursively");
+        assert!(recursive.get(INCLUDE).is_none(), "the include key does not survive");
+
+        let cycle = document(&root.join("cycle-a.json"), &mut Vec::new()).unwrap_err().to_string();
+        assert!(cycle.contains("platform include cycle") && cycle.contains("cycle-a.json ->"),
+                "{cycle}");
+        let missing = document(&root.join("absent.json"), &mut Vec::new()).unwrap_err()
+                                                                          .to_string();
+        assert!(missing.contains("cannot read platform file") &&
+                missing.contains("absent.json"),
+                "{missing}");
+        let dangling = root.join("dangling.json");
+        fs::write(&dangling, br#"{"include":"nowhere.json"}"#).unwrap();
+        let dangling = document(&dangling, &mut Vec::new()).unwrap_err().to_string();
+        assert!(dangling.contains("includes 'nowhere.json'") &&
+                dangling.contains("cannot read platform file"),
+                "{dangling}");
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
 
 
@@ -485,16 +655,18 @@ impl Platform
                                    {
                                        Some(hardware) =>
                                        {
-                                           let artifact =
-                                               hardware.artifact()
-                                                       .map(|artifact| {
-                                                           format!("; write '{artifact}' to it \
-                                                                    with {}",
-                                                                   hardware.tooling().join(", "))
-                                                       })
-                                                       .unwrap_or_default();
+                                           let medium = match &hardware.boot_image
+                                           {
+                                               Some(image) =>
+                                               {
+                                                   format!("; write the '{image}' storage image \
+                                                            to it with {}",
+                                                           hardware.tooling().join(", "))
+                                               }
+                                               None => String::new()
+                                           };
                                            format!(": it targets the board '{}' and cannot be \
-                                                    emulated{artifact}",
+                                                    emulated{medium}",
                                                    hardware.board())
                                        }
                                        None => ": it declares neither emulation nor hardware".into()

@@ -504,6 +504,16 @@ fn execute() -> Result<()>
     }
     let checking =
         args.first().is_some_and(|s| matches!(s.as_str(), "check" | "test" | "boot-check"));
+    // Listing platforms must work even when the default platform cannot be
+    // loaded, which is exactly when the list is most useful.
+    if args.len() == 1 && args[0] == "platforms"
+    {
+        for (name, summary) in mac_build::platform::catalogue()?
+        {
+            println!("{name:<16} {summary}");
+        }
+        return Ok(());
+    }
     let name = platform.or_else(|| env::var(mac_build::platform::PLATFORM_ENV).ok())
                        .unwrap_or_else(|| mac_build::platform::DEFAULT_PLATFORM.into());
     let workspace = Workspace::new(build, checking, mac_build::platform::load(&name)?)?;
@@ -613,6 +623,13 @@ fn execute() -> Result<()>
                 package::build(Path::new(manifest), Path::new(executable), Path::new(directory))?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+        [command] if command == "platforms" =>
+        {
+            for (name, summary) in mac_build::platform::catalogue()?
+            {
+                println!("{name:<16} {summary}");
+            }
+        }
         [] => help(),
         [command] if command == "help" || command == "--help" => help(),
         _ => return Err(error("unknown command; use cargo xtask help"))
@@ -622,6 +639,7 @@ fn execute() -> Result<()>
 
 fn help()
 {
+    println!("  cargo xtask platforms      List the platform records in this checkout");
     println!("  cargo xtask sdk prepare    Materialize the pinned private Rust application SDK");
     println!("  cargo xtask sdk build      Compile the staged System RISC standard library");
     println!("  cargo xtask sdk app Cargo.toml  Build a std application with the private SDK");
