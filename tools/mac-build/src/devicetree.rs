@@ -22,10 +22,41 @@ const END_NODE: u32 = 2;
 const PROP: u32 = 3;
 const END: u32 = 9;
 
-/// Builds the tree for the currently selected platform.
+/// Checks that a platform takes a generated tree, returning a named error when
+/// it does not. Split out from `generate` so both branches are testable without
+/// depending on which platform the environment selects.
+pub fn require_generated(platform: &Platform) -> Result<()>
+{
+    let declared = platform.hardware
+                           .as_ref()
+                           .and_then(|hardware| hardware.device_tree.as_ref());
+    match declared
+    {
+        Some(platform::hardware::DeviceTree::Generated) => Ok(()),
+        Some(other) =>
+        {
+            Err(crate::error(format!("platform '{}' declares device_tree {other:?}, so it does not \
+                                      take a generated tree",
+                                     platform.name)))
+        }
+        None =>
+        {
+            Err(crate::error(format!("platform '{}' declares no device_tree; a generated tree must \
+                                      be declared rather than assumed",
+                                     platform.name)))
+        }
+    }
+}
+
+/// Builds the tree for the currently selected platform, refusing a platform that
+/// does not declare a generated tree. Without this check the record's
+/// declaration would be decorative and a board whose firmware supplies its own
+/// tree would silently receive a generated one instead.
 pub fn generate() -> Result<Vec<u8>>
 {
-    generate_for(platform::current())
+    let platform = platform::current();
+    require_generated(platform)?;
+    generate_for(platform)
 }
 
 /// Builds the tree a platform record describes: its RAM window, its CPUs and the
@@ -381,10 +412,26 @@ mod tests
         }
     }
 
-    fn generated() -> (Vec<u8>, &'static Platform)
+    /// Loads the arm64 record explicitly rather than reading the ambient
+    /// platform selection, so the suite gives the same answer on any checkout.
+    fn generated() -> (Vec<u8>, Platform)
     {
-        let platform = platform::current();
-        (generate_for(platform).expect("generated tree"), platform)
+        let platform = platform::load("qemu_arm64").expect("the arm64 record must load");
+        let blob = generate_for(&platform).expect("generated tree");
+        (blob, platform)
+    }
+
+    #[test]
+    fn a_platform_that_does_not_declare_a_generated_tree_is_refused()
+    {
+        let generated = platform::load("qemu_arm64").expect("arm64 record");
+        assert!(require_generated(&generated).is_ok(),
+                "the arm64 record declares a generated tree");
+        let firmware = platform::load("qemu_riscv").expect("riscv record");
+        let error = require_generated(&firmware).expect_err("a firmware platform must be refused");
+        let message = error.to_string();
+        assert!(message.contains("qemu_riscv") && message.contains("device_tree"),
+                "the refusal must name the platform and the missing declaration: {message}");
     }
 
     #[test]
