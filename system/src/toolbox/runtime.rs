@@ -765,28 +765,6 @@ impl Toolbox
 
     pub fn window(&mut self, operation: u32, request: &mut WindowRequest) -> Status
     {
-        let status = self.window_operation(operation, request);
-        if status == SERVICE_BUSY
-        {
-            // Every refusal in this dispatch returns a bare status, so the caller
-            // cannot tell which window operation was refused. Name the first
-            // refusal of each operation, bounded by the selector's low bits.
-            static SEEN: [core::sync::atomic::AtomicBool; 32] =
-                [const { core::sync::atomic::AtomicBool::new(false) }; 32];
-            let slot = (operation as usize) & 31;
-            if !SEEN[slot].swap(true, core::sync::atomic::Ordering::Relaxed)
-            {
-                serial!("WINDOW_OPERATION_REFUSED operation={} window={} status={}",
-                        operation,
-                        request.id,
-                        status);
-            }
-        }
-        status
-    }
-
-    fn window_operation(&mut self, operation: u32, request: &mut WindowRequest) -> Status
-    {
         if operation == NEW_WINDOW
         {
             return self.create_window(request, None);

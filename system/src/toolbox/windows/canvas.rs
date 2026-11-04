@@ -643,17 +643,6 @@ impl WindowManager
         }
         if guardian.state().mode.load(Ordering::Acquire) != CANVAS || claim.cancelled()
         {
-            // Two different conditions share this refusal and the status does not
-            // say which. Report both fields separately, first refusal only.
-            static REPORTED: core::sync::atomic::AtomicBool =
-                core::sync::atomic::AtomicBool::new(false);
-            if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
-            {
-                serial!("CANVAS_CLAIM_REFUSED mode={} of {} cancelled={}",
-                        guardian.state().mode.load(Ordering::Acquire),
-                        CANVAS,
-                        claim.cancelled());
-            }
             return Err(SERVICE_BUSY);
         }
         Ok(())

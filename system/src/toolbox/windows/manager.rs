@@ -322,12 +322,12 @@ impl Window
 
     /// `source` names where the window's resources came from; a change means the
     /// definition behind this frame was replaced.
-    fn same_source(&self, other: &Self) -> bool
+    fn same_source(&self, _other: &Self) -> bool
     {
         #[cfg(target_arch = "riscv64")]
         {
             use WindowSource::{Application, System};
-            match (&self.source, &other.source)
+            match (&self.source, &_other.source)
             {
                 (Application, Application) => true,
                 (System { resources: a,
@@ -339,7 +339,6 @@ impl Window
         }
         #[cfg(not(target_arch = "riscv64"))]
         {
-            let _ = other;
             true
         }
     }
@@ -1527,21 +1526,6 @@ impl WindowManager
                                       owned.revision =
                                           owned.revision
                                                .and_then(|revision| revision.checked_add(1));
-                                      // Bounded trace of the generic mutation stamp: a paint
-                                      // plan records this value, so when it moves between the
-                                      // plan and the replay the replay refuses. Site tag plus
-                                      // the resulting value orders it against PAINT_ADMIT.
-                                      static TRACED: core::sync::atomic::AtomicU8 =
-                                          core::sync::atomic::AtomicU8::new(0);
-                                      let seen = TRACED.fetch_add(1,
-                                                        core::sync::atomic::Ordering::Relaxed);
-                                      if seen < 200
-                                      {
-                                          serial!("REVISION_BUMP site=window_mut window={} \
-                                                   revision={:?}",
-                                                  id.0,
-                                                  owned.revision);
-                                      }
                                       &mut owned.window
                                   })
     }

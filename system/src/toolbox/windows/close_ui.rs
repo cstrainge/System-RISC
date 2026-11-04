@@ -3,43 +3,13 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Each close step can refuse with a bare status, and Service Busy is the common
-/// one, so the caller cannot tell which owner held the window. Name the first
-/// failing step once.
-fn step<T>(name: &'static str, result: Result<T, Status>) -> Result<T, Status>
-{
-    if let Err(status) = &result
-    {
-        // One latch per step: a shared latch would be consumed by the first
-        // refusing step and hide every later one.
-        static SEEN: [core::sync::atomic::AtomicBool; 8] =
-            [const { core::sync::atomic::AtomicBool::new(false) }; 8];
-        let slot = match name
-        {
-            "removal-window" => 0,
-            "request-window-disposal" => 1,
-            "prepare-remove-window" => 2,
-            "restore-alert-focus" => 3,
-            "remove-closed-content" => 4,
-            "remove-window" => 5,
-            "close-window-activity" => 6,
-            _ => 7
-        };
-        if !SEEN[slot].swap(true, core::sync::atomic::Ordering::Relaxed)
-        {
-            serial!("CLOSE_STEP_REFUSED step={} status={}", name, status);
-        }
-    }
-    result
-}
-
 impl Toolbox
 {
     pub(crate) fn prepare_user_window_removal(&mut self,
                                               job:&Arc<crate::toolbox::windows::manager::operations::WindowJob>)
                                               -> Result<(), Status>
     {
-        let window = step("removal-window", self.windows.removal_window(job))?;
+        let window = self.windows.removal_window(job)?;
         // Arm before testing the actual claim; a real return can arrive between
         // refusal and the caller's park, and must not be cleared afterward.
         job.arm_removal_wait();
@@ -66,7 +36,7 @@ impl Toolbox
     pub(super) fn remove_closed_window_content(&mut self, id: WindowId, when: u32)
                                                -> Result<(), Status>
     {
-        step("remove-window", self.controls.remove_window(id.0))?;
+        self.controls.remove_window(id.0)?;
         let before = self.drag.feedback();
         let drag_cleanup = self.drag.forget_window(id.0, when);
         self.drag_effects(before);
@@ -126,15 +96,15 @@ impl Toolbox
                 return Err(ACCESS_DENIED);
             }
             let id = receipt.window_id();
-            step("prepare-remove-window", self.controls.prepare_remove_window(id.0))?;
+            self.controls.prepare_remove_window(id.0)?;
             if self.dialogs.active() && self.dialogs.window == id.0
             {
-                step("restore-alert-focus", self.restore_alert_focus(self.dialogs.previous))?;
+                self.restore_alert_focus(self.dialogs.previous)?;
             }
-            step("remove-closed-content", self.remove_closed_window_content(id, Self::when()))?;
+            self.remove_closed_window_content(id, Self::when())?;
             if self.dialogs.active() && self.dialogs.window == id.0
             {
-                step("close-window-activity", self.dialogs.close_window_activity(id.0))?;
+                self.dialogs.close_window_activity(id.0)?;
             }
             let removed = self.dialogs.take_window(id.0);
             self.presentation.redraw = true;
@@ -146,20 +116,7 @@ impl Toolbox
 
 pub(super) fn cleanup_status(cause: crate::toolbox::handles::cleanup::Cause) -> Status
 {
-    let status = cleanup_status_of(cause);
-    if status == SERVICE_BUSY
-    {
-        // One refusal status covers many cleanup causes; a close that reports
-        // Service Busy cannot say which one held it. Name the first cause only,
-        // so a repeated close cannot flood the log.
-        static REPORTED: core::sync::atomic::AtomicBool =
-            core::sync::atomic::AtomicBool::new(false);
-        if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
-        {
-            serial!("CLEANUP_BUSY_CAUSE cause={cause:?}");
-        }
-    }
-    status
+    cleanup_status_of(cause)
 }
 
 fn cleanup_status_of(cause: crate::toolbox::handles::cleanup::Cause) -> Status
