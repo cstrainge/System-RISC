@@ -4,7 +4,7 @@
 //! scoped allowances and safety comments for handle ownership and buffers.
 //! No guest OS code lives here.
 #![deny(unsafe_code)]
-#![cfg_attr(windows, feature(windows_by_handle, rename_noreplace))]
+#![cfg_attr(windows, feature(windows_by_handle))]
 
 #[cfg(target_os = "macos")]
 use std::{ffi::CString,
@@ -616,12 +616,96 @@ fn join_path(directory: &str, name: &str) -> String
         directory.strip_suffix('\\').or_else(|| directory.strip_suffix('/')).unwrap_or(directory);
     format!("{base}\\{name}")
 }
-/// Windows atomic no-replace rename, including the platform's support for
-/// open descendants. The standard library owns the scoped Win32 FFI here.
+/// Windows atomic no-replace rename that keeps working while a descendant is
+/// open.
+///
+/// The standard library used to expose exactly this as `fs::rename_noreplace`;
+/// that item is gone from the pinned toolchain, so the same sequence is issued
+/// here. The source is opened for deletion and renamed through its own handle
+/// with `FileRenameInfoEx` and `FILE_RENAME_FLAG_POSIX_SEMANTICS`. The flags
+/// carry no `REPLACE_IF_EXISTS`, so an existing destination is an error rather
+/// than something to overwrite, and they take the rename out of the Win32
+/// pre-check that would otherwise refuse a directory with open descendants.
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 fn move_file_no_replace(from_path: &str, to_path: &str) -> Result<()>
 {
-    Ok(std::fs::rename_noreplace(from_path, to_path)?)
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
+
+    use windows_sys::Win32::{Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+                             Storage::FileSystem::{CreateFileW, DELETE,
+                                                   FILE_FLAG_BACKUP_SEMANTICS,
+                                                   FILE_FLAG_OPEN_REPARSE_POINT,
+                                                   FILE_RENAME_INFO, FILE_SHARE_DELETE,
+                                                   FILE_SHARE_READ, FILE_SHARE_WRITE,
+                                                   FileRenameInfoEx, OPEN_EXISTING,
+                                                   SetFileInformationByHandle}};
+
+    /// `FILE_RENAME_FLAG_POSIX_SEMANTICS`. `windows-sys` 0.61 describes the
+    /// union field but does not name this value.
+    const POSIX_SEMANTICS: u32 = 0x0000_0002;
+
+    let wide = |text: &str| -> Vec<u16> {
+        OsStr::new(text).encode_wide().chain(core::iter::once(0)).collect()
+    };
+    let source = wide(from_path);
+    let name = wide(to_path);
+    let name_bytes = (name.len() - 1) * 2;
+
+    // `FILE_RENAME_INFO` ends in a one-element array, so the record is sized for
+    // the real name and the tail written after the header. The storage is
+    // `u64`-sized because the struct needs pointer alignment that a byte buffer
+    // does not promise.
+    let header = core::mem::size_of::<FILE_RENAME_INFO>();
+    let length = header + name_bytes;
+    let unit = core::mem::size_of::<u64>();
+    let mut storage = vec![0u64; length.div_ceil(unit)];
+    let record = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: `storage` is at least `header` bytes and aligned for the struct.
+    // `length` includes `name.len()` UTF-16 units after the header, so the copy
+    // stays inside the allocation.
+    unsafe {
+        (*record).Anonymous.Flags = POSIX_SEMANTICS;
+        (*record).RootDirectory = ptr::null_mut();
+        (*record).FileNameLength = name_bytes as u32;
+        let tail = ptr::addr_of_mut!((*record).FileName).cast::<u16>();
+        ptr::copy_nonoverlapping(name.as_ptr(), tail, name.len());
+    }
+
+    // SAFETY: both pointers name NUL-terminated UTF-16 buffers alive for the
+    // call. An existing file needs no security descriptor and no template
+    // handle, and the two flags are the documented way to open a file or
+    // directory for deletion without following a reparse point.
+    let handle = unsafe {
+        CreateFileW(source.as_ptr(),
+                    DELETE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                    ptr::null_mut())
+    };
+    if handle == INVALID_HANDLE_VALUE
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: the handle was just opened for deletion, and the buffer is the
+    // record plus its name tail with that exact length passed. The error is
+    // read before the handle is closed, and the handle is closed on both paths.
+    let (status, error) = unsafe {
+        let status = SetFileInformationByHandle(handle,
+                                                FileRenameInfoEx,
+                                                storage.as_ptr().cast(),
+                                                length as u32);
+        let error = io::Error::last_os_error();
+        CloseHandle(handle);
+        (status, error)
+    };
+    if status == 0
+    {
+        return Err(error.into());
+    }
+    Ok(())
 }
 /// Windows hard link by derived paths, for the write probe. Argument
 /// order is the Win32 one: new link first, existing file second.
