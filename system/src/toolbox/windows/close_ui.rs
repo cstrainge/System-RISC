@@ -43,7 +43,20 @@ impl Toolbox
         // Arm before testing the actual claim; a real return can arrive between
         // refusal and the caller's park, and must not be cleared afterward.
         job.arm_removal_wait();
-        step("request-window-disposal", self.controls.request_window_disposal(window.id.0))?;
+        // request_window_disposal arms this window's process-source definition
+        // disposal and then reports busy while that disposal drains. The kernel
+        // completes it unaided: control_work::pump advances every armed slot from
+        // the scheduler maintenance path. A stock application reads busy as a
+        // terminal failure and abandons the close it just started, so treat an
+        // in-flight disposal as admission rather than refusal. Creation against
+        // the window is refused while its disposal is pending, and a stuck
+        // advance still reports CONTROL_DISPOSAL_RETAINED with its canonical job.
+        match self.controls.request_window_disposal(window.id.0)
+        {
+            Ok(()) => (),
+            Err(SERVICE_BUSY) if self.controls.disposal_pending_window(window.id.0) => (),
+            Err(status) => return Err(status)
+        }
         job.removal_admitted();
         Ok(())
     }
