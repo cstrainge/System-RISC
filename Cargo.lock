@@ -37,6 +37,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootrom-aarch64"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "serde_json",
+]
+
+[[package]]
 name = "bootrom-riscv"
 version = "0.1.0"
 dependencies = [

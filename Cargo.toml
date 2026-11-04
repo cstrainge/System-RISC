@@ -49,6 +49,7 @@ members = [
     "tools/risc-host",
     "tools/xtask",
     "bootrom-riscv",
+    "bootrom-aarch64",
     "definitions/*",
     "drivers/*",
     "extensions/*",

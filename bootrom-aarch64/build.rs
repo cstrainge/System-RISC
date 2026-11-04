@@ -1,0 +1,45 @@
+use std::{env, fs, path::Path};
+
+fn main()
+{
+    println!("cargo:rerun-if-env-changed={}", mac_build::platform::PLATFORM_ENV);
+    let platform = mac_build::platform::current();
+    let record_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../platforms")
+                                                           .join(format!("{}.json", platform.name));
+    println!("cargo:rerun-if-changed={}", record_path.display());
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(&record_path).expect("platform record"))
+            .expect("valid platform record");
+    let boot = &record["memory"]["boot"];
+    let base = boot["base"].as_str().expect("memory.boot.base");
+    let bytes = boot["bytes"].as_str().expect("memory.boot.bytes");
+    let uart = record["hardware"]["devices"].as_array()
+                                            .expect("hardware.devices")
+                                            .iter()
+                                            .find(|device| device["kind"] == "uart")
+                                            .expect("the platform must declare a UART peripheral");
+    let uart_base = uart["base"].as_str().expect("the UART must state its base");
+    let out = Path::new(&env::var("OUT_DIR").expect("Cargo supplies OUT_DIR")).to_path_buf();
+    fs::write(out.join("platform-hardware.inc"),
+              format!(".equ PL011_BASE, {uart_base}\n"))
+        .expect("hardware include");
+    let linker = format!("OUTPUT_ARCH(aarch64)\nENTRY(_start)\nMEMORY {{ ram (rwx) : ORIGIN = \
+                          {base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \
+                          KEEP(*(.text.entry)) *(.text .text.*) }} > ram\n.rodata : ALIGN(4096) \
+                          {{ *(.rodata .rodata.* .srodata .srodata.*) }} > ram\n.data : \
+                          ALIGN(4096) {{ *(.data .data.* .sdata .sdata.* .got .got.*) }} > \
+                          ram\n.bss (NOLOAD) : ALIGN(4096) {{ __bss_start = .; *(.bss .bss.* \
+                          .sbss .sbss.*) *(COMMON) . = ALIGN(16); __bss_end = .; }} > ram\n. = \
+                          ALIGN(16);\n. += 0x10000;\n__stack_top = .;\n.ARM.attributes 0 : {{ \
+                          *(.ARM.attributes) }} :NONE\n/DISCARD/ : {{ *(.eh_frame .eh_frame_hdr) \
+                          }}\n}}\n");
+    fs::write(out.join("boot.ld"), linker).expect("boot linker script");
+    println!("cargo:rustc-link-arg-bin=bootrom-aarch64=-T{}", out.join("boot.ld").display());
+    if env::var("TARGET") != env::var("HOST")
+    {
+        mac_build::platform::validate_pic_flags().expect("native PIC dependency contract");
+        mac_build::platform::validate_guest(&env::var("TARGET").expect("target"),
+                                            &env::var("CARGO_CFG_TARGET_FEATURE").expect("features"))
+            .expect("native platform ISA floor");
+    }
+}
