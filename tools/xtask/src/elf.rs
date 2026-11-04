@@ -42,9 +42,12 @@ pub struct Payload
     pub bytes: Vec<u8>
 }
 
-/// Flatten every loadable segment into one image, zero-filling the difference
-/// between a segment's file size and its memory size so uninitialised data is
-/// present in the payload exactly as the linker placed it.
+/// Flatten every loadable segment into one image.
+///
+/// The load address is the segment's physical address, because a section with
+/// a link-time address in RAM can still be loaded from the boot medium. The
+/// extent is the file size, so uninitialised data stays out of the payload,
+/// exactly as the linker placed it on the medium.
 pub fn flatten(image: &[u8], limit: u64) -> Result<Payload>
 {
     if image.len() < 64 || &image[..4] != b"\x7fELF"
@@ -84,14 +87,18 @@ pub fn flatten(image: &[u8], limit: u64) -> Result<Payload>
         {
             return Err(error(format!("ELF segment {index} declares less memory than file bytes")));
         }
-        segments.push((address, offset, file_size, memory_size));
+        if file_size == 0
+        {
+            continue;
+        }
+        segments.push((address, offset, file_size));
     }
     let Some(base) = segments.iter().map(|segment| segment.0).min()
     else
     {
-        return Err(error("bootloader ELF has no loadable segments"));
+        return Err(error("bootloader ELF has no loadable file contents"));
     };
-    let end = segments.iter().map(|segment| segment.0 + segment.3).max().unwrap_or(base);
+    let end = segments.iter().map(|segment| segment.0 + segment.2).max().unwrap_or(base);
     if end <= base || end - base > limit
     {
         return Err(error(format!("bootloader payload spans {} bytes, which does not fit the \
@@ -99,7 +106,7 @@ pub fn flatten(image: &[u8], limit: u64) -> Result<Payload>
                                  end.saturating_sub(base))));
     }
     let mut bytes = vec![0; usize::try_from(end - base).map_err(|_| error("payload too large"))?];
-    for (address, offset, file_size, _) in segments
+    for (address, offset, file_size) in segments
     {
         let start = usize::try_from(address - base).map_err(|_| error("payload too large"))?;
         let length = usize::try_from(file_size).map_err(|_| error("segment too large"))?;

@@ -199,6 +199,7 @@ impl Workspace
 
     fn build(&self) -> Result<Vec<Value>>
     {
+        sdk::prerequisites(self)?;
         self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
                            "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef",
                            "native-table-cdef", "native-splitter-cdef"])?;
@@ -232,24 +233,23 @@ impl Workspace
             reports.push(report);
         }
         disk::validate_modules(self)?;
+        let mut apps: Vec<sdk::App> = Vec::new();
         for app in ["finder", "quickdraw-test", "text-edit", "cursor-test", "panic-test",
                     "resedit", "reactor", "control-suite"]
         {
-            let features: &[&str] = if app == "text-edit"
-                                       && (self.checking
-                                           || env::var_os("SYSTEM7_TEXTEDIT_INPUT_TRACE").is_some())
-            {
-                &["input-trace"]
-            }
-            else
-            {
-                &[]
-            };
-            reports.push(sdk::application(self,
-                                          &self.root.join("apps").join(app).join("Cargo.toml"),
-                                          features,
-                                          Some(self.dist()))?);
+            let features: &'static [&'static str] =
+                if app == "text-edit"
+                   && (self.checking || env::var_os("SYSTEM7_TEXTEDIT_INPUT_TRACE").is_some())
+                {
+                    &["input-trace"]
+                }
+                else
+                {
+                    &[]
+                };
+            apps.push(sdk::App::new(app, features));
         }
+        reports.extend(sdk::applications(self, &apps)?);
         authority::install(self, &mut reports)?;
         for (index, a) in reports.iter().enumerate()
         {
