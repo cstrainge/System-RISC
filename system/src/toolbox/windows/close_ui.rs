@@ -239,25 +239,48 @@ impl Toolbox
                                                -> Result<(), Status>
     {
         let window = self.windows.trusted_removal_window(handle)?;
-        handle.arm_wait();
-        let children = self.controls.prepare_window_removal(window.id.0)?;
-        let result = self.windows.finish_trusted_close(handle, &children);
-        if result.is_ok()
+        // The original ticket/header/storage were validated above. Deferred
+        // cleanup cannot recover this source through a THRD after its reclaim.
+        let binding = if handle.storage_owner().kind()
+                         == mac_object_table::domain::DomainKind::Process
         {
-            children.commit();
+            let binding = self.processes.resource_binding(handle.owner())?;
+            if binding.ledger().owner() != handle.storage_owner()
+            {
+                return Err(ACCESS_DENIED);
+            }
+            Some(binding)
         }
-        result.map(|_| ()).map_err(|cause| {
-                              match cause
-                              {
-                                  crate::toolbox::windows::manager::CloseError::NotFound(_) =>
+        else
+        {
+            None
+        };
+        let mut advance = || {
+            handle.arm_wait();
+            let children = self.controls.prepare_window_removal(window.id.0)?;
+            let result = self.windows.finish_trusted_close(handle, &children);
+            if result.is_ok()
+            {
+                children.commit();
+            }
+            result.map(|_| ()).map_err(|cause| {
+                                  match cause
                                   {
-                                      NOT_FOUND
+                                      crate::toolbox::windows::manager::CloseError::NotFound(_) =>
+                                      {
+                                          NOT_FOUND
+                                      }
+                                      crate::toolbox::windows::manager::CloseError::Cleanup(cause) =>
+                                      {
+                                          cleanup_status(cause)
+                                      }
                                   }
-                                  crate::toolbox::windows::manager::CloseError::Cleanup(cause) =>
-                                  {
-                                      cleanup_status(cause)
-                                  }
-                              }
-                          })
+                              })
+        };
+        match binding
+        {
+            Some(binding) => crate::kernel::with_process_resources(&binding, advance)?,
+            None => advance()
+        }
     }
 }
