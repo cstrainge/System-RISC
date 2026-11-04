@@ -1,7 +1,7 @@
 //! Resident mount identities for filesystem-class providers. No device/sector
 //! fiction: provider metadata is validated before its mount becomes visible.
 #![forbid(unsafe_code)]
-#![cfg_attr(not(guest), allow(dead_code))]
+#![cfg_attr(not(systemrisc), allow(dead_code))]
 use mac_filesystem_interface as fs;
 
 use super::*;
@@ -12,7 +12,7 @@ mod scan;
 pub(super) mod writes;
 pub(super) mod streams;
 pub(super) use forks::Open;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(super) mod runtime;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -251,7 +251,7 @@ impl Manager
     /// Read-only admission for drag feedback; actual unmount revalidates it.
     pub(crate) fn check_provider_unmount(&mut self, id: u32) -> Result<(), Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if self.transfers.iter().any(|(_, entry)| entry.uses(id))
         {
             return Err(SERVICE_BUSY);
@@ -284,14 +284,14 @@ impl Manager
         {
             super::Mounted::Block(_) =>
             {
-                #[cfg(guest)]
+                #[cfg(systemrisc)]
                 if self.local_operation.is_some()
                 {
                     return Err(SERVICE_BUSY);
                 }
                 Ok(None)
             }
-            #[cfg(guest)]
+            #[cfg(systemrisc)]
             super::Mounted::Operating(_) => Err(SERVICE_BUSY),
             super::Mounted::Provider(mounted) =>
             {

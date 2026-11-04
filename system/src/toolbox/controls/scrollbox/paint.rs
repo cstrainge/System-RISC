@@ -65,7 +65,7 @@ pub(crate) struct ScrollBoxPaintSnapshot
 {
     origin:   ScrollBoxPaintOrigin,
     _raster:  Arc<Raster>,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     recovery: Option<crate::recovery::ScrollBoxOrigin>
 }
 impl ScrollBoxPaintSnapshot
@@ -77,7 +77,7 @@ impl ScrollBoxPaintSnapshot
 
     pub(crate) fn with_scope<R>(&self, operation: impl FnOnce() -> R) -> Result<R, Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if let Some(origin) = &self.recovery
         {
             return origin.activity().run(operation);
@@ -96,7 +96,7 @@ pub(crate) struct ScrollBoxPaintClaim
     highlight: i16,
     raster:    Arc<Raster>,
     source:    RetainedDefinition,
-    #[cfg(guest)]
+    #[cfg(systemrisc)]
     recovery:  Option<crate::recovery::ScrollBoxOrigin>
 }
 impl ScrollBoxPaintClaim
@@ -108,7 +108,7 @@ impl ScrollBoxPaintClaim
 
     pub(crate) fn with_scope<R>(&self, operation: impl FnOnce() -> R) -> Result<R, Status>
     {
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         if let Some(origin) = &self.recovery
         {
             return origin.activity().run(operation);
@@ -127,7 +127,7 @@ impl Drawing
     {
         ScrollBoxPaintSnapshot { origin:                                   self.origin,
                                  _raster:                                  self.raster.clone(),
-                                 #[cfg(guest)]
+                                 #[cfg(systemrisc)]
                                  recovery:                                 self._recovery_origin
                                                                                .clone() }
     }
@@ -137,7 +137,7 @@ impl Manager
     fn paint_scope(&self, origin: &ScrollBoxPaintOrigin) -> Result<(), Status>
     {
         let object = self.objects.get(origin.key.id()).ok_or(NOT_FOUND)?;
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         {
             if object.recovery != object._recovery_origin.is_some()
             {
@@ -157,7 +157,7 @@ impl Manager
                 _ => return Err(ACCESS_DENIED)
             }
         }
-        #[cfg(not(guest))]
+        #[cfg(not(systemrisc))]
         let _ = object;
         Ok(())
     }
@@ -184,7 +184,7 @@ impl Manager
                                                                                  .clone(),
                                  source:                                   object.definition
                                                                                  .retain_source(),
-                                 #[cfg(guest)]
+                                 #[cfg(systemrisc)]
                                  recovery:                                 object._recovery_origin
                                                                                  .clone() })
     }
@@ -205,7 +205,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        #[cfg(guest)]
+        #[cfg(systemrisc)]
         match (&object._recovery_origin, &held.recovery)
         {
             (Some(current), Some(original))

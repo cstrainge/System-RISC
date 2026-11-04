@@ -134,11 +134,11 @@ pub(crate) fn account_status(error: &mac_kernel_model::account::Error) -> mac_ab
 pub(crate) fn with_target<R>(target: Target, operation: impl FnOnce() -> R)
                              -> Result<R, mac_abi::Status>
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     {
         Ok(crate::context::with_allocation(target, operation))
     }
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(not(systemrisc))]
     {
         let _ = (target, operation);
         Err(mac_abi::NOT_SUPPORTED)
@@ -156,11 +156,11 @@ pub(crate) fn with_kernel_allocation<R>(account: AccountUse<InvocationGate>,
 
 pub(crate) fn capture_target() -> Result<Target, mac_abi::Status>
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     {
         crate::context::capture_allocation()
     }
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(not(systemrisc))]
     {
         Err(mac_abi::NOT_SUPPORTED)
     }

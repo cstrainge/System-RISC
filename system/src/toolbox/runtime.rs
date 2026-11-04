@@ -816,7 +816,7 @@ impl Toolbox
         {
             CLOSE_WINDOW =>
             {
-                #[cfg(guest)]
+                #[cfg(systemrisc)]
                 if match self.windows.plan_trusted_close(id)
                 {
                     Ok(plan) => plan.is_some(),

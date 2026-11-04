@@ -134,7 +134,7 @@ impl<'a> Services<'a>
 #[macro_export]
 macro_rules! definition_panic_handler {
     () => {
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         #[panic_handler]
         fn __definition_panic(info: &core::panic::PanicInfo<'_>) -> !
         {

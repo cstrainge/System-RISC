@@ -9,7 +9,7 @@ pub mod controls;
 pub mod resources;
 pub mod files;
 pub(crate) mod power;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod entropy;
 pub mod memory;
 pub(crate) mod inspection;
@@ -19,27 +19,27 @@ pub mod menus;
 pub mod crashes;
 pub mod dialogs;
 pub mod classic;
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod runtime;
 
 pub(crate) mod strings;
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub mod processes;
 
 pub mod standard_file;
 
-#[cfg(all(test, feature = "test-support", not(guest)))]
+#[cfg(all(test, feature = "test-support", not(systemrisc)))]
 #[path = "processes/menu.rs"]
 pub(crate) mod test_application_menu;
 
-#[cfg(all(test, feature = "test-support", not(guest)))]
+#[cfg(all(test, feature = "test-support", not(systemrisc)))]
 #[path = "processes/presentation.rs"]
 pub(crate) mod test_process_presentation;
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod application_heap;
 
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) mod native_threads;
 pub(crate) mod font_suitcases;

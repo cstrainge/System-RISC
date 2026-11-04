@@ -39,10 +39,10 @@ pub fn write_if_changed(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> s
 /// geometry; packaging derives actual application/code-resource memory extent.
 pub fn build_guest() -> Result<()>
 {
-    println!("cargo:rustc-check-cfg=cfg(guest)");
+    println!("cargo:rustc-check-cfg=cfg(systemrisc)");
     if env::var("TARGET") != env::var("HOST")
     {
-        println!("cargo:rustc-cfg=guest");
+        println!("cargo:rustc-cfg=systemrisc");
     }
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
     println!("cargo:rerun-if-env-changed={}", platform::PLATFORM_ENV);

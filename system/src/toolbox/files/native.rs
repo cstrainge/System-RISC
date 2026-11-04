@@ -2,7 +2,7 @@
 use mac_abi::{files::FileCall, geometry::Rect, *};
 /// # Safety
 /// The request is a live, exclusively borrowed trap record of the declared size.
-#[cfg(guest)]
+#[cfg(systemrisc)]
 pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, pointer: *mut (),
                                     size: usize)
                                     -> Option<i64>
@@ -611,7 +611,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
 /// # Safety
 /// The record and its optional input array are live caller borrows. No pointer
 /// survives this boundary: admission copies source references into resident state.
-#[cfg(guest)]
+#[cfg(systemrisc)]
 unsafe fn checked_transfer(pointer: *mut (), size: usize,
                            dispatch: impl FnOnce(&mut files::FileTransferCall,
                                   &[files::FileTransferSource])
@@ -646,7 +646,7 @@ unsafe fn checked_transfer(pointer: *mut (), size: usize,
     };
     dispatch(call, sources)
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 unsafe fn dispatch_metadata_async(owner: u64, call: &mut FileCall) -> i64
 {
     use mac_abi::files::*;
@@ -734,7 +734,7 @@ unsafe fn dispatch_metadata_async(owner: u64, call: &mut FileCall) -> i64
         Err(error) => error.status() as i64
     }
 }
-#[cfg(guest)]
+#[cfg(systemrisc)]
 unsafe fn dispatch_scan_async(owner: u64, pointer: *mut (), size: usize) -> i64
 {
     if pointer.is_null()
