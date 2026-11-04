@@ -529,7 +529,8 @@ pub fn compiler_path(root: &Path, platform: &Platform) -> Result<PathBuf>
     let record = platform.toolchain.trim();
     if record.is_empty()
     {
-        return Err(error(format!("platform '{}' names no compiler record; set `toolchain` to                                   the platform's compiler pin, for example \"rust/sdk.json\"",
+        return Err(error(format!("platform '{}' names no compiler record; set `toolchain` to \
+                                  the platform's compiler pin, for example \"rust/sdk.json\"",
                                  platform.name)));
     }
     Ok(root.join("platforms").join(record))
@@ -852,20 +853,20 @@ impl Platform
 {
     pub fn scheduling(&self) -> Result<scheduling::Checked>
     {
-        let scheduling =
-            self.scheduling.as_ref().ok_or_else(|| missing(self, "scheduling"))?;
+        let scheduling = self.scheduling.as_ref().ok_or_else(|| missing(self, "scheduling"))?;
         // The policy caps how many harts may schedule at once, so the check
         // needs the machine's hart count. A platform that declares no emulation
         // has no emulated hart count to compare against, and a cap that cannot
         // be compared is not a cap: the number is still required to be nonzero,
         // and the record is told to declare its machine rather than have the
         // comparison silently skipped.
-        let harts = self.emulation()
-                        .map(|emulation| emulation.harts)
-                        .ok_or_else(|| {
-                            error(format!("platform '{}' declares scheduling limits but no                                            emulation, so scheduling.maximum_active_harts has no                                            machine hart count to validate against",
-                                          self.name))
-                        })?;
+        let harts =
+            self.emulation().map(|emulation| emulation.harts).ok_or_else(|| {
+                error(format!("platform '{}' declares scheduling limits but no emulation, so \
+                              scheduling.maximum_active_harts has no machine hart count to \
+                              validate against",
+                             self.name))
+            })?;
         scheduling.check(harts)
     }
 

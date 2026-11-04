@@ -153,7 +153,14 @@ pub fn build_requiring_with_artifacts(manifest_path: &Path, elf_path: &Path, out
     compact_elf(elf_path, &runtime, &descriptor)?;
     let elf_bytes = fs::read(&runtime)?;
     elf::decode(&elf_bytes, descriptor.load_base, descriptor.load_limit)?;
-    let mut compiled = manifest.compile_resources(manifest_path, &elf_bytes, Some(artifacts))?;
+    // The packaged code is rebuilt from `PT_LOAD` by `compact_code`, not copied
+    // from this ELF, so both files produce the same payload. The packaging also
+    // reads *named sections* - the linked user runtime entries an application
+    // needs, and the module contract a driver carries - and those live only in a
+    // section header table, which `compact_elf` deliberately drops. The full
+    // linked ELF is therefore the input: it loses nothing, because nothing here
+    // embeds it whole.
+    let mut compiled = manifest.compile_resources(manifest_path, &debug_elf, Some(artifacts))?;
     if matches!(descriptor.role, Role::Application | Role::CodeResource)
     {
         let image = elf::decode(&debug_elf, descriptor.load_base, descriptor.load_limit)?;

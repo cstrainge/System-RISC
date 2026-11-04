@@ -206,10 +206,6 @@ pub fn package_all(workspace: &Workspace) -> Result<()>
     let _ = boot::package_rom(workspace)?;
     let crates = Crates::read(workspace)?;
     let mut reports = Vec::new();
-    // Which packages are relocatable code resources, and where each claims
-    // preferred placement. The manifest decides the kind, so the check does not
-    // trust the packaging report to describe itself.
-    let mut mappings: Vec<(String, u64, u64)> = Vec::new();
     for entry in crates::installed(workspace, &crates)?
     {
         let package = crates.get(&entry.package)?;
@@ -226,40 +222,30 @@ pub fn package_all(workspace: &Workspace) -> Result<()>
                                   .join("release")
                                   .join(&resources.binary);
         let report = package::build(&resources.path, &executable, workspace.dist())?;
-        println!("Packaged {}: entry 0x{:x}, {} resources",
+        println!("Packaged {} ({}): entry 0x{:x}, {} resources",
                  entry.name,
+                 resources.role,
                  report["entry"].as_u64().unwrap_or_default(),
                  report["resources"].as_array().map(Vec::len).unwrap_or_default());
-        mappings.push((resources.role.clone(),
-                       report["load_base"].as_u64().unwrap_or_default(),
-                       report["load_limit"].as_u64().unwrap_or_default()));
         reports.push(report);
     }
     disk::validate_modules(workspace)?;
-    for (role, report) in application_reports(workspace)?
-    {
-        mappings.push((role,
-                       report["load_base"].as_u64().unwrap_or_default(),
-                       report["load_limit"].as_u64().unwrap_or_default()));
-        reports.push(report);
-    }
+    // The receipts carry the role beside each report; packaging only needs the
+    // report itself.
+    reports.extend(application_reports(workspace)?.into_iter().map(|(_, report)| report));
     authority::install(workspace, &mut reports)?;
-    for (index, first) in mappings.iter().enumerate()
-    {
-        for second in &mappings[index + 1..]
-        {
-            // Relocatable modules and definitions share link origins, not
-            // execution storage. Only current flat application and System
-            // mappings need pairwise preferred-placement exclusion.
-            if first.0 != "code_resource"
-               && second.0 != "code_resource"
-               && first.1 < second.2
-               && second.1 < first.2
-            {
-                return Err(error("native executable memory reservations overlap"));
-            }
-        }
-    }
+    // No pairwise preferred-placement exclusion here, and that is a resolved
+    // merge rather than a deletion. It used to compare every pair of mappings
+    // and refuse overlapping reservations, excluding `code_resource`. User-mode
+    // application isolation changed the model underneath it: an application is
+    // now linked at the checked private Process image origin and mapped into its
+    // own Process root, so every application shares the same base by design -
+    // all eight report base 0x400000 - and the old rule rejected a correct
+    // build. `system` is mapped once, so it has no pair, and `code_resource`
+    // already shared origins. The overlap question is answered where it belongs
+    // now, by the per-Process image geometry
+    // `virtual_memory()?.application_image_range()` and the loader's own
+    // per-root checks.
     let capacity = workspace.platform.virtual_memory()?.module_capacity();
     let module_bytes = modules::footprint(&reports, capacity)?;
     println!("Resident module execution spans: {module_bytes} of {capacity} virtual bytes; \
@@ -368,9 +354,12 @@ pub fn sdk_app(workspace: &Workspace, manifest: &str, features: &[String]) -> Re
                                                   error(format!("cannot read {}: {why}",
                                                                 cargo_toml.display()))
                                               })?;
-    let declared: toml::Value =
-        text.parse()
-            .map_err(|why| error(format!("cannot parse {}: {why}", cargo_toml.display())))?;
+    // `str::parse` reads one TOML value, not a document, so a manifest must go
+    // through `toml::from_str` or every `[package]` line is rejected.
+    let declared: toml::Value = toml::from_str(&text).map_err(|why| {
+                                                         error(format!("cannot parse {}: {why}",
+                                                                       cargo_toml.display()))
+                                                     })?;
     let package = declared["package"]["name"].as_str()
                                              .ok_or_else(|| {
                                                  error(format!("{} does not name a package",
