@@ -68,8 +68,9 @@ impl Binding
 
 struct Activity
 {
-    readers:  AtomicUsize,
-    retiring: AtomicBool
+    readers:         AtomicUsize,
+    retiring:        AtomicBool,
+    waiting_readers: AtomicBool
 }
 impl Activity
 {
@@ -80,6 +81,21 @@ impl Activity
             .map_err(|_| NO_MEMORY)?;
         Ok(Use(self.clone()))
     }
+
+    /// Called only at an otherwise-eligible retirement decision under the
+    /// original image-manager exclusion. Arm before observing the last reader.
+    fn readers_quiescent(&self) -> bool
+    {
+        self.waiting_readers.store(true, Ordering::SeqCst);
+        if self.readers.load(Ordering::SeqCst) != 0
+        {
+            return false;
+        }
+        // Fresh read admission shares that manager exclusion. An existing
+        // Read clone cannot create the first reader while its own Use is live.
+        self.waiting_readers.store(false, Ordering::SeqCst);
+        true
+    }
 }
 struct Use(Arc<Activity>);
 impl Drop for Use
@@ -87,7 +103,7 @@ impl Drop for Use
     fn drop(&mut self)
     {
         if self.0.readers.fetch_sub(1, Ordering::SeqCst) == 1
-           && self.0.retiring.load(Ordering::SeqCst)
+           && self.0.waiting_readers.swap(false, Ordering::SeqCst)
         {
             crate::toolbox::processes::retirement::resources_released();
             crate::drivers::recovery_changed();
@@ -560,8 +576,9 @@ fn prepare_instance(owner: &OwnerRef,
         }
     }
     let activity =
-        Arc::try_new(Activity { readers:  AtomicUsize::new(0),
-                                retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
+        Arc::try_new(Activity { readers:         AtomicUsize::new(0),
+                                retiring:        AtomicBool::new(false),
+                                waiting_readers: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
     let instance = Arc::try_new(Instance { owner: owner.clone(), module, executable, writable,
             initialized: AtomicBool::new(false), mapping: spin::Once::new(), retirement_claimed:AtomicBool::new(false), base,
             limit: base.checked_add(extent).ok_or(NO_MEMORY)?,
@@ -742,9 +759,9 @@ impl Manager
                                instance.owner.owner().incarnation() > after
                                && !instance.owner.accepting()
                                && Self::root_only(&instance.owner)
-                               && instance.activity.readers.load(Ordering::SeqCst) == 0
                                && !instance.retirement_claimed.load(Ordering::Acquire)
                                && instance.mapping.get().is_some_and(|mapping| mapping.ready())
+                               && instance.activity.readers_quiescent()
                            })
                            .min_by_key(|instance| instance.owner.owner().incarnation())?;
         instance.retirement_claimed
@@ -784,12 +801,12 @@ impl Manager
     {
         self.sources.finish_deferred(|instance| {
                         instance.module
-                        && Arc::strong_count(instance) == 1
                         && !instance.retirement_claimed.load(Ordering::Acquire)
                         && instance.mapping.get().is_none_or(|mapping| mapping.settled())
                         && !instance.owner.accepting()
                         && Self::root_only(&instance.owner)
-                        && instance.activity.readers.load(Ordering::SeqCst) == 0
+                        && instance.activity.readers_quiescent()
+                        && Arc::strong_count(instance) == 1
                     })
     }
 
@@ -797,12 +814,12 @@ impl Manager
     {
         self.sources.finish_deferred(|instance| {
                         !instance.module
-                        && Arc::strong_count(instance) == 1
                         && !instance.retirement_claimed.load(Ordering::Acquire)
                         && instance.mapping.get().is_none_or(|mapping| mapping.settled())
                         && !instance.owner.accepting()
                         && Self::root_only(&instance.owner)
-                        && instance.activity.readers.load(Ordering::SeqCst) == 0
+                        && instance.activity.readers_quiescent()
+                        && Arc::strong_count(instance) == 1
                     })
     }
 
