@@ -83,6 +83,12 @@ fn main()
                 "capture-cancel uses a stock WDEF so its first owned definition proves the CDEF \
                  source");
     }
+    if args.get(4).is_some_and(|mode| mode == "pending-control-ask-size-stop")
+    {
+        assert!(controls.is_none() && window_definition.is_none(),
+                "pending-control-ask-size-stop uses only its original app-owned CDEF18; do not \
+                 add unrelated control/window overrides");
+    }
     let output = std::path::Path::new(&args[2]);
     mac_build::package::build(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources.json"),
         std::path::Path::new(&args[1]), output).expect("package private image probe");
@@ -205,6 +211,7 @@ fn main()
                          | "window-definition-dispose-fault"
                          | "control-definition-panic"
                          | "control-definition-dispose-panic"
+                         | "pending-control-ask-size-stop"
                          | "offscreen-controls"
                          | "offscreen-controls-stock"
                          | "privileged"
