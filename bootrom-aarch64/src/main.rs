@@ -3,8 +3,39 @@
 //! reports the fault registers instead of spinning silently.
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 use core::panic::PanicInfo;
+
+use linked_list_allocator::LockedHeap;
+
+mod sdhci;
+
+/// The filesystem code above the block device needs storage for its own
+/// bookkeeping. This is a bounded firmware heap in the image's own BSS, not a
+/// claim about the machine's RAM.
+const HEAP_BYTES: usize = 256 * 1024;
+
+#[global_allocator]
+static HEAP: LockedHeap = LockedHeap::empty();
+
+static mut HEAP_STORAGE: [u8; HEAP_BYTES] = [0; HEAP_BYTES];
+
+fn init_heap()
+{
+    // SAFETY: the bootrom is single-threaded on the primary CPU and this runs
+    // once before any allocation; no reference to the storage escapes.
+    unsafe { HEAP.lock().init(core::ptr::addr_of_mut!(HEAP_STORAGE) as *mut u8, HEAP_BYTES) };
+}
+
+#[alloc_error_handler]
+fn allocation_failed(_: core::alloc::Layout) -> !
+{
+    loop
+    {}
+}
 
 core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardware.inc")),
                         include_str!("entry.S"));
@@ -109,6 +140,108 @@ pub extern "C" fn physmap_check() -> u64
     let identity = unsafe { core::ptr::read_volatile(0x8_0000 as *const u64) };
     let aliased = unsafe { core::ptr::read_volatile((PHYSMAP_BASE + 0x8_0000) as *const u64) };
     u64::from(identity == aliased)
+}
+
+fn putc(byte: u8)
+{
+    while unsafe { core::ptr::read_volatile((PL011_BASE + 0x18) as *const u32) } & 0x20 != 0
+    {}
+    unsafe { core::ptr::write_volatile(PL011_BASE as *mut u32, u32::from(byte)) };
+}
+
+fn puts(text: &str)
+{
+    for byte in text.bytes()
+    {
+        putc(byte);
+    }
+}
+
+fn puthex(value: u64)
+{
+    for shift in (0..64).step_by(4).rev()
+    {
+        let nibble = ((value >> shift) & 0xf) as u8;
+        putc(if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 });
+    }
+}
+
+/// Reads sector zero from the SD card and reports the partition-table signature
+/// it actually found. A card that answers but returns the wrong sector still
+/// reaches here, so the signature is the evidence rather than the call returning.
+#[unsafe(no_mangle)]
+pub extern "C" fn sdhci_probe() -> u64
+{
+    use mac_filesystem::BlockDevice;
+    init_heap();
+    let mut stage = 0u8;
+    let mut disk = match sdhci::Disk::probe(SDHCI_BASE as usize, &mut stage)
+    {
+        Ok(disk) => disk,
+        Err(_) =>
+        {
+            puts("BOOT_AARCH64_SD_REFUSED: stage=");
+            puthex(u64::from(stage));
+            let base = SDHCI_BASE as usize;
+            // SAFETY: these are the controller's own registers in the declared
+            // device window, which the boot MMU maps as Device memory.
+            unsafe {
+                let read = |offset: usize| -> u64 {
+                    u64::from(u32::from_le(core::ptr::read_volatile((base + offset) as *const u32)))
+                };
+                puts(" present=");
+                puthex(read(0x24));
+                puts(" clock=");
+                puthex(read(0x2C));
+                puts(" capabilities=");
+                puthex(read(0x40));
+                puts(" int_status=");
+                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x30) as *const u16))));
+                puts(" error_status=");
+                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x32) as *const u16))));
+                puts(" cmdreg=");
+                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x0E) as *const u16))));
+                puts(" argument=");
+                puthex(read(0x08));
+                puts(" trnmod=");
+                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x0C) as *const u16))));
+                puts(" nisen=");
+                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x34) as *const u16))));
+                puts(" eisen=");
+                puthex(u64::from(u16::from_le(core::ptr::read_volatile((base + 0x36) as *const u16))));
+                puts(" last_present=");
+                puthex(u64::from(sdhci::LAST_PRESENT.load(core::sync::atomic::Ordering::Relaxed)));
+                puts(" last_command=");
+                puthex(u64::from(sdhci::LAST_COMMAND.load(core::sync::atomic::Ordering::Relaxed)));
+                puts(" csd=");
+                for word in sdhci::LAST_CSD.iter()
+                {
+                    puthex(u64::from(word.load(core::sync::atomic::Ordering::Relaxed)));
+                    puts("_");
+                }
+            }
+            puts("\n");
+            return 0;
+        }
+    };
+    puts("BOOT_AARCH64_SD_READY: sectors=");
+    puthex(disk.sector_count());
+    puts("\n");
+    let mut sector = [0u8; 512];
+    if disk.read_sector(0, &mut sector).is_err()
+    {
+        puts("BOOT_AARCH64_SD_READ_FAILED: sector 0\n");
+        return 0;
+    }
+    let signature = u16::from_le_bytes([sector[510], sector[511]]);
+    puts("BOOT_AARCH64_SD_MBR: signature=");
+    puthex(u64::from(signature));
+    puts(" first_lba=");
+    puthex(u64::from(u32::from_le_bytes([sector[454], sector[455], sector[456], sector[457]])));
+    puts(" type=");
+    puthex(u64::from(sector[450]));
+    puts("\n");
+    u64::from(signature == 0xAA55)
 }
 
 #[panic_handler]
