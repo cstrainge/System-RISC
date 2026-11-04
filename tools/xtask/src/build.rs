@@ -19,6 +19,13 @@ use crate::{Workspace, authority, boot,
 /// hand the graph to ninja.
 pub fn build(workspace: &Workspace) -> Result<()>
 {
+    // Name the resolved machine before compiling, so a record edit is visible
+    // in the build's own output rather than only in the file that was edited.
+    if let Some(emulation) = workspace.platform.emulation()
+    {
+        println!("Platform {}: {}; {} harts",
+                 workspace.platform.name, emulation.description, emulation.harts);
+    }
     sdk::prerequisites(workspace)?;
     ninja::run(workspace, &[])
 }

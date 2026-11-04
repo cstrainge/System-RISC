@@ -70,7 +70,11 @@ impl Transport
 #[serde(rename_all = "kebab-case")]
 pub enum DisplayKind
 {
-    VirtioGpu
+    VirtioGpu,
+    /// A framebuffer configured through the SoC's VideoCore mailbox property
+    /// channel. It is part of the machine, so it has no attachable bus.
+    #[serde(rename = "videocore-mailbox")]
+    VideoCoreMailbox
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,7 +83,11 @@ pub enum Framebuffer
 {
     #[default]
     None,
-    Ramfb
+    Ramfb,
+    /// The framebuffer the mailbox property channel allocates from the SoC's
+    /// reserved video memory.
+    #[serde(rename = "videocore-mailbox")]
+    VideoCoreMailbox
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -89,7 +97,10 @@ pub struct Display
     pub kind:        DisplayKind,
     #[serde(default)]
     pub framebuffer: Framebuffer,
-    pub transport:   Transport
+    /// The bus the display device sits on. A device integrated into the SoC has
+    /// no attachable bus and omits this.
+    #[serde(default)]
+    pub transport:   Option<Transport>
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +139,10 @@ pub struct Pointer
 #[serde(rename_all = "kebab-case")]
 pub enum EntropyKind
 {
-    VirtioRng
+    VirtioRng,
+    /// The SoC's own random number generator. It is part of the machine, so it
+    /// has no attachable bus.
+    Bcm2835Rng
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,7 +164,10 @@ pub struct Entropy
     /// emulator's — so it is stated rather than assumed.
     #[serde(default)]
     pub backend:   EntropyBackend,
-    pub transport: Transport
+    /// The bus the generator sits on. A device integrated into the SoC has no
+    /// attachable bus and omits this.
+    #[serde(default)]
+    pub transport: Option<Transport>
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -186,6 +203,10 @@ pub enum BootMedium
         #[serde(default = "readonly")]
         readonly: bool
     },
+    /// The machine's own firmware reads the boot payload from an SD medium on
+    /// the SoC's SD host controller. The medium is attached by `disks`, so this
+    /// variant carries no attachment details of its own.
+    Sd,
     Direct
 }
 
@@ -207,7 +228,10 @@ fn readonly() -> bool
 pub enum DiskTransport
 {
     VirtioMmio,
-    VirtioPci
+    VirtioPci,
+    /// The SoC's SD host controller. It owns the medium the machine's firmware
+    /// boots from and assigns its own card slot, so attachments name no slot.
+    Sdhci
 }
 
 /// Attachable block devices, one variant per transport, because the two
@@ -247,6 +271,17 @@ pub enum Disks
         capacity: NonZeroUsize,
         #[serde(default)]
         attach:   Vec<Attachment>
+    },
+    /// The SoC's SD host controller. It exposes one card slot, which the
+    /// machine's firmware uses to read the boot medium.
+    Sdhci
+    {
+        #[serde(default = "raw")]
+        format:   String,
+        #[serde(default = "readonly")]
+        readonly: bool,
+        #[serde(default)]
+        attach:   Vec<Attachment>
     }
 }
 
@@ -257,7 +292,8 @@ impl Disks
         match self
         {
             Self::VirtioMmio { .. } => DiskTransport::VirtioMmio,
-            Self::VirtioPci { .. } => DiskTransport::VirtioPci
+            Self::VirtioPci { .. } => DiskTransport::VirtioPci,
+            Self::Sdhci { .. } => DiskTransport::Sdhci
         }
     }
 
@@ -268,7 +304,9 @@ impl Disks
             Self::VirtioMmio { format,
                                .. }
             | Self::VirtioPci { format,
-                              .. } => format
+                              .. }
+            | Self::Sdhci { format,
+                          .. } => format
         }
     }
 
@@ -279,7 +317,9 @@ impl Disks
             Self::VirtioMmio { readonly,
                                .. }
             | Self::VirtioPci { readonly,
-                              .. } => *readonly
+                              .. }
+            | Self::Sdhci { readonly,
+                          .. } => *readonly
         }
     }
 
@@ -290,7 +330,9 @@ impl Disks
             Self::VirtioMmio { attach,
                                .. }
             | Self::VirtioPci { attach,
-                              .. } => attach
+                              .. }
+            | Self::Sdhci { attach,
+                          .. } => attach
         }
     }
 
@@ -302,7 +344,9 @@ impl Disks
             Self::VirtioMmio { slots,
                                .. } => slots.len(),
             Self::VirtioPci { capacity,
-                              .. } => capacity.get()
+                              .. } => capacity.get(),
+            // The SD host controller drives one card.
+            Self::Sdhci { .. } => 1
         }
     }
 
@@ -313,7 +357,7 @@ impl Disks
         {
             Self::VirtioMmio { slots,
                                .. } => slots,
-            Self::VirtioPci { .. } => &[]
+            Self::VirtioPci { .. } | Self::Sdhci { .. } => &[]
         }
     }
 }
@@ -376,9 +420,14 @@ pub struct Console
 #[serde(rename_all = "kebab-case")]
 pub enum Firmware
 {
-    /// No firmware: the boot image is the first thing the processor runs.
+    /// No firmware is loaded and the machine's own default applies. A machine
+    /// whose built-in firmware would otherwise claim the boot path states
+    /// `disabled` instead.
     #[default]
     None,
+    /// The emulator's built-in firmware is explicitly suppressed, so the boot
+    /// payload is the first thing the processor runs.
+    Disabled,
     /// A firmware image the machine loads before the boot image.
     Image
     {
@@ -499,6 +548,29 @@ impl Definition
                 return Err(reject("boot_medium.format", "must name a disk format".into()));
             }
         }
+        if self.boot_medium == BootMedium::Sd
+        {
+            // A machine that boots from SD must say which controller owns the
+            // card, because that is what the guest and the launcher attach it
+            // to. A flash or direct machine has no such requirement.
+            match &self.disks
+            {
+                Some(disks) if disks.transport() == DiskTransport::Sdhci =>
+                {}
+                Some(_) =>
+                {
+                    return Err(reject("boot_medium.kind",
+                                      "sd boot requires disks.transport sdhci".into()));
+                }
+                None =>
+                {
+                    return Err(reject("boot_medium.kind",
+                                      "sd boot requires a disks section naming the sdhci \
+                                       transport"
+                                                 .into()));
+                }
+            }
+        }
         let mut slots: Vec<(u32, &str)> = Vec::new();
         if let Some(disks) = &self.disks
         {
@@ -559,7 +631,21 @@ impl Definition
                                            own addresses"
                                                          .into()));
                     }
+                    (DiskTransport::Sdhci, None) =>
+                    {}
+                    (DiskTransport::Sdhci, Some(_)) =>
+                    {
+                        return Err(reject(&format!("disks.attach[{index}].slot"),
+                                          "must be omitted for the SD host controller, which \
+                                           assigns its own card slot"
+                                                                     .into()));
+                    }
                 }
+            }
+            if disks.transport() == DiskTransport::Sdhci && disks.attach().len() > 1
+            {
+                return Err(reject("disks.attach",
+                                  "the SD host controller drives one card".into()));
             }
             if boot.is_none() && !disks.attach().is_empty()
             {
@@ -569,10 +655,73 @@ impl Definition
                                                                          .into()));
             }
         }
-        let devices = [("display", self.display.as_ref().map(|device| &device.transport)),
-                       ("keyboard", self.keyboard.as_ref().map(|device| &device.transport)),
-                       ("pointer", self.pointer.as_ref().map(|device| &device.transport)),
-                       ("entropy", self.entropy.as_ref().map(|device| &device.transport))];
+        if let Some(display) = &self.display
+        {
+            match (display.kind, &display.transport)
+            {
+                (DisplayKind::VirtioGpu, Some(_)) =>
+                {}
+                (DisplayKind::VirtioGpu, None) =>
+                {
+                    return Err(reject("display.transport",
+                                      "must name the bus a virtio-gpu display sits on".into()));
+                }
+                (DisplayKind::VideoCoreMailbox, None) =>
+                {}
+                (DisplayKind::VideoCoreMailbox, Some(_)) =>
+                {
+                    return Err(reject("display.transport",
+                                      "must be omitted for a display integrated into the SoC"
+                                                                                 .into()));
+                }
+            }
+            match (display.kind, display.framebuffer)
+            {
+                (DisplayKind::VideoCoreMailbox, Framebuffer::VideoCoreMailbox) =>
+                {}
+                (DisplayKind::VideoCoreMailbox, other) =>
+                {
+                    return Err(reject("display.framebuffer",
+                                      format!("a VideoCore mailbox display needs framebuffer \
+                                               videocore-mailbox, not {other:?}")));
+                }
+                (DisplayKind::VirtioGpu, Framebuffer::VideoCoreMailbox) =>
+                {
+                    return Err(reject("display.framebuffer",
+                                      "a virtio-gpu display cannot use the SoC mailbox \
+                                       framebuffer"
+                                                   .into()));
+                }
+                _ =>
+                {}
+            }
+        }
+        if let Some(entropy) = &self.entropy
+        {
+            match (entropy.kind, &entropy.transport)
+            {
+                (EntropyKind::VirtioRng, Some(_)) =>
+                {}
+                (EntropyKind::VirtioRng, None) =>
+                {
+                    return Err(reject("entropy.transport",
+                                      "must name the bus a virtio-rng device sits on".into()));
+                }
+                (EntropyKind::Bcm2835Rng, None) =>
+                {}
+                (EntropyKind::Bcm2835Rng, Some(_)) =>
+                {
+                    return Err(reject("entropy.transport",
+                                      "must be omitted for a generator integrated into the SoC"
+                                                                                 .into()));
+                }
+            }
+        }
+        let devices =
+            [("display", self.display.as_ref().and_then(|device| device.transport.as_ref())),
+             ("keyboard", self.keyboard.as_ref().map(|device| &device.transport)),
+             ("pointer", self.pointer.as_ref().map(|device| &device.transport)),
+             ("entropy", self.entropy.as_ref().and_then(|device| device.transport.as_ref()))];
         for (field, transport) in
             devices.into_iter().filter_map(|(field, transport)| Some((field, transport?)))
         {
