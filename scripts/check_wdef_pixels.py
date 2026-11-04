@@ -5,7 +5,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
-from system7_paths import host_dir
+from sr_paths import host_dir
 import subprocess
 
 from PIL import Image

@@ -1,72 +1,74 @@
-//! Native System-volume builder using the shared HFS-B filesystem.
-use std::{env, fs,
+//! The boot volume, built from the platform's declared storage layout.
+//!
+//! The medium's size, filesystem and contents come from the platform record.
+//! This module is the only place that knows how to realise one, and it refuses
+//! a layout it cannot produce rather than substituting a bare volume: a record
+//! that validates and is then ignored advertises a contract the build does not
+//! honour.
+//!
+//! What lands on the volume is the platform's installed set, resolved through
+//! the workspace crate graph and each package's own `resources.json`. There is
+//! no second list of packages here.
+use std::{collections::BTreeMap,
+          env, fs,
           path::{Path, PathBuf},
-          process::Command,
           time::{SystemTime, UNIX_EPOCH}};
 
-use mac_build::{Result, error, package};
+use mac_build::{Result, error, package,
+                platform::storage::{FilesystemKind, Layout}};
 use mac_formats::{macbinary, text};
 use serde_json::{Value, json};
 
-use crate::{Workspace, output, run, write_json};
+use crate::{Workspace, crates::Crates, write_json};
 
-const DISK_SIZE: u64 = 500 * 1024 * 1024;
+/// The volumes this builder can produce, so an unsupported layout is reported
+/// against the record that declared it.
+const SUPPORTED: &str = "a single unpartitioned system7-filesystem volume";
 
-const PACKAGES: &[(&str, &str)] = &[("System Folder", "System"),
-                                    ("System Folder", "Finder"),
-                                    ("Applications", "QuickDraw Test"),
-                                    ("Applications", "Text Edit"),
-                                    ("Applications", "Cursor Test"),
-                                    ("Applications", "Panic Test"),
-                                    ("Applications", "Res Edit"),
-                                    ("Applications", "Reactor Room"),
-                                    ("Applications", "Control Suite"),
-                                    ("System Folder/Drivers", "Host Transport"),
-                                    ("System Folder/Drivers", "VDAgent Channel"),
-                                    ("System Folder/Drivers", "VirtIO RNG"),
-                                    ("System Folder/Drivers", "Virtio Gpu"),
-                                    ("System Folder/Extensions", "Host Clipboard"),
-                                    ("System Folder/Extensions", "Multi-Scheduler"),
-                                    ("System Folder/Drivers", "Host Filesystem"),
-                                    ("System Folder/Drivers", "StuffIt Filesystem"),
-                                    ("System Folder/Drivers", "Qemu Power Device")];
-
+/// Check that every installed package can be named uniquely inside its folder.
 pub(super) fn validate_modules(workspace: &Workspace) -> Result<()>
 {
+    let crates = Crates::read(workspace)?;
+    let installed = crate::crates::installed(workspace, &crates)?;
     crate::modules::validate_identities(&workspace.dist(),
-                                        PACKAGES.iter()
-                                                .filter(|(directory, _)| {
-                                                    matches!(*directory,
-                                                             "System Folder/Drivers"
-                                                             | "System Folder/Extensions")
-                                                })
-                                                .map(|(_, name)| *name))
+                                        installed.iter().map(|entry| entry.name.as_str()))
 }
 
-/// Serialize image builds without altering global hfsutils mount state.
+/// A private working directory for one image build.
+///
+/// Uniquely named, so two builds never collide, and outside the platform's
+/// output directory, so a build in progress does not leave the output
+/// directory dirty. A failure to remove it is reported: a scratch directory
+/// that outlives its build is untidy, but it must never be mistaken for
+/// another build running.
 struct Scratch
 {
     path: PathBuf
 }
+
 impl Scratch
 {
     fn create(build: &Path) -> Result<Self>
     {
         fs::create_dir_all(build)?;
-        let path = build.join("image-work");
-        fs::create_dir(&path).map_err(|e| {
-                                 error(format!("cannot acquire image workspace {}: {e}; another \
-                                                build may be active",
-                                               path.display()))
-                             })?;
+        let unique = format!("image-work-{}-{}",
+                             std::process::id(),
+                             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos());
+        let path = build.join(unique);
+        fs::create_dir(&path)?;
         Ok(Self { path })
     }
 }
+
 impl Drop for Scratch
 {
     fn drop(&mut self)
     {
-        let _ = fs::remove_dir_all(&self.path);
+        if let Err(cause) = fs::remove_dir_all(&self.path)
+        {
+            eprintln!("warning: could not remove the image scratch directory {}: {cause}",
+                      self.path.display());
+        }
     }
 }
 
@@ -81,21 +83,90 @@ pub(super) fn edit<R>(image: &Path,
     apply(&mut volume)
 }
 
+/// The volume this platform's boot medium is built as.
+struct Volume
+{
+    filesystem: FilesystemKind,
+    size:       u64,
+    /// The medium's layout in the record's own terms, for the report.
+    layout:     String
+}
+
+/// Read the boot medium's layout out of the record, refusing a shape this
+/// builder cannot produce.
+fn volume(workspace: &Workspace) -> Result<Volume>
+{
+    let platform = &workspace.platform.name;
+    let storage =
+        workspace.platform.storage.as_ref().ok_or_else(|| {
+                                                error(format!("platform '{platform}' declares no \
+                                                               storage.images, so it has no boot \
+                                                               volume to build"))
+                                            })?;
+    let name = workspace.boot_image_name()?;
+    let image = storage.image(name).ok_or_else(|| {
+                                        error(format!("platform '{platform}' storage.images has \
+                                                       no image named '{name}'"))
+                                    })?;
+    let (filesystem, size, layout) = match &image.layout
+    {
+        Layout::Filesystem { filesystem,
+                             size,
+                             .. } =>
+        {
+            let bytes = size.bytes()?.ok_or_else(|| {
+                                          error(format!("platform '{platform}' \
+                                                         storage.images.{name}: layout.size must \
+                                                         state a size"))
+                                      })?;
+            (*filesystem, bytes, format!("unpartitioned {filesystem:?}"))
+        }
+        other =>
+        {
+            return Err(error(format!("platform '{platform}' storage.images.{name}: this build \
+                                      produces {SUPPORTED}, not {}",
+                                     describe(other))));
+        }
+    };
+    if filesystem != FilesystemKind::System7
+    {
+        return Err(error(format!("platform '{platform}' storage.images.{name}: this build \
+                                  produces {SUPPORTED}, not {filesystem:?}")));
+    }
+    Ok(Volume { filesystem,
+                size,
+                layout })
+}
+
+/// A layout's shape, for an error that names what the record asked for.
+fn describe(layout: &Layout) -> String
+{
+    match layout
+    {
+        Layout::Filesystem { filesystem,
+                             .. } => format!("a {filesystem:?} filesystem"),
+        Layout::Partitioned { table,
+                              .. } => format!("a {table:?} partition table"),
+        Layout::Raw { .. } => "a raw payload".to_string(),
+        Layout::Container { format,
+                            .. } => format!("a {format:?} container")
+    }
+}
+
 pub fn image(workspace: &Workspace) -> Result<Value>
 {
-    // Refuse collisions before user-state preparation or any image mutation,
-    // including callers reusing an already packaged dist directory.
-    validate_modules(workspace)?;
+    let medium = volume(workspace)?;
+    let crates = Crates::read(workspace)?;
+    let installed = crate::crates::installed(workspace, &crates)?;
+    // Refuse collisions before any image mutation, including callers reusing
+    // an already packaged dist directory.
+    crate::modules::validate_identities(&workspace.dist(),
+                                        installed.iter().map(|entry| entry.name.as_str()))?;
+    let dist = workspace.dist();
     let started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let scratch = Scratch::create(&workspace.build)?;
-    if !workspace.checking
-    {
-        run(workspace.command("python3")
-                     .arg(workspace.root.join("scripts/system7_user_state.py"))
-                     .arg("prepare"))?;
-    }
-    let raw = scratch.path.join("system7.hfsb");
-    let mut image = hfs_b::Image::create(&raw, DISK_SIZE)?;
+    let raw = scratch.path.join("boot.hfsb");
+    let mut image = hfs_b::Image::create(&raw, medium.size)?;
     let partition = image.partition();
     let when = match env::var("SOURCE_DATE_EPOCH")
     {
@@ -112,14 +183,27 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                                  uuid },
                       Default::default())?;
     let mut volume = mac_hfs_b::Volume::mount(&mut image, partition, Default::default())?;
-    let system = volume.create(2, "System Folder", true, when)?.id;
-    let applications = volume.create(2, "Applications", true, when)?.id;
-    volume.create(2, "Documents", true, when)?;
-    let drivers = volume.create(system, "Drivers", true, when)?.id;
-    let extensions = volume.create(system, "Extensions", true, when)?.id;
+
+    // The volume's folders are the platform's installed layout, so a record
+    // that installs into a new folder creates it.
+    let install = &workspace.platform.install;
+    let mut folders: BTreeMap<String, u32> = BTreeMap::new();
+    for folder in [&install.folders.applications,
+                   &install.folders.system,
+                   &install.folders.drivers,
+                   &install.folders.extensions,
+                   &"Documents".to_string()]
+    {
+        create_folder(&mut folders, &mut volume, folder, when)?;
+    }
+    let system = *folders.get(&install.folders.system)
+                         .ok_or_else(|| error("the system folder was not created"))?;
     for name in ["Fonts", "Control Panels", "Preferences"]
     {
-        let folder = volume.create(system, name, true, when)?.id;
+        let folder = create_folder(&mut folders,
+                                   &mut volume,
+                                   &format!("{}/{}", install.folders.system, name),
+                                   when)?;
         if name == "Preferences"
         {
             let file = volume.create(folder, "File Types", false, when)?.id;
@@ -134,7 +218,15 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                 when)?;
             // Derive the persistent key from the actual packaged EABI identity,
             // just as resident MPRE does. Display names confer no storage scope.
-            let bytes = fs::read(workspace.dist().join("Host Clipboard.bin"))?;
+            let clipboard = installed.iter()
+                                     .find(|entry| entry.package == "host-clipboard-extension")
+                                     .map(|entry| dist.join(format!("{}.bin", entry.name)))
+                                     .ok_or_else(|| {
+                                         error("this platform does not install \
+                                                host-clipboard-extension, so it has no clipboard \
+                                                preferences to seed")
+                                     })?;
+            let bytes = fs::read(clipboard)?;
             let module = macbinary::decode(&bytes)?;
             let resources = mac_formats::resource::decode(&module.resources)?;
             let package = mac_formats::module::Package::inspect(&resources, module.file_type)?;
@@ -153,48 +245,40 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                 when)?;
         }
     }
+
     let mut verified = Vec::new();
-    for &(directory, name) in PACKAGES
+    for entry in &installed
     {
-        let parent = match directory
-        {
-            "System Folder" => system,
-            "Applications" => applications,
-            "System Folder/Drivers" => drivers,
-            "System Folder/Extensions" => extensions,
-            _ => return Err(error("installed package has an unknown destination folder"))
-        };
-        let bytes = fs::read(workspace.dist().join(format!("{name}.bin")))?;
+        let parent = create_folder(&mut folders, &mut volume, &entry.folder, when)?;
+        let bytes = fs::read(dist.join(format!("{}.bin", entry.name)))?;
         let original = macbinary::decode(&bytes)?;
-        let entry = hfs_b::import_macbinary_at(&mut volume, parent, &original, name, when)?;
+        let created =
+            hfs_b::import_macbinary_at(&mut volume, parent, &original, &entry.name, when)?;
         let mut data = Vec::new();
         let mut resources = Vec::new();
-        hfs_b::read_stream(&mut volume, entry.id, mac_hfs_b::ForkKind::Data, &mut data)?;
-        hfs_b::read_stream(&mut volume, entry.id, mac_hfs_b::ForkKind::Resource, &mut resources)?;
+        hfs_b::read_stream(&mut volume, created.id, mac_hfs_b::ForkKind::Data, &mut data)?;
+        hfs_b::read_stream(&mut volume, created.id, mac_hfs_b::ForkKind::Resource, &mut resources)?;
         if data != original.data
            || resources != original.resources
-           || entry.created.0 != u64::from(original.created) * 1_000_000
-           || entry.modified.0 != u64::from(original.modified) * 1_000_000
-           || entry.finder_info[..4] != original.file_type
-           || entry.finder_info[4..8] != original.creator
-           || entry.finder_info[8..10] != original.flags.to_be_bytes()
+           || created.created.0 != u64::from(original.created) * 1_000_000
+           || created.modified.0 != u64::from(original.modified) * 1_000_000
+           || created.finder_info[..4] != original.file_type
+           || created.finder_info[4..8] != original.creator
+           || created.finder_info[8..10] != original.flags.to_be_bytes()
         {
-            return Err(error(format!("HFS-B fork or metadata roundtrip failed for {name}")));
+            return Err(error(format!("HFS-B fork or metadata roundtrip failed for {}",
+                                     entry.name)));
         }
-        verified.push(json!({"path":format!("{directory}/{name}"),"cnid":entry.id,"file_type":text::decode(&original.file_type),
-            "creator":text::decode(&original.creator),"data_length":data.len(),"resource_length":resources.len(),
-            "resource_fork_sha256":package::sha256(&resources),"fork_and_metadata_roundtrip":"passed"}));
+        verified.push(json!({"path":entry.path(),"package":entry.package,"cnid":created.id,
+            "file_type":text::decode(&original.file_type),
+            "creator":text::decode(&original.creator),"data_length":data.len(),
+            "resource_length":resources.len(),
+            "resource_fork_sha256":package::sha256(&resources),
+            "fork_and_metadata_roundtrip":"passed"}));
     }
     volume.bless(system, when)?;
     drop(volume);
     drop(image);
-    if !workspace.checking
-    {
-        run(workspace.command("python3")
-                     .arg(workspace.root.join("scripts/system7_user_state.py"))
-                     .arg("restore")
-                     .arg(&raw))?;
-    }
     // A fresh mount, not the formatter's retained state, verifies the blessing.
     let mut image = hfs_b::Image::open(&raw, false)?;
     let mut volume = mac_hfs_b::Volume::mount(&mut image, partition, Default::default())?;
@@ -206,41 +290,67 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     let h = volume.header().clone();
     drop(volume);
     drop(image);
-    let qcow = scratch.path.join("system7.qcow2");
-    run(Command::new("qemu-img").args(["convert", "-f", "raw", "-O", "qcow2"])
-                                .arg(&raw)
-                                .arg(&qcow))?;
-    run(Command::new("qemu-img").arg("check").arg(&qcow))?;
-    run(Command::new("qemu-img").args(["compare", "-f", "raw", "-F", "qcow2"])
-                                .arg(&raw)
-                                .arg(&qcow))?;
-    let qcow_info: Value =
-        serde_json::from_str(&output(Command::new("qemu-img").args(["info", "--output=json"])
-                                                             .arg(&qcow))?)?;
-    if qcow_info["virtual-size"].as_u64() != Some(DISK_SIZE)
-    {
-        return Err(error("qcow2 virtual size mismatch"));
-    }
-    let dist = workspace.dist();
-    fs::rename(&raw, dist.join("system7.hfsb"))?;
-    fs::rename(&qcow, dist.join("system7.qcow2"))?;
     let finished = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let report = json!({"raw":workspace.describe(&dist.join("system7.hfsb")),"qcow2":workspace.describe(&dist.join("system7.qcow2")),
-        "virtual_size":DISK_SIZE,"layout":"unpartitioned HFS-B","filesystem":"HFS-B","filesystem_version":1,
+    // The raw medium is the build artifact; a disk image format an emulator
+    // prefers is produced on demand by `run`, so building needs no emulator
+    // tools on the host.
+    let output = workspace.disk_image()?;
+    fs::rename(&raw, &output)?;
+    let report = json!({"raw":workspace.describe(&output),
+        "virtual_size":medium.size,
+        "layout":medium.layout,
+        "filesystem":format!("{:?}", medium.filesystem),
+        "filesystem_version":1,
         "unicode_version":"17.0.0","volume_name":h.name,"created":h.created,"modified":h.modified,
         "image_started_unix":started,"image_finished_unix":finished,"time_basis":"1904 epoch microseconds, UTC",
         "blessed_system_folder_id":system,"files":verified,"catalog_files":checked.files,"catalog_directories":checked.directories,
-        "qcow2_check":"passed","raw_qcow2_comparison":"passed","riscv_disk_boot_available":true,"boot_rom":workspace.describe(&dist.join("bootrom-riscv.bin"))});
+        "boot_rom":workspace.describe(&dist.join("bootrom-riscv.bin"))});
     write_json(&dist.join("disk.json"), &report)?;
-    println!("Built 500 MiB HFS-B v1/qcow2; all installed forks, metadata, blessing and \
-              structural checks passed.");
+    println!("Built {} MiB HFS-B v1 as {}; all installed forks, metadata, blessing and \
+              structural checks passed.",
+             medium.size / (1024 * 1024),
+             medium.layout);
     Ok(report)
+}
+
+/// Create `path` on the volume if it does not exist yet, returning its CNID.
+fn create_folder(folders: &mut BTreeMap<String, u32>,
+                 volume: &mut mac_hfs_b::Volume<'_, hfs_b::Image>, path: &str,
+                 when: mac_hfs_b::time::Timestamp)
+                 -> Result<u32>
+{
+    let mut parent = 2;
+    let mut id = 2;
+    let mut so_far = String::new();
+    for part in path.split('/').filter(|part| !part.is_empty())
+    {
+        if !so_far.is_empty()
+        {
+            so_far.push('/');
+        }
+        so_far.push_str(part);
+        id = match folders.get(&so_far)
+        {
+            Some(id) => *id,
+            None =>
+            {
+                let created = volume.create(parent, part, true, when)?.id;
+                folders.insert(so_far.clone(), created);
+                created
+            }
+        };
+        parent = id;
+    }
+    Ok(id)
 }
 
 #[cfg(test)]
 mod tests
 {
+    use std::process::Command;
+
     use super::*;
+    use crate::run;
 
     /// Uses existing release packages in a wholly separate build/media root.
     #[test]
@@ -254,7 +364,8 @@ mod tests
         let output =
             PathBuf::from(env::var_os("SYSTEM7_REBUILD_OUTPUT").expect("private output directory"));
         assert!(!output.exists(), "refuse to overwrite existing test/user data");
-        let workspace = Workspace::new(Some(output), false, mac_build::platform::load(&mac_build::platform::current().name).unwrap()).unwrap();
+        let workspace = Workspace::new(Some(output), None, None, false,
+                                       mac_build::platform::load(&mac_build::platform::current().name).unwrap()).unwrap();
         let dist = workspace.dist();
         fs::create_dir_all(&dist).unwrap();
         for entry in fs::read_dir(packages).unwrap()
@@ -268,7 +379,7 @@ mod tests
         // Two actual builder runs, with user changes in the first writable disk.
         image(&workspace).unwrap();
         let preferences = br#"{"version":3,"font_key":"bundled:22","font_size":18,"wrap":true,"line_numbers":false,"ruler_kind":0,"ruler_value":0}"#;
-        edit(&dist.join("system7.hfsb"), |volume| {
+        edit(&workspace.disk_image().unwrap(), |volume| {
             let folder = hfs_b::copy::resolve(volume, "/System Folder/Preferences")?.id;
             let pref = volume.create(folder, "Text Edit Preferences", false, hfs_b::now()?)?.id;
             let mut finder = [0; 32];
@@ -298,10 +409,10 @@ mod tests
         let state = workspace.build.join("vm");
         fs::create_dir(&state).unwrap();
         run(Command::new("qemu-img").args(["convert", "-f", "raw", "-O", "qcow2"])
-                                    .arg(dist.join("system7.hfsb"))
+                                    .arg(workspace.disk_image().unwrap())
                                     .arg(state.join("system7.qcow2"))).unwrap();
         image(&workspace).unwrap();
-        edit(&dist.join("system7.hfsb"), |volume| {
+        edit(&workspace.disk_image().unwrap(), |volume| {
             for (path, expected) in
                 [("/System Folder/Preferences/Text Edit Preferences", preferences.as_slice()),
                  ("/Documents/Saved Notes", b"Survives rebuilding.\r".as_slice())]

@@ -47,22 +47,21 @@ cargo run -p hfs-b -- copy-out ../working/user-state.hfsb '/System Folder/Fonts'
 cargo run -p hfs-b -- copy-out ../working/user-state.hfsb /Documents ../working/saved-documents
 cargo run -p hfs-b -- copy-out ../working/user-state.hfsb '/Desktop Folder' ../working/saved-desktop
 # Rebuild and check the pristine System volume here.
-cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-preferences '/System Folder' --replace
-cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-fonts '/System Folder' --replace
-cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-documents / --replace
-cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-desktop / --replace
-cargo run -p hfs-b -- check ../build/system7/dist/system7.hfsb
+cargo run -p hfs-b -- copy-in dist/qemu_riscv/system7.hfsb ../working/saved-preferences '/System Folder' --replace
+cargo run -p hfs-b -- copy-in dist/qemu_riscv/system7.hfsb ../working/saved-fonts '/System Folder' --replace
+cargo run -p hfs-b -- copy-in dist/qemu_riscv/system7.hfsb ../working/saved-documents / --replace
+cargo run -p hfs-b -- copy-in dist/qemu_riscv/system7.hfsb ../working/saved-desktop / --replace
+cargo run -p hfs-b -- check dist/qemu_riscv/system7.hfsb
 ```
 
 Preferences remain versioned JSON owned by their services. These commands preserve
 the user folders independently of regenerated System/application binaries. They do
-not retain old disk images or migrate incompatible preference schemas. Recreate
-the qcow2 from the updated raw image before launching it:
+not retain old disk images or migrate incompatible preference schemas. The
+build produces the raw volume only; the launcher works on a private copy and
+leaves `dist/<platform>/system7.hfsb` untouched:
 
 ```sh
-qemu-img convert -f raw -O qcow2 ../build/system7/dist/system7.hfsb ../build/system7/dist/restored.qcow2
-mv ../build/system7/dist/restored.qcow2 ../build/system7/dist/system7.qcow2
-python3 scripts/system7_vm.py start --no-build
+cargo xtask run --no-build
 ```
 
 Export Fonts and Desktop Folder only when they exist; an existing non-directory at either path

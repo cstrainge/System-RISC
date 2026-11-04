@@ -60,7 +60,7 @@ impl Definition
         }
         for (field, path) in [("entry", &self.entry), ("linker_script", &self.linker_script)]
         {
-            if path.starts_with('/') || path.contains('\\') || path.contains("..")
+            if !crate::paths::is_repo_relative(path)
             {
                 return Err(reject(field,
                                   format!("'{path}' must be a relative path inside the \

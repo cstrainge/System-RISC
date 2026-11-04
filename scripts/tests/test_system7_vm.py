@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import system7_vm as vm
-import system7_paths as paths
+import sr_paths as paths
 import hfs_b_tool
 import system7_exports
 
@@ -446,7 +446,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_host_cache_and_hfs_tool_follow_the_selected_build_root(self):
         with tempfile.TemporaryDirectory(prefix='system risc ') as folder, \
-             patch.dict(os.environ, {'SYSTEM7_BUILD_DIR': folder}), \
+             patch.dict(os.environ, {'SR_BUILD_DIR': folder}), \
              patch.object(hfs_b_tool.subprocess, 'run') as run:
             hfs_b_tool.tool.cache_clear()
             try:
@@ -524,7 +524,7 @@ class LauncherTests(unittest.TestCase):
         with patch.dict(os.environ), patch.object(vm, 'DIST'), patch.object(vm, 'STATE'), \
              patch.object(sys, 'argv', ['system7_vm.py', 'check', '--no-build']), \
              patch.object(vm, 'check') as check:
-            os.environ.pop('SYSTEM7_BUILD_DIR', None)
+            os.environ.pop('SR_BUILD_DIR', None)
             vm.main()
             self.assertEqual(vm.DIST, vm.ROOT / 'build/system7/check/dist')
             check.assert_called_once_with(False, None)
@@ -544,7 +544,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_check_keeps_separate_media_when_normal_root_comes_from_environment(self):
         with tempfile.TemporaryDirectory() as folder, \
-             patch.dict(os.environ, {'SYSTEM7_BUILD_DIR': folder}), \
+             patch.dict(os.environ, {'SR_BUILD_DIR': folder}), \
              patch.object(vm, 'DIST'), patch.object(vm, 'STATE'), \
              patch.object(sys, 'argv', ['system7_vm.py', 'check', '--no-build']), \
              patch.object(vm, 'check'):

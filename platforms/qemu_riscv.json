@@ -1,6 +1,40 @@
 {
   "include": "riscv_base.json",
   "name": "qemu_riscv",
+  "install": {
+    "description": "The complete System RISC desktop: every application, resident driver and System extension this platform ships",
+    "applications": [
+      "mac-finder",
+      "quickdraw-test",
+      "text-edit",
+      "cursor-test",
+      "panic-test",
+      "resedit",
+      "reactor",
+      "control-suite"
+    ],
+    "modules": [
+      "mac-system",
+      "vhost-transport",
+      "vdagent-channel",
+      "virtio-rng",
+      "virtio-gpu",
+      "host-clipboard-extension",
+      "multi-scheduler-extension",
+      "vhost-filesystem",
+      "stuffit-filesystem",
+      "qemu-power-device"
+    ],
+    "folders": {
+      "applications": "Applications",
+      "system": "System Folder",
+      "drivers": "System Folder/Drivers",
+      "extensions": "System Folder/Extensions"
+    },
+    "exceptions": {
+      "mac-finder": "System Folder"
+    }
+  },
   "bootloader": {
     "description": "M-mode boot ROM: executes in place from read-only pflash, probes the machine and loads the resident System from the boot disk",
     "package": "bootrom-riscv",
@@ -12,12 +46,15 @@
   "storage": {
     "images": {
       "system-disk": {
-        "description": "Bare HFS-B System 7 volume over the whole 500 MiB medium, with no partition table, which is what the resident disk driver expects",
+        "description": "Bare HFS-B System RISC volume over the whole 500 MiB medium, with no partition table, which is what the resident disk driver expects",
         "output": "system7.hfsb",
         "layout": {
           "kind": "filesystem",
           "filesystem": "system7",
-          "size": { "kind": "bytes", "bytes": "0x1f400000" }
+          "size": {
+            "kind": "bytes",
+            "bytes": "0x1f400000"
+          }
         }
       }
     }
@@ -31,38 +68,76 @@
     "ram": "2G",
     "harts": 4,
     "firmware": "none",
-    "boot_medium": { "kind": "flash", "unit": 0, "format": "raw", "readonly": true },
+    "boot_medium": {
+      "kind": "flash",
+      "unit": 0,
+      "format": "raw",
+      "readonly": true
+    },
     "disks": {
       "transport": "virtio-mmio",
       "format": "raw",
       "readonly": true,
-      "slots": [0, 3, 4, 7],
-      "attach": [{ "image": "system-disk", "slot": 0 }],
-      "capacity": 4
+      "slots": [
+        0,
+        3,
+        4,
+        7
+      ],
+      "attach": [
+        {
+          "image": "system-disk",
+          "slot": 0,
+          "boot": true
+        }
+      ]
     },
     "display": {
       "kind": "virtio-gpu",
       "framebuffer": "ramfb",
-      "transport": { "kind": "virtio-mmio", "slot": 6 }
+      "transport": {
+        "kind": "virtio-mmio",
+        "slot": 6
+      }
     },
     "keyboard": {
       "kind": "virtio-keyboard",
-      "transport": { "kind": "virtio-mmio", "slot": 1 }
+      "transport": {
+        "kind": "virtio-mmio",
+        "slot": 1
+      }
     },
     "pointer": {
       "kind": "tablet",
-      "transport": { "kind": "virtio-mmio", "slot": 2 }
+      "transport": {
+        "kind": "virtio-mmio",
+        "slot": 2
+      }
     },
     "entropy": {
       "kind": "virtio-rng",
-      "transport": { "kind": "virtio-mmio", "slot": 5 }
+      "transport": {
+        "kind": "virtio-mmio",
+        "slot": 5
+      }
     },
-    "network": { "kind": "none" },
-    "screen": { "interactive": "window", "headless": "none" },
-    "console": { "interactive": "stdio", "headless": "file" },
+    "network": {
+      "kind": "none"
+    },
+    "screen": {
+      "interactive": "window",
+      "headless": "none"
+    },
+    "console": {
+      "interactive": "stdio",
+      "headless": "file"
+    },
     "readiness": {
-      "timeout_seconds": 15,
-      "booted": ["DESKTOP_READY:", "BOOT_NO_SYSTEM:"],
+      "timeout_seconds": 60,
+      "booted": [
+        "DESKTOP_READY:",
+        "BOOT_NO_SYSTEM:"
+      ],
       "failed": [
         "BOOT_TRAP:",
         "BOOT_PANIC:",

@@ -141,8 +141,8 @@ expected fork to also require byte-for-byte agreement with an independently
 extracted resource fork:
 
 ```sh
-SYSTEM7_TEST_HFS="$PWD/build/system7/dist/system7.hfs" \
-SYSTEM7_TEST_SYSTEM_RSRC="$PWD/build/system7/dist/System.rsrc" \
+SR_TEST_HFS="$PWD/dist/qemu_riscv/system7.hfsb" \
+SR_TEST_SYSTEM_RSRC="$PWD/dist/qemu_riscv/System.rsrc" \
 cargo test --manifest-path System7/Cargo.toml -p mac-system --lib \
   toolbox::files::tests::actual_disk_catalog_and_both_forks -- --ignored
 ```

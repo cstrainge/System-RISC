@@ -6,7 +6,7 @@ only build/package/clone/boot/input/frame/serial transport and artifact identiti
 """
 from hfs_b_tool import Image as NativeImage
 from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
-from system7_paths import SOURCE
+from sr_paths import SOURCE
 import argparse
 import json
 import os

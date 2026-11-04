@@ -45,7 +45,7 @@ class NativeStartupCaptureTests(unittest.TestCase):
                 raise RuntimeError('recorded-child-reap-failed')
             child.poll.return_value = 0
 
-        with patch.dict(os.environ, {'SYSTEM7_BUILD_DIR': str(installation)}), \
+        with patch.dict(os.environ, {'SR_BUILD_DIR': str(installation)}), \
              patch.object(capture, 'prepare'), \
              patch.object(capture, 'run', side_effect=run), \
              patch.object(capture, 'Image') as image, \

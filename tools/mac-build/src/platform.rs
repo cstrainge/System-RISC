@@ -14,6 +14,7 @@ use crate::{Result, error};
 pub mod bootloader;
 pub mod emulation;
 pub mod hardware;
+pub mod install;
 pub mod memory;
 mod devices;
 pub mod storage;
@@ -29,43 +30,61 @@ pub mod scheduling;
 #[serde(deny_unknown_fields)]
 pub struct Platform
 {
-    pub name:         String,
-    pub rust_target:  String,
+    pub name:             String,
+    pub rust_target:      String,
+    /// The Rust target the pinned private SDK provides for `std` applications.
+    /// Absent means this platform installs no `std` application, so the target
+    /// is never needed; a platform that does install one and omits it is
+    /// rejected rather than falling back to another platform's triple.
+    #[serde(default)]
+    pub std_target:       Option<String>,
     /// The instruction set profile as a `target-feature` value. Empty means the
     /// architecture has no such profile, in which case no flag is emitted.
     #[serde(default)]
-    pub llvm_profile: String,
+    pub llvm_profile:     String,
+    /// The feature names the compiler must report for `llvm_profile`. The
+    /// profile is a platform fact, so what it has to contain is recorded beside
+    /// it rather than assumed here: an architecture without a V/F/D-style
+    /// profile lists what its own expansion must contain, and an empty list
+    /// asks only that the profile itself appears.
+    #[serde(default)]
+    pub profile_requires: Vec<String>,
+    /// Which workspace packages this platform installs, and with which
+    /// features. The build tool reads the graph from Cargo and the selection
+    /// from here, so changing the installed set is a platform edit.
+    #[serde(default)]
+    pub install:          install::Install,
     /// How to run this platform under an emulator. Optional and independent of
     /// the build; absent means this platform declares no emulation.
     #[serde(default)]
-    pub emulation:    Option<emulation::Definition>,
+    pub emulation:        Option<emulation::Definition>,
     /// How to build and run this platform on a real board. Optional and
     /// independent of both the build and the emulation description.
     #[serde(default)]
-    pub hardware:     Option<hardware::Definition>,
+    pub hardware:         Option<hardware::Definition>,
     /// The media this platform produces, attaches and writes. Storage lives
     /// here rather than under `emulation` or `hardware` because one described
     /// medium has to serve both.
     #[serde(default)]
-    pub storage:      Option<storage::Storage>,
+    pub storage:          Option<storage::Storage>,
     /// The bootloader this platform builds. Optional: a board whose first stage
     /// is vendor firmware declares none.
     #[serde(default)]
-    pub bootloader:   Option<bootloader::Definition>,
+    pub bootloader:       Option<bootloader::Definition>,
     /// True for a record meant only to be included by other platforms. Such a
     /// record describes shared data, not a machine, so it is not listed and
     /// cannot be selected.
     #[serde(default)]
-    pub base:         bool,
-    fatal_shutdown:   Option<FatalShutdown>,
+    pub base:             bool,
+    fatal_shutdown:       Option<FatalShutdown>,
     #[serde(default)]
-    mmio_devices:     Vec<devices::Definition>,
-    scheduling:       Option<scheduling::Definition>,
-    memory:           Option<memory::Definition>,
-    virtual_memory:   Option<virtual_memory::Definition>
+    mmio_devices:         Vec<devices::Definition>,
+    scheduling:           Option<scheduling::Definition>,
+    memory:               Option<memory::Definition>,
+    virtual_memory:       Option<virtual_memory::Definition>
 }
 pub const DEFAULT_PLATFORM: &str = "qemu_riscv";
-pub const PLATFORM_ENV: &str = "SYSTEM7_PLATFORM";
+pub const PLATFORM_ENV: &str = "SR_PLATFORM";
 
 /// The only directory a platform record is read from.
 fn directory() -> PathBuf
@@ -94,13 +113,25 @@ pub fn catalogue() -> Result<Vec<(String, String)>>
         {
             continue;
         }
-        let platform = load(&name)?;
+        // Listing records answers "which platforms exist". One record that
+        // cannot load is named with its own error rather than deciding that
+        // every other platform is unreportable too; building or selecting that
+        // record still fails on `load`.
+        let platform = match load(&name)
+        {
+            Ok(platform) => platform,
+            Err(why) =>
+            {
+                listed.push((name, format!("unusable, so it cannot be selected: {why}")));
+                continue;
+            }
+        };
         let summary = platform.emulation()
                               .map(|emulation| emulation.description.clone())
                               .or_else(|| {
                                   platform.hardware.as_ref().map(|hardware| {
                                                                 format!("{}; no emulation declared",
-                                                                        hardware.description())
+                                                                        hardware.description)
                                                             })
                               })
                               .unwrap_or_else(|| "no emulation or hardware description".into());
@@ -469,6 +500,30 @@ pub fn current() -> &'static Platform
 {
     &PLATFORM
 }
+
+/// The rustup channel this checkout's compiler pin names.
+///
+/// The pin lives in `platforms/rust/sdk.json` beside the target specification
+/// and the patches, so everything under `platforms/` is read here rather than
+/// by whichever module happens to need one string out of it.
+pub fn rust_toolchain(root: &Path) -> Result<String>
+{
+    let path = root.join("platforms/rust/sdk.json");
+    let text = fs::read_to_string(&path).map_err(|cause| {
+                                            error(format!("cannot read {}: {cause}",
+                                                          path.display()))
+                                        })?;
+    let pin: Value = serde_json::from_str(&text).map_err(|cause| {
+                                                    error(format!("{} is not a valid compiler \
+                                                                   pin: {cause}",
+                                                                  path.display()))
+                                                })?;
+    match pin["rustup_toolchain"].as_str()
+    {
+        Some(toolchain) if !toolchain.trim().is_empty() => Ok(toolchain.to_string()),
+        _ => Err(error(format!("{} does not name a `rustup_toolchain`", path.display())))
+    }
+}
 /// Guest builds launched outside the workspace still receive the same profile.
 /// Existing flags remain visible; validation below rejects a narrowed or
 /// broadened instruction set rather than silently ignoring caller flags.
@@ -560,9 +615,19 @@ pub fn validate_guest(target: &str, actual: &str) -> Result<()>
 /// image roles continue to require the platform's explicit no_std target.
 pub fn validate_std_application(target: &str, actual: &str) -> Result<()>
 {
-    if target != "riscv64-unknown-systemrisc"
+    let platform = current();
+    let Some(std_target) = platform.std_target.as_deref()
+    else
     {
-        return Err(error("std application requires the pinned System RISC SDK target"));
+        return Err(error(format!("platform '{}' declares no std_target, so it cannot install \
+                                  applications built against the pinned System RISC SDK; add \
+                                  \"std_target\" to platforms/{}.json",
+                                 platform.name, platform.name)));
+    };
+    if target != std_target
+    {
+        return Err(error(format!("std application requires the pinned System RISC SDK target \
+                                  {std_target}")));
     }
     validate_profile(target, actual)
 }
@@ -571,9 +636,23 @@ fn validate_profile(target: &str, actual: &str) -> Result<()>
 {
     let platform = current();
     let compiler = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let expected = Command::new(compiler).args(["--print", "cfg", "--target", target, "-C"])
-                                         .arg(format!("target-feature=+{}", platform.llvm_profile))
-                                         .output()?;
+    let probe = |extra: &[&str]| -> std::io::Result<std::process::Output> {
+        let mut command = Command::new(&compiler);
+        command.args(["--print", "cfg", "--target", target]);
+        command.args(extra);
+        command.args(["-C"]).arg(format!("target-feature=+{}", platform.llvm_profile)).output()
+    };
+    let mut expected = probe(&[])?;
+    // A platform's std target is a JSON specification this repository owns, so
+    // the compiler needs the unstable switch that admits it. The switch is
+    // asked for only after the plain probe says it is required, so a platform
+    // pinned to a stable compiler still reaches the real error below instead of
+    // being handed a flag its toolchain rejects.
+    if !expected.status.success()
+       && String::from_utf8_lossy(&expected.stderr).contains("`-Zunstable-options`")
+    {
+        expected = probe(&["-Zunstable-options"])?;
+    }
     if !expected.status.success()
     {
         return Err(error(format!("compiler cannot expand the required {} profile: {}",
@@ -582,7 +661,20 @@ fn validate_profile(target: &str, actual: &str) -> Result<()>
     }
     let text = String::from_utf8(expected.stdout)?;
     let expected = features(&text);
-    if ![platform.llvm_profile.as_str(),"v","d","f","zba","zbb","zbs"].iter().all(|name|expected.contains(name)) {return Err(error(format!("compiler does not implement the full {} profile (V/F/D/B required); install a compatible Rust/LLVM toolchain",platform.llvm_profile)));}
+
+    let required: Vec<&str> =
+        core::iter::once(platform.llvm_profile.as_str()).chain(platform.profile_requires
+                                                                       .iter()
+                                                                       .map(String::as_str))
+                                                        .filter(|name| !name.is_empty())
+                                                        .collect();
+    if !required.iter().all(|name| expected.contains(name))
+    {
+        return Err(error(format!("compiler does not implement the full {} profile ({} \
+                                  required); install a compatible Rust/LLVM toolchain",
+                                 platform.llvm_profile,
+                                 required.join("/"))));
+    }
     let actual: BTreeSet<_> = actual.split(',').filter(|name| !name.is_empty()).collect();
     let missing: Vec<_> = expected.difference(&actual).copied().collect();
     let extra: Vec<_> = actual.difference(&expected).copied().collect();
@@ -770,13 +862,13 @@ impl Platform
                                                {
                                                    format!("; write the '{image}' storage image \
                                                             to it with {}",
-                                                           hardware.tooling().join(", "))
+                                                           hardware.tooling.join(", "))
                                                }
                                                None => String::new()
                                            };
                                            format!(": it targets the board '{}' and cannot be \
                                                     emulated{medium}",
-                                                   hardware.board())
+                                                   hardware.board)
                                        }
                                        None => ": it declares neither emulation nor hardware".into()
                                    };

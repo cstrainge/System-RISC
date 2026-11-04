@@ -3,6 +3,7 @@ use std::{fs::{self, File, OpenOptions},
           io::{Read, Seek, SeekFrom, Write},
           path::{Path, PathBuf},
           process::{Child, Command, Stdio},
+          sync::{Arc, Mutex},
           thread,
           time::Instant};
 
@@ -92,7 +93,7 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
                         "payload_size": flattened.bytes.len(),
                         "flash_bank_size": memory.flash_bytes(),
                         "sha256": package::sha256(&fs::read(&rom)?),
-                        "source": format!("System7/{}", bootloader.package),
+                        "source": bootloader.package,
                         "execution": bootloader.description});
     write_json(&dist.join(format!("{}.json", bootloader.artifact)), &report)?;
     println!("Packaged {}: {} bytes at 0x{:x} in {} MiB platform flash bank.",
@@ -130,15 +131,22 @@ pub fn disk_format(path: &Path) -> Result<&'static str>
 
 /// Start the platform's machine. The invocation, the device set and the
 /// readiness contract all come from the platform record.
+///
+/// The console is copied to `<platform>/serial.log` as it arrives, so a run
+/// leaves evidence a reader can inspect afterwards. The record still decides
+/// where the guest's console goes; this only keeps a copy of what the host saw.
 pub fn run(workspace: &Workspace, mode: emulator::Mode, media: &[PathBuf], extra: &[String])
            -> Result<()>
 {
+    // No media named means the machine the record describes; media named means
+    // those disks instead.
+    let media =
+        if media.is_empty() { emulator::Media::Declared } else { emulator::Media::Given(media) };
     let invocation = emulator::invocation(&workspace.platform,
                                           &workspace.root,
                                           workspace.dist(),
                                           media,
                                           mode,
-                                          emulator::Serial::Stdio,
                                           extra)?;
     println!("Booting {} through {}. Ctrl+C stops the emulator.",
              workspace.platform
@@ -146,7 +154,32 @@ pub fn run(workspace: &Workspace, mode: emulator::Mode, media: &[PathBuf], extra
                       .map(|emulation| emulation.description.as_str())
                       .unwrap_or("the declared machine"),
              invocation.describe());
-    let status = invocation.command().status()?;
+    let log = workspace.dist().join("serial.log");
+    let mut recording = File::create(&log)?;
+    let mut command = invocation.command();
+    command.stdout(Stdio::piped());
+    let mut child = command.spawn()?;
+    if let Some(mut console) = child.stdout.take()
+    {
+        let mut buffer = [0u8; 4096];
+        loop
+        {
+            match console.read(&mut buffer)
+            {
+                Ok(0) | Err(_) => break,
+                Ok(count) =>
+                {
+                    let chunk = &buffer[..count];
+                    let _ = std::io::stdout().write_all(chunk);
+                    let _ = std::io::stdout().flush();
+                    recording.write_all(chunk)?;
+                }
+            }
+        }
+    }
+    recording.flush()?;
+    let status = child.wait()?;
+    println!("Console log: {}", log.display());
     if !status.success()
     {
         return Err(error(format!("emulator exited with {status}; the boot payload is {}",
@@ -171,24 +204,50 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
 {
     let serial = directory.join(format!("{name}.serial.log"));
     let stderr = directory.join(format!("{name}.qemu.log"));
-    // Do not accept a readiness marker left by a previous invocation while the
-    // new QEMU process is still opening its serial backend.
-    File::create(&serial)?;
+    // Each case states the disks it is about; the record's own medium is not
+    // attached underneath it.
+    //
+    // The console is read from a pipe rather than written by QEMU into a file:
+    // QEMU's file chardev buffers, so a reader watching the file sees nothing
+    // until a buffer fills or the emulator exits, which would make readiness
+    // look like a stall. Reading the pipe and writing the file here means the
+    // log is complete as it arrives.
     let invocation = emulator::invocation(&workspace.platform,
                                           &workspace.root,
                                           workspace.dist(),
-                                          media,
+                                          emulator::Media::Given(media),
                                           emulator::Mode::Headless,
-                                          emulator::Serial::File(serial.clone()),
                                           &[])?;
     let mut command = invocation.command();
-    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(File::create(&stderr)?);
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(File::create(&stderr)?);
     let launch = emulator::render(&invocation);
     let mut child = Guest(command.spawn()?);
-    let deadline = Instant::now() + invocation.timeout;
+    let mut console =
+        child.0.stdout.take().ok_or_else(|| error(format!("no console pipe for {name}")))?;
+    let mut recording = File::create(&serial)?;
+    let collected = Arc::new(Mutex::new(String::new()));
+    let sink = Arc::clone(&collected);
+    thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(count) = console.read(&mut buffer)
+        {
+            if count == 0
+            {
+                break;
+            }
+            let _ = recording.write_all(&buffer[..count]);
+            let _ = recording.flush();
+            if let Ok(mut log) = sink.lock()
+            {
+                log.push_str(&String::from_utf8_lossy(&buffer[..count]));
+            }
+        }
+    });
+    let started = Instant::now();
+    let deadline = started + invocation.timeout;
     let log = loop
     {
-        let log = fs::read_to_string(&serial).unwrap_or_default();
+        let log = collected.lock().map(|log| log.clone()).unwrap_or_default();
         // UART output can be observed halfway through a formatted line. Wait
         // for its newline before validating markers or stopping the guest.
         if log.split_inclusive('\n').any(|line| line.ends_with('\n') && invocation.booted_by(line))
@@ -201,18 +260,33 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
            || Instant::now() >= deadline
            || child.0.try_wait()?.is_some()
         {
-            return Err(error(format!("ROM check {name} failed; see {} and {}",
+            return Err(error(format!("ROM check {name} failed after {:?}: {}; launched as \
+                                      {launch}; see {} and {}",
+                                     started.elapsed(),
+                                     if failing
+                                     {
+                                         "the guest reported a failure"
+                                     }
+                                     else if child.0.try_wait()?.is_some()
+                                     {
+                                         "the emulator exited before reaching the readiness marker"
+                                     }
+                                     else
+                                     {
+                                         "the readiness marker did not arrive within the \
+                                          platform's timeout"
+                                     },
                                      serial.display(),
                                      stderr.display())));
         }
         thread::sleep(std::time::Duration::from_millis(20));
     };
     drop(child);
-    if expected.iter().any(|marker| !log.contains(marker))
-       || invocation.booted_by(&log) != boots
-       || (!boots
-           && log.contains("BOOT: entering System")
-           && !expected.iter().any(|marker| invocation.failed_by(marker)))
+    // `boots` is about the guest OS starting, which is a different fact from the
+    // ROM reaching a terminal state: a machine with no disk is expected to say
+    // so and stop, and that is a pass, not a boot.
+    let started = log.contains("BOOT: entering System");
+    if expected.iter().any(|marker| !log.contains(marker)) || started != boots
     {
         return Err(error(format!("unexpected ROM result for {name}:\n{log}")));
     }
@@ -221,9 +295,10 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
 }
 fn clone_raw(source: &Path, destination: &Path) -> Result<()>
 {
-    run_command(Command::new("qemu-img").args(["convert", "-f", "raw", "-O", "raw", "-S", "4k"])
-                                        .arg(source)
-                                        .arg(destination))
+    run_command(Command::new(crate::tools::resolve("qemu-img")?).args(["convert", "-f", "raw",
+                                                                       "-O", "raw", "-S", "4k"])
+                                                                .arg(source)
+                                                                .arg(destination))
 }
 
 
@@ -340,11 +415,31 @@ fn apm(source: &Path, destination: &Path) -> Result<()>
 
 pub fn check(workspace: &Workspace) -> Result<Value>
 {
-    let directory = workspace.build.join("boot-checks");
+    let directory = workspace.dist().join("boot-checks");
     fs::create_dir_all(&directory)?;
-    let raw = workspace.dist().join("system7.hfsb");
-    let qcow = workspace.dist().join("system7.qcow2");
-    let hash_before = package::sha256(&fs::read(&qcow)?);
+    let raw = workspace.disk_image()?;
+    // A disk image format is an emulator convenience, so it is produced here,
+    // on the way to the guest, rather than in the build. The conversion tool is
+    // a host extra, so its absence skips that one case and says so, rather than
+    // failing the checks that only need the build's own output.
+    let qcow = directory.join("system7.qcow2");
+    let mut skipped: Vec<Value> = Vec::new();
+    let converted = match crate::tools::resolve("qemu-img")
+    {
+        Ok(tool) =>
+        {
+            run_command(Command::new(tool).args(["convert", "-f", "raw", "-O", "qcow2"])
+                                          .arg(&raw)
+                                          .arg(&qcow))?;
+            Some(package::sha256(&fs::read(&qcow)?))
+        }
+        Err(why) =>
+        {
+            skipped.push(json!({"name": "qcow2-hfs-b", "status": "skipped",
+                                "reason": why.to_string()}));
+            None
+        }
+    };
     let mut cases = vec![case(workspace,
                               &directory,
                               "no-disk",
@@ -355,15 +450,22 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               &directory,
                               "raw-hfs-b",
                               &[raw.clone()],
-                              &["System RISC Boot ROM v1 at 0x200", "CNID=16",
+                              // The catalog number is not asserted: it shifts whenever
+                              // the volume's contents change, and what matters is that a
+                              // blessed System Folder was found at all.
+                              &["System RISC Boot ROM v1 at 0x200",
+                                "blessed folder 'System Folder' CNID=",
                                 "System: native service table ready", "BOOT_SYSTEM_READY:"],
-                              true)?,
-                         case(workspace,
-                              &directory,
-                              "qcow2-hfs-b",
-                              &[qcow.clone()],
-                              &["BOOT_SYSTEM_READY:"],
-                              true)?,];
+                              true)?];
+    if converted.is_some()
+    {
+        cases.push(case(workspace,
+                        &directory,
+                        "qcow2-hfs-b",
+                        &[qcow.clone()],
+                        &["BOOT_SYSTEM_READY:"],
+                        true)?);
+    }
     let large = directory.join("large-system-fork.hfsb");
     clone_raw(&raw, &large)?;
     altered_system(workspace, &directory, &large, "large-fork")?;
@@ -391,7 +493,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &directory,
                     "renamed-blessed-folder",
                     &[renamed.clone()],
-                    &["blessed folder 'Renamed Startup' CNID=16", "BOOT_SYSTEM_READY:"],
+                    &["blessed folder 'Renamed Startup' CNID=", "BOOT_SYSTEM_READY:"],
                     true)?);
     let unblessed = directory.join("unblessed.hfsb");
     clone_raw(&raw, &unblessed)?;
@@ -472,12 +574,23 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &[malformed.clone(), raw.clone()],
                     &["invalid RV64 segment resource header", "BOOT_SYSTEM_READY:"],
                     true)?);
-    if package::sha256(&fs::read(&qcow)?) != hash_before
+    if let Some(before) = &converted
     {
-        return Err(error("boot checks changed the generated qcow2"));
+        if package::sha256(&fs::read(&qcow)?) != *before
+        {
+            return Err(error("boot checks changed the generated qcow2"));
+        }
     }
-    let report = json!({"status": "passed", "method": "QEMU cold reset to read-only pflash; virtio-block reads HFS-B and loads System, Finder, WDEF and CDEF resources entirely inside the guest", "cases": cases, "disk_boot_tested": true, "finder_launched": true, "rom": serde_json::from_slice::<Value>(&fs::read(bootloader_report(workspace)?)?)?, "qcow2_unchanged": true, "qemu": output(Command::new(tools::resolve(&workspace.platform.require_emulation()?.binary)?).arg("--version"))?});
-    write_json(&workspace.repo.join("results/system7/boot-checks.json"), &report)?;
-    println!("{} ROM boot checks passed.", cases.len());
+    let report = json!({"status": "passed", "method": "QEMU cold reset to read-only pflash; virtio-block reads HFS-B and loads System, Finder, WDEF and CDEF resources entirely inside the guest", "cases": cases, "skipped": skipped, "disk_boot_tested": true, "finder_launched": true, "rom": serde_json::from_slice::<Value>(&fs::read(bootloader_report(workspace)?)?)?, "qcow2_unchanged": converted.is_some(), "qemu": output(Command::new(tools::resolve(&workspace.platform.require_emulation()?.binary)?).arg("--version"))?});
+    write_json(&workspace.results().join("system7/boot-checks.json"), &report)?;
+    for entry in &skipped
+    {
+        println!("Skipped {}: {}",
+                 entry["name"].as_str().unwrap_or("a case"),
+                 entry["reason"].as_str().unwrap_or("no reason recorded"));
+    }
+    println!("{} ROM boot checks passed. Serial logs and reports: {}",
+             cases.len(),
+             directory.display());
     Ok(report)
 }

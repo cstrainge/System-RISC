@@ -79,7 +79,7 @@ impl Disk
 {
     fn new(files: &[(String, [u8; 4], Vec<Resource>)]) -> Self
     {
-        let base = std::env::var_os("SYSTEM7_BUILD_DIR").map(PathBuf::from)
+        let base = std::env::var_os("SR_BUILD_DIR").map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("system-risc-module-checks"));
         let directory = base.join("checks").join(format!("extension-projection-{}-{}",
                                                          std::process::id(),

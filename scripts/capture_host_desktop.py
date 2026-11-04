@@ -14,7 +14,7 @@ import time
 
 from capture_system7_applications_ui import Driver
 import system7_vm as vm
-from system7_paths import build_dir, host_dir
+from sr_paths import build_dir, host_dir
 from system7_platform import display_size
 
 

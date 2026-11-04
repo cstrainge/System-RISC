@@ -12,8 +12,14 @@ use std::{fs,
 fn native_vdagent_transport_exchanges_capabilities_and_refuses_bad_endpoints()
 {
     let build = native_capture::build();
-    assert!(build.join("dist/system7.qcow2").is_file(),
-            "build a private optimized image and select it with SYSTEM7_BUILD_DIR");
+    // The platform directory holds the raw HFS-B image; the pre-HFS-B qcow2 is
+    // no longer produced, and the capture scripts behind this ignored gate
+    // still expect it (they are out of scope for the build rewrite).
+    let image = native_capture::dist().join("system7.hfsb");
+    assert!(image.is_file(),
+            "build a private optimized image and select it with SR_BUILD_DIR; expected \
+             '{}'",
+            image.display());
     let output = build.join("checks").join(format!("vdagent-native-{}", std::process::id()));
     let result = native_capture::command("capture_vdagent_transport.py").arg("--output")
                                                                         .arg(&output)

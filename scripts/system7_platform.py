@@ -4,21 +4,56 @@ import os
 from pathlib import Path
 import shlex
 
-NAME = os.environ.get('SYSTEM7_PLATFORM', 'qemu_riscv')
+NAME = os.environ.get('SR_PLATFORM', 'qemu_riscv')
 if not NAME or not all(c.isascii() and (c.isalnum() or c in '-_') for c in NAME):
     raise ValueError('Invalid platform name: expected ASCII letters, digits, - or _')
 DEFINITION = Path(__file__).resolve().parents[1] / 'platforms' / (NAME + '.json')
 if not DEFINITION.is_file():
     raise ValueError(f"Unknown platform {NAME!r}; known platform: qemu_riscv")
-PLATFORM = json.loads(DEFINITION.read_text())
+
+
+def _merge(included, overlay):
+    """Compose one record over another exactly as the build tool does.
+
+    Scalars and plain arrays replace what they overlay, objects merge key by
+    key, and `{"$append": [...]}` extends an inherited array. A record that
+    layers on a base platform therefore reads the same through Python as
+    through `cargo xtask`.
+    """
+    if isinstance(included, dict) and isinstance(overlay, dict):
+        merged = dict(included)
+        for key, value in overlay.items():
+            if isinstance(value, dict) and set(value) == {'$append'}:
+                merged[key] = list(included.get(key, [])) + list(value['$append'])
+            else:
+                merged[key] = _merge(included.get(key), value)
+        return merged
+    return overlay
+
+
+def _load(path, seen=()):
+    if path in seen:
+        chain = ' -> '.join(item.name for item in (*seen, path))
+        raise ValueError(f'Platform include cycle: {chain}')
+    record = json.loads(path.read_text())
+    parent = record.pop('include', None)
+    if parent is None:
+        return record
+    return _merge(_load(path.parent / parent, (*seen, path)), record)
+
+
+PLATFORM = _load(DEFINITION)
 if PLATFORM['name'] != NAME:
     raise ValueError(f"Platform {NAME!r} declares a different name")
+EMULATION = PLATFORM['emulation']
 TARGET = PLATFORM['rust_target']
-CPU = PLATFORM['qemu_cpu']
-RAM = PLATFORM['qemu_ram']
-HARTS = PLATFORM['qemu_harts']
+CPU = EMULATION.get('cpu')
+if not CPU:
+    raise ValueError('Platform emulation.cpu must name the CPU model the machine is given')
+RAM = EMULATION['ram']
+HARTS = EMULATION['harts']
 if type(HARTS) is not int or HARTS < 1:
-    raise ValueError('Platform qemu_harts must be a positive integer')
+    raise ValueError('Platform emulation.harts must be a positive integer')
 
 def cpu_model(vector_bits=None):
     if vector_bits is None:

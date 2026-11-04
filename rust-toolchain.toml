@@ -1,0 +1,15 @@
+# The bootstrap toolchain pin.
+#
+# rustup reads this file before cargo or xtask can run, so it cannot be derived
+# at build time: the pin has to exist before anything is built. The authority
+# for the version is `platforms/rust/sdk.json::rustup_toolchain`, and `cargo
+# xtask` refuses to build when the two disagree rather than quietly using one
+# of them, so this file is a checked copy and never a second authority.
+#
+# `rust-src` supplies the library sources `-Zbuild-std` compiles; `rustfmt` is
+# what `cargo xtask check` runs. Adding a component here is not optional
+# convenience — a missing one fails the build rather than degrading it.
+[toolchain]
+channel    = "nightly-2026-10-05"
+components = ["rust-src", "rustfmt"]
+profile    = "minimal"

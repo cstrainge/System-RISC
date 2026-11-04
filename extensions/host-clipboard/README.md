@@ -27,7 +27,7 @@ preferences keep sharing local. There is no settings panel yet.
 Build the complete paired ROM/System/module image with a private output root:
 
 ```sh
-SYSTEM7_BUILD_DIR=/path/to/private/build cargo xtask image
+SR_BUILD_DIR=/path/to/private/build cargo xtask image
 ```
 
 See [the architecture, limits and native evidence](../../docs/HOST-CLIPBOARD.md).

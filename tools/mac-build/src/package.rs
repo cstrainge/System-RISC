@@ -1,6 +1,5 @@
 use std::{env, fs,
           path::Path,
-          process::Command,
           time::{SystemTime, UNIX_EPOCH}};
 
 use mac_formats::{elf,
@@ -17,14 +16,43 @@ pub fn sha256(bytes: &[u8]) -> String
     format!("{:x}", Sha256::digest(bytes))
 }
 
-pub fn strip_runtime(source: &Path, destination: &Path) -> Result<()>
+/// Write the loader-relevant part of a linked module to `destination`.
+///
+/// This replaces a host `llvm-objcopy --strip-all`. The guest profile keeps
+/// debug information (`debug = 2`), so a linked module is dominated by
+/// sections nothing in the load path reads: only the ELF header, the program
+/// header table and the `PT_LOAD` file images are load-bearing. Copying those
+/// and dropping the section header table is the whole strip, in Rust, on every
+/// host, with no installed tool.
+pub fn compact_elf(source: &Path, destination: &Path, descriptor: &Descriptor) -> Result<()>
 {
-    let status =
-        Command::new("llvm-objcopy").arg("--strip-all").arg(source).arg(destination).status()?;
-    if !status.success()
+    let bytes = fs::read(source)?;
+    let fail = |why: &str| error(format!("cannot compact {}: {why}", source.display()));
+    // The shared decoder owns the ELF contract for this file: it requires the
+    // 64-bit program header width, rejects dynamic, interpreter and TLS
+    // segments, refuses a virtual and physical address that disagree, and
+    // requires an entry point inside executable data. A second copy of those
+    // rules here would drift from the one the loader already enforces.
+    let image = elf::decode(&bytes, descriptor.load_base, descriptor.load_limit)?;
+    // The three header writes below land inside the ELF header, which the
+    // decoder has already required this file to contain in full.
+    let mut end = 64usize;
+    for segment in &image.segments
     {
-        return Err(error("llvm-objcopy failed to strip runtime executable"));
+        let offset = usize::try_from(segment.offset).map_err(|_| fail("segment offset overflow"))?;
+        let size = usize::try_from(segment.file_size).map_err(|_| fail("segment size overflow"))?;
+        end = end.max(offset.checked_add(size).ok_or_else(|| fail("segment end overflow"))?);
     }
+    let mut compact =
+        bytes.get(..end)
+             .ok_or_else(|| fail("a loadable segment lies beyond the end of the file"))?
+             .to_vec();
+    // No section header table: this file is an input to the packager, not
+    // something a debugger or a linker reads.
+    compact[40..48].fill(0);
+    compact[60..62].fill(0);
+    compact[62..64].fill(0);
+    fs::write(destination, &compact)?;
     Ok(())
 }
 
@@ -122,7 +150,7 @@ pub fn build_requiring_with_artifacts(manifest_path: &Path, elf_path: &Path, out
     fs::create_dir_all(out)?;
     let debug_elf = fs::read(elf_path)?;
     let runtime = out.join(format!("{}.runtime.elf", manifest.name));
-    strip_runtime(elf_path, &runtime)?;
+    compact_elf(elf_path, &runtime, &descriptor)?;
     let elf_bytes = fs::read(&runtime)?;
     elf::decode(&elf_bytes, descriptor.load_base, descriptor.load_limit)?;
     let mut compiled = manifest.compile_resources(manifest_path, &elf_bytes, Some(artifacts))?;

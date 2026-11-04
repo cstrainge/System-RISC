@@ -17,7 +17,7 @@ import system7_fixture_build as fixture
 mode = sys.argv[3]
 env = (fixture.host_env if mode == 'host' else fixture.guest_env)(sys.argv[2])
 if mode == 'guest-cache-only':
-    env.pop('SYSTEM7_CARGO_ARTIFACT_DIR', None)
+    env.pop('SR_CARGO_ARTIFACT_DIR', None)
 raise SystemExit(subprocess.call(sys.argv[4:], env=env))
 "#;
 
@@ -29,7 +29,7 @@ fn run(repo: &Path, root: &Path, target: &Path, mode: &str, arguments: &[&std::f
     let output = Command::new(std::env::var_os("SYSTEM7_PYTHON").unwrap_or_else(|| "python3".into()))
         .arg("-c").arg(TRANSPORT).arg(repo.join("scripts")).arg(target)
         .arg(mode).arg("cargo").args(arguments)
-        .env("SYSTEM7_BUILD_DIR", root).current_dir(repo.parent().unwrap())
+        .env("SR_BUILD_DIR", root).current_dir(repo.parent().unwrap())
         .output().unwrap();
     fs::write(root.join(format!("{label}.stdout")), &output.stdout).unwrap();
     fs::write(root.join(format!("{label}.stderr")), &output.stderr).unwrap();
@@ -236,7 +236,7 @@ fn standalone_fixtures_share_dependencies_without_sharing_final_binaries_or_nati
                           }),
             "native-code source watch did not name the actual final ELF");
     assert!(watches.iter().any(|text| {
-                              text.contains("cargo:rerun-if-env-changed=SYSTEM7_CARGO_ARTIFACT_DIR")
+                              text.contains("cargo:rerun-if-env-changed=SR_CARGO_ARTIFACT_DIR")
                           }));
     report.push(json!({"common_dependency_fresh":true,"common_artifact":b["filenames"],"first_elf_sha256":mac_build::package::sha256(&original_a),"second_elf_sha256":mac_build::package::sha256(&original_b),"definition_final_elf":final_elf,"native_definition_package":"verified"}));
     fs::write(root.join("acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
