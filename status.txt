@@ -708,3 +708,54 @@ Naming: the only authored text match for the product-name pattern is the QEMU
 machine field in platforms/qemu_arm64.json. The other text match is Python's
 mathematical circle constant in apps/reactor/assets/generate.py; the remaining
 matches are binary fixtures.
+
+qemu_arm64 layers 1-2 - 2026-11-04
+==================================
+[Platform lane / qemu_arm64 agent]
+
+Layer 1 - partitioned SD writer
+-------------------------------
+tools/xtask/src/disk.rs now dispatches Layout::Partitioned to
+tools/xtask/src/disk/partition.rs. The writer builds the MBR, FAT32, System7
+and raw payload partitions from the declared schema; build_system7 is shared
+with the unpartitioned layout.
+The round-trip test `cargo test -p xtask fat32_roundtrip` passes. It builds a
+64 MiB FAT32 partition, parses the boot sector (0x55AA, TotSec32/FATSz32),
+checks both FAT copies are identical, lists CONFIG.TXT/KERNEL8.IMG/SUB, checks
+each first cluster, and compares the file bytes read through the FAT chain by
+SHA-256. The MBR test checks the boot flag, type 0x0C, LBA/sectors, an
+out-of-range boot index and an LBA overflow.
+Verification on the earlier temporary partitioned record: qemu-img reports a
+2 GiB raw medium; the MBR has a bootable FAT32 partition at LBA 2048 (type
+0x0C) and a type 0xAF System7 partition; the FAT32 reader returned
+CONFIG.TXT (61 bytes, declared board config) and PAYLOAD.BIN (517 bytes,
+SHA-256 7779b22f... matching tools/xtask/Cargo.toml).
+qemu_riscv boot-check after the writer changes: 17/17, 0 skips, fresh logs.
+
+Layer 2 - aarch64 admission entry
+---------------------------------
+bootrom-aarch64 is a new workspace package. Its build.rs reads the platform
+record for memory.boot and the UART base (0x3f201000), emits the linker script
+and the PL011 constant, and the entry initialises the UART once, sets
+VBAR_EL1, prints over PL011, parks secondary CPUs by MPIDR, and halts. The
+16-slot vector table reports ESR_EL1/ELR_EL1/FAR_EL1 and halts.
+Verified: `cargo build --release --target aarch64-unknown-none -p
+bootrom-aarch64` (SR_PLATFORM=qemu_arm64) produced a 71,488-byte ELF. Booting
+it with QEMU 11.1.0 `-machine raspi3b -m 1G -kernel <elf>` produced the serial
+log:
+  BOOT_AARCH64_READY: qemu_arm64 EL1 entry reached
+No trap marker followed. This is the admission milestone, not a guest.
+
+Still missing for a real platform
+---------------------------------
+1. aarch64 MMU: no page-table builder/activation; the entry runs with the MMU
+   off. The build-system layout is validated but not installed.
+2. Shared bare-metal gating: guest crates still gate no_std/no_main/entry on
+   target_arch = "riscv64"; mac-traps has no aarch64 svc path.
+3. Platform build integration: the qemu_arm64 record has no bootloader
+   section and the SD image's kernel8.img still names the unimplemented
+   system-image artifact. cargo xtask build still refuses at the empty stages
+   (install.set none); the image writer is reachable via `cargo xtask stage
+   image` with a partitioned record.
+4. VideoCore mailbox framebuffer driver (Layer 3) and boot-check integration
+   (Layer 4) are not started.
