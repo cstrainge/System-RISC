@@ -868,6 +868,21 @@ impl Toolbox
                 }
                 if let Err(status) = self.controls.prepare_remove_window(id.0)
                 {
+                    // This close already planned its canonical job and armed the
+                    // window's definition disposal. The kernel completes it with
+                    // no further call from this application: window_work::pump
+                    // advances that same job, and control_work::pump drains the
+                    // disposal, both from the scheduler maintenance path. A stock
+                    // application reads Service Busy as a terminal failure and
+                    // abandons the close it just started, so report the in-flight
+                    // close as accepted. Creation against the window is refused
+                    // while its disposal is pending, so no caller can observe a
+                    // half-disposed window, and a stuck advance still reports
+                    // CONTROL_DISPOSAL_RETAINED with its canonical job and tickets.
+                    if status == SERVICE_BUSY && self.controls.disposal_pending_window(id.0)
+                    {
+                        return OK;
+                    }
                     return status;
                 }
                 if let Err(status) = self.drag.prepare_window_close(id.0)
