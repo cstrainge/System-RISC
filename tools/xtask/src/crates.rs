@@ -146,8 +146,18 @@ impl Crates
             {
                 continue;
             }
-            let name = package["name"].as_str().unwrap_or_default().to_string();
-            let manifest = PathBuf::from(package["manifest_path"].as_str().unwrap_or_default());
+            // `cargo metadata` always reports both fields for a member, so a
+            // missing one is a malformed answer rather than a package with an
+            // empty name. Skipping is the same policy the id check above uses:
+            // an entry without an identity is not a package.
+            let (Some(name), Some(manifest)) =
+                (package["name"].as_str(), package["manifest_path"].as_str())
+            else
+            {
+                continue;
+            };
+            let name = name.to_string();
+            let manifest = PathBuf::from(manifest);
             let directory = manifest.parent().unwrap_or(Path::new(".")).to_path_buf();
             let relative = relative(&workspace.root, &directory)?;
             let features: BTreeSet<String> =
@@ -276,7 +286,17 @@ pub fn installed(workspace: &Workspace, crates: &Crates) -> Result<Vec<Installed
     {
         let entry = crates.get(package)?;
         let resources = entry.resources()?;
-        let group = entry.relative.split('/').next().unwrap_or_default();
+        // `relative` is documented as the package's directory inside the
+        // checkout, so a package the tree cannot place is a fact to report
+        // rather than one to classify as sitting in the root.
+        let group = entry.relative
+                         .split('/')
+                         .next()
+                         .filter(|group| !group.is_empty())
+                         .ok_or_else(|| {
+                             error(format!("package '{}' has no directory inside the checkout",
+                                           entry.name))
+                         })?;
         found.push(Installed { package: package.clone(),
                                name:    resources.name.clone(),
                                folder:  install.folder(package, group)?.to_string() });

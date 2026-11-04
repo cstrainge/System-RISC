@@ -5,12 +5,17 @@
 //! (`qemu-system-riscv64`). This module owns the host's spelling of that name,
 //! the search order, and — on the hosts that support it — obtaining the tool.
 //!
-//! The search order is the same on every host:
+//! The search order is the same on every host, and every step is visible in
+//! `cargo xtask tools`:
 //!
 //! 1. `SR_TOOL_<PROGRAM>`, so a developer can point at a build they made;
 //! 2. `PATH`;
 //! 3. this user's tool cache, if a previous `cargo xtask tools --install` filled it;
-//! 4. install — but only when the caller asked for installation.
+//! 4. this host's own install locations — on Windows the `Program Files` QEMU directory, the
+//!    per-user directory winget and manual installs use, and the ninja that Visual Studio ships.
+//!    This is why a host with no copy on `PATH` can still resolve ninja, and skipping it was a
+//!    documented gap;
+//! 5. install — but only when the caller asked for installation.
 //!
 //! `build`, `run`, `flash` and `clean` never install anything. A missing tool is
 //! reported with the same text `cargo xtask tools` prints, because obtaining a
@@ -275,6 +280,18 @@ fn installed(program: &str) -> Vec<PathBuf>
             {
                 places.push(root.join("qemu").join(host_name(program)));
             }
+            // A machine-wide install is not the only one: winget and manual
+            // archives land under the user's own profile, and a tool that is
+            // invisible there looks missing while it is installed.
+            for variable in ["LOCALAPPDATA", "USERPROFILE"]
+            {
+                if let Some(root) = env::var_os(variable)
+                {
+                    let root = PathBuf::from(root);
+                    places.push(root.join("Programs").join("qemu").join(host_name(program)));
+                    places.push(root.join("qemu").join(host_name(program)));
+                }
+            }
         }
         if program == "ninja"
         {
@@ -332,16 +349,10 @@ pub fn find(program: &str) -> std::result::Result<PathBuf, Missing>
     }
     let name = host_name(program);
     let mut searched = Vec::new();
-    if let Some(override_path) = env::var_os(override_name(program)).or_else(|| {
-                                     if program.starts_with("qemu-")
-                                     {
-                                         env::var_os("SR_EMULATOR")
-                                     }
-                                     else
-                                     {
-                                         None
-                                     }
-                                 })
+    // One override name per program: `SR_TOOL_<PROGRAM>` is derived from the
+    // program the platform names, so every tool has exactly one spelling and a
+    // record cannot be redirected by a variable no other tool honours.
+    if let Some(override_path) = env::var_os(override_name(program))
     {
         let path = PathBuf::from(override_path);
         if path.is_file()
@@ -773,18 +784,19 @@ pub fn report(programs: &[String])
         println!("This platform declares no emulator, so it needs no host tools.");
         return;
     }
+    let order = "Host tools are taken from SR_TOOL_*, then PATH, then the per-user cache, then \
+                 this host's install locations.";
     match host()
     {
         Host::Windows =>
         {
-            println!("Host tools are taken from SR_TOOL_*, then PATH, then the per-user cache. \
-                      `cargo xtask tools --install` obtains a missing one with winget or a pinned \
-                      download.")
+            println!("{order} `cargo xtask tools --install` obtains a missing one with winget or \
+                      a pinned download.")
         }
         _ =>
         {
-            println!("Host tools are taken from SR_TOOL_*, then PATH, then the per-user cache. \
-                      This build does not install host tools on {}; use your package manager.",
+            println!("{order} This build does not install host tools on {}; use your package \
+                      manager.",
                      host_label())
         }
     }

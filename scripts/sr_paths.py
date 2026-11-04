@@ -30,8 +30,21 @@ def dist_dir():
     return (ROOT / 'dist' / os.environ.get(PLATFORM_ENV, DEFAULT_PLATFORM)).resolve()
 
 
+TARGET_DIR_ENV = 'CARGO_TARGET_DIR'
+
+
 def host_dir():
-    """Cargo's target directory: the one place host tools are built."""
+    """Cargo's target directory: the one place host tools are built.
+
+    The checkout root owns it, exactly as the build tool's own target
+    directory does; `CARGO_TARGET_DIR` relocates it, and it is no longer a
+    subdirectory of the generated build files, which own only the ninja graph
+    and the private SDK.
+    """
+    chosen = os.environ.get(TARGET_DIR_ENV)
+    if chosen:
+        path = Path(chosen)
+        return (path if path.is_absolute() else ROOT / path).resolve()
     return (ROOT / 'target').resolve()
 
 

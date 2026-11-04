@@ -49,6 +49,18 @@ pub struct Platform
     /// asks only that the profile itself appears.
     #[serde(default)]
     pub profile_requires: Vec<String>,
+    /// The compiler record this platform is built with, relative to
+    /// `platforms/`.
+    ///
+    /// One run resolves exactly one toolchain: rustup reads
+    /// `rust-toolchain.toml` before any of this code executes, so two platforms
+    /// naming different compilers need two checkouts rather than one build that
+    /// switches between them. The field still exists, because a platform that
+    /// says nothing about the tool that builds it is an incomplete record, and
+    /// `cargo xtask` checks this file against the bootstrap pin and refuses to
+    /// build when they disagree.
+    #[serde(default = "compiler_record")]
+    pub toolchain:        String,
     /// Which workspace packages this platform installs, and with which
     /// features. The build tool reads the graph from Cargo and the selection
     /// from here, so changing the installed set is a platform edit.
@@ -506,9 +518,26 @@ pub fn current() -> &'static Platform
 /// The pin lives in `platforms/rust/sdk.json` beside the target specification
 /// and the patches, so everything under `platforms/` is read here rather than
 /// by whichever module happens to need one string out of it.
-pub fn rust_toolchain(root: &Path) -> Result<String>
+fn compiler_record() -> String
 {
-    let path = root.join("platforms/rust/sdk.json");
+    "rust/sdk.json".to_string()
+}
+
+/// The absolute path of the compiler record a platform names.
+pub fn compiler_path(root: &Path, platform: &Platform) -> Result<PathBuf>
+{
+    let record = platform.toolchain.trim();
+    if record.is_empty()
+    {
+        return Err(error(format!("platform '{}' names no compiler record; set `toolchain` to                                   the platform's compiler pin, for example \"rust/sdk.json\"",
+                                 platform.name)));
+    }
+    Ok(root.join("platforms").join(record))
+}
+
+pub fn rust_toolchain(root: &Path, platform: &Platform) -> Result<String>
+{
+    let path = compiler_path(root, platform)?;
     let text = fs::read_to_string(&path).map_err(|cause| {
                                             error(format!("cannot read {}: {cause}",
                                                           path.display()))
@@ -531,25 +560,43 @@ pub fn configure(command: &mut Command)
 {
     configure_for(current(), command);
 }
-pub fn configure_for(platform: &Platform, command: &mut Command)
+/// The rustflags this record's instruction-set profile implies for the guest
+/// target, as cargo's `target.<triple>.rustflags` list.
+///
+/// This is the one place the profile becomes a compiler flag. Nothing in
+/// `.cargo/config.toml` repeats it: a static copy there would silently keep
+/// building the old ISA after the record changed, and it would be a second
+/// authority for the same fact. Cargo cannot read this workspace's JSON, so the
+/// values are handed to the invocation that builds the guest instead.
+pub fn guest_rustflags(platform: &Platform) -> Vec<String>
 {
-    let mut flags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_else(|_| {
-                                                           env::var("RUSTFLAGS").unwrap_or_default()
-                                                                                .split_whitespace()
-                                                                                .collect::<Vec<_>>()
-                                                                                .join("\u{1f}")
-                                                       });
-    if !flags.is_empty()
-    {
-        flags.push('\u{1f}');
-    }
+    let mut flags = Vec::new();
     if !platform.llvm_profile.is_empty()
     {
-        flags.push_str(&format!("-C\u{1f}target-feature=+{}", platform.llvm_profile));
+        flags.push("-C".to_string());
+        flags.push(format!("target-feature=+{}", platform.llvm_profile));
     }
-    flags.push_str("\u{1f}-C\u{1f}relocation-model=pic");
+    flags.push("-C".to_string());
+    flags.push("relocation-model=pic".to_string());
+    flags
+}
+
+/// The same flags as one `cargo --config` argument.
+///
+/// The key is scoped to the guest triple, so host build scripts and proc macros
+/// are not compiled with the guest's instruction set.
+pub fn guest_rustflags_config(platform: &Platform) -> String
+{
+    let flags = guest_rustflags(platform);
+    let encoded = flags.iter().map(|flag| format!("{flag:?}")).collect::<Vec<_>>().join(",");
+    format!("target.{}.rustflags=[{encoded}]", platform.rust_target)
+}
+
+/// Extend one cargo invocation with the guest target's instruction profile.
+pub fn configure_for(platform: &Platform, command: &mut Command)
+{
+    command.arg("--config").arg(guest_rustflags_config(platform));
     command.env(PLATFORM_ENV, &platform.name);
-    command.env("CARGO_ENCODED_RUSTFLAGS", flags);
 }
 /// The compiler flag covers every Cargo-built target dependency, not just the
 /// final executable. Refuse conflicting overrides instead of last-flag-wins.

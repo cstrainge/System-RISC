@@ -137,7 +137,7 @@ impl Workspace
         // capture scripts own this path. `--dist` therefore relocates build
         // output only; a report stays beside the checkout it is about.
         let results = root.join("results");
-        let toolchain = mac_build::platform::rust_toolchain(&root)?;
+        let toolchain = mac_build::platform::rust_toolchain(&root, &platform)?;
         verify_toolchain_pin(&root, &toolchain)?;
         Ok(Self { root,
                   build,

@@ -11,7 +11,25 @@ import socket
 import subprocess
 import time
 
-ROOT = Path(__file__).resolve().parents[2]
+def _workspace():
+    """The directory that owns the developer's recorded host tools.
+
+    It is found rather than counted: the checkout can sit any number of levels
+    below it, and how many is a property of this checkout rather than of the
+    project. The recorded Windows QEMU is the thing that has to be found; a
+    `working/` directory alone may belong to something else.
+    """
+    here = Path(__file__).resolve().parents[1]
+    for candidate in (here, *here.parents):
+        if (candidate / 'working/vm/windows-qemu.json').is_file():
+            return candidate
+    return here.parent
+
+
+# The checkout is the root for everything the build produces; the enclosing
+# workspace is only where the developer's recorded host tools live.
+ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE = _workspace()
 STATE = ROOT / 'working/riscv-vm'
 TARGET = 'riscv64imac-unknown-none-elf'
 BUILD = ROOT / 'build/riscv-quickdraw'
@@ -80,7 +98,7 @@ def native_executable():
         installed = shutil.which('qemu-system-riscv64.exe')
         if installed:
             return Path(installed)
-    config = ROOT / 'working/vm/windows-qemu.json'
+    config = WORKSPACE / 'working/vm/windows-qemu.json'
     if config.exists():
         exe = native_path(json.loads(config.read_text())['executable']).with_name('qemu-system-riscv64.exe')
         if exe.exists():

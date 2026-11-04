@@ -446,11 +446,11 @@ class LauncherTests(unittest.TestCase):
 
     def test_host_cache_and_hfs_tool_follow_the_selected_build_root(self):
         with tempfile.TemporaryDirectory(prefix='system risc ') as folder, \
-             patch.dict(os.environ, {'SR_BUILD_DIR': folder}), \
+             patch.dict(os.environ, {'CARGO_TARGET_DIR': folder}), \
              patch.object(hfs_b_tool.subprocess, 'run') as run:
             hfs_b_tool.tool.cache_clear()
             try:
-                expected = Path(folder).resolve() / 'host'
+                expected = Path(folder).resolve()
                 self.assertEqual(paths.host_dir(), expected)
                 self.assertEqual(hfs_b_tool.tool(), paths.host_tool('hfs-b'))
                 command = run.call_args.args[0]
@@ -516,8 +516,11 @@ class LauncherTests(unittest.TestCase):
             vm.main()
             command = run.call_args.args[0]
             selected = Path(folder).resolve()
-            self.assertEqual(command, ['cargo', 'xtask', 'image', '--build-dir', str(selected)])
-            self.assertEqual(vm.DIST, selected / 'dist')
+            self.assertEqual(command, ['cargo', 'xtask', 'build', '--build-dir', str(selected)])
+            # The platform's output directory is the checkout's, not the build
+            # directory's; only the generated files and the VM state follow
+            # --build-dir.
+            self.assertEqual(vm.DIST, vm.ROOT / 'dist/qemu_riscv')
             self.assertEqual(vm.STATE, selected / 'vm')
 
     def test_check_defaults_to_separate_media(self):
@@ -526,7 +529,7 @@ class LauncherTests(unittest.TestCase):
              patch.object(vm, 'check') as check:
             os.environ.pop('SR_BUILD_DIR', None)
             vm.main()
-            self.assertEqual(vm.DIST, vm.ROOT / 'build/system7/check/dist')
+            self.assertEqual(vm.DIST, vm.ROOT / 'build/check/dist/qemu_riscv')
             check.assert_called_once_with(False, None)
 
     def test_an_occupied_native_port_never_sends_commands_to_its_owner(self):
@@ -549,7 +552,7 @@ class LauncherTests(unittest.TestCase):
              patch.object(sys, 'argv', ['system7_vm.py', 'check', '--no-build']), \
              patch.object(vm, 'check'):
             vm.main()
-            self.assertEqual(vm.DIST, Path(folder).resolve() / 'check/dist')
+            self.assertEqual(vm.DIST, Path(folder).resolve() / 'check/dist/qemu_riscv')
 
 
 @unittest.skipUnless(os.name == 'nt', 'Windows VM process identity')

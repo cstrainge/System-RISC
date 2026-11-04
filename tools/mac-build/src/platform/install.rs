@@ -28,9 +28,20 @@ pub struct Install
     /// the package's own directory, so the order here is not significant.
     #[serde(default)]
     pub modules:      Vec<String>,
-    /// Extra Cargo features, keyed by package name. A package that is not
-    /// installed cannot carry features, and an unknown package is an error
-    /// rather than a silently ignored entry.
+    /// The Cargo features each installed package is built with, keyed by
+    /// package name.
+    ///
+    /// This is the shipped set: what every build of this platform compiles. A
+    /// package that is not installed cannot carry features, and an unknown
+    /// package is an error rather than a silently ignored entry.
+    ///
+    /// Host-side diagnostics are deliberately *not* here. `text-edit`'s
+    /// `input-trace` and `mac-system`'s `event-trace` trace what the guest is
+    /// doing, and a record that enabled one would turn it on for everybody who
+    /// built that platform while making the shipped set depend on a debugging
+    /// build. The build tool enables them from `cargo xtask check` or from the
+    /// environment variable named beside each one, so they never appear in this
+    /// map and never reach a release by being described here.
     #[serde(default)]
     pub features:     BTreeMap<String, Vec<String>>,
     /// Where each kind of package is installed on the boot volume, keyed by the

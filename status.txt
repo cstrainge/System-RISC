@@ -358,3 +358,107 @@ The spec places the capture, check and test scripts out of scope, so they are
 reported rather than rewritten. Until they are updated, `cargo xtask check`
 cannot pass on this host for two independent reasons: that suite, and the
 absence of QEMU. `cargo xtask doc` is fixed and verified.
+
+11. Spec conformance after review
+--------------------------------
+Three deviations were raised against the first commit, and each is now fixed
+with the evidence below.
+
+A1, one source of truth for the ISA profile. `.cargo/config.toml` no longer
+carries any target rustflags. The guest build receives
+`--config target.<triple>.rustflags=[...]` built from `platform.llvm_profile`
+and a fixed `relocation-model=pic`, so the record is the only place the
+profile is written. Acceptance run: setting `llvm_profile` to `rva22u64` in
+`platforms/riscv_base.json` and rebuilding failed with
+"compiler does not implement the full rva22u64 profile (rva22u64/v/d/f/zba/
+zbb/zbs required)" - the name in the message is the record's value, with no
+other file edited. Reverting and rebuilding the guest stage exited 0.
+
+A2, per-package features. The record's `features` map is the shipped set and
+is read by one function; the three tracing features are one documented
+`DIAGNOSTICS` table keyed by package, feature, environment variable and
+whether `cargo xtask check` enables it. `install.rs` states that diagnostics
+are never record data and why. Each build prints the resolved feature list for
+a package that has any, so what was compiled is visible rather than inferred.
+
+A3, the platform names its compiler. Both records carry
+`"toolchain": "rust/sdk.json"`; `sdk.rs` and the workspace resolve the pin
+through `platform::compiler_path`, and patch paths resolve beside the pin
+rather than from a hardcoded directory. `platform.rs` documents that one
+checkout resolves one toolchain per run, because rustup reads
+`rust-toolchain.toml` before the build tool starts, and that `cargo xtask`
+refuses to build when the pin and the record disagree. Verified: a record
+naming `rust/does-not-exist.json` fails at `sdk prepare` with that path.
+
+12. Review round three: findings and fixes
+----------------------------------------
+B1. `crates.rs` no longer fills a missing package name, manifest path or
+directory with `unwrap_or_default()` / `"."`. A metadata entry without an
+identity is skipped the same way one without an id already was, and a package
+the tree cannot place is an error naming the package instead of being
+classified as host code.
+
+B2. The SDK compiler diagnostic had 72 spaces where a line join had gone
+wrong; it now reads "the SDK compiler requires SR_SDK_SYSROOT to name its
+private sysroot".
+
+B3. `altered_system` took a `directory` it never used and silenced the warning
+with `let _ = directory;`. The parameter is gone and both callers updated.
+
+B4. The console recorder ignored `write_all`/`flush` failures, so a truncated
+log would be reported as the guest never reaching `DESKTOP_READY` - blaming
+the guest for the recorder, on the file the acceptance criterion rests on. A
+read or write failure is now recorded and returned as "the console log for
+<case> was not recorded: <cause>". The in-memory copy is still what readiness
+is judged from, so the failure is reported rather than converted into a
+different one.
+
+B5. The `tools.rs` module doc listed four search steps while the code had
+five; the missing one - this host's own install locations - is why ninja
+resolves here at all. The doc and the printed summary now list all five.
+
+B6. `SR_EMULATOR` was a second override name for QEMU that no other program
+had, and the spec never defines. It is gone; `SR_TOOL_QEMU_SYSTEM_RISCV64`
+is the one spelling. Verified: exporting `SR_EMULATOR` to a path that does not
+exist no longer changes what `cargo xtask tools` reports.
+
+B7. QEMU was probed only under `Program Files`. The per-user locations winget
+and manual archives use (`%LOCALAPPDATA%\Programs\qemu`,
+`%LOCALAPPDATA%\qemu`, `%USERPROFILE%\qemu`) are probed too.
+
+Python suite. The branch went from 13 failures / 4 errors to 8 failures / 1
+error; `main` is 9 failures / 1 error, so the seven breakages this branch had
+introduced are fixed and one pre-existing failure is now correct. Four causes,
+all of them consequences of the moved build root rather than of the scripts'
+logic:
+
+  - `sr_paths.host_dir()` returned a fixed `<checkout>/target` and ignored
+    `CARGO_TARGET_DIR`, so a caller that selected a build root got host tools
+    from somewhere else. It honours the variable now.
+  - `riscv_vm.py` counted `parents[2]` to find the enclosing workspace, which
+    was true only for the old one-level layout. It now walks up until the
+    directory holding the recorded host QEMU appears, and keeps the checkout
+    as its own root for everything the build produces.
+  - `system7_vm.py` ran `cargo xtask image --build-dir` and derived the media
+    root from the build root. It runs `cargo xtask build`, and check mode gets
+    its own `SR_DIST` so a check never opens the desktop's images.
+  - Four tests asserted the old roots (`build/system7/check/dist`,
+    `<build>/host`, `<build>/dist`). They now assert the roots the build
+    actually produces: `<checkout>/target` (or `CARGO_TARGET_DIR`),
+    `<checkout>/build/check/dist/<platform>`, `<checkout>/dist/<platform>`.
+    The assertions are as strict as before; only the layout they name changed,
+    which is the intended and documented move.
+
+Three of the four VM tests the coordinator listed as failing only fail while a
+stray QEMU holds port 4447. One from an earlier session was found listening
+there and stopped; with the port free they pass.
+
+Also fixed while here: registering the SDK key as a directory name pushed
+object paths past Windows' 260-character limit, and the host linker reported
+"cannot open file" for an rlib that exists. The key is now a marker file that
+clears stale application artifacts, which is what the directory name was for,
+without lengthening the paths.
+
+`cargo xtask doc` also emitted `rustdoc::invalid_html_tags` for
+`/Volumes/<unique mounted name>/...`, which rustdoc reads as a tag; the path is
+in backticks now.

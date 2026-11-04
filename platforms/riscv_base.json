@@ -4,6 +4,7 @@
   "rust_target": "riscv64imac-unknown-none-elf",
   "std_target": "riscv64-unknown-systemrisc",
   "llvm_profile": "rva23u64",
+  "toolchain": "rust/sdk.json",
   "profile_requires": [
     "v",
     "d",
