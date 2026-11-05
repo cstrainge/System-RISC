@@ -3939,31 +3939,6 @@
           "name": "Courier Bold",
           "attributes": 32,
           "form": "file"
-        },
-        {
-          "type": "sfnt",
-          "id": 13003,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217",
-          "name": "Courier",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        }
-      ]
-    },
-    {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Geneva",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13004,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_2",
-          "name": "Geneva",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
         }
       ]
     },
@@ -3976,31 +3951,6 @@
           "source_id": 15011,
           "symbol": "EXTRACTED_SFNT_15011",
           "name": "Gill Sans Condensed Bold",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        }
-      ]
-    },
-    {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Helvetica",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13006,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_3",
-          "name": "Helvetica",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        },
-        {
-          "type": "sfnt",
-          "id": 13007,
-          "source_id": 9218,
-          "symbol": "EXTRACTED_SFNT_9218",
-          "name": "Helvetica Bold",
           "attributes": 32,
           "form": "file",
           "taken": true
@@ -4023,21 +3973,6 @@
       ]
     },
     {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Monaco",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13009,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_4",
-          "name": "Monaco",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        }
-      ]
-    },
-    {
       "path": "Hard Disk Files/System Folder Files/Fonts/New Berolina MT",
       "resources": [
         {
@@ -4046,21 +3981,6 @@
           "source_id": 10909,
           "symbol": "EXTRACTED_SFNT_10909",
           "name": "New Berolina MT",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        }
-      ]
-    },
-    {
-      "path": "Hard Disk Files/System Folder Files/Fonts/New York",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13011,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_5",
-          "name": "New York",
           "attributes": 32,
           "form": "file",
           "taken": true
@@ -4100,26 +4020,6 @@
           "name": "Palatino Bold Italic",
           "attributes": 32,
           "form": "file"
-        },
-        {
-          "type": "sfnt",
-          "id": 13013,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_6",
-          "name": "Palatino",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        },
-        {
-          "type": "sfnt",
-          "id": 13014,
-          "source_id": 9218,
-          "symbol": "EXTRACTED_SFNT_9218_2",
-          "name": "Palatino Italic",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
         }
       ]
     },
@@ -4132,66 +4032,6 @@
           "source_id": 10890,
           "symbol": "EXTRACTED_SFNT_10890",
           "name": "Script MT Bold",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        }
-      ]
-    },
-    {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Symbol",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13016,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_7",
-          "name": "Symbol",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        }
-      ]
-    },
-    {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Times",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13017,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_8",
-          "name": "Times",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        },
-        {
-          "type": "sfnt",
-          "id": 13018,
-          "source_id": 9218,
-          "symbol": "EXTRACTED_SFNT_9218_3",
-          "name": "Times Bold",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        },
-        {
-          "type": "sfnt",
-          "id": 13019,
-          "source_id": 9219,
-          "symbol": "EXTRACTED_SFNT_9219",
-          "name": "Times Italic",
-          "attributes": 32,
-          "form": "file",
-          "taken": true
-        },
-        {
-          "type": "sfnt",
-          "id": 13020,
-          "source_id": 9220,
-          "symbol": "EXTRACTED_SFNT_9220",
-          "name": "Times Bold Italic",
           "attributes": 32,
           "form": "file",
           "taken": true
