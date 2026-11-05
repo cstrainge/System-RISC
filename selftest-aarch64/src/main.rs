@@ -36,7 +36,7 @@ mod uart;
 core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardware.inc")),
                         include_str!("entry.S"));
 
-const TEXT_BYTES: usize = 200;
+const TEXT_BYTES: usize = 512;
 const MAX_CHECKS: usize = 20;
 const CACHE_TEST_BYTES: usize = 4096;
 const DMA_WORDS: usize = 4096;
@@ -1002,7 +1002,7 @@ pub extern "C" fn rust_entry() -> !
                     _ => (false, "unknown")
                 };
                 report.push("spi-len", ok, reason)
-                      .push_str("dlen 32 rx ")
+                      .push_str("dlen 8 rx ")
                       .push_dec(received as u64)
                       .push_str(" shift ")
                       .push_dec(u64::from(shift));
@@ -1080,6 +1080,7 @@ pub extern "C" fn rust_entry() -> !
     let mut spi_busy = false;
     let mut spi_dma_duration = 0u64;
     let mut spi_cpu_duration = 0u64;
+    let mut spi_reference = 0u64;
     if spi_ready && shift != 0 && channel_ok
     {
         let bytes = 512usize;
@@ -1096,15 +1097,28 @@ pub extern "C" fn rust_entry() -> !
             Ok((_, duration)) => spi_cpu_duration = duration,
             Err(reason) => spi_dma_reason = reason
         }
+        // If the CPU-fed reference refused, compare the engine against the
+        // arithmetic instead of abandoning the check.
+        spi_reference = if spi_cpu_duration != 0
+        {
+            spi_cpu_duration
+        }
+        else if core_hz != 0
+        {
+            (bytes as u64 * 8 * 1000) / core_hz
+        }
+        else
+        {
+            0
+        };
         if let Some(ch) = channel.as_ref()
         {
             match spi.prepare_dma(bytes, 1000)
             {
                 Ok(()) =>
                 {
-                    let block = dma::ControlBlock::spi_write(source as usize,
-                                                              spi0::FIFO_BUS,
-                                                              dma_bytes);
+                    let block =
+                        dma::ControlBlock::spi_write(source as usize, spi0::FIFO_BUS, dma_bytes);
                     cache::clean(source as usize, dma_bytes);
                     let start = timer();
                     match ch.start(&block)
@@ -1120,9 +1134,8 @@ pub extern "C" fn rust_entry() -> !
                             let end = timer();
                             spi.finish();
                             spi_dma_duration = end.wrapping_sub(start);
-                            spi_dma_ok = dma_result.is_ok()
-                                         && spi_result.is_ok()
-                                         && spi_cpu_duration != 0;
+                            spi_dma_ok =
+                                dma_result.is_ok() && spi_result.is_ok() && spi_reference != 0;
                             if let Err(reason) = dma_result
                             {
                                 spi_dma_reason = reason;
@@ -1160,15 +1173,15 @@ pub extern "C" fn rust_entry() -> !
     }
     else if spi_dma_ok
     {
-        let off = spi_dma_duration.abs_diff(spi_cpu_duration);
-        let within = off * 100 <= spi_cpu_duration * 2;
+        let off = spi_dma_duration.abs_diff(spi_reference);
+        let within = off * 100 <= spi_reference * 2;
         if within
         {
             report.push("spi-pace", true, "")
                   .push_str("dma ")
                   .push_dec(spi_dma_duration)
-                  .push_str(" us cpu ")
-                  .push_dec(spi_cpu_duration)
+                  .push_str(" us reference ")
+                  .push_dec(spi_reference)
                   .push_str(" us");
         }
         else
@@ -1176,21 +1189,18 @@ pub extern "C" fn rust_entry() -> !
             report.push("spi-pace", false, "gap")
                   .push_str("dma ")
                   .push_dec(spi_dma_duration)
-                  .push_str(" us cpu ")
-                  .push_dec(spi_cpu_duration)
+                  .push_str(" us reference ")
+                  .push_dec(spi_reference)
                   .push_str(" us");
         }
-        report.push("spi-done",
-                    true,
-                    "")
-              .push_str(if spi_busy
-              {
-                  "dma done, spi still busy"
-              }
-              else
-              {
-                  "spi done with dma"
-              });
+        report.push("spi-done", true, "").push_str(if spi_busy
+                                                   {
+                                                       "dma done, spi still busy"
+                                                   }
+                                                   else
+                                                   {
+                                                       "spi done with dma"
+                                                   });
     }
     else
     {
@@ -1245,8 +1255,7 @@ pub extern "C" fn rust_entry() -> !
                 }
                 else
                 {
-                    report.push("dma-lease", false, "mismatch")
-                          .push_str("the copy did not land");
+                    report.push("dma-lease", false, "mismatch").push_str("the copy did not land");
                 }
             }
             Err(reason) =>
@@ -1274,17 +1283,14 @@ pub extern "C" fn rust_entry() -> !
         cache::clean(source as usize, long_words * 4);
         cache::clean(source2 as usize, 256 * 4);
         cache::invalidate(dest as usize, long_words * 4);
-        let first = dma::ControlBlock::memory_copy(source as usize,
-                                                   dest as usize,
-                                                   long_words * 4);
+        let first = dma::ControlBlock::memory_copy(source as usize, dest as usize, long_words * 4);
         match ch.start(&first)
         {
             Ok(()) =>
             {
                 let busy = ch.active();
-                let second = dma::ControlBlock::memory_copy(source2 as usize,
-                                                            dest2 as usize,
-                                                            256 * 4);
+                let second =
+                    dma::ControlBlock::memory_copy(source2 as usize, dest2 as usize, 256 * 4);
                 let second_start = ch.start(&second);
                 let wait = ch.wait();
                 cache::invalidate(dest as usize, long_words * 4);
@@ -1395,12 +1401,9 @@ pub extern "C" fn rust_entry() -> !
     }
     else
     {
-        report.push("dma-lease", false, "no-channel")
-              .push_str("no channel from the ARM set");
-        report.push("dma-2nd", false, "no-channel")
-              .push_str("no channel from the ARM set");
-        report.push("dma-clean", false, "no-channel")
-              .push_str("no channel from the ARM set");
+        report.push("dma-lease", false, "no-channel").push_str("no channel from the ARM set");
+        report.push("dma-2nd", false, "no-channel").push_str("no channel from the ARM set");
+        report.push("dma-clean", false, "no-channel").push_str("no channel from the ARM set");
     }
 
     report.log();

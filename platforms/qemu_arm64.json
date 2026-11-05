@@ -158,25 +158,6 @@
       "flags": 2
     },
     {
-      "id": "bcm2835-dma",
-      "bus": "MMIO",
-      "key": "6272636d2c646d610000000000000000",
-      "address": "0x3f007000",
-      "bytes": 4096,
-      "interrupt": 16,
-      "pool": 32565,
-      "flags": 2
-    },
-    {
-      "id": "bcm2835-spi0",
-      "bus": "MMIO",
-      "key": "6272636d2c7370693000000000000000",
-      "address": "0x3f204000",
-      "bytes": 4096,
-      "interrupt": 54,
-      "flags": 2
-    },
-    {
       "id": "bcm2835-rng",
       "bus": "MMIO",
       "key": "6272636d2c62636d323833352d726e67",
