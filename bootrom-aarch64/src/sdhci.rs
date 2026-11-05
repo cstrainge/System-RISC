@@ -45,7 +45,11 @@ const ERROR_ALL: u16 = 0xFFFF;
 
 const PRESENT_COMMAND_INHIBIT: u32 = 1 << 0;
 const PRESENT_DAT_INHIBIT: u32 = 1 << 1;
-const PRESENT_BUFFER_READ: u32 = 1 << 9;
+/// A word is waiting in the buffer port. Bit 9 is "read transfer active", which
+/// is a different fact: a reader waiting on it finds nothing on silicon, while
+/// the emulated controller presents data and completes the transfer together so
+/// the mistake never shows there.
+const PRESENT_BUFFER_READ: u32 = 1 << 11;
 
 /// Clock Control layout: Internal Clock Enable bit 0, Internal Clock Stable
 /// bit 1, SD Clock Enable bit 2, PLL Enable bit 3, and the divider in bits 8-15
@@ -230,8 +234,12 @@ impl Disk
     }
 
     /// Issues one command and waits for command completion. `data` selects the
-    /// data-present path; the caller performs the transfer itself.
-    fn command(&mut self, index: u32, argument: u32, response: u16, data: bool)
+    /// data-present path; the caller performs the transfer itself. `crc` and
+    /// `index_check` are facts about the response type, not settings: R3 carries
+    /// neither field, so checking them makes the controller report an error the
+    /// card never made, and R2 carries a CRC but no command index.
+    fn command(&mut self, index: u32, argument: u32, response: u16, crc: bool, index_check: bool,
+               data: bool)
                -> Result<[u32; 4]>
     {
         self.wait_inhibit()?;
@@ -240,17 +248,24 @@ impl Disk
         let mut transfer = 0u16;
         if data
         {
-            // Read direction, one block, block count enabled.
-            transfer = (1 << 4) | (1 << 1) | (1 << 5);
+            // Read direction only. This reader issues single-block commands, so
+            // the multi-block bit stays clear: setting it tells the controller
+            // to expect further blocks and leaves the card mid-transfer once the
+            // one block has gone.
+            transfer = 1 << 4;
             self.write16(BLOCK_SIZE, SECTOR_BYTES as u16);
             self.write16(BLOCK_COUNT, 1);
         }
         self.write32(ARGUMENT, argument);
         // Command index occupies bits 8-13; the response type is bits 0-1.
         let mut flags = (index << 8) | u32::from(response);
-        if response != RESPONSE_NONE
+        if crc
         {
-            flags |= (1 << 3) | (1 << 4);
+            flags |= 1 << 3;
+        }
+        if index_check
+        {
+            flags |= 1 << 4;
         }
         if data
         {
@@ -282,14 +297,17 @@ impl Disk
         // GO_IDLE_STATE resets the card, so it must precede every other command;
         // the card ignores or rejects commands sent before it.
         *stage = 5;
-        self.command(CMD_GO_IDLE, 0, RESPONSE_NONE, false)?;
+        self.command(CMD_GO_IDLE, 0, RESPONSE_NONE, false, false, false)?;
         *stage = 6;
-        self.command(CMD_SEND_IF_COND, 0x1AA, RESPONSE_48, false)?;
+        self.command(CMD_SEND_IF_COND, 0x1AA, RESPONSE_48, true, true, false)?;
         let mut ready = false;
         for _ in 0..INITIALISE_POLLS
         {
-            self.command(CMD_APP_COMMAND, 0, RESPONSE_48, false)?;
-            let response = self.command(CMD_APP_SEND_OP_COND, 0x40FF_8000, RESPONSE_48, false)?;
+            self.command(CMD_APP_COMMAND, 0, RESPONSE_48, true, true, false)?;
+            // The operating-conditions reply carries neither a CRC nor a command
+            // index, so neither check applies to it.
+            let response =
+                self.command(CMD_APP_SEND_OP_COND, 0x40FF_8000, RESPONSE_48, false, false, false)?;
             if response[0] & 0x8000_0000 != 0
             {
                 self.high_capacity = response[0] & 0x4000_0000 != 0;
@@ -302,19 +320,21 @@ impl Disk
             *stage = 7;
             return Err(Error::Malformed("sdhci card did not finish initialising"));
         }
-        self.command(CMD_ALL_SEND_CID, 0, RESPONSE_136, false)?;
-        let relative = self.command(CMD_SEND_RELATIVE_ADDRESS, 0, RESPONSE_48, false)?;
+        // The identity reply is 136 bits with a CRC and no command index.
+        self.command(CMD_ALL_SEND_CID, 0, RESPONSE_136, true, false, false)?;
+        let relative = self.command(CMD_SEND_RELATIVE_ADDRESS, 0, RESPONSE_48, true, true, false)?;
         self.relative = (relative[0] >> 16) as u16;
         // The card description is readable in the stand-by state; asking for it
         // after SELECT_CARD times out on this controller.
-        let csd_response =
-            self.command(CMD_SEND_CSD, u32::from(self.relative) << 16, RESPONSE_136, false)?;
+        let csd_response = self.command(CMD_SEND_CSD, u32::from(self.relative) << 16, RESPONSE_136,
+                                        true, false, false)?;
         // SDHCI presents a 136-bit response most-significant word last, so the
         // card description reads from RESP3 down to RESP0. Taking RESP0 as the
         // high word yields a structure value no SD card uses.
         let csd = [csd_response[3], csd_response[2], csd_response[1], csd_response[0]];
-        self.command(CMD_SELECT_CARD, u32::from(self.relative) << 16, RESPONSE_48_BUSY, false)?;
-        self.command(CMD_SET_BLOCK_LENGTH, SECTOR_BYTES as u32, RESPONSE_48, false)?;
+        self.command(CMD_SELECT_CARD, u32::from(self.relative) << 16, RESPONSE_48_BUSY, true, true,
+                     false)?;
+        self.command(CMD_SET_BLOCK_LENGTH, SECTOR_BYTES as u32, RESPONSE_48, true, true, false)?;
         self.sectors = capacity_sectors(csd)?;
         Ok(())
     }
@@ -323,7 +343,7 @@ impl Disk
     fn transfer(&mut self, sector: u64) -> Result<[u8; SECTOR_BYTES]>
     {
         let argument = if self.high_capacity { sector as u32 } else { (sector * 512) as u32 };
-        self.command(CMD_READ_SINGLE_BLOCK, argument, RESPONSE_48, true)?;
+        self.command(CMD_READ_SINGLE_BLOCK, argument, RESPONSE_48, true, true, true)?;
         let mut bytes = [0u8; SECTOR_BYTES];
         let mut words = 0usize;
         for _ in 0..TRANSFER_POLLS
@@ -333,11 +353,19 @@ impl Disk
             {
                 return Err(Error::Malformed("sdhci read failed"));
             }
-            while words < SECTOR_BYTES / 4 && self.read32(PRESENT_STATE) & PRESENT_BUFFER_READ != 0
+            // Either signal means data has arrived: the buffer-read-ready
+            // interrupt, or the polled "a word is waiting" bit. The transfer's
+            // own activity state is not a readiness signal.
+            if status & INT_BUFFER_READ_READY != 0
+               || self.read32(PRESENT_STATE) & PRESENT_BUFFER_READ != 0
             {
-                let word = self.read32(BUFFER_DATA).to_le_bytes();
-                bytes[words * 4..words * 4 + 4].copy_from_slice(&word);
-                words += 1;
+                while words < SECTOR_BYTES / 4
+                      && self.read32(PRESENT_STATE) & PRESENT_BUFFER_READ != 0
+                {
+                    let word = self.read32(BUFFER_DATA).to_le_bytes();
+                    bytes[words * 4..words * 4 + 4].copy_from_slice(&word);
+                    words += 1;
+                }
             }
             if words == SECTOR_BYTES / 4
             {

@@ -27,6 +27,34 @@ design that would be cheaper now:
    platform that supports two models ends up supporting neither well. The
    mapping must be data so a new model is a new record.
 
+## The acceptance requirement
+
+One sentence states the whole contract, and it is what the class is accepted
+against:
+
+> An application addresses `GPIO 1` and gets the same physical pin on every
+> supported board. It never knows, and never needs to know, which pin the SoC
+> calls it.
+
+Two halves of that sentence are separately true and must not be conflated:
+
+* **Identity is portable.** The name an application uses is the board's, and the
+  board's record resolves it to whatever SoC pin that board uses for it. The
+  resolution happens in data, so the same application request reaches the right
+  physical pin on a board whose SoC numbers it differently.
+* **Capability is per-platform.** The same identity does not promise the same
+  availability or the same functions. A position may be absent on a board with a
+  smaller connector, reserved on a board where the board's own hardware uses it —
+  the identification EEPROM pins on the expansion header are the everyday example
+  — or present but with a different set of peripheral functions behind it.
+
+So the class must answer two questions per board, separately: *is this pin
+available here?* and *what can it do here?* A request naming a pin that the board
+does not offer is refused by name. It is never redirected to a different pin
+because a different board would have matched, and the pin is never driven anyway
+"to see if it works": either of those turns a portability promise into silent
+misbehaviour on the board where the assumption is false.
+
 ## Definitions
 
 * **Logical pin** — the board's stable identity for a pin: the thing a person can

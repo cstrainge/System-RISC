@@ -11,13 +11,39 @@ the wait.
 
 ## Which controller owns the card
 
-On this board the microSD slot is wired to **sdhost** (`0x3F202000`), and this
-controller — the Arasan EMMC/SDHCI block — carries the wireless SDIO interface.
-The distinction matters more than any register in it: a driver written against
-this block does not see the card on real silicon, however correct its register
-use is. This document specifies the controller because the platform's emulated
-machine offers no other one, and because the block is a legitimate device to
-drive for its real function. The inventory records the gap.
+On this board the card answers on **this** controller. A self-test binary ran on
+the physical board, brought the Arasan block up and read the card's partition
+table through it — a real card with real partitions, not the built image. Public
+descriptions of this SoC family attach the microSD slot of some models to the
+other SD controller (`sdhost` at `0x3F202000`) and this one to the wireless
+interface; that description does not hold here, and the board is the authority.
+
+The distinction still matters, and it is worth stating what it cost: an earlier
+reading of those descriptions concluded that this controller could not reach the
+card, and the boot payload's reader was left uncorrected on that basis. The
+defect was in our reader. The three rules below — the data-available bit, the
+per-response-type CRC decision, and the single-block transfer framing — are
+exactly the three that the board run exposed and that an emulated machine cannot
+contradict.
+
+## Rules the board run established
+
+The emulated machine presents data and completes a transfer together, so a reader
+that confuses "a transfer is in progress" with "a word is waiting" still returns
+the right bytes there. On silicon it returns none. The same is true of the CRC
+check on a response that has no CRC field: the emulated controller does not
+report the error the real one does.
+
+Three behaviours are therefore recorded as board-established rather than
+specification-derived:
+
+* the reader waits for present-state bit 11 (a word is waiting) or the
+  buffer-read-ready interrupt, and drains the port only while bit 11 is set;
+* the operating-conditions response during card identification is issued without
+  the CRC or index checks, while the identity and card-description responses are
+  issued with the CRC check and without the index check;
+* a single-block read is framed with the direction bit only — no multi-block bit
+  and no block-count enable — because the card otherwise expects further blocks.
 
 ## Where this contract comes from
 
@@ -239,8 +265,13 @@ Capacity from card-specific data:
 
 ## What this document does not establish
 
-Nothing here proves the controller works on the board. The data-available rule
-and the CRC-check rule are exactly the two that an emulated machine cannot
-contradict, so an implementation that follows this document is still unverified
-against silicon until it reads a card on one. Conversely, a run that succeeds in
-the emulated machine establishes only that the bytes arrived there.
+That the boot payload's reader now implements all of it on the board. The three
+board-established rules above were carried into the reader after the board run
+that exposed them, and the reader is verified in the emulated machine; a
+corrected reader is not the same claim as a reader observed reading a card on
+silicon. Everything else here — timings, card-detection, write support, error
+recovery — is unexercised on either.
+
+Conversely, a run that succeeds in the emulated machine establishes only that the
+bytes arrived there, which for this controller is exactly the class of result the
+board contradicted once already.
