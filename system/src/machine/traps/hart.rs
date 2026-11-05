@@ -647,6 +647,9 @@ unsafe extern "C" {
 }
 // The cold bootstrap call frame owns no lock/RAII resource needed by running
 // applications. Graphical startup never returns; headless startup restores it.
+// Each architecture saves the callee-saved set it must not disturb, swaps to the
+// supplied stack top, calls the entry and restores its own frame.
+#[cfg(target_arch = "riscv64")]
 global_asm!(
             r#"
 .global __system_boot_stack
@@ -683,6 +686,33 @@ ld s9,80(sp)
 ld s10,88(sp)
 ld s11,96(sp)
 addi sp,sp,112
+ret
+"#
+);
+
+#[cfg(target_arch = "aarch64")]
+global_asm!(
+            r#"
+.global __system_boot_stack
+__system_boot_stack:
+sub sp, sp, #112
+stp x29, x30, [sp, #0]
+stp x19, x20, [sp, #16]
+stp x21, x22, [sp, #32]
+stp x23, x24, [sp, #48]
+stp x25, x26, [sp, #64]
+stp x27, x28, [sp, #80]
+mov x29, sp
+mov sp, x2
+blr x1
+mov sp, x29
+ldp x29, x30, [sp, #0]
+ldp x19, x20, [sp, #16]
+ldp x21, x22, [sp, #32]
+ldp x23, x24, [sp, #48]
+ldp x25, x26, [sp, #64]
+ldp x27, x28, [sp, #80]
+add sp, sp, #112
 ret
 "#
 );

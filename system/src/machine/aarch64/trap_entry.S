@@ -100,6 +100,10 @@ __system_trap_common:
     bl __system_trap_dispatch
 
     // Restore the integer state and return to the interrupted context.
+    // Reached by fall-through from dispatch and by `__system_start_frame`, which
+    // supplies a freshly built frame rather than an interrupted one.
+    .global __system_restore_frame
+__system_restore_frame:
     mov x2, x0
     ldr x4, [x2, #{pc}]
     msr elr_el1, x4
@@ -128,3 +132,22 @@ __system_trap_no_control:
     msr daifset, #2
 2:  wfi
     b 2b
+
+// Enter a freshly built frame rather than returning to an interrupted context.
+// The frame carries the stack pointer the new context must run on, so unlike an
+// exception return this path has to install it explicitly before eret.
+    .global __system_start_frame
+__system_start_frame:
+    ldr x4, [x0, #{saved_sp}]
+    mov sp, x4
+    b __system_restore_frame
+
+// Request a trap from an ordinary call frame: (number, argument, length) in
+// x0/x1/x2 becomes the x8/x0/x1 convention the exception entry expects.
+    .global __system_trap_gateway
+__system_trap_gateway:
+    mov x8, x0
+    mov x0, x1
+    mov x1, x2
+    svc #0
+    ret
