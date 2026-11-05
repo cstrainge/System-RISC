@@ -1019,3 +1019,47 @@ Remaining
 File Manager merged enumeration/lookup/path/synthetic ids/mutation refusals,
 System Folder/Pipes creation and boot ensure, Finder open-as-connect, icon
 families -30002/-30003 with the allowlist extension.
+
+Pipes: Terminal/CLAP model reverted to Terminal-as-creator
+==========================================================
+[Pipes / facilities agent] 2026-11-05
+
+Section 10.1 of docs/PIPES.md is corrected after review. The previous revision
+inverted the specified design and could not work.
+
+Restored model
+--------------
+Finder binds the CLAP type to Terminal. Terminal creates the three pipes and
+keeps one end of each; it asks the process API to execute the file, naming the
+other ends. The execute chain gives an extension first pass on the file; seeing
+CLAP, the extension attaches the named endpoints and calls the base handler. If
+no handler claims a CLAP, the execute call fails and Terminal receives the error
+through the ordinary return code. Terminal does not look the extension up and
+does not ask it for anything.
+
+Anonymous create is therefore a load-bearing application operation again; the
+earlier withdrawal is itself withdrawn. The reason is recorded in the spec so it
+is not proposed again: an extension that created the pipes would have to hand one
+end to Terminal, and a handle belongs to the process it was issued to, so either a
+general handle-transfer facility would have to be invented or the architecture
+would not work. With Terminal as creator nothing crosses: Terminal creates both
+ends, keeps one and offers the other in the child's launch record.
+
+Gap list reduced to the two that are real
+-----------------------------------------
+1. The execute request has no field for pipe endpoints, so Terminal cannot name
+   the ends and the execute chain cannot say which the child receives.
+2. The child has no per-application attachment record for its standard streams,
+   so the standard-library profile cannot bind real streams.
+
+The process-ownership fact stays as context, not as a third gap: handles are
+process-owned and there is no general transfer/adoption facility. The execute
+request must therefore define that the endpoints it names pass to the child at
+commit and are invalid in Terminal afterwards. That rule belongs to the launch
+record, not to a new kernel transfer mechanism.
+
+Named create/connect remain application operations; NeoPixel's dependency is
+unchanged.
+
+Evidence: documentation only. The code is identical to the 18-of-18 boot-check tip
+verified immediately before this edit; the gate was not rerun for a prose change.
