@@ -1,6 +1,6 @@
 //! Independent progress-bar geometry and bounded change damage.
-#![cfg_attr(target_arch = "riscv64", no_std)]
-#![cfg_attr(target_arch = "riscv64", no_main)]
+#![cfg_attr(systemrisc, no_std)]
+#![cfg_attr(systemrisc, no_main)]
 #![deny(unsafe_code)]
 use mac_definition::{Error, Message, Part, Progress, ProgressStyle, Rect, Reply, Result, Services,
                      SurfacePort};

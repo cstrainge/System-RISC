@@ -1,7 +1,7 @@
 //! Standard native menu definition. Drawing, sizing and hit geometry stay in
 //! this independently loaded resource; System owns state and event routing.
-#![cfg_attr(target_arch = "riscv64", no_std)]
-#![cfg_attr(target_arch = "riscv64", no_main)]
+#![cfg_attr(systemrisc, no_std)]
+#![cfg_attr(systemrisc, no_main)]
 use mac_abi::{geometry::{Point, Rect},
               menus::*,
               *};

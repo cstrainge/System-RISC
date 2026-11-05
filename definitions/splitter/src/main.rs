@@ -1,6 +1,6 @@
 //! A divider owns its pixels and drag geometry. Its parent applies the result.
-#![cfg_attr(target_arch = "riscv64", no_std)]
-#![cfg_attr(target_arch = "riscv64", no_main)]
+#![cfg_attr(systemrisc, no_std)]
+#![cfg_attr(systemrisc, no_main)]
 #![deny(unsafe_code)]
 use mac_definition::{Error, Message, Part, Rect, Reply, Result, Services, Splitter, cdef_main};
 #[cdef_main]

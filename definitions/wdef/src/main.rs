@@ -3,8 +3,8 @@
 //! Messages and hit results follow the classic WDEF protocol. Geometry is based
 //! on installed System 7.6.1 WDEF 0. Chicago 12 and the measured reference-device
 //! palette reproduce all retained original-Mac color reference captures exactly.
-#![cfg_attr(target_arch = "riscv64", no_std)]
-#![cfg_attr(target_arch = "riscv64", no_main)]
+#![cfg_attr(systemrisc, no_std)]
+#![cfg_attr(systemrisc, no_main)]
 pub use mac_abi::definitions::*;
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, DefinitionCall, NOT_SUPPORTED};
 use toolbox_quickdraw::{Point, Rect, SurfacePort as Canvas, WHITE, font::CHICAGO_12};

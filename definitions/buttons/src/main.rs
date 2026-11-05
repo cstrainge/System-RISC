@@ -1,6 +1,6 @@
 //! Control definitions. Full Control Manager ownership/tracking follows later.
-#![cfg_attr(target_arch = "riscv64", no_std)]
-#![cfg_attr(target_arch = "riscv64", no_main)]
+#![cfg_attr(systemrisc, no_std)]
+#![cfg_attr(systemrisc, no_main)]
 #![deny(unsafe_code)]
 use mac_definition::{Button, ButtonKind, CaptionMode, Error, Highlight, Message, Part, Reply,
                      Result, Services};
