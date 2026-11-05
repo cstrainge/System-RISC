@@ -1,0 +1,15 @@
+[package]
+name = "mac-sdhci"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["block-device"]
+# The checked `BlockDevice` face needs `mac-block`, which is not allocation
+# free. A caller that only reads a block, such as the hardware self-test, turns
+# this off and keeps the reader without an allocator.
+block-device = ["dep:mac-block"]
+
+[dependencies]
+mac-block = { workspace = true, optional = true }
