@@ -206,9 +206,17 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
 }
 
 /// `timeout` overrides the platform's startup budget for a case whose own
-/// image is deliberately abnormal — a rewritten multi-megabyte fork reads more
-/// slowly than an ordinary boot, and that slowness is the fixture's, not the
-/// System's.
+/// image is deliberately abnormal.
+///
+/// `system-resource-fork-over-4mib` rewrites a multi-megabyte fork into a
+/// cloned volume, and that layout reads far more slowly than an ordinary boot:
+/// measured on 2026-11-05 with QEMU 11.1.0, 4 harts and 2 GB on this Windows
+/// host, the case reached `DESKTOP_READY:` in 48.0 s, 51.8 s and 52.9 s across
+/// three runs, against 17.1 s for the ordinary image. The platform's 60 s
+/// readiness budget therefore left 7-12 s of margin, which flakes under load —
+/// an earlier run of the same tree did time out at 60 s. That earlier timeout
+/// was this budget gap, not an intermittent fault, and the 180 s budget here is
+/// the fix; the ordinary cases keep the platform's 60 s.
 fn case_within(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf],
                expected: &[&str], boots: bool, timeout: Option<std::time::Duration>)
                -> Result<Value>
