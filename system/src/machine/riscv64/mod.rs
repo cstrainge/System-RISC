@@ -11,6 +11,7 @@ pub(crate) fn hart_id() -> usize
 pub(crate) mod clock;
 pub(crate) mod cpu;
 pub(crate) mod mmu;
+pub(crate) mod page_layout;
 
 
 pub(crate) mod interrupts;
