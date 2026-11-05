@@ -156,7 +156,13 @@ pub struct DirectoryScanCursor
     pub index:     u32,
     pub traversed: u32,
     pub state:     u32,
-    pub reserved:  u32
+    /// Revision of the resident pipe registry for a scan of the Pipes folder,
+    /// zero for every ordinary directory. A registration or destruction while
+    /// the enumeration is open makes the continuation stale.
+    pub reserved:  u32,
+    /// Row offset into the pipe registry once the catalog portion of the Pipes
+    /// folder is exhausted. Zero until then, and unused elsewhere.
+    pub registry:  u32
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]

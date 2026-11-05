@@ -740,6 +740,7 @@ dependencies = [
  "toolbox-inspection",
  "toolbox-memory",
  "toolbox-menus",
+ "toolbox-pipes",
  "toolbox-power",
  "toolbox-processes",
  "toolbox-quickdraw",
@@ -1344,6 +1345,14 @@ dependencies = [
  "mac-abi",
  "mac-traps",
  "toolbox-events",
+]
+
+[[package]]
+name = "toolbox-pipes"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
 ]
 
 [[package]]

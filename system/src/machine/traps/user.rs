@@ -961,6 +961,21 @@ impl Call
             {
                 span!(abi::entropy::Call, output, capacity, u8, true);
             }
+            PIPES =>
+            {
+                let call = unsafe { &*self.owned_mut(0)?.pointer().cast::<abi::pipes::Call>() };
+                if call.length > isize::MAX as usize
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                // READ writes into the caller's buffer; WRITE only reads it.
+                let writable = call.operation == abi::pipes::READ;
+                self.point(0,
+                           offset_of!(abi::pipes::Call, buffer),
+                           call.length,
+                           align_of::<u8>(),
+                           writable)?;
+            }
             NATIVE_THREAD =>
             {
                 span!(abi::native_threads::Call, name, name_length, u8, false);
@@ -1218,6 +1233,7 @@ fn layout(number: u32, bytes: usize) -> Result<Layout, Status>
         APPLICATION_HEAP => select!(abi::application_heap::Call),
         NATIVE_THREAD => select!(abi::native_threads::Call),
         ADDRESS_WAIT => select!(abi::address_wait::Call),
+        PIPES => select!(abi::pipes::Call),
         TLS => select!(abi::tls::Call),
         ENTROPY => select!(abi::entropy::Call),
         POWER => select!(abi::power::PowerCall),

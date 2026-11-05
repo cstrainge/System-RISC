@@ -20,6 +20,7 @@ mod subject;
 pub(crate) mod pins;
 pub(crate) mod forks;
 mod scan;
+mod pipes;
 mod properties;
 pub(crate) mod watch;
 mod cache;
@@ -486,6 +487,11 @@ pub struct Manager
     #[cfg(target_arch = "riscv64")]
     transfers:            objects::Objects<provider::runtime::transfer::Entry>,
     watches:              watch::Watches,
+    /// `(volume, cnid)` of the volume's `Pipes` folder, when one exists. The
+    /// folder is a real directory; only its contents come from the resident
+    /// pipe registry.
+    #[cfg(target_arch = "riscv64")]
+    pipes_folder:         Option<(u32, u32)>,
     pub rejected_volumes: u32
 }
 impl Default for Manager
@@ -516,6 +522,8 @@ impl Default for Manager
                    objects::Objects::new(),
                watches:
                    watch::Watches::new(),
+               #[cfg(target_arch = "riscv64")]
+               pipes_folder:                                                              None,
                rejected_volumes:                                                          0,
                #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
                file_icons:
@@ -817,7 +825,13 @@ impl Manager
             let info = match storage.info(index)
             {
                 Ok(info) => info,
-                Err(NOT_FOUND) => return Ok(result),
+                Err(NOT_FOUND) =>
+                {
+                    // Every volume is mounted; resolve the folder once here so
+                    // no later scan has to discover it.
+                    result.pipes_folder = result.pipes_discover();
+                    return Ok(result);
+                }
                 Err(status) => return Err(status)
             };
             if index == MAX_DISKS
@@ -958,12 +972,28 @@ impl Manager
         self.with_volume(volume, |v| required(io(v.entry(if id == 0 { ROOT_ID } else { id }))?))
     }
 
+    /// Catalog object for a CNID, including a registry item when this volume's
+    /// Pipes folder owns the identity. Only read-only callers use this: a
+    /// mutation on a virtual identity is refused before it reaches a volume.
+    fn catalog_entry(&mut self, volume: u32, cnid: u32) -> Result<CatalogEntry, Status>
+    {
+        if let Some(entry) = self.pipes_entry(volume, cnid)
+        {
+            return Ok(entry);
+        }
+        self.entry(volume, cnid)
+    }
+
     fn lookup(&mut self, volume: u32, start: u32, path: &str) -> Result<CatalogEntry, Status>
     {
         if path.len() > MAX_PATH || path.contains('\0')
         {
             return Err(BAD_ARGUMENT);
         }
+        // The Pipes folder has virtual children that no catalog lookup can
+        // reach, so a component left unresolved by the catalog consults the
+        // registry. The identity is captured before the volume borrow below.
+        let pipes = self.pipes_folder().filter(|(owner, _)| *owner == volume).map(|(_, cnid)| cnid);
         self.with_volume(volume, |v| {
                 let mut entry = required(io(v.entry(if path.starts_with('/') || start == 0
                                                     {
@@ -993,7 +1023,19 @@ impl Manager
                         continue;
                     }
                     let name = component.as_bytes();
-                    entry = required(io(v.lookup(entry.id, name))?)?;
+                    entry = match io(v.lookup(entry.id, name))?
+                    {
+                        Some(found) => found,
+                        None =>
+                        {
+                            let folder = pipes.filter(|folder| *folder == entry.id);
+                            match folder.and_then(|folder| pipes::virtual_entry(folder, name))
+                            {
+                                Some(found) => found,
+                                None => return Err(NOT_FOUND)
+                            }
+                        }
+                    };
                 }
                 if path.ends_with('/') && !entry.directory
                 {
@@ -1608,7 +1650,29 @@ impl Manager
                 self.validate_transfer_mutation(owner, call.volume)?;
                 self.validate_provider_mutation(call.volume)?;
             }
-            return self.mutation(call, name, output);
+            // The Pipes folder has no catalog object for its contents, so every
+            // mutation inside it, and every mutation of a virtual identity, is
+            // refused before any volume or registry state is touched.
+            if self.pipes_refuses(call)
+            {
+                return Err(NOT_SUPPORTED);
+            }
+            let result = self.mutation(call, name, output);
+            if result.is_ok()
+            {
+                if call.operation == NEW_FOLDER
+                {
+                    self.pipes_note(call, name);
+                }
+                else if matches!(call.operation, REMOVE | RENAME | MOVE_INTO)
+                {
+                    // Trash and put-away for a block volume are routed through
+                    // the transfer bridge, which re-resolves the identity on
+                    // its own commit path.
+                    self.pipes_refresh(call.volume, call.cnid);
+                }
+            }
+            return result;
         }
         match call.operation
         {
@@ -1630,7 +1694,7 @@ impl Manager
                 call.volume_info =
                     self.volumes.get(call.volume).and_then(Mounted::info).ok_or(NOT_FOUND)?
             }
-            CATALOG => call.entry = metadata(call.volume, &self.entry(call.volume, call.cnid)?),
+            CATALOG => call.entry = metadata(call.volume, &self.catalog_entry(call.volume, call.cnid)?),
             ALLOCATION_INFO =>
             {
                 let (data, resource) = self.with_volume(call.volume, |volume| {
@@ -1656,7 +1720,7 @@ impl Manager
             }
             PARENT =>
             {
-                let entry = self.entry(call.volume, call.cnid)?;
+                let entry = self.catalog_entry(call.volume, call.cnid)?;
                 call.entry = metadata(call.volume,
                                       &self.entry(call.volume,
                                                   if entry.id == ROOT_ID
