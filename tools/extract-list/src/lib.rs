@@ -19,7 +19,10 @@ use mac_build::{Manifest, Result, error, manifest::Payload};
 use mac_formats::resource::Resource;
 use serde::Serialize;
 
+use crate::usage::Usage;
+
 pub mod iso;
+pub mod usage;
 
 /// One extract-list entry: what the extractor takes, and the classic form it
 /// must land in. Metadata only — no payload bytes, so the list is safe to
@@ -213,6 +216,9 @@ pub fn read_package(source: &str, path: &Path) -> Result<Package>
 pub struct IsoResource
 {
     pub source:   String,
+    /// Read for comparison evidence only: an unapproved source can show that a
+    /// resource exists on the disc, but nothing is extracted from it.
+    pub held:     bool,
     pub resource: Resource
 }
 
@@ -232,6 +238,9 @@ pub enum Verdict
     /// Several disc files carry this `(type, id)` and none is byte-identical.
     /// Keeping ours is the only safe answer; the report names the candidates.
     Ambiguous,
+    /// Matches a source that is not approved for extraction: identical bytes,
+    /// but taken from a file this phase does not accept.
+    Held,
     /// Our own native code. Never compared, never extracted.
     NativeCode
 }
@@ -246,6 +255,7 @@ impl Verdict
             Self::Customised { .. } => "customised",
             Self::OursOnly => "ours-only",
             Self::Ambiguous => "ambiguous",
+            Self::Held => "held",
             Self::NativeCode => "native-code"
         }
     }
@@ -317,6 +327,13 @@ pub struct Report
 /// same `(type, id)` numbers in each file. So the lookup spans every source and
 /// prefers a byte-identical match; when several files carry the id and none is
 /// identical, the answer is `ambiguous` rather than a guess.
+fn identical(ours: &OursResource, candidate: &IsoResource) -> bool
+{
+    candidate.resource.data.as_slice() == ours.classic.as_deref().unwrap_or_default()
+    && candidate.resource.name.as_deref() == ours.name.as_deref()
+    && candidate.resource.attributes == ours.attributes
+}
+
 pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
 {
     let mut lookup: BTreeMap<(&str, i16), Vec<&IsoResource>> = BTreeMap::new();
@@ -343,39 +360,43 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
             }
             else
             {
-                match candidates.map(Vec::as_slice)
+                let all = candidates.map(Vec::as_slice).unwrap_or_default();
+                let approved: Vec<&IsoResource> =
+                    all.iter().copied().filter(|candidate| !candidate.held).collect();
+
+                if approved.is_empty()
                 {
-                    None | Some([]) => Verdict::OursOnly,
-                    Some(candidates) =>
+                    if let Some(held) =
+                        all.iter().copied().find(|candidate| identical(ours, candidate))
                     {
-                        if let Some(identical) =
-                            candidates.iter().find(|candidate| {
-                                                 candidate.resource.data.as_slice()
-                                                 == ours.classic.as_deref().unwrap_or_default()
-                                                 && candidate.resource.name.as_deref()
-                                                    == ours.name.as_deref()
-                                                 && candidate.resource.attributes == ours.attributes
-                                             })
-                        {
-                            iso_source = Some(identical.source.clone());
-                            Verdict::Extract
-                        }
-                        else if candidates.len() == 1
-                        {
-                            let iso = &candidates[0].resource;
-                            iso_source = Some(candidates[0].source.clone());
-                            let payload = ours.classic.as_deref() != Some(iso.data.as_slice());
-                            let name = ours.name.as_deref() != iso.name.as_deref();
-                            let attributes = ours.attributes != iso.attributes;
-                            Verdict::Customised { payload,
-                                                  name,
-                                                  attributes }
-                        }
-                        else
-                        {
-                            Verdict::Ambiguous
-                        }
+                        iso_source = Some(held.source.clone());
+                        Verdict::Held
                     }
+                    else
+                    {
+                        Verdict::OursOnly
+                    }
+                }
+                else if let Some(identical) =
+                    approved.iter().copied().find(|candidate| identical(ours, candidate))
+                {
+                    iso_source = Some(identical.source.clone());
+                    Verdict::Extract
+                }
+                else if approved.len() == 1
+                {
+                    let iso = &approved[0].resource;
+                    iso_source = Some(approved[0].source.clone());
+                    let payload = ours.classic.as_deref() != Some(iso.data.as_slice());
+                    let name = ours.name.as_deref() != iso.name.as_deref();
+                    let attributes = ours.attributes != iso.attributes;
+                    Verdict::Customised { payload,
+                                          name,
+                                          attributes }
+                }
+                else
+                {
+                    Verdict::Ambiguous
                 }
             };
             classifications.push(Classification { source: ours.source.clone(),
@@ -447,7 +468,7 @@ fn kind_str(kind: &[u8; 4]) -> &str
 /// The human report beside the extract list: what we take, what we keep and
 /// why, counted overall and per type. Sorted, so two runs read the same.
 pub fn human_report(description: &str, iso: &str, sources: &[String], package: &Package,
-                    report: &Report)
+                    report: &Report, usage: &Usage)
                     -> String
 {
     use std::fmt::Write as _;
@@ -463,34 +484,44 @@ pub fn human_report(description: &str, iso: &str, sources: &[String], package: &
     let customised = count(report, |verdict| matches!(verdict, Verdict::Customised { .. }));
     let ours_only = count(report, |verdict| verdict == Verdict::OursOnly);
     let ambiguous = count(report, |verdict| verdict == Verdict::Ambiguous);
+    let held = count(report, |verdict| verdict == Verdict::Held);
     let native = count(report, |verdict| verdict == Verdict::NativeCode);
     let _ = writeln!(text,
                      "ours: {} resources — extract {extract}, keep ours {customised} customised, \
-                      {ours_only} ours-only, {ambiguous} ambiguous, {native} native-code",
+                      {ours_only} ours-only, {ambiguous} ambiguous, {held} held, {native} \
+                      native-code",
                      package.resources.len() + package.unresolvable.len());
     let _ = writeln!(text,
                      "disc: {} resources, {} whose (type, id) we do not name",
                      report.disc, report.ignored);
     let _ = writeln!(text, "\nby type");
     let _ = writeln!(text,
-                     "  {:<5} {:>5} {:>8} {:>11} {:>10} {:>10} {:>7}",
-                     "type", "ours", "extract", "customised", "ours-only", "ambiguous", "native");
+                     "  {:<5} {:>5} {:>8} {:>11} {:>10} {:>10} {:>6} {:>7}",
+                     "type",
+                     "ours",
+                     "extract",
+                     "customised",
+                     "ours-only",
+                     "ambiguous",
+                     "held",
+                     "native");
     for (kind, row) in types(report)
     {
         let _ = writeln!(text,
-                         "  {:<5} {:>5} {:>8} {:>11} {:>10} {:>10} {:>7}",
+                         "  {:<5} {:>5} {:>8} {:>11} {:>10} {:>10} {:>6} {:>7}",
                          kind,
                          row.ours,
                          row.extract,
                          row.customised,
                          row.ours_only,
                          row.ambiguous,
+                         row.held,
                          row.native);
     }
     let _ = writeln!(text, "\nkeep ours");
     for entry in &report.classifications
     {
-        if entry.verdict == Verdict::Extract || entry.verdict == Verdict::NativeCode
+        if matches!(entry.verdict, Verdict::Extract | Verdict::NativeCode | Verdict::Held)
         {
             continue;
         }
@@ -503,8 +534,234 @@ pub fn human_report(description: &str, iso: &str, sources: &[String], package: &
                          entry.name.as_deref().map_or_else(String::new, mac_formats::text::decode),
                          entry.symbol);
     }
+    let _ = writeln!(text, "\nheld out of the list");
+    let mut any_held = false;
+    for entry in &report.classifications
+    {
+        if entry.verdict != Verdict::Held
+        {
+            continue;
+        }
+        any_held = true;
+        let _ = writeln!(text,
+                         "  {:<5} {:>7}  {:<28} {}  (identical to {})",
+                         entry.kind,
+                         entry.id,
+                         entry.name.as_deref().map_or_else(String::new, mac_formats::text::decode),
+                         entry.symbol,
+                         entry.iso_source.as_deref().unwrap_or("an unapproved source"));
+    }
+    if !any_held
+    {
+        let _ = writeln!(text, "  none");
+    }
+    let _ = writeln!(text, "\nambiguous — kept as ours, not extracted");
+    let mut any_ambiguous = false;
+    for entry in &report.classifications
+    {
+        if entry.verdict != Verdict::Ambiguous
+        {
+            continue;
+        }
+        any_ambiguous = true;
+        let _ = writeln!(text,
+                         "  {:<5} {:>7}  {:<28} {}",
+                         entry.kind,
+                         entry.id,
+                         entry.name.as_deref().map_or_else(String::new, mac_formats::text::decode),
+                         entry.symbol);
+    }
+    if !any_ambiguous
+    {
+        let _ = writeln!(text, "  none");
+    }
+    else
+    {
+        let _ = writeln!(text,
+                         "  reason: more than one disc file carries this (type, id) and none is \
+                          byte-identical, so the tool cannot say which file the resource came \
+                          from. They stay ours until a ruling; the usage section below says \
+                          whether anything names them.");
+    }
+    write_usage(&mut text, report, usage, package);
     text
 }
+
+/// Resources that another resource of ours points at: an ALRT names its DITL,
+/// and our standard-file dialogs read the DITL with the DLOG's own id. Neither
+/// is a code reference, but deleting one would break the other.
+fn reachable(package: &Package, report: &Report) -> BTreeMap<(String, i16), String>
+{
+    let payload = |kind: &str, id: i16| {
+        package.resources
+               .iter()
+               .find(|resource| resource.kind == kind && resource.id == id)
+               .and_then(|resource| resource.classic.as_deref())
+    };
+    let mut reachable = BTreeMap::new();
+    for entry in report.classifications.iter().filter(|entry| entry.verdict == Verdict::Extract)
+    {
+        match entry.kind.as_str()
+        {
+            "ALRT" =>
+            {
+                if let Some(data) = payload("ALRT", entry.id)
+                   && data.len() >= 10
+                {
+                    let items = i16::from_be_bytes([data[8], data[9]]);
+                    reachable.entry(("DITL".to_string(), items))
+                             .or_insert_with(|| format!("named by ALRT {}", entry.id));
+                }
+            }
+            "DLOG" =>
+            {
+                reachable.entry(("DITL".to_string(), entry.id))
+                         .or_insert_with(|| format!("read with DLOG {}", entry.id));
+            }
+            _ =>
+            {}
+        }
+    }
+    reachable
+}
+
+/// The four dispositions of an extracted resource, for the report and the
+/// console summary alike.
+pub struct UsageCounts
+{
+    pub extracted:     usize,
+    pub named:         usize,
+    pub reachable:     usize,
+    pub unproven:      usize,
+    pub unmatched:     usize,
+    pub tests:         usize,
+    pub reachable_why: BTreeMap<(String, i16), String>
+}
+
+pub fn usage_counts(report: &Report, usage: &Usage, package: &Package) -> UsageCounts
+{
+    let reachable = reachable(package, report);
+    let extracted = usage_extracted(report);
+    let named = |entry: &Classification| !usage.of(&entry.kind, entry.id).is_empty();
+    let implied = |entry: &Classification| reachable.contains_key(&(entry.kind.clone(), entry.id));
+    let unproven = |entry: &Classification| {
+        !named(entry) && !implied(entry) && usage.dynamic_types.contains(&entry.kind)
+    };
+    let named_count = extracted.iter().filter(|entry| named(entry)).count();
+    let implied_count = extracted.iter().filter(|entry| !named(entry) && implied(entry)).count();
+    let unproven_count = extracted.iter().filter(|entry| unproven(entry)).count();
+    let tests = extracted.iter()
+                         .filter(|entry| {
+                             let hits = usage.of(&entry.kind, entry.id);
+                             !hits.is_empty() && hits.iter().all(|hit| hit.test)
+                         })
+                         .count();
+    UsageCounts { extracted: extracted.len(),
+                  named: named_count,
+                  reachable: implied_count,
+                  unproven: unproven_count,
+                  unmatched: extracted.len() - named_count - implied_count - unproven_count,
+                  tests,
+                  reachable_why: reachable }
+}
+
+fn usage_extracted(report: &Report) -> Vec<&Classification>
+{
+    report.classifications.iter().filter(|entry| entry.verdict == Verdict::Extract).collect()
+}
+
+fn write_usage(text: &mut String, report: &Report, usage: &Usage, package: &Package)
+{
+    use std::fmt::Write as _;
+    let counts = usage_counts(report, usage, package);
+    let reachable = counts.reachable_why.clone();
+    let extracted = usage_extracted(report);
+    let named = |entry: &Classification| !usage.of(&entry.kind, entry.id).is_empty();
+    let implied = |entry: &Classification| reachable.contains_key(&(entry.kind.clone(), entry.id));
+    let unproven = |entry: &Classification| {
+        !named(entry) && !implied(entry) && usage.dynamic_types.contains(&entry.kind)
+    };
+    let _ = writeln!(text, "\nusage — static scan of {} Rust source files", usage.files);
+    let _ = writeln!(text, "  extracted {}", counts.extracted);
+    let _ = writeln!(text, "    referenced by name, literal or symbol    {}", counts.named);
+    let _ = writeln!(text, "    reachable from another extracted resource {}", counts.reachable);
+    let _ = writeln!(text,
+                     "    cannot be ruled out (type looked up with a computed id) {}",
+                     counts.unproven);
+    let _ = writeln!(text, "    no reference found at all                 {}", counts.unmatched);
+    let _ = writeln!(text, "  of the referenced, {} are named only by test code", counts.tests);
+    let ambiguous = report.classifications
+                          .iter()
+                          .filter(|entry| entry.verdict == Verdict::Ambiguous)
+                          .collect::<Vec<_>>();
+    let _ = writeln!(text,
+                     "  ambiguous {} — referenced {}, no reference found {}",
+                     ambiguous.len(),
+                     ambiguous.iter().filter(|entry| named(entry)).count(),
+                     ambiguous.iter().filter(|entry| !named(entry)).count());
+    let _ = writeln!(text,
+                     "  how: a resources.json symbol, a (type, id) literal in the same \
+                      expression (or, where the id is computed, an id literal in the same file), \
+                      or a quoted resource name, anywhere in the repository's Rust sources. \
+                      Tests are included and counted separately.");
+    let _ = writeln!(text,
+                     "  not searchable this way: ids computed at runtime, ids read from data or \
+                      from another resource, names built at runtime, classic software asking for \
+                      a resource by number, and anything outside this repository. A type that is \
+                      ever looked up with a computed id is therefore reported as 'cannot be \
+                      ruled out', never as unused. 'No reference found' is not proof of disuse \
+                      and must not be treated as one.");
+    let _ = writeln!(text, "\n  sample references");
+    let mut shown = 0;
+    for entry in extracted.iter().filter(|entry| named(entry))
+    {
+        if shown == 12
+        {
+            break;
+        }
+        shown += 1;
+        let hits = usage.of(&entry.kind, entry.id);
+        let hit = hits.iter().find(|hit| !hit.test).unwrap_or(&hits[0]);
+        let _ = writeln!(text,
+                         "    {:<5} {:>7}  {:<28} {}:{}  ({})",
+                         entry.kind, entry.id, entry.symbol, hit.path, hit.line, hit.how);
+    }
+    let _ = writeln!(text, "\n  reachable from another extracted resource");
+    for entry in extracted.iter().filter(|entry| !named(entry) && implied(entry)).take(8)
+    {
+        let why = &reachable[&(entry.kind.clone(), entry.id)];
+        let _ =
+            writeln!(text, "    {:<5} {:>7}  {:<28} {}", entry.kind, entry.id, entry.symbol, why);
+    }
+    let _ = writeln!(text, "\n  no reference found at all (review, do not delete on this alone)");
+    let mut listed = 0;
+    for entry in
+        extracted.iter().filter(|entry| !named(entry) && !implied(entry) && !unproven(entry))
+    {
+        listed += 1;
+        let _ = writeln!(text,
+                         "    {:<5} {:>7}  {:<28} {}",
+                         entry.kind,
+                         entry.id,
+                         entry.name.as_deref().map_or_else(String::new, mac_formats::text::decode),
+                         entry.symbol);
+    }
+    if listed == 0
+    {
+        let _ = writeln!(text, "    none");
+    }
+    let _ = writeln!(text, "\n  cannot be ruled out, by type (count of extracted resources)");
+    let mut by_type: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in extracted.iter().filter(|entry| unproven(entry))
+    {
+        *by_type.entry(entry.kind.as_str()).or_default() += 1;
+    }
+    for (kind, count) in by_type
+    {
+        let _ = writeln!(text, "    {:<5} {count}", kind);
+    }
+}
+
 
 fn count(report: &Report, predicate: impl Fn(Verdict) -> bool) -> usize
 {
@@ -518,6 +775,7 @@ struct TypeCount
     customised: usize,
     ours_only:  usize,
     ambiguous:  usize,
+    held:       usize,
     native:     usize
 }
 
@@ -531,6 +789,7 @@ fn types(report: &Report) -> BTreeMap<String, TypeCount>
                                                                        customised: 0,
                                                                        ours_only:  0,
                                                                        ambiguous:  0,
+                                                                       held:       0,
                                                                        native:     0 });
         row.ours += 1;
         match entry.verdict
@@ -539,6 +798,7 @@ fn types(report: &Report) -> BTreeMap<String, TypeCount>
             Verdict::Customised { .. } => row.customised += 1,
             Verdict::OursOnly => row.ours_only += 1,
             Verdict::Ambiguous => row.ambiguous += 1,
+            Verdict::Held => row.held += 1,
             Verdict::NativeCode => row.native += 1
         }
     }
@@ -562,6 +822,7 @@ pub fn read_fork(source: &str, path: &Path) -> Result<Vec<IsoResource>>
     Ok(resources.into_iter()
                 .map(|resource| {
                     IsoResource { source: source.to_string(),
+                                  held: false,
                                   resource }
                 })
                 .collect())
@@ -616,6 +877,7 @@ edition = "2024"
            -> IsoResource
     {
         IsoResource { source:   source.to_string(),
+                      held:     false,
                       resource: Resource { kind: *kind,
                                            id,
                                            name: name.map(<[u8]>::to_vec),
@@ -780,6 +1042,68 @@ edition = "2024"
         assert_eq!(list.sources[0].resources.len(), 1);
         assert_eq!(list.sources[0].resources[0].id, 128);
         assert_eq!(list.sources[0].resources[0].form, "hex");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_held_source_is_evidence_but_never_extracted()
+    {
+        let (root, package) = read(
+                                   r#"[
+            {"type":"ICON","id":128,"symbol":"ONLY_IN_UPDATE","payload":{"format":"hex","hex":"0102"}}
+        ]"#
+        );
+        let mut held = iso("update", b"ICON", 128, None, 0, vec![1, 2]);
+        held.held = true;
+        let report = classify(&[package], &[held]);
+        assert_eq!(report.classifications[0].verdict, Verdict::Held);
+        assert_eq!(report.classifications[0].iso_source.as_deref(),
+                   Some("update"),
+                   "the report says which unapproved file it matched");
+        let list = extract_list("fixture disc", "fixture.iso", &report, &["update".to_string()]);
+        assert!(list.sources.is_empty(), "a held match never reaches the list");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_usage_scan_finds_symbols_literals_and_names()
+    {
+        let root = std::env::temp_dir().join(format!("extract-list-usage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/tests")).unwrap();
+        fs::write(root.join("src/code.rs"),
+                  "let about = RESOURCE_KEY_ABOUT;\n\
+                   let key = ResourceKey { kind: *b\"ICON\", id: -18 };\n\
+                   let named = lookup(\"Standard File labels\");\n\
+                   let absent = 1;\n").unwrap();
+        fs::write(root.join("src/tests/check.rs"), "let menu = FILE_MENU;\n").unwrap();
+        let keys = vec![usage::Key { kind:   "ALRT".to_string(),
+                                     id:     -16463,
+                                     symbol: "RESOURCE_KEY_ABOUT".to_string(),
+                                     name:   Some("About System RISC".to_string()) },
+                        usage::Key { kind:   "ICON".to_string(),
+                                     id:     -18,
+                                     symbol: "ICON_KEY".to_string(),
+                                     name:   None },
+                        usage::Key { kind:   "STR#".to_string(),
+                                     id:     -16490,
+                                     symbol: "STANDARD_FILE_LABELS".to_string(),
+                                     name:   Some("Standard File labels".to_string()) },
+                        usage::Key { kind:   "MENU".to_string(),
+                                     id:     1252,
+                                     symbol: "FILE_MENU".to_string(),
+                                     name:   None },
+                        usage::Key { kind:   "PICT".to_string(),
+                                     id:     999,
+                                     symbol: "NEVER_NAMED".to_string(),
+                                     name:   Some("Nobody says this".to_string()) }];
+        let found = usage::scan(&root, &keys).unwrap();
+        assert_eq!(found.of("ALRT", -16463)[0].how, "symbol RESOURCE_KEY_ABOUT");
+        assert_eq!(found.of("ICON", -18)[0].how, "literal ICON -18");
+        assert_eq!(found.of("STR#", -16490)[0].how, "name \"Standard File labels\"");
+        assert!(found.of("MENU", 1252)[0].test, "test-only references are marked");
+        assert!(found.of("PICT", 999).is_empty());
+        assert_eq!(found.files, 2);
         fs::remove_dir_all(root).unwrap();
     }
 

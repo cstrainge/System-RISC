@@ -8,10 +8,13 @@
 //! payload bytes. `build` reads the disc the list names, classifies the package
 //! against it, and writes the package's extract list.
 
-use std::{collections::BTreeMap, env, fs, path::PathBuf, process::ExitCode};
+use std::{collections::BTreeMap,
+          env, fs,
+          path::{Path, PathBuf},
+          process::ExitCode};
 
 use extract_list::{Classification, Form, IsoResource, Package, Report, Verdict, classify,
-                   extract_list, human_report, iso, read_fork, read_package};
+                   extract_list, human_report, iso, read_fork, read_package, usage, usage_counts};
 use mac_build::Result;
 
 fn usage() -> String
@@ -192,18 +195,48 @@ fn build_command(args: &[String]) -> Result<ExitCode>
     let disc = iso::require(&name, &description)?;
     let package = read_package(&label, &package_path)?;
     let disc_sources = iso::sources(&disc, &requested)?;
+    let held_requested: Vec<String> =
+        options(args, "--held").into_iter().map(String::from).collect();
+    let held_sources =
+        if held_requested.is_empty() { Vec::new() } else { iso::sources(&disc, &held_requested)? };
     let mut iso_side = Vec::new();
     for file in &disc_sources
     {
         for resource in &file.resources
         {
             iso_side.push(IsoResource { source:   file.path.clone(),
+                                        held:     false,
+                                        resource: resource.clone() });
+        }
+    }
+    for file in &held_sources
+    {
+        for resource in &file.resources
+        {
+            iso_side.push(IsoResource { source:   file.path.clone(),
+                                        held:     true,
                                         resource: resource.clone() });
         }
     }
     let paths: Vec<String> = disc_sources.iter().map(|file| file.path.clone()).collect();
     let report = classify(std::slice::from_ref(&package), &iso_side);
     print_report(&report);
+    let keys: Vec<usage::Key> =
+        report.classifications
+              .iter()
+              .map(|entry| {
+                  usage::Key { kind:   entry.kind.clone(),
+                               id:     entry.id,
+                               symbol: entry.symbol.clone(),
+                               name:   entry.name.as_deref().map(mac_formats::text::decode) }
+              })
+              .collect();
+    let usage = usage::scan(Path::new("."), &keys)?;
+    let counts = usage_counts(&report, &usage, &package);
+    println!("usage        {} referenced, {} reachable, {} cannot be ruled out, {} with no \
+              reference found",
+             counts.named, counts.reachable, counts.unproven, counts.unmatched);
+
     let list = extract_list(&description, &name, &report, &paths);
     let mut text = list.to_json()?;
     text.push('\n');
@@ -214,7 +247,7 @@ fn build_command(args: &[String]) -> Result<ExitCode>
              list.sources.len());
     if let Some(path) = option(args, "--report")
     {
-        fs::write(path, human_report(&description, &name, &paths, &package, &report))?;
+        fs::write(path, human_report(&description, &name, &paths, &package, &report, &usage))?;
         println!("wrote {path}");
     }
     Ok(ExitCode::SUCCESS)
@@ -320,6 +353,8 @@ fn print_report(report: &Report)
              detail.name,
              detail.attributes);
     println!("keep ours    {:>5} ours-only", counts.get(&Verdict::OursOnly).copied().unwrap_or(0));
+    println!("held         {:>5} (identical, but the source is not approved)",
+             counts.get(&Verdict::Held).copied().unwrap_or(0));
     println!("native-code  {:>5}", counts.get(&Verdict::NativeCode).copied().unwrap_or(0));
     println!("ignored      {:>5} ISO-side resources we do not use", report.ignored);
 }
