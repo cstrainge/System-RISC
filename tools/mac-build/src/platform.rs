@@ -481,6 +481,7 @@ pub fn load(name: &str) -> Result<Platform>
     {
         hardware.check(&platform.name)?;
     }
+    platform.check_peripheral_windows()?;
     if let Some(storage) = &platform.storage
     {
         storage.check(&platform.name)?;
@@ -650,6 +651,90 @@ impl Platform
                                           bytes });
         }
         Ok(devices)
+    }
+
+    /// Ties a peripheral's exact window to the page-granular range a driver
+    /// claims. The MMIO inventory cannot state a sub-page window — its ranges
+    /// must be page aligned and page sized — so a peripheral whose registers
+    /// start part way into a page is declared twice: the window in
+    /// `hardware.devices`, which becomes the device-tree node, and the page in
+    /// `mmio_devices`, which a module matches and claims. Those are two
+    /// declarations of one device, and a record that states them inconsistently
+    /// is refused here rather than discovered when a driver claims the wrong
+    /// page. Two windows inside one claimed page are refused for the same
+    /// reason: one claim would then cover two devices.
+    fn check_peripheral_windows(&self) -> Result<()>
+    {
+        let windows = self.declared_devices()?;
+        if windows.is_empty() || self.mmio_devices.is_empty()
+        {
+            return Ok(());
+        }
+        let ranges = devices::check(&self.mmio_devices, &self.memory()?)?;
+        for window in &windows
+        {
+            let end = window.base
+                           .checked_add(window.bytes)
+                           .ok_or_else(|| {
+                               crate::error(format!("platform '{}' peripheral {} window \
+                                                     0x{:x}+0x{:x} overflows the address space",
+                                                    self.name, window.compatible, window.base,
+                                                    window.bytes))
+                           })?;
+            let containing: Vec<&devices::Checked> = ranges.iter()
+                                                           .filter(|range| {
+                                                               range.address <= window.base
+                                                               && end <= range.address + range.bytes
+                                                           })
+                                                           .collect();
+            match containing.as_slice()
+            {
+                [range] =>
+                {
+                    let occupants = windows.iter()
+                                           .filter(|other| {
+                                               range.address <= other.base
+                                               && other.base + other.bytes
+                                                  <= range.address + range.bytes
+                                           })
+                                           .count();
+                    if occupants > 1
+                    {
+                        return Err(crate::error(format!("platform '{}' MMIO range {} \
+                                                         0x{:x}+0x{:x} contains {occupants} \
+                                                         declared peripheral windows; one \
+                                                         claim would cover more than one \
+                                                         device",
+                                                        self.name,
+                                                        range.id,
+                                                        range.address,
+                                                        range.bytes)));
+                    }
+                }
+                [] =>
+                {
+                    return Err(crate::error(format!("platform '{}' peripheral {} window \
+                                                     0x{:x}+0x{:x} lies outside every \
+                                                     declared MMIO range, so no module can \
+                                                     claim it",
+                                                    self.name,
+                                                    window.compatible,
+                                                    window.base,
+                                                    window.bytes)));
+                }
+                _ =>
+                {
+                    return Err(crate::error(format!("platform '{}' peripheral {} window \
+                                                     0x{:x}+0x{:x} is contained by more than \
+                                                     one MMIO range",
+                                                    self.name,
+                                                    window.compatible,
+                                                    window.base,
+                                                    window.bytes)));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1310,6 +1395,58 @@ mod artifact_tests
         bad.mmio_devices.push(bad.mmio_devices[0].clone());
         assert!(bad.device_artifacts(true).err().unwrap().to_string().contains("non-overlapping"));
     }
+    #[test]
+    fn a_peripheral_window_and_the_page_a_driver_claims_cannot_describe_different_devices()
+    {
+        let platform = load("qemu_arm64").unwrap();
+        platform.check_peripheral_windows().unwrap();
+        // The mailbox registers start part way into the ARM control page the
+        // record claims, so one device is declared at two granularities on
+        // purpose: the window in the tree, the page in the inventory.
+        let mailbox = platform.declared_devices()
+                              .unwrap()
+                              .into_iter()
+                              .find(|device| device.compatible == "bcm2835-mailbox")
+                              .expect("the record declares the mailbox window");
+        assert_eq!((mailbox.base, mailbox.bytes), (0x3f00b880, 0x40));
+        // A window moved out of the page that claims it is refused.
+        let mut drifted = load("qemu_arm64").unwrap();
+        drifted.hardware
+               .as_mut()
+               .unwrap()
+               .devices
+               .iter_mut()
+               .find(|device| device.model == "bcm2835-mailbox")
+               .unwrap()
+               .base = Some("0x3f00c880".into());
+        let error = drifted.check_peripheral_windows().unwrap_err().to_string();
+        assert!(error.contains("bcm2835-mailbox"), "{error}");
+        assert!(error.contains("outside every declared MMIO range"), "{error}");
+        // A claimed page moved away from the window it is supposed to hold is
+        // refused in the same way.
+        let mut drifted = load("qemu_arm64").unwrap();
+        drifted.mmio_devices
+               .iter_mut()
+               .find(|device| device.id == "bcm2835-mbox")
+               .unwrap()
+               .address = "0x3f00c000".into();
+        let error = drifted.check_peripheral_windows().unwrap_err().to_string();
+        assert!(error.contains("outside every declared MMIO range"), "{error}");
+        // Two windows in one claimed page would make a single claim cover two
+        // devices, which is the same defect in the other direction.
+        let mut crowded = load("qemu_arm64").unwrap();
+        crowded.hardware
+               .as_mut()
+               .unwrap()
+               .devices
+               .iter_mut()
+               .find(|device| device.model == "pl011")
+               .unwrap()
+               .base = Some("0x3f00b000".into());
+        let error = crowded.check_peripheral_windows().unwrap_err().to_string();
+        assert!(error.contains("contains 2 declared peripheral windows"), "{error}");
+    }
+
     #[test]
     fn emergency_restart_is_required_checked_and_generated_from_the_selected_record()
     {

@@ -51,6 +51,17 @@ size is refused rather than given a default, because one window must have one
 declaration and a second source could disagree with the first. A peripheral with
 no base describes a function rather than a window and is omitted.
 
+A peripheral whose registers start part way into a page is the one case where a
+window is described at two granularities, and the two are tied together rather
+than left to agree by inspection. Its exact window lives in `hardware.devices`
+and becomes its tree node; the page it sits in lives in `mmio_devices`, because
+the MMIO inventory that modules match and claim against must be page aligned and
+page sized, so it cannot state a sub-page window. The build refuses a record
+where such a window falls outside every declared MMIO range, or where one
+declared range holds two windows — one claim would then cover two devices. A
+driver claims by the inventory entry and takes its register window from the
+tree; it must not add a hardcoded offset of its own.
+
 `boot_cpuid_phys` is 0: the bootloader starts on the primary hart.
 
 ## Consumer rules
