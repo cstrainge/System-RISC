@@ -182,6 +182,79 @@ pub fn listing(iso: &Path, path: &str) -> Result<Vec<EntryInfo>, Box<dyn std::er
     Ok(entries)
 }
 
+/// Walk the whole volume and report every file whose resource fork carries a
+/// resource of one of `kinds`, with the IDs found. A feasibility question —
+/// "does this disc carry theme resources at all?" — is answered by the disc,
+/// not by a guess about its vintage.
+pub fn scan(iso: &Path, kinds: &[String])
+            -> Result<(Vec<(String, Vec<(String, i16)>)>, usize), Box<dyn std::error::Error>>
+{
+    let wanted: Vec<[u8; 4]> = kinds.iter()
+                                    .map(|kind| {
+                                        let bytes = mac_formats::text::encode(kind)?;
+                                        bytes.try_into().map_err(|_| {
+                                            mac_build::error(format!("'{kind}' is not four Mac                                                                       Roman bytes"))
+                                        })
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?;
+    let mut image = Image::open(iso, false)?;
+    let partition = partition(&mut image, iso)?;
+    let mut volume = Volume::mount(&mut image, partition)?;
+    let mut found = Vec::new();
+    let mut examined = 0;
+    walk_volume(&mut volume, iso, 2, "", &wanted, &mut found, &mut examined, 0)?;
+    Ok((found, examined))
+}
+
+fn walk_volume(volume: &mut Volume<'_, Image>, iso: &Path, id: u32, path: &str,
+               wanted: &[[u8; 4]], found: &mut Vec<(String, Vec<(String, i16)>)>,
+               examined: &mut usize, depth: usize)
+               -> Result<(), Box<dyn std::error::Error>>
+{
+    if depth > 24
+    {
+        return Ok(());
+    }
+    let mut index = 0;
+    while let Some(child) = volume.child(id, index)?
+    {
+        index += 1;
+        let name = name(&child.name);
+        let child_path = if path.is_empty() { name.clone() } else { format!("{path}/{name}") };
+        if child.directory
+        {
+            walk_volume(volume, iso, child.id, &child_path, wanted, found, examined, depth + 1)?;
+            continue;
+        }
+        *examined += 1;
+        if child.resources.as_ref().is_none_or(|fork| fork.length == 0)
+        {
+            continue;
+        }
+        // A malformed fork on one file must not stop the scan.
+        let Ok(resources) = entries(volume, &child_path, iso)
+        else
+        {
+            continue;
+        };
+        let hits: Vec<(String, i16)> =
+            resources.iter()
+                     .filter(|resource| wanted.contains(&resource.kind))
+                     .map(|resource| (name_or_empty(&resource.kind), resource.id))
+                     .collect();
+        if !hits.is_empty()
+        {
+            found.push((child_path, hits));
+        }
+    }
+    Ok(())
+}
+
+fn name_or_empty(kind: &[u8; 4]) -> String
+{
+    kind.iter().map(|byte| if byte.is_ascii_graphic() { *byte as char } else { '?' }).collect()
+}
+
 fn name(bytes: &[u8]) -> String
 {
     mac_formats::text::decode(bytes)
