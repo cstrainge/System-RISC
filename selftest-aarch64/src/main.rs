@@ -763,7 +763,11 @@ pub extern "C" fn rust_entry() -> !
         unsafe { write_volatile(buffer.add(index), 0xa5) };
     }
     cache::clean(address, CACHE_TEST_BYTES);
-    cache::clean_invalidate(address, CACHE_TEST_BYTES);
+    // Discard the now-clean lines without writing back. `dc civac` here would
+    // write them back a second time, so the read below would succeed even if
+    // the clean above had done nothing and this half would pass on any
+    // hardware while proving nothing about `dc cvac`.
+    cache::invalidate(address, CACHE_TEST_BYTES);
     let mut clean_ok = true;
     let mut clean_observed = 0u8;
     for index in 0..CACHE_TEST_BYTES
@@ -800,18 +804,22 @@ pub extern "C" fn rust_entry() -> !
     cache::invalidate(address, CACHE_TEST_BYTES);
     // SAFETY: the buffer is a static owned by this run.
     let dirty_observed = unsafe { read_volatile(buffer) };
-    let drift = dirty_observed != 0x5a;
+    // The stale byte must be the first pattern: that is what proves the clean
+    // above really reached DRAM and that this line was dirty. Anything else
+    // means the two halves disagree about where the bytes live.
+    let drift = dirty_observed == 0xa5;
     if drift
     {
         report.push("cache-dirty", true, "")
-              .push_str("uncleaned write read back ")
-              .push_hex(u64::from(dirty_observed))
-              .push_str(", wanted 0x5a");
+              .push_str("uncleaned write read back 0xa5, the cleaned pattern");
     }
     else
     {
-        report.push("cache-dirty", false, "no-drift")
-              .push_str("uncleaned write read back 0x5a; the cache is not doing anything");
+        let reason = if dirty_observed == 0x5a { "no-drift" } else { "unexpected" };
+        report.push("cache-dirty", false, reason)
+              .push_str("uncleaned write read back ")
+              .push_hex(u64::from(dirty_observed))
+              .push_str("; wanted 0xa5");
     }
 
     report.log();
