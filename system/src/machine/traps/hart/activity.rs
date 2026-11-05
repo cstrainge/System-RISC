@@ -46,14 +46,14 @@ impl Values
         Ok((idle, executing))
     }
 }
-pub(super) struct Counter
+pub(crate) struct Counter
 {
     mode:   AtomicU8,
     values: Spinlock<Values>
 }
 impl Counter
 {
-    pub(super) const fn new() -> Self
+    pub(crate) const fn new() -> Self
     {
         Self { mode:   AtomicU8::new(UNKNOWN),
                values: Spinlock::new(Values { mode:      UNKNOWN,
@@ -64,12 +64,12 @@ impl Counter
                                               failure:   0 }) }
     }
 
-    pub(super) fn enter(&self)
+    pub(crate) fn enter(&self)
     {
         self.transition(EXECUTING);
     }
 
-    pub(super) fn resume(&self, idle: bool)
+    pub(crate) fn resume(&self, idle: bool)
     {
         let next = if idle { IDLE } else { EXECUTING };
         self.transition(next);

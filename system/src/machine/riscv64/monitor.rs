@@ -89,12 +89,12 @@ impl fmt::Display for WakeError
 /// first-frame ownership commits. This capability cannot target a numeric ID.
 pub(crate) struct PrimaryWake
 {
-    key:   super::traps::execution::HartKey,
+    key:   crate::machine::traps::execution::HartKey,
     entry: &'static Entry
 }
 impl PrimaryWake
 {
-    pub(crate) fn is_target(&self, key: super::traps::execution::HartKey) -> bool
+    pub(crate) fn is_target(&self, key: crate::machine::traps::execution::HartKey) -> bool
     {
         self.key == key
     }
@@ -104,13 +104,13 @@ impl PrimaryWake
         let transport = MONITOR.get().ok_or(WakeError::Missing)?;
         // Only a genuinely selected HOT row may issue a general wake. Cold
         // producers retain work in the caller until this capability publishes.
-        let sender = super::traps::execution::selected_hart();
+        let sender = crate::machine::traps::execution::selected_hart();
         checked_wake_entry(transport, sender.binding())?;
         checked_wake_entry(transport, self.key.binding())?;
         post_wake(self.entry).map(|_| ())
     }
 }
-fn checked_wake_entry(transport: &'static Admitted, key: super::traps::execution::HartBinding)
+fn checked_wake_entry(transport: &'static Admitted, key: crate::machine::traps::execution::HartBinding)
                       -> Result<&'static Entry, WakeError>
 {
     let bad = || WakeError::Binding { hart: key.number() as u64 };
@@ -136,7 +136,7 @@ fn checked_wake_entry(transport: &'static Admitted, key: super::traps::execution
 pub(crate) fn prepare_primary_wake() -> Result<PrimaryWake, WakeError>
 {
     let transport = MONITOR.get().ok_or(WakeError::Missing)?;
-    let key = super::traps::execution::selected_hart();
+    let key = crate::machine::traps::execution::selected_hart();
     if !key.is_primary() || !key.dispatch_eligible()
     {
         return Err(WakeError::ForeignPrimary { hart: key.number() as u64 });
@@ -193,7 +193,7 @@ pub(crate) enum Error
     AlreadyAdmitted,
     Layout,
     Image,
-    Entry(super::traps::EntryError),
+    Entry(crate::machine::traps::EntryError),
     StartBinding
     {
         hart: u64
@@ -790,7 +790,7 @@ fn publish_all(publication: Publication) -> Result<u64, Error>
 /// Irreversible terminal operation. Bypasses every normal command/owner lock;
 /// peers may be interrupted while holding those locks. The caller must abandon
 /// ordinary execution and must use direct shutdown on any refusal.
-pub(crate) fn stop_peers(winner: &super::traps::execution::TerminalWinner) -> Result<(), Error>
+pub(crate) fn stop_peers(winner: &crate::machine::traps::execution::TerminalWinner) -> Result<(), Error>
 {
     let monitor = MONITOR.get().ok_or(Error::Missing)?;
     // The terminal claim carries a genuine current cold/hot selection. Do not
@@ -877,7 +877,7 @@ pub(crate) struct StartReport
     entry:                        &'static Entry,
     sequence:                     u64
 }
-pub(crate) fn validate_start(proof: &super::traps::StartingHart, pointer: *const SecondaryStart,
+pub(crate) fn validate_start(proof: &crate::machine::traps::StartingHart, pointer: *const SecondaryStart,
                              bytes: usize)
                              -> Result<StartReport, Error>
 {
@@ -912,7 +912,7 @@ pub(crate) fn validate_start(proof: &super::traps::StartingHart, pointer: *const
     }
     Ok(report)
 }
-pub(crate) fn finish_start(proof: &super::traps::StartingHart, report: StartReport)
+pub(crate) fn finish_start(proof: &crate::machine::traps::StartingHart, report: StartReport)
                            -> Result<(), Error>
 {
     let transport = MONITOR.get().ok_or(Error::Missing)?;
@@ -929,13 +929,13 @@ pub(crate) fn finish_start(proof: &super::traps::StartingHart, report: StartRepo
 pub(crate) struct StartRefusal
 {
     pub(crate) cause:    Error,
-    pub(crate) prepared: super::traps::PreparedHart
+    pub(crate) prepared: crate::machine::traps::PreparedHart
 }
 /// Retains the actual published claim on timeout/refusal/drop. No Drop path
 /// reports that a potentially running CPU or canonical idle record was freed.
 pub(crate) struct PendingHart
 {
-    prepared: super::traps::PreparedHart,
+    prepared: crate::machine::traps::PreparedHart,
     entry:    &'static Entry,
     sequence: u64,
     deadline: u64,
@@ -943,7 +943,7 @@ pub(crate) struct PendingHart
     result:   Option<i64>,
     wake:     Option<u64>
 }
-pub(crate) fn begin_secondary(mut prepared: super::traps::PreparedHart)
+pub(crate) fn begin_secondary(mut prepared: crate::machine::traps::PreparedHart)
                               -> Result<PendingHart, StartRefusal>
 {
     let preflight = (|| {
@@ -1109,10 +1109,10 @@ impl PendingHart
 }
 /// Called only after clearing local SSIP and ending the live mutable-frame
 /// borrow. Uses genuine current-row authority, never a caller numeric label.
-pub(crate) fn acknowledge_wake(key: super::traps::execution::HartKey) -> Result<bool, Error>
+pub(crate) fn acknowledge_wake(key: crate::machine::traps::execution::HartKey) -> Result<bool, Error>
 {
     let transport = MONITOR.get().ok_or(Error::Missing)?;
-    if key != super::traps::execution::selected_hart()
+    if key != crate::machine::traps::execution::selected_hart()
     {
         return Err(Error::ForeignHart);
     }
@@ -1152,7 +1152,7 @@ pub(crate) fn acknowledge_wake(key: super::traps::execution::HartKey) -> Result<
 /// observational poll result cannot construct this proof or enable dispatch.
 pub(crate) struct ReadyHart
 {
-    prepared:   super::traps::PreparedHart,
+    prepared:   crate::machine::traps::PreparedHart,
     sequence:   u64,
     wake_epoch: u64
 }
@@ -1160,7 +1160,7 @@ impl ReadyHart
 {
     /// Data binding derives from the retained hardware admission receipt. It
     /// cannot select that CPU or substitute for this unique readiness owner.
-    pub(crate) fn binding(&self) -> super::traps::execution::HartBinding
+    pub(crate) fn binding(&self) -> crate::machine::traps::execution::HartBinding
     {
         self.prepared.binding()
     }
@@ -1170,7 +1170,7 @@ impl ReadyHart
     pub(crate) fn post_work(&self) -> Result<(), WakeError>
     {
         let transport = MONITOR.get().ok_or(WakeError::Missing)?;
-        checked_wake_entry(transport, super::traps::execution::selected_hart().binding())?;
+        checked_wake_entry(transport, crate::machine::traps::execution::selected_hart().binding())?;
         let entry = checked_wake_entry(transport, self.binding())?;
         post_wake(entry).map(|_| ())
     }
@@ -1225,7 +1225,7 @@ impl PendingHart
 /// never resumes an author or attempts to access the winner's terminal kit.
 /// The actual higher-privilege MSIP handler owns stop acknowledgment. S only
 /// waits a bounded interval, then reports failure through independent hardware.
-pub(crate) fn wait_for_terminal_stop(key: super::traps::execution::HartKey) -> !
+pub(crate) fn wait_for_terminal_stop(key: crate::machine::traps::execution::HartKey) -> !
 {
     // SAFETY: local terminal path never restores S execution. Higher-privilege
     // machine software interrupts remain deliverable with SIE clear.
@@ -1234,7 +1234,7 @@ pub(crate) fn wait_for_terminal_stop(key: super::traps::execution::HartKey) -> !
     }
     let deadline = MONITOR.get()
                           .and_then(|transport| {
-                              (key == super::traps::execution::selected_hart()).then_some(transport)
+                              (key == crate::machine::traps::execution::selected_hart()).then_some(transport)
                           })
                           .and_then(|transport| transport.timebase_hz.checked_mul(2))
                           .and_then(|ticks| now().checked_add(ticks));

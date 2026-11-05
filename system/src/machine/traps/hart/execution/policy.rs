@@ -6,20 +6,20 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use super::{HartLocal, required, with_masked};
 
-pub(super) struct State
+pub(crate) struct State
 {
     entered: AtomicBool,
     refused: AtomicU32
 }
 impl State
 {
-    pub(super) const fn new() -> Self
+    pub(crate) const fn new() -> Self
     {
         Self { entered: AtomicBool::new(false),
                refused: AtomicU32::new(0) }
     }
 
-    pub(super) fn active(&self) -> bool
+    pub(crate) fn active(&self) -> bool
     {
         self.entered.load(Ordering::Acquire)
     }

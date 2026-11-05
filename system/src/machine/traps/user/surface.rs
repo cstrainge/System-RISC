@@ -19,11 +19,11 @@ use crate::{context::ThreadId,
                       resources::definitions::callbacks::Notice}};
 
 #[derive(Clone, Copy)]
-pub(super) struct Capture
+pub(crate) struct Capture
 {
-    pub(super) field:  usize,
-    pub(super) header: usize,
-    pub(super) pixels: Option<usize>
+    pub(crate) field:  usize,
+    pub(crate) header: usize,
+    pub(crate) pixels: Option<usize>
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Geometry
@@ -424,7 +424,7 @@ impl Call
                   storage: Some(node) })
     }
 
-    pub(super) fn restore_surface(&mut self) -> Result<(), Status>
+    pub(crate) fn restore_surface(&mut self) -> Result<(), Status>
     {
         let Some(origin) = &self.surface_return
         else
@@ -470,7 +470,7 @@ impl Call
 {
     /// Checked-envelope election before generic resident dispatch. No raw
     /// ControlCall/Surface reference crosses a wait, including Desktop refusal.
-    pub(super) fn dispatch_surface(&mut self, suspension: Result<(), Status>)
+    pub(crate) fn dispatch_surface(&mut self, suspension: Result<(), Status>)
                                    -> Option<crate::machine::scheduler::service::RequestResult>
     {
         use crate::{machine::scheduler::service::{RequestAction, RequestResult},

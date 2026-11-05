@@ -104,7 +104,7 @@ impl Cell
         }
     }
 
-    pub(super) fn checkout(self: &Arc<Self>, identity: RequestIdentity, pointer: usize,
+    pub(crate) fn checkout(self: &Arc<Self>, identity: RequestIdentity, pointer: usize,
                            bytes: usize, memory: Memory, layout: Layout, thread: ThreadId)
                            -> Result<Call, Status>
     {
@@ -184,14 +184,14 @@ impl Cell
 
 // Private construction/unique checkout means there is at most one live loan.
 // No reference to Context, Process, Activity or Job occurs in this owner.
-pub(super) struct Loan
+pub(crate) struct Loan
 {
     cell:    Arc<Cell>,
     storage: Storage
 }
 impl Loan
 {
-    pub(super) fn restore(&mut self, record: Vec<u64>, encoded: Vec<u64>,
+    pub(crate) fn restore(&mut self, record: Vec<u64>, encoded: Vec<u64>,
                           buffers: Vec<Option<Buffer>>, fixups: Vec<Fixup>,
                           readers: Option<ReaderStorage>)
     {

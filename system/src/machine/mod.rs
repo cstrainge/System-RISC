@@ -22,6 +22,7 @@ pub(crate) mod pages;
 pub(crate) mod paging;
 pub(crate) mod scheduler;
 pub(crate) mod smp;
+pub(crate) mod traps;
 pub(crate) use smp::eligible_harts;
 pub(crate) mod video;
 
