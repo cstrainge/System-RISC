@@ -18,6 +18,10 @@ bench = false
 mac-abi.workspace = true
 mac-driver = { path = "../../crates/mac-driver" }
 mac-video-interface.workspace = true
+mac-videocore-fb = { path = "../../crates/mac-videocore-fb" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+spinning_top = "=0.2.5"
 
 [build-dependencies]
 mac-build.workspace = true
