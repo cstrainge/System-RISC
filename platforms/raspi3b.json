@@ -23,7 +23,8 @@
     ],
     "modules": [
       "mac-system",
-      "videocore-framebuffer"
+      "videocore-framebuffer",
+      "spi0-wave"
     ],
     "folders": {
       "applications": "Applications",
