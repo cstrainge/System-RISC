@@ -293,9 +293,10 @@ corrupts the transfer, which is a bus-level constraint no class design can paper
 over.
 
 **SPI.** The clock divider is documented as needing to be a power of two. It does
-not; any value divides. Separately, setting the transmit-FIFO-clear bit while a
-chip select is asserted can de-assert that select for a fraction of a clock
-period, so a driver must clear FIFOs with no device selected.
+not; any value divides, which matters because a power-of-two ladder cannot reach
+the bit periods a timed waveform needs. Separately, setting the transmit-FIFO-clear
+bit while a chip select is asserted can de-assert that select for a fraction of a
+clock period, so a driver must clear FIFOs with no device selected.
 
 **Mini UART.** The interrupt-enable register's two low bits are documented in the
 opposite order, and two bits documented as unused are required before the block
