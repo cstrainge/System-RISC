@@ -19,13 +19,27 @@ pub(crate) fn fatal_shutdown() -> !
     unsafe { core::arch::asm!("msr daifset, #2", options(nostack)) };
     crate::machine::emergency::serial(format_args!("SYSTEM_SHUTDOWN: fatal privileged fault; recovery is \
                                            not proven\n"));
-    // SAFETY: the current platform declares this finisher window in its record.
-    // The write requests the board's guest-panic shutdown and execution never
-    // resumes; no heap, driver registry or borrowed desktop service is involved.
-    unsafe {
-        core::ptr::write_volatile(platform::FATAL_FINISHER_ADDRESS as *mut u32,
-                                  platform::FATAL_FINISHER_FAILURE);
-        core::arch::asm!("dsb sy", options(nostack));
+    // A zero address is the record's absence marker: this machine declares no
+    // power-management device, so there is no register that completes a
+    // shutdown. Report that plainly and halt rather than writing to address
+    // zero, which would fault inside the terminal path itself.
+    if platform::FATAL_FINISHER_ADDRESS != 0
+    {
+        // SAFETY: the current platform declares this finisher window in its
+        // record. The write requests the board's guest-panic shutdown and
+        // execution never resumes; no heap, driver registry or borrowed desktop
+        // service is involved.
+        unsafe {
+            core::ptr::write_volatile(platform::FATAL_FINISHER_ADDRESS as *mut u32,
+                                      platform::FATAL_FINISHER_FAILURE);
+            core::arch::asm!("dsb sy", options(nostack));
+        }
+    }
+    else
+    {
+        crate::machine::emergency::serial(format_args!("SYSTEM_SHUTDOWN_NO_FINISHER: this machine \
+                                                        declares no power-management device; halting \
+                                                        instead of powering off\n"));
     }
     // The controller completes the shutdown asynchronously. This is quiescence
     // after an explicit, reported shutdown request, never a silent spin.
@@ -43,12 +57,23 @@ pub(crate) fn emergency_restart() -> !
     // SAFETY: as `fatal_shutdown`; only this CPU's mask state changes.
     unsafe { core::arch::asm!("msr daifset, #2", options(nostack)) };
     crate::machine::emergency::serial(format_args!("SYSTEM_RESTART: emergency terminal requested reset\n"));
-    // SAFETY: terminal admission retains the mapped checked board register and
-    // execution never resumes. The record supplies the restart value.
-    unsafe {
-        core::ptr::write_volatile(platform::FATAL_FINISHER_ADDRESS as *mut u32,
-                                  platform::FATAL_FINISHER_RESTART);
-        core::arch::asm!("dsb sy", options(nostack));
+    // As `fatal_shutdown`: no finisher register exists on this machine, so the
+    // request is reported and the CPU halts rather than a reset being claimed.
+    if platform::FATAL_FINISHER_ADDRESS != 0
+    {
+        // SAFETY: terminal admission retains the mapped checked board register
+        // and execution never resumes. The record supplies the restart value.
+        unsafe {
+            core::ptr::write_volatile(platform::FATAL_FINISHER_ADDRESS as *mut u32,
+                                      platform::FATAL_FINISHER_RESTART);
+            core::arch::asm!("dsb sy", options(nostack));
+        }
+    }
+    else
+    {
+        crate::machine::emergency::serial(format_args!("SYSTEM_RESTART_NO_FINISHER: this machine \
+                                                        declares no power-management device; halting \
+                                                        instead of resetting\n"));
     }
     loop
     {
