@@ -7,3 +7,4 @@
 //! code above the selection point.
 
 pub(crate) mod interrupts;
+pub(crate) mod power;
