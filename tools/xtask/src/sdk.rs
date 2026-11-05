@@ -68,6 +68,13 @@ struct Pin
     rustup_toolchain: String,
     rustc_commit:     String,
     cargo_commit:     String,
+    /// Every standard-library target this pin can build. A platform selects one
+    /// of them through its own `std_target`, so adding an architecture does not
+    /// mean a second pin or a second SDK cache.
+    targets:          Vec<String>,
+    /// The target the calling platform selected. Filled in by `pin()` so every
+    /// later step still works against one target and one private sysroot.
+    #[serde(skip)]
     target:           String,
     patches:          Vec<String>,
     rust_src_sha256:  String
@@ -165,10 +172,31 @@ fn pin(root: &Path, platform: &mac_build::platform::Platform) -> Result<Pin>
                                                           path.display()))
                                         })?;
 
-    serde_json::from_str(&text).map_err(|cause| {
-                                   error(format!("{} is not a valid compiler pin: {cause}",
-                                                 path.display()))
-                               })
+    let mut pin: Pin = serde_json::from_str(&text).map_err(|cause| {
+                                                        error(format!("{} is not a valid compiler \
+                                                                       pin: {cause}",
+                                                                      path.display()))
+                                                    })?;
+    // A platform states which standard-library target it needs; the pin states
+    // which ones it can build. Selecting here keeps every later step working
+    // against one target and one private sysroot, and refuses a platform whose
+    // target this pin cannot produce rather than building a foreign library.
+    let selected = platform.std_target.clone().ok_or_else(|| {
+                                                       error(format!("platform {} declares no std \
+                                                                      target, so it cannot install \
+                                                                      a standard library",
+                                                                     platform.name))
+                                                   })?;
+    if !pin.targets.iter().any(|candidate| *candidate == selected)
+    {
+        return Err(error(format!("platform {} declares std target {selected} but {} builds only \
+                                  {}",
+                                 platform.name,
+                                 path.display(),
+                                 pin.targets.join(", "))));
+    }
+    pin.target = selected;
+    Ok(pin)
 }
 
 fn rustup(root: &Path, arguments: &[&str]) -> Command

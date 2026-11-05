@@ -78,7 +78,14 @@ pub fn exit_returned(status: i64) -> !
     // SAFETY: EXIT violated its nonreturning contract. An explicit architecture
     // fault follows the System's loud terminal path; it is never a silent hang
     // or a claim of arbitrary privileged-fault containment (M-D04).
+    #[cfg(target_arch = "riscv64")]
     unsafe {
         core::arch::asm!("unimp", options(noreturn, nostack));
+    }
+    // `unimp` is RISC-V's deliberate illegal instruction; AArch64's equivalent
+    // is a software breakpoint, which takes the same terminal path.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(noreturn, nostack));
     }
 }

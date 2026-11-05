@@ -17,9 +17,16 @@ unsafe extern "C" fn gate(number: u32, pointer: *mut (), bytes: usize) -> i64
     let mut result = pointer.addr();
     // SAFETY: each caller lends its initialized local wire record only for this
     // synchronous trap. System snapshots all user records and nested buffers.
+    #[cfg(target_arch = "riscv64")]
     unsafe {
         core::arch::asm!("ecall", in("a7") number,
                         inlateout("a0") result, in("a1") bytes, clobber_abi("C"));
+    }
+    // The trap number travels in x8 and the argument pair in x0/x1.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mov x8, {number}", "svc #0", number = in(reg) u64::from(number),
+                        inlateout("x0") result, in("x1") bytes, clobber_abi("C"));
     }
     result as i64
 }
