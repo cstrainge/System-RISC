@@ -311,7 +311,7 @@
     }
   },
   "hardware": {
-    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware",
+    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware. It generates its device tree rather than consuming the one that firmware hands over: the board is described by this record, so the bootloader and the kernel read the same declared hardware instead of whatever the firmware happened to build. That divergence from real hardware is deliberate and is not a bug to fix.",
     "board": "bcm2837-class",
     "soc": "bcm2837",
     "boot": {
@@ -326,9 +326,7 @@
       "device": "ttyAMA0",
       "baud": 115200
     },
-    "device_tree": {
-      "kind": "generated"
-    },
+    "generate_device_tree": true,
     "ram": {
       "base": "0x0",
       "bytes": "0x40000000"
