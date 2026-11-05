@@ -10,6 +10,7 @@
 //! write or implicit activation exists in this crate.
 #![no_std]
 #![forbid(unsafe_code)]
+pub mod mapping;
 use core::fmt;
 
 use mac_kernel_model::pages::{Access, PageOwnership, Permissions, PhysicalAddress};
@@ -34,6 +35,33 @@ const OUTPUT_MASK: u64 = ((1 << 48) - 1) & !0xfff;
 /// address, so a port that stays within 48 bits may use them.
 const SOFTWARE_SHIFT: u32 = 55;
 const SOFTWARE_MASK: u64 = 0b11 << SOFTWARE_SHIFT;
+
+/// The base page this format is built on.
+pub const PAGE_BYTES: u64 = 4096;
+/// The leaves, finest first: 4 KiB page, 2 MiB block, 1 GiB block.
+pub const LEAF_BYTES: &[u64] = &[1 << 12, 1 << 21, 1 << 30];
+/// The top of the lower half of a 39-bit space.
+const LOWER_END: u64 = 0x0000_0080_0000_0000;
+/// The bottom of the upper half.
+const UPPER_START: u64 = 0xffff_ff80_0000_0000;
+
+pub fn geometry() -> mac_kernel_model::pages::PageGeometry
+{
+    mac_kernel_model::pages::PageGeometry::new(PAGE_BYTES)
+        .expect("the aarch64 base page geometry is 4096 bytes")
+}
+
+pub fn leaf_sizes() -> &'static [u64]
+{
+    LEAF_BYTES
+}
+
+/// A range is valid when it lies wholly inside one canonical half.
+pub fn valid_virtual_range(range: mac_kernel_model::policy::AddressRange) -> bool
+{
+    let (start, end) = (range.start(), range.end());
+    (start < LOWER_END && end <= LOWER_END) || start >= UPPER_START
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
@@ -282,5 +310,67 @@ impl Entry
                                                        },
                                                        global:  bits & (1 << 11) == 0 },
                            ownership: ownership_from(bits) })
+    }
+}
+
+impl mac_kernel_model::pages::Descriptor for Entry
+{
+    type Error = Error;
+
+    fn invalid() -> Self
+    {
+        Self::invalid()
+    }
+
+    fn bits(self) -> u64
+    {
+        self.bits()
+    }
+
+    fn table(address: PhysicalAddress, global: bool, ownership: PageOwnership)
+             -> Result<Self, Error>
+    {
+        Entry::table(address, global, ownership)
+    }
+
+    fn leaf(address: PhysicalAddress, size_bytes: u64, permissions: Permissions,
+            ownership: PageOwnership)
+            -> Result<Self, Error>
+    {
+        let size = match size_bytes
+        {
+            n if n == LeafSize::Page.bytes() => LeafSize::Page,
+            n if n == LeafSize::Large.bytes() => LeafSize::Large,
+            n if n == LeafSize::Huge.bytes() => LeafSize::Huge,
+            _ => return Err(Error::Physical { address:   address.0,
+                                              alignment: size_bytes })
+        };
+        Entry::leaf(address, size, permissions, ownership)
+    }
+
+    fn decode(bits: u64, level: u8) -> Result<mac_kernel_model::pages::EntryKind, Error>
+    {
+        Ok(match Entry::decode_raw(bits, level)?
+        {
+            Decoded::Invalid => mac_kernel_model::pages::EntryKind::Invalid,
+            Decoded::Table { physical,
+                             global,
+                             ownership } =>
+            {
+                mac_kernel_model::pages::EntryKind::Table { physical,
+                                                            global,
+                                                            ownership }
+            }
+            Decoded::Leaf { physical,
+                            size,
+                            permissions,
+                            ownership } =>
+            {
+                mac_kernel_model::pages::EntryKind::Leaf { physical,
+                                                           size_bytes: size.bytes(),
+                                                           permissions,
+                                                           ownership }
+            }
+        })
     }
 }

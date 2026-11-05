@@ -8,7 +8,7 @@ use core::{fmt,
 use mac_kernel_model::pages::{AddressSpace, AsidTag, PhysicalAddress};
 use mac_object_table::{domain::{DomainId, DomainKind},
                        store::PreparedError};
-use mac_riscv_pages::mapping::Tables;
+use crate::machine::page_layout::mapping::Tables;
 use crate::machine::page_layout::{Decoded, Entry, LeafSize};
 use spinning_top::Spinlock;
 
@@ -89,7 +89,7 @@ impl Error
             Self::Monitor(e) => e.status(),
             Self::Retirement(cause)=>cause.status(),
             Self::Pool(cause) | Self::Publication(PreparedError::Pool(cause)) =>crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(*cause)),
-            Self::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(cause))) => cause.status(),
+            Self::Tables(super::Error::Tables(crate::machine::page_layout::mapping::MapError::Storage(cause))) => cause.status(),
             _ => mac_abi::BAD_ABI
         }
     }
@@ -786,7 +786,7 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
               owner: DomainId, definitions: &[crate::toolbox::resources::definitions::Range])
               -> Result<PhysicalAddress, Error>
 {
-    let target=tables.allocate_zeroed().map_err(|e|Error::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(e))))?;
+    let target=tables.allocate_zeroed().map_err(|e|Error::Tables(super::Error::Tables(crate::machine::page_layout::mapping::MapError::Storage(e))))?;
     let entries =
         modules::table_snapshot(source).map_err(|_| Error::Template { physical: source.0 })?;
     for (index, bits) in entries.into_iter().enumerate()
@@ -849,7 +849,7 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
                 Entry::leaf(physical, size, permissions, ownership).map_err(Error::Encoding)?
             }
         };
-        tables.store(target,index,entry).map_err(|e|Error::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(e))))?;
+        tables.store(target,index,entry).map_err(|e|Error::Tables(super::Error::Tables(crate::machine::page_layout::mapping::MapError::Storage(e))))?;
     }
     Ok(target)
 }

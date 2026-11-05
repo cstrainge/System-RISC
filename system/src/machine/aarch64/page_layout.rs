@@ -12,6 +12,7 @@ use mac_kernel_model::pages::{PageGeometry, PageLayout};
 /// The encoder types shared paging stores and decodes, provided by this
 /// architecture's descriptor encoder.
 pub(crate) use mac_aarch64_pages::{Decoded, Entry, LeafSize};
+pub(crate) use mac_aarch64_pages::mapping;
 use mac_kernel_model::policy::AddressRange;
 
 /// The base page. AArch64 also permits 16 KiB and 64 KiB granules; the platform
@@ -29,20 +30,18 @@ const UPPER_START: u64 = 0xffff_ff80_0000_0000;
 
 pub(crate) fn geometry() -> PageGeometry
 {
-    PageGeometry::new(PAGE_BYTES).expect("the aarch64 base page geometry is 4096 bytes")
+    mac_aarch64_pages::geometry()
 }
 
 pub(crate) fn leaf_sizes() -> &'static [u64]
 {
-    LEAF_BYTES
+    mac_aarch64_pages::leaf_sizes()
 }
 
-/// A range is valid when it lies wholly inside one canonical half. A range that
-/// straddles the hole between them has no single valid encoding.
+/// A range is valid when it lies wholly inside one canonical half.
 pub(crate) fn valid_virtual_range(range: AddressRange) -> bool
 {
-    let (start, end) = (range.start(), range.end());
-    (start < LOWER_END && end <= LOWER_END) || start >= UPPER_START
+    mac_aarch64_pages::valid_virtual_range(range)
 }
 
 /// The name the admission diagnostic reports, so a refused root says which

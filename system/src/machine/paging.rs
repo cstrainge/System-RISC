@@ -21,7 +21,7 @@ use mac_kernel_model::{DomainId,
                                physical::{DirectMap, Error as PhysicalError}},
                        policy::{AddressRange, ModelError}};
 use crate::machine::page_layout::Entry;
-use mac_riscv_pages::mapping::{MapError, Mapper, Tables};
+use crate::machine::page_layout::mapping::{MapError, Mapper, Tables};
 
 use super::interrupts::{self, NativeInvocationGate};
 use crate::machine::memory::*;
@@ -215,7 +215,7 @@ impl fmt::Display for Error
                                  observed } =>
             {
                 write!(f,
-                       "warm root transition refused: expected SATP {expected:#x}, observed \
+                       "warm root transition refused: expected root {expected:#x}, observed \
                         {observed:#x}")
             }
             Self::Memory(e) => e.fmt(f),
@@ -507,6 +507,8 @@ impl Frames
 impl Tables for Frames
 {
     type Error = FrameError;
+    type Descriptor = Entry;
+    type Layout = Rva;
 
     fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, FrameError>
     {
@@ -668,7 +670,7 @@ pub(crate) fn system_stacks() -> Option<&'static [Foundation<Stack>]>
     Some(SPACES.get()?.stacks.as_slice())
 }
 /// Actual permanent roots and one canonical service-stack slot. Construction
-/// borrows the owning Spaces, never caller-supplied SATP values. The proof
+/// borrows the owning Spaces, never caller-supplied root values. The proof
 /// neither selects a hart nor grants execution; the native row binding does.
 pub(crate) struct PreparedRoots
 {
@@ -1038,7 +1040,7 @@ pub(crate) unsafe fn with_kernel<R>(outer: bool, call: impl FnOnce() -> R) -> Re
     {
         // Before any scheduler handoff, discard the interrupted root's restore
         // intent. Its actual claim may subsequently be released/reaped on a
-        // peer. No return path may resurrect that copied SATP afterwards.
+        // peer. No return path may resurrect that copied root afterwards.
         scope.previous = spaces.kernel.register;
         scope.changed = false;
     }
@@ -1063,7 +1065,7 @@ pub(crate) unsafe fn with_kernel<R>(outer: bool, call: impl FnOnce() -> R) -> Re
         scope.fence = true;
     }
     // Every callback/guard/borrow from call has ended. Only the copied result
-    // and the actual selected claim survive the final SATP/flush turn.
+    // and the actual selected claim survive the final root/flush turn.
     drop(scope);
     Ok(result)
 }
