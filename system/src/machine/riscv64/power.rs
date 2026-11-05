@@ -5,7 +5,7 @@
 //! Values/addresses come from the checked platform record. No callbacks, ROM
 //! logger, scheduler context, heap or locks are consulted. These terminal paths
 //! abandon execution; they do not claim M-D04 privileged-fault recovery.
-pub(super) mod platform
+pub(crate) mod platform
 {
     include!(concat!(env!("OUT_DIR"), "/platform.rs"));
 }

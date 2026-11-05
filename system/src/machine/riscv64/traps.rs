@@ -78,7 +78,7 @@ pub(crate) fn validate_stack_configuration(
     use mac_kernel_model::{pages::PageGeometry,
                            stack::{self, Policy}};
 
-    use super::memory::*;
+    use crate::machine::memory::*;
     let vector_bytes: u64;
     unsafe {
         asm!("csrr {},vlenb", out(reg)vector_bytes, options(nomem,nostack));

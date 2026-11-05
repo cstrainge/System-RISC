@@ -893,7 +893,7 @@ impl Mapping
         let region = match target
         {
             TargetKind::Module => base >= VM_MODULE_START && end <= VM_MODULE_END,
-            TargetKind::Application => super::super::memory::application_region(base, end),
+            TargetKind::Application => crate::machine::memory::application_region(base, end),
             TargetKind::Definition | TargetKind::UserDefinition =>
             {
                 base >= DEFINITION_BASE && end <= DEFINITION_LIMIT

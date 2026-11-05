@@ -9,21 +9,21 @@ use crate::display::{height, pixels, width};
 static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 // The complete physical display reservation remains build-owned and excluded
 // from the page pool. Only the live front/back mapped views are used here.
-const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE
+const _: () = assert!(crate::machine::memory::DISPLAY_BACKBUFFER_BASE
                       + (crate::display::MAX_PIXELS * size_of::<u32>()) as u64
-                      <= super::memory::DISPLAY_SCRATCH_BASE
-                         + super::memory::DISPLAY_SCRATCH_BYTES);
+                      <= crate::machine::memory::DISPLAY_SCRATCH_BASE
+                         + crate::machine::memory::DISPLAY_SCRATCH_BYTES);
 
 // The checked platform window covers minimum RAM; native admission proves all
 // discovered RAM is mapped before any framebuffer view is created. These are
 // first mapped views, not rebased physical references or fallible paint lookups.
-const FRONT_CPU: usize = (super::memory::VM_PHYSMAP_START
-                          + (super::memory::DISPLAY_FRONTBUFFER_BASE
-                             - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
+const FRONT_CPU: usize = (crate::machine::memory::VM_PHYSMAP_START
+                          + (crate::machine::memory::DISPLAY_FRONTBUFFER_BASE
+                             - crate::machine::memory::VM_PHYSMAP_PHYSICAL_BASE))
                          as usize;
-const BACK_CPU: usize = (super::memory::VM_PHYSMAP_START
-                         + (super::memory::DISPLAY_BACKBUFFER_BASE
-                            - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
+const BACK_CPU: usize = (crate::machine::memory::VM_PHYSMAP_START
+                         + (crate::machine::memory::DISPLAY_BACKBUFFER_BASE
+                            - crate::machine::memory::VM_PHYSMAP_PHYSICAL_BASE))
                         as usize;
 /// Scan-out memory System draws into: the platform reservation for ramfb, or
 /// the video driver's own framebuffer once one attaches.
@@ -148,13 +148,13 @@ pub(crate) fn clear_mode_buffers()
 }
 pub fn setup_framebuffer() -> bool
 {
-    let address = super::memory::DISPLAY_FRONTBUFFER_BASE;
+    let address = crate::machine::memory::DISPLAY_FRONTBUFFER_BASE;
     // The checked platform frontbuffer reservation is pinned for System's lifetime; bootstrap owns
     // exclusive fw_cfg access, before any application or secondary hart starts.
     // The binding translates the permanent high-linked System scratch to bus
     // PA; shared device code never treats a CPU pointer as a physical address.
     let result = unsafe {
-        mac_boot_screen::ramfb::configure(super::memory::FW_CFG_BASE as usize,
+        mac_boot_screen::ramfb::configure(crate::machine::memory::FW_CFG_BASE as usize,
                                           address,
                                           width(),
                                           height(),
@@ -178,7 +178,7 @@ pub fn setup_framebuffer() -> bool
     {
         serial!("RAMFB {}x{} addr=0x{:x}", width(), height(), address);
         serial!("DISPLAY_BUFFERS back={} front={} bytes={}",
-                super::memory::DISPLAY_BACKBUFFER_BASE,
+                crate::machine::memory::DISPLAY_BACKBUFFER_BASE,
                 address,
                 pixels() * size_of::<u32>());
     }

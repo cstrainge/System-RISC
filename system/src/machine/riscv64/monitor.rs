@@ -11,7 +11,7 @@ use mac_abi::{BootInfo, BootMemoryRange,
                      monitor::{self, BootImage, Control, Entry, SecondaryStart},
                      topology::Cpu}};
 
-use super::memory::*;
+use crate::machine::memory::*;
 
 // Build-host policy and the target's actual wire layout must agree before a
 // native binding can form any control-field pointer in firmware backing.
@@ -394,10 +394,10 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
         return Err(Error::AlreadyAdmitted);
     }
     let directory =
-        unsafe { super::memory::primary_slice(info, info.monitor, 1) }.map_err(Error::Memory)?
+        unsafe { crate::machine::memory::primary_slice(info, info.monitor, 1) }.map_err(Error::Memory)?
                                                                       .first()
                                                                       .ok_or(Error::Missing)?;
-    let entries = unsafe { super::memory::primary_slice(info, directory.entries, directory.count) }
+    let entries = unsafe { crate::machine::memory::primary_slice(info, directory.entries, directory.count) }
         .map_err(Error::Memory)?;
     directory.checked(entries,
                       cpus,
@@ -409,11 +409,11 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
                                         length: CLINT_BYTES })
              .map_err(Error::Directory)?;
     let image =
-        unsafe { super::memory::primary_slice(info, directory.image, 1) }.map_err(Error::Memory)?
+        unsafe { crate::machine::memory::primary_slice(info, directory.image, 1) }.map_err(Error::Memory)?
                                                                          .first()
                                                                          .ok_or(Error::Image)?;
     let execution =
-        unsafe { super::memory::primary_slice(info, info.execution, 1) }.map_err(Error::Memory)?
+        unsafe { crate::machine::memory::primary_slice(info, info.execution, 1) }.map_err(Error::Memory)?
                                                                         .first()
                                                                         .ok_or(Error::Image)?;
     if image.sealed.load(Ordering::Acquire) != 1

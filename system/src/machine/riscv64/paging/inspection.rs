@@ -8,7 +8,8 @@ use mac_abi::{CORRUPT_DATA, NO_MEMORY, NOT_SUPPORTED, Status, inspection::memory
 use mac_kernel_model::pages::{Access, PhysicalAddress};
 use mac_riscv_pages::walk::{ReadTables, Span, Walker};
 
-use super::{super::memory::*, BOOT, FrameError, SPACES, Space};
+use super::{BOOT, FrameError, SPACES, Space};
+use crate::machine::memory::*;
 
 struct Snapshot
 {

@@ -6,7 +6,7 @@ use core::{fmt,
 
 use mac_kernel_model::pages::PhysicalAddress;
 
-use super::super::memory::*;
+use crate::machine::memory::*;
 use crate::machine::pages::Backing;
 
 #[derive(Debug)]

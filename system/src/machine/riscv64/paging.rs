@@ -23,8 +23,8 @@ use mac_kernel_model::{DomainId,
 use mac_riscv_pages::{Entry, Sv39,
                       mapping::{MapError, Mapper, Tables}};
 
-use super::{interrupts::{self, NativeInvocationGate},
-            memory::*};
+use super::interrupts::{self, NativeInvocationGate};
+use crate::machine::memory::*;
 use crate::machine::pages::{ArrayError, Backing, OwnedArray, Stack};
 use crate::allocator::foundation::{self, Foundation};
 const MODE: usize = 8usize << 60;
@@ -298,15 +298,15 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
     {
         return Err(Error::AlreadyActive);
     }
-    let memory = unsafe { super::memory::validate_boot(info) }.map_err(Error::Memory)?;
-    let record = unsafe { super::memory::execution(info) }.map_err(Error::Memory)?;
+    let memory = unsafe { crate::machine::memory::validate_boot(info) }.map_err(Error::Memory)?;
+    let record = unsafe { crate::machine::memory::execution(info) }.map_err(Error::Memory)?;
     // validate_boot checked the whole physical array's reservation before this
     // mapped view is formed. Discovery metadata never selects the current hart.
-    let cpus = unsafe { super::memory::primary_slice(info, info.cpus, info.cpu_count) }
+    let cpus = unsafe { crate::machine::memory::primary_slice(info, info.cpus, info.cpu_count) }
         .map_err(Error::Memory)?;
     let topology = topology::Topology::checked(cpus, record.hart).map_err(Error::Topology)?;
     let regions = unsafe {
-                      super::memory::primary_slice(info, record.regions, record.region_count)
+                      crate::machine::memory::primary_slice(info, record.regions, record.region_count)
                   }.map_err(Error::Memory)?;
     record.checked(memory,
                    regions,
