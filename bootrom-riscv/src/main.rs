@@ -23,6 +23,28 @@ use core::{alloc::Layout,
            panic::PanicInfo,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
+/// The capabilities the shared virtio transport asks for, supplied by this
+/// machine. The transport never guesses them.
+struct BootMachine;
+
+impl virtio_blk::Machine for BootMachine
+{
+    fn fence()
+    {
+        // SAFETY: a full fence has no memory operands; it is the device/CPU
+        // publication ordering virtio requires.
+        unsafe { core::arch::asm!("fence iorw, iorw", options(nostack)) };
+    }
+
+    fn counter() -> u64
+    {
+        let value;
+        // SAFETY: reading the time counter has no side effects.
+        unsafe { core::arch::asm!("rdtime {value}", value = out(reg) value, options(nomem, nostack)) };
+        value
+    }
+}
+
 use bootrom_riscv::memory;
 use linked_list_allocator::LockedHeap;
 use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NOT_FOUND, NOT_SUPPORTED, OK, Status};
@@ -720,7 +742,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
         {
             continue;
         }
-        let disk = match virtio_blk::Disk::open(base)
+        let disk = match virtio_blk::Disk::<BootMachine>::open(base)
         {
             Ok(disk) => disk,
             Err(error) =>
