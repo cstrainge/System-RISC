@@ -33,9 +33,21 @@ pub struct ExtractEntry
     #[serde(rename = "type")]
     pub kind:       String,
     pub id:         i16,
+    /// The package symbol the extracted resource carries, so the generated file
+    /// can replace a hand-authored entry without breaking code that names it.
+    pub symbol:     String,
     pub name:       Option<String>,
     pub attributes: u8,
-    pub form:       String
+    pub form:       String,
+    /// True when the disc's copy is taken by policy rather than by matching our
+    /// key. Fonts are imported this way, so their IDs are the disc's, not ours.
+    #[serde(skip_serializing_if = "is_false")]
+    pub taken:      bool
+}
+
+fn is_false(value: &bool) -> bool
+{
+    !*value
 }
 
 /// The extract list: a complete description of its own source, so a package
@@ -302,6 +314,9 @@ pub struct Classification
     pub form:       Form,
     /// The disc file this resource was matched in, when one matched.
     pub iso_source: Option<String>,
+    /// True when the disc's copy is taken by policy rather than by matching
+    /// our key: fonts are imported by enumeration, not by ID lookup.
+    pub taken:      bool,
     pub verdict:    Verdict
 }
 
@@ -407,6 +422,7 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
                                                   attributes: ours.attributes,
                                                   form: ours.form,
                                                   iso_source,
+                                                  taken: false,
                                                   verdict });
         }
     }
@@ -420,13 +436,82 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
              ignored }
 }
 
+/// Import every instance of `types` the approved sources carry, regardless of
+/// whether our manifest uses that key.
+///
+/// Fonts are the case this exists for: the disc's TrueType faces are what we
+/// want, not the exact `sfnt` IDs our current tables happen to hold, and one ID
+/// (`sfnt 9217`) is reused by every family that has a single face. The entry
+/// keeps the disc's own ID and name; the package's numbering is a Phase B
+/// decision, made when the tables are regenerated.
+pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, types: &[String],
+                form: Form)
+{
+    let types: BTreeSet<&str> = types.iter().map(String::as_str).collect();
+    let mut symbols: BTreeSet<String> =
+        report.classifications.iter().map(|entry| entry.symbol.clone()).collect();
+    let mut present: BTreeSet<(String, String, i16)> =
+        report.classifications
+              .iter()
+              .filter(|entry| entry.verdict == Verdict::Extract)
+              .filter_map(|entry| {
+                  entry.iso_source
+                       .as_ref()
+                       .map(|source| (source.clone(), entry.kind.clone(), entry.id))
+              })
+              .collect();
+    for entry in iso
+    {
+        if entry.held
+        {
+            continue;
+        }
+        let kind = kind_str(&entry.resource.kind).to_string();
+        if !types.contains(kind.as_str())
+        {
+            continue;
+        }
+        if !present.insert((entry.source.clone(), kind.clone(), entry.resource.id))
+        {
+            continue;
+        }
+        let base =
+            format!("EXTRACTED_{}_{}",
+                    kind.chars()
+                        .map(|c| {
+                            if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }
+                        })
+                        .collect::<String>(),
+                    entry.resource.id.unsigned_abs());
+        let mut symbol = base.clone();
+        let mut suffix = 2;
+        while !symbols.insert(symbol.clone())
+        {
+            symbol = format!("{base}_{suffix}");
+            suffix += 1;
+        }
+        report.classifications.push(Classification { source: package.source.clone(),
+                                                     kind,
+                                                     id: entry.resource.id,
+                                                     symbol,
+                                                     name: entry.resource.name.clone(),
+                                                     attributes: entry.resource.attributes,
+                                                     form,
+                                                     iso_source: Some(entry.source.clone()),
+                                                     taken: true,
+                                                     verdict: Verdict::Extract });
+    }
+    report.classifications.sort_by(|a, b| (&a.kind, a.id).cmp(&(&b.kind, b.id)));
+}
+
 /// Turn the extract verdicts into the package's checked-in extract list.
 ///
 /// Each entry names the classic form the extractor must land the resource in.
 /// Because the comparison is at classic byte level, that form is the one our
 /// manifest already uses: an identical payload means our current form is a
 /// faithful encoding of the disc's bytes.
-pub fn extract_list(description: &str, iso: &str, report: &Report, source_order: &[String])
+pub fn extract_list(description: &str, iso: &str, report: &Report, source_order: &[String],
+                    exclude: &BTreeSet<(String, i16)>)
                     -> ExtractList
 {
     let mut sources: Vec<ExtractSource> = source_order.iter()
@@ -435,7 +520,10 @@ pub fn extract_list(description: &str, iso: &str, report: &Report, source_order:
                                                                           resources: Vec::new() }
                                                       })
                                                       .collect();
-    for entry in report.classifications.iter().filter(|entry| entry.verdict == Verdict::Extract)
+    for entry in report.classifications
+                       .iter()
+                       .filter(|entry| entry.verdict == Verdict::Extract)
+                       .filter(|entry| !exclude.contains(&(entry.kind.clone(), entry.id)))
     {
         let path = entry.iso_source.as_deref().unwrap_or_default();
         let Some(section) = sources.iter_mut().find(|section| section.path == path)
@@ -445,11 +533,13 @@ pub fn extract_list(description: &str, iso: &str, report: &Report, source_order:
         };
         section.resources.push(ExtractEntry { kind:       entry.kind.clone(),
                                               id:         entry.id,
+                                              symbol:     entry.symbol.clone(),
                                               name:       entry.name
                                                                .as_deref()
                                                                .map(mac_formats::text::decode),
                                               attributes: entry.attributes,
-                                              form:       entry.form.as_str().to_string() });
+                                              form:       entry.form.as_str().to_string(),
+                                              taken:      entry.taken });
     }
     sources.retain(|section| !section.resources.is_empty());
     ExtractList { description: description.to_string(),
@@ -583,6 +673,7 @@ pub fn human_report(description: &str, iso: &str, sources: &[String], package: &
                           from. They stay ours until a ruling; the usage section below says \
                           whether anything names them.");
     }
+    write_fonts(&mut text, report);
     write_usage(&mut text, report, usage, package);
     text
 }
@@ -670,6 +761,119 @@ fn usage_extracted(report: &Report) -> Vec<&Classification>
     report.classifications.iter().filter(|entry| entry.verdict == Verdict::Extract).collect()
 }
 
+/// Extracted resources the static scan could not name at all, and that no
+/// extracted resource reaches: the entries the ruling excludes from the list.
+pub fn unreferenced(report: &Report, usage: &Usage, package: &Package) -> BTreeSet<(String, i16)>
+{
+    let reachable = reachable(package, report);
+    report.classifications
+          .iter()
+          .filter(|entry| entry.verdict == Verdict::Extract)
+          .filter(|entry| usage.of(&entry.kind, entry.id).is_empty())
+          .filter(|entry| !reachable.contains_key(&(entry.kind.clone(), entry.id)))
+          .filter(|entry| !usage.dynamic_types.contains(&entry.kind))
+          .map(|entry| (entry.kind.clone(), entry.id))
+          .collect()
+}
+
+/// The font section: what the disc carries as outlines, what it does not carry
+/// that we hold, and the numbering problem the ruling leaves to Phase B.
+fn write_fonts(text: &mut String, report: &Report)
+{
+    use std::fmt::Write as _;
+    let taken: Vec<&Classification> =
+        report.classifications.iter().filter(|entry| entry.taken).collect();
+    if taken.is_empty()
+    {
+        return;
+    }
+    let mut families: BTreeMap<String, Vec<&Classification>> = BTreeMap::new();
+    for entry in &taken
+    {
+        let family = entry.iso_source
+                          .as_deref()
+                          .and_then(|source| source.rsplit('/').next())
+                          .unwrap_or("-")
+                          .to_string();
+        families.entry(family).or_default().push(entry);
+    }
+    let _ = writeln!(text, "\nfonts — outlines imported by enumeration, not by ID lookup");
+    let _ = writeln!(text, "  taken: {} faces from {} families", taken.len(), families.len());
+    for (family, faces) in &families
+    {
+        let ids: Vec<String> = faces.iter().map(|face| face.id.to_string()).collect();
+        let names: Vec<String> =
+            faces.iter()
+                 .map(|face| {
+                     face.name.as_deref().map_or_else(String::new, mac_formats::text::decode)
+                 })
+                 .collect();
+        let _ = writeln!(text,
+                         "    {:<26} {} face(s)  sfnt {}  [{}]",
+                         family,
+                         faces.len(),
+                         ids.join(", "),
+                         names.join(", "));
+    }
+    let mut by_id: BTreeMap<i16, Vec<&str>> = BTreeMap::new();
+    for (family, faces) in &families
+    {
+        for face in faces
+        {
+            by_id.entry(face.id).or_default().push(family.as_str());
+        }
+    }
+    let shared: Vec<String> = by_id.iter()
+                                   .filter(|(_, users)| users.len() > 1)
+                                   .map(|(id, users)| format!("{id} ({})", users.join(", ")))
+                                   .collect();
+    let _ = writeln!(text,
+                     "  numbering: the disc reuses sfnt IDs across families — {}. These are not \
+                      unique (type, id) pairs, so this list keeps the disc's ID as source \
+                      identity only; Phase B must give every imported face a distinct ID in the \
+                      package and regenerate FOND against those IDs.",
+                     shared.join("; "));
+    let _ = writeln!(text,
+                     "  bitmaps: the disc's font files also carry NFNT bitmaps (IDs 1025+ per \
+                      family). This list takes the outlines only, so every family above ends \
+                      with an outline and no bitmap from the disc.");
+    let absent_nfnt =
+        report.classifications
+              .iter()
+              .filter(|entry| entry.kind == "NFNT" && entry.verdict == Verdict::OursOnly)
+              .count();
+    let absent_font =
+        report.classifications
+              .iter()
+              .filter(|entry| entry.kind == "FONT" && entry.verdict == Verdict::OursOnly)
+              .count();
+    let _ = writeln!(text,
+                     "  our bitmaps: {absent_nfnt} NFNT and {absent_font} FONT have no disc \
+                      counterpart by ID — bitmap absent, outline present where the family is \
+                      imported. They stay ours; nothing is dropped from the manifest.");
+    let fondonly: Vec<&Classification> =
+        report.classifications.iter().filter(|entry| entry.kind == "FOND").collect();
+    if !fondonly.is_empty()
+    {
+        let _ = writeln!(text,
+                         "  FOND: all {} are ours and are not extracted; they are the tables to \
+                          regenerate. Source: system/assets/fonts/FOND-*.bin, referenced from \
+                          system/resources.json (symbols FONT_BUNDLE_FOND_*). Each must be \
+                          rewritten to the font IDs the package actually installs.",
+                         fondonly.len());
+        for entry in fondonly
+        {
+            let _ =
+                writeln!(text,
+                         "    FOND {:>3}  {:<12} {}  ({})",
+                         entry.id,
+                         entry.name.as_deref().map_or_else(String::new, mac_formats::text::decode),
+                         entry.symbol,
+                         entry.verdict.reason());
+        }
+    }
+}
+
 fn write_usage(text: &mut String, report: &Report, usage: &Usage, package: &Package)
 {
     use std::fmt::Write as _;
@@ -690,6 +894,10 @@ fn write_usage(text: &mut String, report: &Report, usage: &Usage, package: &Pack
                      counts.unproven);
     let _ = writeln!(text, "    no reference found at all                 {}", counts.unmatched);
     let _ = writeln!(text, "  of the referenced, {} are named only by test code", counts.tests);
+    let _ = writeln!(text,
+                     "  excluded from the extract list on this basis: {} (listed below; they \
+                      stay in resources.json — the rip-out is separate)",
+                     unreferenced(report, usage, package).len());
     let ambiguous = report.classifications
                           .iter()
                           .filter(|entry| entry.verdict == Verdict::Ambiguous)
@@ -1036,7 +1244,8 @@ edition = "2024"
         let list = extract_list("fixture disc",
                                 "fixture.iso",
                                 &report,
-                                &["a".to_string(), "b".to_string()]);
+                                &["a".to_string(), "b".to_string()],
+                                &BTreeSet::new());
         assert_eq!(list.sources.len(), 1, "only files that contribute an entry are listed");
         assert_eq!(list.sources[0].path, "a");
         assert_eq!(list.sources[0].resources.len(), 1);
@@ -1060,7 +1269,11 @@ edition = "2024"
         assert_eq!(report.classifications[0].iso_source.as_deref(),
                    Some("update"),
                    "the report says which unapproved file it matched");
-        let list = extract_list("fixture disc", "fixture.iso", &report, &["update".to_string()]);
+        let list = extract_list("fixture disc",
+                                "fixture.iso",
+                                &report,
+                                &["update".to_string()],
+                                &BTreeSet::new());
         assert!(list.sources.is_empty(), "a held match never reaches the list");
         fs::remove_dir_all(root).unwrap();
     }
