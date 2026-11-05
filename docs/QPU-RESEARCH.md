@@ -344,10 +344,12 @@ that cannot enable the clock cannot trust any register read.
 
 | Item | Value | Source |
 |---|---|---|
-| Bus base | `0x7EC00000` | Guide Appendix B; device tree |
-| ARM physical base | `0x3FC00000` | `0x3F000000 + (0x7EC00000 - 0x7E000000)` — see §2.7 for the calibration |
+| Bus base | `0x7EC00000` | Guide Appendix B; device tree `v3d@7ec00000` |
+| ARM physical base | `0x3FC00000` | Derived: `0x3F000000 + (0x7EC00000 - 0x7E000000)`; calibration in §2.7 |
+| Peripheral aperture (ARM) | `0x3F000000`, 16 MiB | Inventory; the base the derivation above uses |
+| Peripheral bus base | `0x7E000000` | Guide §1.2.4 |
 | Window size | `0x1000` (one page) | Device tree `reg = <0x7ec00000 0x1000>` |
-| ARM interrupt | GPU interrupt 10 | Device tree `interrupts = <1 10>`; bank 1 bit 10 is `VC_3D` in the binding |
+| ARM interrupt | GPU interrupt 10 | Device tree `interrupts = <1 10>`; bank 1 bit 10 is `VC_3D` in the binding (§2.7) |
 | Clock | clock manager's V3D clock | Device tree (PM node lists it) |
 | Reset | PM block's V3D reset | Device tree `resets = <&pm BCM2835_RESET_V3D>` |
 
@@ -373,7 +375,12 @@ wrong on the next part.
 ### 3.3 Register map
 
 Offsets from the window base. This is the set a driver actually touches; it is
-not the complete map.
+not the complete map. **Provenance:** every offset and bit position below was
+checked against Linux `drivers/gpu/drm/vc4/vc4_regs.h` (GPL-2.0, cited for facts
+only) and cross-checked against the guide's §3 register map. Where the header
+names a register but its semantics were not extracted, the row says so rather
+than guessing — a guessed field is worse than a blank one, because a driver
+written from it would be wrong in a way no test detects until it is on silicon.
 
 | Offset | Register | Use |
 |---|---|---|
@@ -1304,29 +1311,160 @@ failure early stops work that depends on it.
 
 ## 14. Decisions a reviewer must make
 
-1. **Accept that the guide is the authority and the encoders are the tie-break.**
-   The alternative — treating the guide as authoritative where it disagrees with
-   Mesa and `py-videocore` — would make the pack/unpack table wrong.
-2. **Accept `VPMBASE = 0` for the first landing** (whole VPM to the pipeline, no
-   standalone QPU programs), or choose a partition now. This decides whether
-   raw compute is a first-landing feature. See `docs/GPU-SUBSYSTEM.md` §10.
-3. **Accept that the first render target is linear XRGB32**, matching the
-   compositing driver's surface, rather than a tiled target. This is what makes
-   byte-exactness possible; a tiled target would need a detile pass.
-4. **Accept that shader code is the only program crossing the boundary**, and
-   that everything carrying an address is constructed by the driver. If that is
-   rejected, the design reverts to implementing the whole of §6.2.
-5. **Decide the semaphore budget** — how many of the block's semaphores the
-   submission path may use for fences, and what happens when they are exhausted.
-6. **Route the corrections to the two records** (§2.7). The inventory's V3D
-   **address is correct** (`0x3FC00000`); its size (64 KiB → `0x1000`), its
-   interrupt count ("66, 67" and "three lines" → one line, GPU IRQ 10), its
-   category (VideoCore → ARM-reachable) and its "no supported way to submit
-   jobs" claim need correcting. The 2D design's ARM address
-   (`0x3FEC0000` → `0x3FC00000`) needs correcting where that document lives.
-   **And before the platform record is written:** a window described as "bus
-   `0x7EC00000` / ARM `0x3FEC0000`" is internally inconsistent, and if the
-   record stores the ARM address it will probe the wrong page.
+The consolidated list is §16.1 — decisions D1–D29, each naming the section that
+argues it. The four that originate in this document are:
+
+| Id | Decision | Argued in |
+|---|---|---|
+| **D10** | The guide is the authority and the encoders are the tie-break where they disagree (pack/unpack). | §2.1, §9.4 |
+| **D3** | `VPMBASE = 0` for the first landing. | §3.3 |
+| **D4** | The first render target is linear XRGB32. | §5 |
+| **D14** | The semaphore budget for fences. | §8.2 |
+
+D1/D2 (construction, and the no-addressing subset) also rest on this document's
+§6.2, and the record corrections this document found are §16.3. The lists are
+not repeated here: a duplicated decision is a decision that can drift from its
+own argument, which is the defect this document was corrected for.
+
+---
+
+## 15. Hardware fact register
+
+One table of every hardware fact the five documents rely on, its provenance, and
+where it appears. It exists because a single transposed digit in one document
+propagated into three and survived until an outside check caught it; a value
+that appears in more than one place is a value that can disagree with itself.
+
+**Provenance codes.** `G` — Architecture Reference Guide. `M` — Mesa `vc4`
+(MIT). `L` — Linux `drm/vc4` (GPL-2.0, facts only). `D` — device tree or binding
+(GPL-2.0). `P` — `py-videocore` (MIT). `Q` — QEMU model (GPL-2.0; a fact about
+the model, not the silicon). `I` — this project's hardware inventory (a weaker
+source: it is derived, and its V3D row was wrong in four fields). `X` — derived
+by this document from other facts, with the derivation shown.
+
+| Fact | Value | Provenance | Appears in |
+|---|---|---|---|
+| V3D bus base | `0x7EC00000` | G, D | QPU §2.7, §3.1; QD-HW §2 (diagram) |
+| V3D ARM base | `0x3FC00000` | X from D | QPU §2.7, §3.1; QD-HW §2 |
+| Peripheral bus base | `0x7E000000` | G §1.2.4 | QPU §2.7 |
+| ARM peripheral aperture | `0x3F000000`, 16 MiB | I | QPU §3.1 |
+| Bus↔ARM rule | `ARM = bus − 0x7E000000 + 0x3F000000` | X, calibrated on RNG and HVS | QPU §2.7 |
+| V3D window size | `0x1000` | D | QPU §2.7, §3.1 |
+| V3D ARM interrupt | GPU interrupt 10 (bank 1 bit 10 = `VC_3D`) | D, L binding, Q | QPU §2.7, §3.1; GPU §1.1, §3 |
+| V3D internal status bits | `FRDONE` 0, `FLDONE` 1, `OUTOMEM` 2, `SPILLUSE` 3 | L | QPU §3.4; GPU §5.3 |
+| `V3D_IDENT0` expected | `0x02443356` | L | QPU §3.2; GPU §3; QD-HW §11 |
+| `V3D_IDENT1` fields | VPM 31:28, semaphores 23:16, TMUs 15:12, QPUs 11:8, slices 7:4, rev 3:0 | L | QPU §3.2 |
+| Register offsets `0x00000`–`0x00F20` | see §3.3 | L, G | QPU §3.3 |
+| `L2CACTL` bits | clear 2, disable 1, enable 0 | L | QPU §3.3 |
+| `PCS` bits | binner OOM 8, render busy 3, render active 2, binner busy 1, binner active 0 | L | QPU §3.3 |
+| Tile buffer | 64×64×32bpp = 16 KiB; 32×32 at 4× MSAA | M, G | QPU §4.3, §4.4 |
+| Tile state | 48 bytes/tile | L, M | QPU §4.4 |
+| Tile alloc | 32 bytes/tile initially | L, M | QPU §4.4 |
+| Binner pool | 16 MiB, 512 KiB slots, must not cross 256 MiB | L | QPU §4.4; GPU §10 |
+| Max tiles sized for | 4096 (2048×2048 at 32×32) | X from L | QPU §4.4 |
+| Shader record size | 36 + 8·attrs, or 100 + 4·attrs extended; 16-byte aligned | L | QPU §4.5 |
+| Shader record attribute count | 3 bits, 0 means 8 | L | QPU §4.5 |
+| Render target limit | 4096 per axis | L | QPU §4.7; QD-3D §4.1 |
+| Texture limit | 2048×2048 | L | QPU §4.7; QD-3D §4.1 |
+| Texture base granularity | 4 KiB (offset field is bits 31:12) | L | QPU §6.4 |
+| QPU instruction | 64-bit, field positions in §7.2 | G, M, P | QPU §7.2 |
+| QPU width | 16 elements, four lanes × four cycles | G, P | QPU §7.1 |
+| QPU register file | 32 A + 32 B + `r0`–`r5` | M | QPU §7.1, §7.4 |
+| QPU A/B registers when threaded | bottom 16 only | M | QPU §2.2; SC §4.6 |
+| QPU reserved register | 14 (read-address fixup) | M | QPU §2.2; SC §4.6 |
+| QPU instruction-memory size | **not established** | — | QPU §12 |
+| VPM size | from `V3D_IDENT1`, **not measured** | L | QPU §7.10, §12 |
+| Semaphore count | from `V3D_IDENT1`, **not measured** | L | QPU §8.2, §12 |
+| QPU counts | slices × QPUs/slice; "twelve" is an expectation | P, L | QPU §1.2, §3.2 |
+| `VPMBASE` first value | 0 | L | QPU §3.3; GPU §10 |
+| DMA channel mask | `0x7f35` (channels 0,2,4,5,8–14) | D | QPU §2.5; GPU §5.4 |
+| RNG bus / ARM | `0x7E104000` / `0x3F104000` | D, I | QPU §2.7 |
+| HVS bus / ARM | `0x7E400000` / `0x3F400000` | D, I | QPU §2.7 |
+| QEMU `V3D_OFFSET` | `0xc00000` → `0x3FC00000` | Q | QPU §2.7, §3.5 |
+| QEMU `INTERRUPT_3D` | 10 | Q | QPU §2.7 |
+| XRGB32 stride | width × 4 | this project's `VIDO` contract | QD-HW §7, §9; QPU §5 |
+
+Two entries in that table are deliberately marked **not established** rather than
+given a plausible number. A plausible number is what propagated last time.
+
+### 15.1 Facts that appear in only one document
+
+Not every fact needs to be repeated, but a fact that *only* one document states
+is a fact no other document can be checked against. The ones that matter:
+
+| Fact | Only in | Why it is not cross-checked |
+|---|---|---|
+| The resolved-span primitive's fields | QD-HW §5.2 | It is this design's invention, not a hardware fact. |
+| The batch window derivation | QD-HW §6.2 | Derived from the frame interval; a policy constant. |
+| The shader ABI's three parts | QD-3D §2.2 | A contract between two components of this design. |
+| The crate tree | SC §8 | This design's structure. |
+| The clock/reset capability's operations | GPU §1.3 | This design's interface. |
+
+Those are design decisions, not hardware facts, and they are not expected to
+appear twice. Everything in the register above is a hardware fact and does.
+
+---
+
+## 16. Consolidated decisions and interface gaps
+
+The five documents each end with their own list. This is the single list, so a
+reviewer has one place to work from. Identifiers are stable and are referenced
+from the individual documents.
+
+### 16.1 Decisions
+
+| Id | Decision | Where argued | Blocks |
+|---|---|---|---|
+| **D1** | The kernel **constructs** control lists from checked parameters rather than validating arbitrary ones. Consequences: no application-authored lists, no raw QPU compute from user space, and the residual risk is a subset-check hole rather than a template bug. | GPU §6; QD-3D §3.1–3.2 | Everything. If rejected, the design must implement the whole of QPU §6.2. |
+| **D2** | The compiler emits an **ISA subset with no addressing capability**: VPM configuration writes are immediates selecting register-file transfer, and no metadata declares direct TMU addressing. The kernel checks the subset. | SC §4.10; QD-3D §3.1 | D1's soundness. |
+| **D3** | `VPMBASE = 0` for the first landing — whole VPM to the pipeline, no standalone QPU programs. | QPU §3.3; GPU §10 | Whether raw compute is a first-landing feature. |
+| **D4** | The first render target is **linear XRGB32, stride = width × 4**, matching the compositing driver's surface. | QPU §5; QD-HW §7.1 | Byte-exactness. A tiled target needs a detile pass. |
+| **D5** | A reset **kills every context with outstanding work**, not only the offending one. | GPU §8.2; QD-3D §7.4 | Failure semantics. |
+| **D6** | **Quarantine, not free**, when completion cannot be established; quarantined memory stays charged to the device. | GPU §8.3 | Decision 5 of the brief. |
+| **D7** | Register exhaustion is a **refusal**, not a spill. | SC §4.6 | Which shaders are expressible. |
+| **D8** | A **purpose-built shader language** over a target-neutral IR, not a GLSL subset and not SPIR-V-only. | SC §2.2 | Who writes shaders; how a second front end plugs in. |
+| **D9** | One job at a time at the block, software fences, hardware semaphores only inside a job. | GPU §7 | Scheduling; failure analysis. |
+| **D10** | The guide is the authority and the **encoders are the tie-break** where they disagree (pack/unpack). | QPU §2.1, §9.4 | The correctness of the encoder. |
+| **D11** | The timeout value (provisional 250 ms) and the scheduling quantum. | GPU §10.2 | Hang detection; whether a slow shader is indistinguishable from a wedged one. |
+| **D12** | Whether precompiled shaders ship in the image (making determinism load-bearing) or are compiled at start-up (making compile time a boot cost). | SC §8.1, §11 | Boot time; reproducibility. |
+| **D13** | Whether a privileged compute tier is in scope, so the interface is not accidentally closed to it. | QD-3D §3.2, §10 | Future GPGPU. |
+| **D14** | The semaphore budget for fences, and the behaviour when exhausted. | QPU §14 | Multi-context fencing. |
+| **D15** | The **first-landing divert set**: rect fills, `srcCopy` copies and scrolls, declared pattern fills, and text runs; everything else delegates. Ovals, arcs, polygons and complex regions are not accelerated. | QD-HW §4 | What is accelerated at all. |
+| **D16** | The **interposer is resident and in-process**, and the hardware provider is a client of the GPU subsystem rather than a direct driver caller. | QD-HW §2 | The whole split. |
+| **D17** | `Rasterise` is a **capability with a software default**, so a board with no working GPU path behaves exactly as today. | QD-HW §1, §4.3 | Degradation. |
+| **D18** | The **resolved-span interface** is the boundary, and the provider may know nothing about QuickDraw. | QD-HW §5 | Whether the interface is really stateless. |
+| **D19** | The **batch window derivation** (`frame_interval/16`, clamped 500 µs–2 ms), subject to tuning. | QD-HW §6.2 | Batching behaviour. |
+| **D20** | The **ignored byte** policy for XRGB32 (constant or preserved), decided before the corpus is written. | QD-HW §8.3, §10 Q1 | What byte-exactness asserts. |
+| **D21** | **Model (b) is not scheduled**; QD-HW §7.3 is the list of conditions, not a plan. | QD-HW §7 | Scope. |
+| **D22** | The **API surface** in QD-3D §1.3, including what is deliberately absent: no mips, no multiple render targets, no instancing, no compute. | QD-3D §1.3 | Feature scope. |
+| **D23** | **Blending is a shader variant**, so pipeline state is part of the program key and a mismatch is a refusal. | QD-3D §1.4 | How blending is expressed. |
+| **D24** | The driver's **template is a closed set of list shapes**; a job needing another shape is refused, not hand-built. | QD-3D §5.3 | D1's tractability. |
+| **D25** | The **no-divergence rule**: a non-uniform `if` is a compile error unless it can be selected. | SC §2.3, §4.1 | Which shaders compile. |
+| **D26** | The **checker is production code** and runs on every compile, in the shipping configuration. | SC §5.1 | D2's enforcement. |
+| **D27** | The **development-tool form** of the interpreter, golden corpus and differential generator — not a revived `#[test]` framework, per the recovery order. | SC §5.2–5.6 | Whether validation work may proceed now. |
+| **D28** | The **crate split**, in particular `mac-shader-qpu-isa` as the single ISA definition shared by the compiler and the kernel. | SC §8 | One checker or two. |
+| **D29** | The **driver/subsystem split** in GPU §1, including the `GPUX` class and the clock/reset capability. | GPU §1 | Where each half lives. |
+
+### 16.2 Interface gaps to route
+
+| Id | Gap | Where | Blocking? |
+|---|---|---|---|
+| **G1** | The video driver **receives a device address from the Device service and drops it**; the surface handover carries only a CPU address. | QD-HW §9.2 | **Yes** — the GPU cannot name the surface. |
+| **G2** | Cache maintenance is private to the video driver; there is no handover operation. The resident DMA module's buffers are coherent by contract, so the mechanism exists. | QD-HW §9.2 | **Yes** for correctness unless the drawable is coherent. |
+| **G3** | No **device-side in-flight hold** on the video driver's surface; `RELEASE` drains CPU views only. | QD-HW §9.2 | **Yes** — decision 5 of the brief. |
+| **G4** | `SERVICE(damage)` carries no producer identity, so a present cannot order itself after GPU completion. | QD-HW §9.2 | No — "wait before present" is an acceptable interim answer. |
+| **G5** | Damage is a single rectangle, so a multi-region batch presents a bounding box. | QD-HW §9.2 | No — correct but wasteful. |
+| **G6** | A mode change replaces the surface with no notification to another device. | QD-HW §9.2 | No if G3 is fixed. |
+| **G7** | The **QuickDraw destination is a caller-supplied pixel buffer** with no allocation identity, so the interposer cannot assume it is the scanout surface. | QD-HW §9.2 | **Yes** — it decides which surface to render into. |
+| **G8** | The `GPUX` class identifier is new and must be **registered centrally**; the driver's device match key must be confirmed against the record rather than assumed. | GPU §1.1 | No — but a wrong key means the driver never attaches. |
+
+### 16.3 Record corrections to route
+
+| Record | Correction | Evidence |
+|---|---|---|
+| `docs/PI-HARDWARE-INVENTORY.md`, V3D row | Size 64 KiB → `0x1000`; interrupts "66, 67"/"three lines" → one line, GPU IRQ 10; category VideoCore → ARM; "no supported way to submit jobs" → false | QPU §2.7 |
+| `docs/VIDEOCORE-2D-DESIGN.md` §7, §10 | ARM address `0x3FEC0000` → `0x3FC00000`; the claim that QEMU's V3D address differs from the silicon's is withdrawn | QPU §2.7 |
+| `platforms/raspi3b.json` (platform lane) | The V3D window must carry ARM `0x3FC00000`, not `0x3FEC0000`, if the ARM address is what the record stores | QPU §2.7 |
 
 
 

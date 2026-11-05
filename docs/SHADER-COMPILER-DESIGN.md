@@ -583,19 +583,17 @@ list, and `docs/QPU-RESEARCH.md` §3.5 records why QEMU cannot substitute for it
 
 ## 11. Decisions a reviewer must make
 
-1. **Accept a purpose-built language over a GLSL subset or SPIR-V-only.** §2.2
-   gives the reasoning; the consequence is that this project writes its own
-   shaders, which it already does.
-2. **Accept the no-divergence rule**, and therefore that non-uniform `if` is a
-   compile error unless it can be selected.
-3. **Accept that register exhaustion is a refusal**, not a spill.
-4. **Accept that the checker is production code** and runs on every compile, in
-   the shipping configuration.
-5. **Accept the development-tool form of the interpreter and the golden
-   corpus**, and confirm that it does not conflict with the recovery order's
-   deferral of new validation machinery.
-6. **Accept the crate split**, in particular `mac-shader-qpu-isa` as the single
-   ISA definition shared by the compiler and the kernel.
-7. **Decide whether precompiled shaders are shipped in the image** (making
-   determinism load-bearing) or compiled at start-up (making compile time a boot
-   cost).
+Identifiers are global and defined once, in `docs/QPU-RESEARCH.md` §16.1. This
+document originates these:
+
+| Id | Decision | Argued in |
+|---|---|---|
+| **D25** | The no-divergence rule. | §2.3, §4.1 |
+| **D26** | The checker is production code, run on every compile. | §5.1 |
+| **D27** | The development-tool form of the interpreter and corpus, not a `#[test]` framework. | §5.2–5.6 |
+| **D28** | The crate split, with `mac-shader-qpu-isa` as the single ISA definition. | §8 |
+
+D8 (purpose-built language), D7 (register exhaustion is a refusal) and D12
+(precompiled shaders versus compile at start-up) are argued here and defined in
+the consolidated list. D2 — the no-addressing subset — is the backend rule this
+document implements in §4.10.

@@ -36,7 +36,7 @@ Why not one piece:
 | Element | Content |
 |---|---|
 | Crate | `drivers/v3d/`, package name `v3d-gpu` |
-| `module.json` | Declares class `GPUX` version 1 in `interfaces`; matches the device on the V3D window's bus key (`brcm,v3d`); declares the services it requires: the V3D clock by name, the V3D reset, the Device DMA allocation service, and the interrupt registration for GPU interrupt 10 |
+| `module.json` | Declares class `GPUX` version 1 in `interfaces`; matches the device on the V3D window's bus key; declares the services it requires: the V3D clock by name, the V3D reset, the Device DMA allocation service, and the interrupt registration for GPU interrupt 10. The key is **expected** to be `brcm,v3d` by the existing convention (the video driver matches `brcm,mbox`, and the record's identities are `bcm2835-*`), but the V3D window is being added to the record by another lane and the key it declares is authoritative — confirm before writing the match. `GPUX` is also a new class identifier and must be registered centrally like every other class, not merely chosen here (gap G8 in `docs/QPU-RESEARCH.md` §16.2). |
 | `src/lib.rs` | Safe driver body: job construction, object bookkeeping, refusal logic |
 | `src/native.rs` | The one audited machine adapter: MMIO window, cache instructions, interrupt acknowledgement |
 | `main.rs` | `mac_driver::export_driver!` |
@@ -124,11 +124,25 @@ address.
 ### 2.2 Contiguity
 
 The GPU has no scatter-gather: a buffer or texture must be contiguous in device
-address space. The Device DMA allocation is therefore the unit of allocation,
-and an object is one allocation. There is no paging and no relocation: **an
-object's device address never changes for its lifetime.** That is a requirement,
-not an implementation detail — the control lists and shader records name
-addresses, and a relocation would invalidate every list that references them.
+address space. **This already exists and should be reused rather than
+reinvented.** `system/src/machine/dma.rs` provides a pinned, charged resident DMA
+buffer that is page-rounded, zero-initialised in bounded steps, and whose
+`device_address()` is derived through `machine::paging::bus_address` — the System
+heap has a contiguous native bus alias, which is exactly what the GPU needs. The
+module's own contract states the rest: storage is retained until device
+completion or reset and all CPU view pins have drained.
+
+A GPU object is therefore a resident DMA buffer, not a new kind of allocation,
+and an object's device address never changes for its lifetime. That is a
+requirement, not an implementation detail — the control lists and shader records
+name addresses, and a relocation would invalidate every list that references
+them.
+
+The one caveat is scale: `bus_address` proves a contiguous alias for the System
+heap and for the boot image, and falls back to a page-table walk for other
+mapped ranges. Whether a large render target can be allocated contiguously at
+the sizes this design wants is a board-memory question (§11), not something the
+address derivation settles.
 
 ### 2.3 Mapping and cache
 
@@ -140,6 +154,10 @@ addresses, and a relocation would invalidate every list that references them.
 * The maintenance is performed by the driver's audited adapter, not by
   application code and not by the subsystem, because it is the one place where
   an architecture instruction must be issued and reviewed.
+* The resident DMA module's buffers are coherent by contract, which is why GPU
+  objects should be allocated from it rather than from the ordinary heap: an
+  object that needs an explicit maintenance call at every use is one forgotten
+  call away from a stale read.
 * A render target that the compositing driver will read needs the same
   invalidate on the compositor's side; that is interface gap G2 in
   `docs/QUICKDRAW-HW-DESIGN.md` §9.2, not something this subsystem can do for
@@ -538,19 +556,27 @@ split beyond the hardware limits.
 
 ### 9.2 Accounting
 
+Per-owner accounting already exists and should be used rather than duplicated:
+`system/src/allocator.rs` takes an `AllocationAuthority` and reserves against it
+by `MemoryClass::Kernel` or `MemoryClass::Application`, and the resident DMA
+buffer is charged to the requesting module's account. A GPU context's budget is
+therefore a named account of that kind, not a new counter.
+
 | Charge | Unit |
 |---|---|
-| Object memory | Bytes, per object, per context |
+| Object memory | Bytes, per object, per context — reserved against the context's account |
 | Command-list storage | Bytes, per job, per context |
 | Binner slot | Bytes of the pool, per job |
 | Quarantined objects | Bytes, per device |
 
 * A context has a budget; exceeding it is a refusal at admission, before any
-  allocation.
+  allocation. The refusal comes from the account, so it is the same refusal an
+  ordinary allocation would produce rather than a parallel one.
 * The device has a total budget; exceeding it is a refusal, and the refusal
   names which contexts hold the memory.
 * Freeing returns the charge. Quarantine does not return the charge until the
-  object is reclaimed.
+  object is reclaimed — it is deliberately re-attributed to the device, not
+  leaked.
 * The binner pool is allocated once, at bring-up, and carved into slots; a job
   that cannot get a slot waits or is refused, and the refusal names the pool.
 
@@ -562,8 +588,8 @@ split beyond the hardware limits.
    fixed-function pipeline, none to standalone QPU programs. This design uses
    the fixed-function pipeline only, so zero is the natural first value — and it
    forecloses raw compute. A non-zero partition would allow compute but reduce
-   the pipeline's VPM, with an unquantified effect on varying capacity. Decision
-   D1 below.
+   the pipeline's VPM, with an unquantified effect on varying capacity. That is
+   decision D3 in the consolidated list.
 2. **The timeout.** No measurement exists. It must be large enough for a
    legitimate shader and small enough that a wedged GPU does not stall the
    desktop. Provisional: 250 ms, to be measured.
@@ -599,8 +625,11 @@ split beyond the hardware limits.
 6. **The cost of the interrupt path.** One interrupt per job, with a job per
    draw (or per split), may be too many interrupts for a desktop's frame rate.
    Unmeasured.
-7. **Nothing here is testable in QEMU.** The V3D is a placeholder returning zero
-   at an address that is not the silicon's.
+7. **Whether anything here is verifiable in QEMU.** Only the refusal path is:
+   the block is an unimplemented placeholder that returns zero at the silicon's
+   own address, so `V3D_IDENT0` does not match and the driver must refuse to
+   attach. That is a real test of the degradation path and of nothing else —
+   `docs/QPU-RESEARCH.md` §3.5 is the split.
 
 ---
 
@@ -630,15 +659,15 @@ above needs the board.
 
 ## 13. Decisions a reviewer must make
 
-1. **D1 — accept construction over validation** (§6), including the loss of
-   application-authored lists and raw compute, and the residual risk in §6.4.
-2. **D2 — accept `VPMBASE = 0`** for the first landing, and therefore that raw
-   compute is not available.
-3. **D3 — accept a single job at a time**, with software fences and hardware
-   semaphores used only inside a job.
-4. **D4 — accept that a reset kills every context with outstanding work.**
-5. **D5 — accept quarantine as the fallback** when completion is uncertain, and
-   that quarantined memory stays charged.
-6. **D6 — accept the driver/subystem split** as specified in §1, including the
-   `GPUX` class and the clock/reset capability.
-7. **D7 — set the timeout** and the scheduling quantum.
+Identifiers are global and defined once, in `docs/QPU-RESEARCH.md` §16.1. This
+document originates one:
+
+| Id | Decision | Argued in |
+|---|---|---|
+| **D29** | The driver/subsystem split, including the `GPUX` class and the clock/reset capability. | §1 |
+
+D1 (construction over validation), D3 (`VPMBASE = 0`), D9 (one job at a time),
+D5 (a reset kills every context with outstanding work), D6 (quarantine), D11
+(the timeout and scheduling quantum) and D14 (the semaphore budget) are all
+argued here and defined in the consolidated list. §6.4 states D1's residual risk
+and §16.2 there lists the interface gaps this subsystem depends on.
