@@ -1468,6 +1468,8 @@ dependencies = [
  "mac-build",
  "mac-driver",
  "mac-video-interface",
+ "mac-videocore-fb",
+ "spinning_top",
 ]
 
 [[package]]

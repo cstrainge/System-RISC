@@ -382,6 +382,14 @@ impl Checked
         (self.display_width as usize, self.display_height as usize)
     }
 
+    /// The display geometry the record declares: the initial width and height,
+    /// then the largest mode a display driver may apply. A driver that changes
+    /// mode reads its bounds from here rather than carrying its own copy.
+    pub fn display_bounds(&self) -> (u64, u64, u64, u64)
+    {
+        (self.display_width, self.display_height, self.display_max_width, self.display_max_height)
+    }
+
     pub fn display_constants(&self) -> String
     {
         format!("// Generated from the checked platform display record.\npub(crate) const \
