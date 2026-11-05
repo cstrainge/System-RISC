@@ -182,6 +182,45 @@ Every refusal is typed and distinguishable from every other. The minimum set:
 An application must be able to distinguish "retry later" from "this board cannot
 do that" without reading a board name.
 
+## Capabilities are a runtime query
+
+An application ships as one binary to boards that differ, so it cannot decide at
+build time what a pin can do. Capability is therefore data returned by the class,
+asked for at run time, never a compile-time assumption and never a board name
+compared against a string.
+
+The class answers three questions, and the first must be answerable for every
+pin the platform declares, including one the application may not claim:
+
+| Question | Answer |
+| --- | --- |
+| What can this pin do on this board? | A capability set, plus whether the pin is available at all |
+| Can I have it, as I need it? | Either a handle, or a refusal naming the capability that was missing *and* what the pin can do instead |
+| I am finished with it | The pin returns to its prior configuration and its claims end |
+
+The capability set is an **extensible enumeration**, not a closed one. It
+describes, per pin: whether the pin is available; which functions it can take,
+by name; its pull options; its output drive options; whether it can produce
+events, and on what; and any board-imposed restriction. A capability added after
+an application was built is simply a value that application does not know: it is
+tolerated and ignored, which is the same rule the rest of the system applies to
+unknown properties. Modelling capabilities as a closed set would force every
+existing application to change whenever a board gained a feature, which is the
+opposite of what portability requires.
+
+Two consequences follow directly:
+
+* An application **feature-detects and degrades**. Its normal path on the board it
+  was written for, a checked alternative where the normal path is unavailable, and
+  a named refusal when neither is possible. A missing capability never becomes a
+  silent no-op: the class returns the reason, and the application decides whether
+  the alternative path is acceptable.
+* A refusal carries **what the pin can do**, not only what it cannot. An
+  application that receives "no" without the alternatives has to guess, and a
+  guess about hardware is how a board ends up driven wrongly. This is the same
+  invariant the resident services apply to ordinary errors: an error that loses
+  the cause is a defect.
+
 ## Consistency across models
 
 The class's promise is: **an application written against one board's logical
