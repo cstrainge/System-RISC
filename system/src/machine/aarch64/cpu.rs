@@ -41,6 +41,104 @@ pub(crate) fn wait_for_interrupt()
     unsafe { core::arch::asm!("wfi", options(nomem, nostack)) };
 }
 
+/// Monotonic time counter, in platform ticks of the generic timer.
+pub(crate) fn ticks() -> u64
+{
+    let value: u64;
+    // SAFETY: reading the virtual counter has no side effects.
+    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+/// The timer compare value currently programmed.
+pub(crate) fn timer_compare() -> u64
+{
+    let value: u64;
+    // SAFETY: reading this CPU's timer compare has no side effects.
+    unsafe { core::arch::asm!("mrs {}, cntp_cval_el0", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+/// Installs the trap vector: the address the CPU jumps to on any exception.
+///
+/// # Safety
+/// `vector` must be the entry of a valid, mapped exception table that preserves
+/// the frame layout this kernel expects.
+pub(crate) unsafe fn install_trap_vector(vector: usize)
+{
+    // SAFETY: the caller guarantees the handler contract. VBAR_EL1 must be
+    // 2 KiB aligned, which the table's own alignment attribute provides.
+    unsafe {
+        core::arch::asm!("msr vbar_el1, {}", "isb", in(reg) vector);
+    }
+}
+
+/// Bytes per vector register. AArch64 has no such extension, so this reports
+/// zero and callers size their frames accordingly.
+pub(crate) fn vector_bytes() -> usize
+{
+    0
+}
+
+/// The current stack pointer.
+pub(crate) fn stack_pointer() -> usize
+{
+    let value: usize;
+    // SAFETY: reading sp has no side effects.
+    unsafe { core::arch::asm!("mov {}, sp", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+/// This CPU's control-block pointer, kept in TPIDR_EL1.
+pub(crate) fn hart_control() -> usize
+{
+    let value: usize;
+    // SAFETY: reading TPIDR_EL1 has no side effects.
+    unsafe { core::arch::asm!("mrs {}, tpidr_el1", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+/// Sets this CPU's control-block pointer.
+///
+/// # Safety
+/// `value` must be null or point to the live control block for this CPU.
+pub(crate) unsafe fn set_hart_control(value: usize)
+{
+    // SAFETY: the caller guarantees the pointer.
+    unsafe { core::arch::asm!("msr tpidr_el1, {}", in(reg) value, options(nostack)) };
+}
+
+/// Raises a breakpoint, entering the exception handler with a breakpoint cause.
+pub(crate) fn breakpoint() -> !
+{
+    // SAFETY: `brk` transfers control to the installed vector and never returns
+    // to the next instruction.
+    unsafe { core::arch::asm!("brk #0", options(noreturn)) };
+}
+
+/// Clears a pending software interrupt so re-entry cannot immediately retrap.
+pub(crate) fn clear_software_interrupt()
+{
+    // AArch64 reports a software-generated interrupt through the GIC, not a
+    // pending bit this layer owns; the distributor clear belongs to the
+    // interrupt controller adapter.
+}
+
+/// Unmasks the software-interrupt source, which the scheduler uses to admit a
+/// peer into idle.
+pub(crate) fn enable_software_interrupt()
+{
+    // As `clear_software_interrupt`: the GIC owns this, not the CPU interface.
+}
+
+/// The interrupt-enable register, whose bits say which sources can interrupt.
+/// AArch64 masks at the controller, so the CPU-level answer is whether IRQ is
+/// currently unmasked.
+pub(crate) fn interrupt_enables() -> usize
+{
+    usize::from(super::interrupts::enabled())
+}
+
 core::arch::global_asm!(".section .text", ".balign 4", ".global __system_terminal_stack",
                         "__system_terminal_stack:", "mov sp, x0", "and sp, sp, #-16", "mov x9, \
                         x1", "mov x0, x2", "mov x30, xzr", "br x9");

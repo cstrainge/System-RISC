@@ -79,10 +79,7 @@ pub(crate) fn validate_stack_configuration(
                            stack::{self, Policy}};
 
     use crate::machine::memory::*;
-    let vector_bytes: u64;
-    unsafe {
-        asm!("csrr {},vlenb", out(reg)vector_bytes, options(nomem,nostack));
-    }
+    let vector_bytes = crate::machine::cpu::vector_bytes() as u64;
     let cpu_bytes =
         stack::cpu_state_bytes(size_of::<TrapFrame>() as u64, 32, vector_bytes).map_err(|error| {
                                                                                    ("CPU frame",
@@ -159,8 +156,9 @@ fn definition_request<T>(mut run: impl FnMut(&mut crate::toolbox::runtime::Toolb
 /// poisoned; it must not initialize global tracing or use firmware logging.
 fn install_local()
 {
+    // SAFETY: `__system_trap_vector` is this crate's own trap entry.
     unsafe {
-        asm!("csrw stvec, {}",in(reg)__system_trap_vector as *const() as usize);
+        crate::machine::cpu::install_trap_vector(__system_trap_vector as *const() as usize);
     }
 }
 pub(crate) fn install()
@@ -273,9 +271,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
         Err(error) =>
         {
             crate::machine::paging::report_refusal(&error);
-            unsafe {
-                asm!("ebreak", options(noreturn));
-            }
+            crate::machine::cpu::breakpoint();
         }
     }
 }
@@ -289,12 +285,9 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
 {
     if frame.cause == (1usize << 63) | 1
     {
-        // Clear the local hardware source before any ACK observation. No
-        // frame reference or trace/context guard may survive into that ACK.
-        // No nomem: keep publication of the later atomic ACK after this CSR.
-        unsafe {
-            asm!("csrci sip, 2", options(nostack));
-        }
+        // Clear the local hardware source before any ACK observation. No frame
+        // reference or trace/context guard may survive into that ACK.
+        crate::machine::cpu::clear_software_interrupt();
         return Dispatch::Wake;
     }
     #[cfg(feature = "event-trace")]

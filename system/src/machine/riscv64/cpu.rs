@@ -51,6 +51,108 @@ pub(crate) fn wait_for_interrupt()
     unsafe { core::arch::asm!("wfi", options(nomem, nostack)) };
 }
 
+/// Monotonic time counter, in platform ticks.
+pub(crate) fn ticks() -> u64
+{
+    let value: u64;
+    // SAFETY: reading the time counter has no side effects. The fences stop the
+    // compiler and the hardware reordering the read across surrounding stores.
+    unsafe {
+        core::arch::asm!("fence rw, i", "rdtime {value}", "fence i, rw", value = out(reg) value);
+    }
+    value
+}
+
+/// The timer compare value currently programmed.
+pub(crate) fn timer_compare() -> u64
+{
+    let value: u64;
+    // SAFETY: reading a supervisor CSR has no side effects.
+    unsafe { core::arch::asm!("csrr {}, stimecmp", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+/// Installs the trap vector: the address the CPU jumps to on any trap.
+///
+/// # Safety
+/// `vector` must be the entry of a valid, mapped trap handler that preserves the
+/// frame layout this kernel expects.
+pub(crate) unsafe fn install_trap_vector(vector: usize)
+{
+    // SAFETY: the caller guarantees the handler contract.
+    unsafe { core::arch::asm!("csrw stvec, {}", in(reg) vector) };
+}
+
+/// Bytes per vector register, or zero when the extension is absent.
+pub(crate) fn vector_bytes() -> usize
+{
+    let bytes: usize;
+    // SAFETY: reading vlenb is defined even where the V extension is absent,
+    // where it reads as zero.
+    unsafe { core::arch::asm!("csrr {}, vlenb", out(reg) bytes, options(nomem, nostack)) };
+    bytes
+}
+
+/// The current stack pointer.
+pub(crate) fn stack_pointer() -> usize
+{
+    let value: usize;
+    // SAFETY: reading sp has no side effects.
+    unsafe { core::arch::asm!("mv {}, sp", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+/// This hart's control-block pointer, kept in the supervisor scratch register.
+pub(crate) fn hart_control() -> usize
+{
+    let value: usize;
+    // SAFETY: reading sscratch has no side effects.
+    unsafe { core::arch::asm!("csrr {}, sscratch", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
+/// Sets this hart's control-block pointer.
+///
+/// # Safety
+/// `value` must be null or point to the live control block for this hart.
+pub(crate) unsafe fn set_hart_control(value: usize)
+{
+    // SAFETY: the caller guarantees the pointer.
+    unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) value, options(nostack)) };
+}
+
+/// Raises a breakpoint, entering the trap handler with a breakpoint cause.
+pub(crate) fn breakpoint() -> !
+{
+    // SAFETY: `ebreak` transfers control to the installed trap vector and never
+    // returns to the next instruction.
+    unsafe { core::arch::asm!("ebreak", options(noreturn)) };
+}
+
+/// Clears a pending software interrupt so re-entry cannot immediately retrap.
+pub(crate) fn clear_software_interrupt()
+{
+    // SAFETY: clears one pending bit for this hart.
+    unsafe { core::arch::asm!("csrci sip, 2", options(nostack)) };
+}
+
+/// Unmasks the software-interrupt source, which the scheduler uses to admit a
+/// peer into idle.
+pub(crate) fn enable_software_interrupt()
+{
+    // SAFETY: sets one interrupt-enable bit for this hart.
+    unsafe { core::arch::asm!("csrs sie, {}", in(reg) 2usize, options(nomem, nostack)) };
+}
+
+/// The interrupt-enable register, whose bits say which sources can interrupt.
+pub(crate) fn interrupt_enables() -> usize
+{
+    let value: usize;
+    // SAFETY: reading sie has no side effects.
+    unsafe { core::arch::asm!("csrr {}, sie", out(reg) value, options(nomem, nostack)) };
+    value
+}
+
 core::arch::global_asm!(".section .text", ".balign 4", ".global __system_terminal_stack",
                         "__system_terminal_stack:", "mv sp, a0", "andi sp, sp, -16", "mv t0, a1",
                         "mv a0, a2", "li ra, 0", "jr t0");
