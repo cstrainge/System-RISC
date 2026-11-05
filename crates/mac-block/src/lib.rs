@@ -5,7 +5,8 @@ extern crate alloc;
 use alloc::boxed::Box;
 mod partitions;
 pub use mac_formats::{Error, Result};
-pub use partitions::{ApplePartition, MbrPartition, apple_partitions, mbr_partitions};
+pub use partitions::{ApplePartition, MbrEntry, MbrPartition, apple_partitions, mbr_entries,
+                     mbr_partitions};
 pub const SECTOR_SIZE: usize = 512;
 
 pub trait BlockDevice

@@ -9,4 +9,4 @@ mod apple;
 mod mbr;
 
 pub use apple::{ApplePartition, apple_partitions};
-pub use mbr::{MbrPartition, mbr_partitions};
+pub use mbr::{MbrEntry, MbrPartition, mbr_entries, mbr_partitions};
