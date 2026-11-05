@@ -13,10 +13,10 @@ use crate::{Refusal,
                       plan as copy_plan},
             surface_bytes};
 
-/// The VIDO operations the engine drives. Semantics follow the virtio driver:
-/// ATTACH allocates and scans out, PREPARE stages without publishing, COMMIT
-/// switches, and RELEASE follows System's CPU-pin retirement — a refusal retains
-/// custody of whatever it refused to release.
+/// The VIDO operations the engine drives. The semantics are the interface's,
+/// not another driver's: ATTACH allocates and scans out, PREPARE stages without
+/// publishing, COMMIT switches, and RELEASE follows System's CPU-pin retirement
+/// — a refusal retains custody of whatever it refused to release.
 pub trait Hardware
 {
     fn attach(&mut self, attach: &Attach, generation: u64) -> Result<Surface, Refusal>;
