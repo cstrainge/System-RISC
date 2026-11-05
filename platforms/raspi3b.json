@@ -204,6 +204,33 @@
       "bytes": 4096,
       "interrupt": 0,
       "flags": 2
+    },
+    {
+      "id": "bcm2835-dma",
+      "bus": "MMIO",
+      "key": "6272636d2c646d610000000000000000",
+      "address": "0x3f007000",
+      "bytes": 4096,
+      "interrupt": 16,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-spi0",
+      "bus": "MMIO",
+      "key": "6272636d2c7370693000000000000000",
+      "address": "0x3f204000",
+      "bytes": 4096,
+      "interrupt": 54,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-aux",
+      "bus": "MMIO",
+      "key": "6272636d2c6175780000000000000000",
+      "address": "0x3f215000",
+      "bytes": 4096,
+      "interrupt": 29,
+      "flags": 2
     }
   ],
   "bootloader": {
@@ -339,7 +366,7 @@
     }
   },
   "hardware": {
-    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware",
+    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware. Its DMA controller has fifteen channels, of which the board's own firmware keeps four for itself: the reference hardware description gives the ARM channels 0, 2, 4, 5 and 8 through 14, and that mask is what a driver must take its channels from rather than assuming all fifteen. The controller is therefore shared: the SD host path is served by channel 13 when that controller is driven, and a timed output needs a channel of its own from the same set.",
     "board": "bcm2837-class",
     "soc": "bcm2837",
     "boot": {
@@ -393,6 +420,27 @@
         "base": "0x3f104000",
         "bytes": "0x10",
         "interrupt": 61
+      },
+      {
+        "kind": "dma",
+        "model": "bcm2835-dma",
+        "base": "0x3f007000",
+        "bytes": "0xf00",
+        "interrupt": 16
+      },
+      {
+        "kind": "spi",
+        "model": "bcm2835-spi0",
+        "base": "0x3f204000",
+        "bytes": "0x200",
+        "interrupt": 54
+      },
+      {
+        "kind": "auxiliary",
+        "model": "bcm2835-aux",
+        "base": "0x3f215000",
+        "bytes": "0x1000",
+        "interrupt": 29
       }
     ],
     "tooling": [

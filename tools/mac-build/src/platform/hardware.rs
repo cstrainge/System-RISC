@@ -188,7 +188,20 @@ pub enum PeripheralKind
     Timer,
     InterruptController,
     Display,
-    Entropy
+    Entropy,
+    /// A DMA engine: it moves data between memory and a peripheral, and is what
+    /// lets a serialiser emit a buffer with no CPU instruction between elements.
+    Dma,
+    /// A pulse-width modulator, whose channel emits a duty value per period.
+    Pwm,
+    /// A serial peripheral: its shift register emits a bit stream at a divided
+    /// clock, which makes it a serialiser for a timed waveform as well as a bus.
+    Spi,
+    /// A framed audio engine, which is a serialiser with its own clock dividers.
+    Audio,
+    /// A block that multiplexes several functions behind one register window, so
+    /// its clients share an enable register and an interrupt.
+    Auxiliary
 }
 
 impl Definition

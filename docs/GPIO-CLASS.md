@@ -197,6 +197,76 @@ Every refusal is typed and distinguishable from every other. The minimum set:
 An application must be able to distinguish "retry later" from "this board cannot
 do that" without reading a board name.
 
+## Two callers, one contract
+
+A System extension runs inside System; an application does not. Both may need to
+drive a pin, so the class must be reachable from both — but it must be **one
+contract and one implementation presented twice**, not two implementations.
+
+**The implementation.** The resident owner of the class holds the arbitration
+state and issues requests to whichever driver the record selected. That is the
+whole of it. There is no second path over a driver's registers.
+
+**The presentations.**
+
+* *Applications* reach it through the kernel-mediated service: a request crosses
+  the kernel boundary, is attributed to the calling application, and its reply
+  carries the capability data or the typed refusal.
+* *Extensions* reach it through the System-internal interface: the same
+  operations, the same capability data, the same refusal values, resolved by a
+  direct call because there is no boundary to cross.
+
+The two presentations must be generated from the same contract and answered by
+the same code. If the internal path ever grows its own notion of which pin is
+available or who holds it, an application and an extension will disagree about
+one pin and nothing will report the disagreement — the arbitration state would
+have two owners and neither would be wrong from where it stands. That failure is
+invisible in tests that exercise one path at a time, which is why the rule is
+structural.
+
+**There is no privilege difference in this class** — and saying so is more useful
+than implying one. An extension may do things an application may not because it
+is kernel code and is trusted as such; through *this* class it may not take a pin
+an application holds, may not skip arbitration, may not claim a pin the board does
+not have, and may not read a pin's state without claiming it. Its advantage is
+convenience: no boundary crossing, no service round trip. If a future requirement
+genuinely needs an extension to do something an application cannot, that is a
+declared, audited difference and it belongs in this document — not an accident of
+the internal path being closer to the hardware.
+
+Lifecycle is the same for both: an extension that holds pins releases them when
+it is unloaded, exactly as an application releases them when it exits, and for
+the same reason — the next claimant must find the header usable.
+
+## Absence is an answer
+
+A platform with no GPIO must answer clearly rather than fail at a call site.
+
+* The platform record that declares no GPIO device yields a class with an empty
+  pin set. That is a valid platform, not a broken one: the emulated ARM machine
+  used for development is exactly that case.
+* The capability query is answerable for such a platform: it returns "no pins
+  here", which is data, not an error. Every other operation returns the typed
+  *absent* refusal, naming the platform as the reason.
+* Nothing panics, nothing partially initialises, and no default pin appears. A
+  fabricated pin on a board without one is worse than a refusal, because the
+  caller would act on it.
+
+## Declining to attach is supported
+
+An extension that needs pins declares the interface in its module contract. If
+the platform's class reports absent, the extension receives the named refusal,
+exits cleanly, and does not attach — no crash, no half-initialised state holding
+resources nothing will release.
+
+This is the project's declared-dependency model applied to a device class: a
+provider that cannot supply what a module declares is a typed refusal with its
+cause visible beside the module, not a successful-looking no-op. The older
+System's extensions did the same thing — checked for what they needed at
+start-up and disabled themselves if it was not there — and that behaviour is
+worth keeping because the alternative, discovering the absence later, leaves the
+system with a loaded component that cannot work.
+
 ## Capabilities are a runtime query
 
 An application ships as one binary to boards that differ, so it cannot decide at
