@@ -1,0 +1,23 @@
+[package]
+name = "videocore-framebuffer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+guest = []
+
+[[bin]]
+name = "VideoCoreFramebuffer"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+bench = false
+
+[dependencies]
+mac-abi.workspace = true
+mac-driver = { path = "../../crates/mac-driver" }
+mac-video-interface.workspace = true
+
+[build-dependencies]
+mac-build.workspace = true
