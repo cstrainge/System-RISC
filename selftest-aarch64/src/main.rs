@@ -300,7 +300,9 @@ fn wait_microseconds(microseconds: u64)
     }
 }
 
-#[repr(align(64))]
+/// Page aligned so the whole buffer is reachable through one non-cacheable
+/// alias page, which is how the experiment observes memory instead of cache.
+#[repr(align(4096))]
 struct CacheTest([u8; CACHE_TEST_BYTES]);
 
 static mut CACHE_TEST: CacheTest = CacheTest([0; CACHE_TEST_BYTES]);
@@ -469,6 +471,10 @@ fn describe_failure(text: &mut Text, failure: &sdhci::Failure)
         .push_hex(u64::from(failure.normal))
         .push_str(" err ")
         .push_hex(u64::from(failure.error));
+    if failure.caps != 0
+    {
+        text.push_str(" cap ").push_hex(u64::from(failure.caps));
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -756,7 +762,15 @@ pub extern "C" fn rust_entry() -> !
     // 9. Turn translation and caches on. The mailbox is no longer used after
     // this point: its message buffer would need cleaning before the firmware
     // could read it again, and this program has nothing left to ask.
-    let mapped = mmu::enable();
+    //
+    // The experiment's buffer is addressed first, while translation is still
+    // off, so its address is its physical address too; the page table then
+    // gives that page a second, non-cacheable VA.
+    // SAFETY: a static owned by this single-threaded run; taking its address
+    // does not create a reference.
+    let buffer = unsafe { core::ptr::addr_of_mut!(CACHE_TEST.0) as *mut u8 };
+    let address = buffer as usize;
+    let mapped = mmu::enable(address);
     let enabled = mapped && mmu::enabled();
     report.push("mmu",
                 enabled,
@@ -771,31 +785,27 @@ pub extern "C" fn rust_entry() -> !
           });
 
     // 10. Cache coherence, the reason this binary exists. Write a pattern,
-    // clean it to the point of coherency, invalidate, read back: the clean is
-    // what made the read correct. Then write a second pattern and invalidate
-    // without cleaning: the read must return the first pattern. Both halves are
-    // reported separately so the mechanism is visible, not just a tick.
-    // SAFETY: the buffer is a static owned by this single-threaded run; taking
-    // its address here does not create a reference.
-    let buffer = unsafe { core::ptr::addr_of_mut!(CACHE_TEST.0) as *mut u8 };
-    let address = buffer as usize;
+    // clean it to the point of coherency, then read it back through the
+    // non-cacheable alias: the clean is what put it in memory. Then write a
+    // second pattern and read again without cleaning: memory must still hold
+    // the first. Reading through the cache would answer from the cache in both
+    // halves and prove nothing, and invalidating would not help, because on
+    // Cortex-A53 `dc ivac` cleans a dirty line before it invalidates it.
+    // SAFETY: the alias maps this buffer's page, so both pointers address
+    // memory this run owns.
+    let view = mmu::ALIAS_BASE as *const u8;
     for index in 0..CACHE_TEST_BYTES
     {
         // SAFETY: `index` is inside the buffer.
         unsafe { write_volatile(buffer.add(index), 0xa5) };
     }
     cache::clean(address, CACHE_TEST_BYTES);
-    // Discard the now-clean lines without writing back. `dc civac` here would
-    // write them back a second time, so the read below would succeed even if
-    // the clean above had done nothing and this half would pass on any
-    // hardware while proving nothing about `dc cvac`.
-    cache::invalidate(address, CACHE_TEST_BYTES);
     let mut clean_ok = true;
     let mut clean_observed = 0u8;
     for index in 0..CACHE_TEST_BYTES
     {
-        // SAFETY: as above; the volatile read defeats any cached register copy.
-        let value = unsafe { read_volatile(buffer.add(index)) };
+        // SAFETY: as above; non-cacheable, so this is memory rather than cache.
+        let value = unsafe { read_volatile(view.add(index)) };
         if index == 0
         {
             clean_observed = value;
@@ -821,11 +831,10 @@ pub extern "C" fn rust_entry() -> !
         // SAFETY: `index` is inside the buffer.
         unsafe { write_volatile(buffer.add(index), 0x5a) };
     }
-    // The second pattern is never cleaned. Invalidate discards it instead of
-    // writing it back, so a real cache leaves the first pattern in DRAM.
-    cache::invalidate(address, CACHE_TEST_BYTES);
-    // SAFETY: the buffer is a static owned by this run.
-    let dirty_observed = unsafe { read_volatile(buffer) };
+    // The second pattern is never cleaned, so a write-back cache leaves the
+    // first pattern in memory, where the alias sees it.
+    // SAFETY: as above.
+    let dirty_observed = unsafe { read_volatile(view) };
     // The stale byte must be the first pattern: that is what proves the clean
     // above really reached DRAM and that this line was dirty. Anything else
     // means the two halves disagree about where the bytes live.

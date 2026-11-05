@@ -18,6 +18,9 @@ pub fn line_bytes() -> usize
 /// Clean each line in the range to the point of coherency.
 pub fn clean(start: usize, bytes: usize)
 {
+    // Stores still in flight when the maintenance runs would not be covered,
+    // so let them reach the cache first.
+    dsb();
     let line = line_bytes();
     let mut address = start & !(line - 1);
     let end = start + bytes;
@@ -26,22 +29,6 @@ pub fn clean(start: usize, bytes: usize)
         // SAFETY: `address` is a valid address in the caller's buffer; the
         // instruction only writes that line back.
         unsafe { asm!("dc cvac, {}", in(reg) address, options(nostack, preserves_flags)) };
-        address += line;
-    }
-    dsb();
-}
-
-/// Discard each line without writing it back. Dirty data is lost; that is the
-/// point of the experiment's second half.
-pub fn invalidate(start: usize, bytes: usize)
-{
-    let line = line_bytes();
-    let mut address = start & !(line - 1);
-    let end = start + bytes;
-    while address < end
-    {
-        // SAFETY: as `clean`.
-        unsafe { asm!("dc ivac, {}", in(reg) address, options(nostack, preserves_flags)) };
         address += line;
     }
     dsb();
