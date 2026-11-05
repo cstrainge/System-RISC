@@ -57,11 +57,21 @@ fn main()
                       & !0x1f_ffff;
     let display = &record["memory"]["display"];
     let boot = &record["memory"]["boot"];
+    let dma_pool = record["mmio_devices"].as_array()
+                                         .expect("mmio_devices")
+                                         .iter()
+                                         .find(|device| device["id"] == "bcm2835-dma")
+                                         .and_then(|device| device["pool"].as_u64())
+                                         .expect("the DMA window must declare the ARM channel pool")
+        as u32;
     let out = Path::new(&env::var("OUT_DIR").expect("Cargo supplies OUT_DIR")).to_path_buf();
     let facts = format!("pub const PLATFORM_NAME: &str = \"{name}\";\npub const MAILBOX_BASE: \
                          usize = {mailbox:#x};\npub const PL011_BASE: usize = {pl011:#x};\npub \
                          const SDHCI_BASE: usize = {sdhci:#x};\npub const SYSTIMER_BASE: usize = \
-                         {timer:#x};\npub const DECLARED_RAM_BASE: u64 = {ram_base:#x};\npub \
+                         {timer:#x};\npub const SPI0_BASE: usize = {spi0:#x};\npub const DMA_BASE: \
+                         usize = {dma:#x};\npub const DMA_POOL: u32 = {dma_pool:#x};\npub const \
+                         PM_BASE: usize = {pm:#x};\npub const DECLARED_RAM_BASE: u64 = \
+                         {ram_base:#x};\npub \
                          const DECLARED_RAM_BYTES: u64 = {ram_bytes:#x};\npub const DEVICE_BASE: \
                          u64 = {device_base:#x};\npub const DISPLAY_WIDTH: u32 = {width};\npub \
                          const DISPLAY_HEIGHT: u32 = {height};\n",
@@ -69,6 +79,9 @@ fn main()
                         pl011 = device("uart"),
                         sdhci = device("storage"),
                         timer = mmio("bcm2835-systimer"),
+                        spi0 = mmio("bcm2835-spi0"),
+                        dma = mmio("bcm2835-dma"),
+                        pm = mmio("bcm2835-pm"),
                         ram_base = number(&hardware["ram"]["base"]),
                         ram_bytes = number(&hardware["ram"]["bytes"]),
                         width = display["width"].as_u64().expect("memory.display.width"),

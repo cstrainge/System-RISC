@@ -34,6 +34,26 @@ pub fn clean(start: usize, bytes: usize)
     dsb();
 }
 
+/// Discard each line so the next read comes from memory. On Cortex-A53 a dirty
+/// line is written back before it is invalidated, so this is safe for a
+/// destination the engine is about to overwrite and for a destination it has
+/// just written, but it is not a way to observe a dirty line's absence.
+pub fn invalidate(start: usize, bytes: usize)
+{
+    dsb();
+    let line = line_bytes();
+    let mut address = start & !(line - 1);
+    let end = start + bytes;
+    while address < end
+    {
+        // SAFETY: `address` is a valid address in the caller's buffer; the
+        // instruction discards that line after any required writeback.
+        unsafe { asm!("dc ivac, {}", in(reg) address, options(nostack, preserves_flags)) };
+        address += line;
+    }
+    dsb();
+}
+
 /// Complete every maintenance operation issued before it.
 pub fn dsb()
 {

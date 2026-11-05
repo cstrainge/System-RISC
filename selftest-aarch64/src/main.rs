@@ -22,6 +22,7 @@ use mac_sdhci::Disk;
 use mac_videocore_fb::{Error, Framebuffer, Mode, PixelOrder, acquire};
 
 mod cache;
+mod dma;
 mod font;
 mod mailbox;
 mod mbr;
@@ -29,14 +30,16 @@ mod mmu;
 mod platform;
 mod qr;
 mod screen;
+mod spi0;
 mod uart;
 
 core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardware.inc")),
                         include_str!("entry.S"));
 
 const TEXT_BYTES: usize = 200;
-const MAX_CHECKS: usize = 12;
+const MAX_CHECKS: usize = 20;
 const CACHE_TEST_BYTES: usize = 4096;
+const DMA_WORDS: usize = 4096;
 
 #[panic_handler]
 fn panic(_: &PanicInfo) -> !
@@ -146,6 +149,7 @@ struct Check
 {
     name:   &'static str,
     ok:     bool,
+    skip:   bool,
     reason: &'static str,
     detail: Text
 }
@@ -156,6 +160,7 @@ impl Check
     {
         Self { name:   "",
                ok:     false,
+               skip:   false,
                reason: "",
                detail: Text::new() }
     }
@@ -181,6 +186,21 @@ impl Report
         self.count += 1;
         self.checks[at] = Check { name,
                                   ok,
+                                  skip: false,
+                                  reason,
+                                  detail: Text::new() };
+        &mut self.checks[at].detail
+    }
+
+    /// A check that cannot run because its hardware is not there. It is
+    /// reported, never silently omitted.
+    fn skip(&mut self, name: &'static str, reason: &'static str) -> &mut Text
+    {
+        let at = self.count;
+        self.count += 1;
+        self.checks[at] = Check { name,
+                                  ok: false,
+                                  skip: true,
                                   reason,
                                   detail: Text::new() };
         &mut self.checks[at].detail
@@ -193,11 +213,16 @@ impl Report
 
     fn failed(&self) -> usize
     {
-        self.count - self.passed()
+        self.checks[..self.count].iter().filter(|check| !check.ok && !check.skip).count()
     }
 
-    /// The exact text the QR carries: one `name=ok` or `name=fail: reason` per
-    /// line, and nothing else.
+    fn skipped(&self) -> usize
+    {
+        self.checks[..self.count].iter().filter(|check| check.skip).count()
+    }
+
+    /// The exact text the QR carries: one `name=ok`, `name=fail: reason` or
+    /// `name=skip: reason` per line, and nothing else.
     fn payload(&self) -> Text
     {
         let mut text = Text::new();
@@ -211,6 +236,11 @@ impl Report
             if check.ok
             {
                 text.push_str("=ok");
+            }
+            else if check.skip
+            {
+                text.push_str("=skip: ");
+                text.push_str(check.reason);
             }
             else
             {
@@ -231,6 +261,12 @@ impl Report
             {
                 uart::puts("=ok ");
             }
+            else if check.skip
+            {
+                uart::puts("=skip: ");
+                uart::puts(check.reason);
+                uart::putc(b' ');
+            }
             else
             {
                 uart::puts("=fail: ");
@@ -244,7 +280,9 @@ impl Report
         uart::putdec(self.passed() as u64);
         uart::puts(" ok ");
         uart::putdec(self.failed() as u64);
-        uart::puts(" fail\n");
+        uart::puts(" fail ");
+        uart::putdec(self.skipped() as u64);
+        uart::puts(" skip\n");
     }
 }
 
@@ -280,7 +318,7 @@ fn note_mailbox_failure(report: &mut Report, name: &'static str, subject: &str, 
     report.push(name, false, reason).push_str(subject).push_str(": ").push_str(reason);
 }
 
-fn timer() -> u64
+pub(crate) fn timer() -> u64
 {
     // SAFETY: the system timer window comes from the platform record and the
     // counter registers are read-only.
@@ -308,6 +346,17 @@ struct CacheTest([u8; CACHE_TEST_BYTES]);
 
 static mut CACHE_TEST: CacheTest = CacheTest([0; CACHE_TEST_BYTES]);
 
+/// The DMA buffers. They are page aligned so the cache maintenance that guards
+/// each transfer covers whole lines, and static so the engine's bus address is
+/// stable for the whole run.
+#[repr(align(64))]
+struct DmaBuffer<const WORDS: usize>([u32; WORDS]);
+
+static mut DMA_SOURCE: DmaBuffer<DMA_WORDS> = DmaBuffer([0; DMA_WORDS]);
+static mut DMA_DEST: DmaBuffer<DMA_WORDS> = DmaBuffer([0; DMA_WORDS]);
+static mut DMA_SOURCE2: DmaBuffer<256> = DmaBuffer([0; 256]);
+static mut DMA_DEST2: DmaBuffer<256> = DmaBuffer([0; 256]);
+
 fn draw_frame(screen: &screen::Screen, report: &Report, page: &str)
 {
     screen.fill_all(screen::GREY);
@@ -327,7 +376,9 @@ fn draw_frame(screen: &screen::Screen, report: &Report, page: &str)
            .push_dec(report.passed() as u64)
            .push_str(" OK ")
            .push_dec(report.failed() as u64)
-           .push_str(" FAIL");
+           .push_str(" FAIL ")
+           .push_dec(report.skipped() as u64)
+           .push_str(" SKIP");
     screen.centred_text(28,
                         3,
                         if report.failed() == 0 { screen::GREEN } else { screen::RED },
@@ -341,7 +392,7 @@ fn draw_results(screen: &screen::Screen, report: &Report, qr: Option<&qr::Qr>)
     {
         // The QR wins the space: the largest integer scale that fits the band
         // between the summary and the detail lines, centred on both axes.
-        let available = 505 - 58;
+        let available = 468 - 58;
         let scale = screen::Screen::qr_scale(qr, available);
         let panel = (qr.size + 8) * scale;
         let x = screen.width().saturating_sub(panel) / 2;
@@ -352,6 +403,7 @@ fn draw_results(screen: &screen::Screen, report: &Report, qr: Option<&qr::Qr>)
     {
         screen.centred_text(240, 3, screen::RED, "QR ENCODING FAILED");
     }
+    // Two columns keep nineteen checks readable without shrinking the QR.
     for (index, check) in report.checks[..report.count].iter().enumerate()
     {
         let mut line = Text::new();
@@ -359,6 +411,11 @@ fn draw_results(screen: &screen::Screen, report: &Report, qr: Option<&qr::Qr>)
         if check.ok
         {
             line.push_str("=ok");
+        }
+        else if check.skip
+        {
+            line.push_str("=skip: ");
+            line.push_str(check.reason);
         }
         else
         {
@@ -370,10 +427,23 @@ fn draw_results(screen: &screen::Screen, report: &Report, qr: Option<&qr::Qr>)
             line.push_char(b' ');
         }
         line.push_str(check.detail.as_str());
-        screen.text(20,
-                    492 + index * 8,
+        let column = index / 10;
+        let row = index % 10;
+        screen.text(20 + column * 390,
+                    478 + row * 8,
                     1,
-                    if check.ok { screen::WHITE } else { screen::RED },
+                    if check.ok
+                    {
+                        screen::WHITE
+                    }
+                    else if check.skip
+                    {
+                        screen::YELLOW
+                    }
+                    else
+                    {
+                        screen::RED
+                    },
                     line.as_str());
     }
 }
@@ -496,6 +566,7 @@ pub extern "C" fn rust_entry() -> !
     uart::putc(b'\n');
 
     let mut report = Report::new();
+    let mut core_hz = 0u64;
     let mut storage = mailbox::Storage::new();
     let mut mailbox = mailbox::mailbox();
     let mut message = match mailbox::message(&mut storage)
@@ -564,6 +635,7 @@ pub extern "C" fn rust_entry() -> !
         }
         Ok([id, rate]) =>
         {
+            core_hz = u64::from(rate);
             report.push("clock", true, "")
                   .push_str("core id ")
                   .push_dec(u64::from(id))
@@ -886,6 +958,449 @@ pub extern "C" fn rust_entry() -> !
               .push_str("uncleaned write read back ")
               .push_hex(u64::from(dirty_observed))
               .push_str("; wanted 0xa5");
+    }
+
+    // 12. SPI0: the block is live, the divider reads back, and the transmit
+    // status bit is produced by the FIFO rather than stored by the CPU.
+    let mut spi = spi0::Spi0::new();
+    let mut spi_ready = false;
+    let mut shift = 0u32;
+    if spi.present()
+    {
+        match spi.claim()
+        {
+            Ok(()) =>
+            {
+                report.push("spi-claim", true, "").push_str("clk 1000 txd ready");
+                spi_ready = true;
+            }
+            Err(reason) =>
+            {
+                report.push("spi-claim", false, reason).push_str("claim: ").push_str(reason);
+            }
+        }
+    }
+    else
+    {
+        report.skip("spi-claim", "no-block").push_str("SPI0 registers did not read back");
+    }
+
+    // 13. Byte length: send 32 bytes and count what came back. The count is
+    // also what reveals whether a FIFO entry shifts 8 bits or 32, which is the
+    // fact the "n words is 4n bytes" rule depends on.
+    if spi_ready
+    {
+        match spi.probe_shift()
+        {
+            Ok(received) =>
+            {
+                shift = spi.shift_bits();
+                let (ok, reason) = match shift
+                {
+                    32 => (true, ""),
+                    8 => (false, "shift-8"),
+                    _ => (false, "unknown")
+                };
+                report.push("spi-len", ok, reason)
+                      .push_str("dlen 32 rx ")
+                      .push_dec(received as u64)
+                      .push_str(" shift ")
+                      .push_dec(u64::from(shift));
+            }
+            Err(reason) =>
+            {
+                report.push("spi-len", false, reason).push_str("probe: ").push_str(reason);
+            }
+        }
+    }
+    else
+    {
+        report.skip("spi-len", "no-claim").push_str("SPI0 was not claimed");
+    }
+
+    // 14. A non-power-of-two divider against a power of two. The ratio cancels
+    // the core clock, so a rounded divisor shows as a ratio of 1.0 instead of
+    // 1.024 even if the rate itself is unknown.
+    if shift != 0
+    {
+        match (spi.transfer(256, 1000), spi.transfer(256, 1024))
+        {
+            (Ok((_, slow)), Ok((_, fast))) if slow != 0 && fast != 0 =>
+            {
+                let ratio = fast.saturating_mul(1_000_000) / slow;
+                let off = ratio.abs_diff(1_024_000);
+                let mut detail = Text::new();
+                detail.push_str("1000/1024 ratio ").push_dec(ratio);
+                if core_hz != 0
+                {
+                    detail.push_str(" core ").push_dec(core_hz);
+                }
+                if off <= 10_240
+                {
+                    report.push("spi-div", true, "").push_str(detail.as_str());
+                }
+                else if ratio.abs_diff(1_000_000) <= 10_240
+                {
+                    report.push("spi-div", false, "rounded")
+                          .push_str(detail.as_str())
+                          .push_str("; non-power-of-two rounded");
+                }
+                else
+                {
+                    report.push("spi-div", false, "rate").push_str(detail.as_str());
+                }
+            }
+            (Err(reason), _) | (_, Err(reason)) =>
+            {
+                report.push("spi-div", false, reason).push_str("transfer: ").push_str(reason);
+            }
+            _ =>
+            {
+                report.push("spi-div", false, "timer").push_str("no timer advance");
+            }
+        }
+    }
+    else
+    {
+        report.skip("spi-div", "no-shift").push_str("the shift width was not established");
+    }
+
+    // 15. The DMA controller: presence, then a channel from the board's ARM
+    // set. The mask is the record's pool, never all fifteen.
+    let dma = dma::Dma::new();
+    let dma_present = dma.present();
+    let channel = if dma_present { dma.claim(platform::DMA_POOL) } else { None };
+    let channel_ok = channel.is_some();
+
+    // 16-17. Pacing and completion: one DMA-fed SPI transfer, measured against
+    // a CPU-fed transfer of the same byte count. Completion is the SPI's own
+    // done bit, not the engine's active bit.
+    let mut spi_dma_ok = false;
+    let mut spi_dma_reason: &'static str = "no-dma";
+    let mut spi_busy = false;
+    let mut spi_dma_duration = 0u64;
+    let mut spi_cpu_duration = 0u64;
+    if spi_ready && shift != 0 && channel_ok
+    {
+        let bytes = 512usize;
+        let dma_bytes = if shift == 8 { bytes * 4 } else { bytes };
+        // SAFETY: a static owned by this single-threaded run.
+        let source = unsafe { core::ptr::addr_of_mut!(DMA_SOURCE.0) as *mut u32 };
+        for index in 0..dma_bytes / 4
+        {
+            // SAFETY: `index` is inside the buffer.
+            unsafe { write_volatile(source.add(index), 0xa5a5_0000 | index as u32) };
+        }
+        match spi.transfer(bytes, 1000)
+        {
+            Ok((_, duration)) => spi_cpu_duration = duration,
+            Err(reason) => spi_dma_reason = reason
+        }
+        if let Some(ch) = channel.as_ref()
+        {
+            match spi.prepare_dma(bytes, 1000)
+            {
+                Ok(()) =>
+                {
+                    let block = dma::ControlBlock::spi_write(source as usize,
+                                                              spi0::FIFO_BUS,
+                                                              dma_bytes);
+                    cache::clean(source as usize, dma_bytes);
+                    let start = timer();
+                    match ch.start(&block)
+                    {
+                        Ok(()) =>
+                        {
+                            // The engine is running before the block is told to
+                            // shift; the other order waits on an empty FIFO.
+                            spi.start();
+                            let dma_result = ch.wait();
+                            spi_busy = spi.busy();
+                            let spi_result = spi.wait_done();
+                            let end = timer();
+                            spi.finish();
+                            spi_dma_duration = end.wrapping_sub(start);
+                            spi_dma_ok = dma_result.is_ok()
+                                         && spi_result.is_ok()
+                                         && spi_cpu_duration != 0;
+                            if let Err(reason) = dma_result
+                            {
+                                spi_dma_reason = reason;
+                            }
+                            else if let Err(reason) = spi_result
+                            {
+                                spi_dma_reason = reason;
+                            }
+                        }
+                        Err(reason) =>
+                        {
+                            spi.finish();
+                            spi_dma_reason = reason;
+                        }
+                    }
+                }
+                Err(reason) => spi_dma_reason = reason
+            }
+        }
+    }
+    if !spi_ready
+    {
+        report.skip("spi-pace", "no-claim").push_str("SPI0 was not claimed");
+        report.skip("spi-done", "no-claim").push_str("SPI0 was not claimed");
+    }
+    else if shift == 0
+    {
+        report.skip("spi-pace", "no-shift").push_str("the shift width was not established");
+        report.skip("spi-done", "no-shift").push_str("the shift width was not established");
+    }
+    else if !channel_ok
+    {
+        report.skip("spi-pace", "no-dma").push_str("no DMA channel from the ARM set");
+        report.skip("spi-done", "no-dma").push_str("no DMA channel from the ARM set");
+    }
+    else if spi_dma_ok
+    {
+        let off = spi_dma_duration.abs_diff(spi_cpu_duration);
+        let within = off * 100 <= spi_cpu_duration * 2;
+        if within
+        {
+            report.push("spi-pace", true, "")
+                  .push_str("dma ")
+                  .push_dec(spi_dma_duration)
+                  .push_str(" us cpu ")
+                  .push_dec(spi_cpu_duration)
+                  .push_str(" us");
+        }
+        else
+        {
+            report.push("spi-pace", false, "gap")
+                  .push_str("dma ")
+                  .push_dec(spi_dma_duration)
+                  .push_str(" us cpu ")
+                  .push_dec(spi_cpu_duration)
+                  .push_str(" us");
+        }
+        report.push("spi-done",
+                    true,
+                    "")
+              .push_str(if spi_busy
+              {
+                  "dma done, spi still busy"
+              }
+              else
+              {
+                  "spi done with dma"
+              });
+    }
+    else
+    {
+        report.push("spi-pace", false, spi_dma_reason)
+              .push_str("dma-fed transfer: ")
+              .push_str(spi_dma_reason);
+        report.push("spi-done", false, spi_dma_reason)
+              .push_str("dma-fed transfer: ")
+              .push_str(spi_dma_reason);
+    }
+
+    // 18. A channel lease on real hardware: a memory-to-memory copy whose
+    // source and destination are both in the buffer the CPU owns.
+    if !dma_present
+    {
+        report.skip("dma-lease", "no-dma").push_str("DMA registers did not read back");
+        report.skip("dma-2nd", "no-dma").push_str("DMA registers did not read back");
+        report.skip("dma-clean", "no-dma").push_str("DMA registers did not read back");
+    }
+    else if let Some(ch) = channel.as_ref()
+    {
+        let words = 1024usize;
+        // SAFETY: statics owned by this single-threaded run.
+        let source = unsafe { core::ptr::addr_of_mut!(DMA_SOURCE.0) as *mut u32 };
+        let dest = unsafe { core::ptr::addr_of_mut!(DMA_DEST.0) as *mut u32 };
+        for index in 0..words
+        {
+            // SAFETY: `index` is inside the buffer.
+            unsafe { write_volatile(source.add(index), 0x1122_3344 ^ index as u32) };
+        }
+        match ch.copy(source as usize, dest as usize, words * 4, true)
+        {
+            Ok(()) =>
+            {
+                cache::invalidate(dest as usize, words * 4);
+                let mut landed = true;
+                for index in 0..words
+                {
+                    // SAFETY: as above.
+                    if unsafe { read_volatile(dest.add(index)) } != (0x1122_3344 ^ index as u32)
+                    {
+                        landed = false;
+                        break;
+                    }
+                }
+                if landed
+                {
+                    report.push("dma-lease", true, "")
+                          .push_str("ch ")
+                          .push_dec(u64::from(ch.number()))
+                          .push_str(" 4096 bytes");
+                }
+                else
+                {
+                    report.push("dma-lease", false, "mismatch")
+                          .push_str("the copy did not land");
+                }
+            }
+            Err(reason) =>
+            {
+                report.push("dma-lease", false, reason).push_str("copy: ").push_str(reason);
+            }
+        }
+
+        // 19. A second acquisition of the same channel while the first is in
+        // flight. The controller has no ownership check; the observation is
+        // whether the first transfer survives it.
+        let source2 = unsafe { core::ptr::addr_of_mut!(DMA_SOURCE2.0) as *mut u32 };
+        let dest2 = unsafe { core::ptr::addr_of_mut!(DMA_DEST2.0) as *mut u32 };
+        let long_words = DMA_WORDS;
+        for index in 0..long_words
+        {
+            // SAFETY: `index` is inside the buffer.
+            unsafe { write_volatile(source.add(index), 0x5566_7788 ^ index as u32) };
+        }
+        for index in 0..256
+        {
+            // SAFETY: `index` is inside the second buffer.
+            unsafe { write_volatile(source2.add(index), 0x99aa_bbcc ^ index as u32) };
+        }
+        cache::clean(source as usize, long_words * 4);
+        cache::clean(source2 as usize, 256 * 4);
+        cache::invalidate(dest as usize, long_words * 4);
+        let first = dma::ControlBlock::memory_copy(source as usize,
+                                                   dest as usize,
+                                                   long_words * 4);
+        match ch.start(&first)
+        {
+            Ok(()) =>
+            {
+                let busy = ch.active();
+                let second = dma::ControlBlock::memory_copy(source2 as usize,
+                                                            dest2 as usize,
+                                                            256 * 4);
+                let second_start = ch.start(&second);
+                let wait = ch.wait();
+                cache::invalidate(dest as usize, long_words * 4);
+                // SAFETY: `dest` is inside the buffer.
+                let first_landed = unsafe { read_volatile(dest) } == 0x5566_7788;
+                if busy && wait.is_ok() && first_landed
+                {
+                    report.push("dma-2nd", true, "")
+                          .push_str("busy seen; second ")
+                          .push_str(if second_start.is_ok() { "accepted" } else { "refused" })
+                          .push_str(", first intact");
+                }
+                else if !busy
+                {
+                    report.push("dma-2nd", false, "too-fast")
+                          .push_str("the first transfer finished before it was observed");
+                }
+                else if !first_landed
+                {
+                    report.push("dma-2nd", false, "corrupt")
+                          .push_str("the second acquisition disturbed the first");
+                }
+                else
+                {
+                    let reason = match wait
+                    {
+                        Err(reason) => reason,
+                        Ok(()) => "second"
+                    };
+                    report.push("dma-2nd", false, reason)
+                          .push_str("first transfer did not complete");
+                }
+            }
+            Err(reason) =>
+            {
+                report.push("dma-2nd", false, reason).push_str("start: ").push_str(reason);
+            }
+        }
+
+        // 20. The clean the document requires. The cleaned copy must land; the
+        // uncleaned one is the observation, not a failure: it says whether the
+        // requirement is visible on this silicon.
+        for index in 0..words
+        {
+            // SAFETY: `index` is inside the buffer.
+            unsafe { write_volatile(source.add(index), 0xa5a5_a5a5) };
+        }
+        match ch.copy(source as usize, dest as usize, words * 4, true)
+        {
+            Ok(()) =>
+            {
+                cache::invalidate(dest as usize, words * 4);
+                let mut cleaned = true;
+                for index in 0..words
+                {
+                    // SAFETY: as above.
+                    if unsafe { read_volatile(dest.add(index)) } != 0xa5a5_a5a5
+                    {
+                        cleaned = false;
+                        break;
+                    }
+                }
+                for index in 0..words
+                {
+                    // SAFETY: as above.
+                    unsafe { write_volatile(source.add(index), 0x5a5a_5a5a) };
+                }
+                let uncleaned = ch.copy(source as usize, dest as usize, words * 4, false);
+                cache::invalidate(dest as usize, words * 4);
+                // SAFETY: `dest` is inside the buffer.
+                let observed = unsafe { read_volatile(dest) };
+                if !cleaned
+                {
+                    report.push("dma-clean", false, "clean")
+                          .push_str("the cleaned copy did not land");
+                }
+                else if let Err(reason) = uncleaned
+                {
+                    report.push("dma-clean", false, reason)
+                          .push_str("uncleaned copy: ")
+                          .push_str(reason);
+                }
+                else
+                {
+                    let note = if observed == 0xa5a5_a5a5
+                    {
+                        " clean required"
+                    }
+                    else if observed == 0x5a5a_5a5a
+                    {
+                        " clean not observable"
+                    }
+                    else
+                    {
+                        ""
+                    };
+                    report.push("dma-clean", true, "")
+                          .push_str("unclean read ")
+                          .push_hex(u64::from(observed))
+                          .push_str(note);
+                }
+            }
+            Err(reason) =>
+            {
+                report.push("dma-clean", false, reason).push_str("copy: ").push_str(reason);
+            }
+        }
+    }
+    else
+    {
+        report.push("dma-lease", false, "no-channel")
+              .push_str("no channel from the ARM set");
+        report.push("dma-2nd", false, "no-channel")
+              .push_str("no channel from the ARM set");
+        report.push("dma-clean", false, "no-channel")
+              .push_str("no channel from the ARM set");
     }
 
     report.log();
