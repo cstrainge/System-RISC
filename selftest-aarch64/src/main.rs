@@ -475,6 +475,16 @@ fn describe_failure(text: &mut Text, failure: &sdhci::Failure)
     {
         text.push_str(" cap ").push_hex(u64::from(failure.caps));
     }
+    // Only a stuck error bit is interesting: other normal-status bits are
+    // events that legitimately sit in the register between commands.
+    if failure.before & 0x8000 != 0
+    {
+        text.push_str(" pre ").push_hex(u64::from(failure.before));
+    }
+    if failure.completed
+    {
+        text.push_str(" resp ").push_hex(u64::from(failure.resp));
+    }
 }
 
 #[unsafe(no_mangle)]
