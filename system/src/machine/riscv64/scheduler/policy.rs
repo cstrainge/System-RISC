@@ -46,7 +46,7 @@ pub(crate) fn limits() -> Result<control::Limits, Status>
                           callback_budget_microseconds: CALLBACK_BUDGET_MICROSECONDS,
                           physical_harts,
                           active_harts:
-                              crate::machine::riscv64::smp::active_harts().try_into().map_err(|_| BAD_ABI)?,
+                              crate::machine::smp::active_harts().try_into().map_err(|_| BAD_ABI)?,
                           boot_hart,
                           // The admitted boot topology is immutable until reset. No hotplug
                           // producer exists; requests from a different epoch are refused.
@@ -568,7 +568,7 @@ fn select_from(pin: &crate::drivers::scheduler::PolicyPin, generation: u64, capt
             }
             else
             {
-                crate::machine::riscv64::smp::observed_runnable(capture.hart());
+                crate::machine::smp::observed_runnable(capture.hart());
             }
         }
     }

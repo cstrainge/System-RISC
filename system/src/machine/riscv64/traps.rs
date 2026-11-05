@@ -1421,7 +1421,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
     }
 }
 
-pub(crate) fn prepare_entry(stack: &'static super::pages::Stack)
+pub(crate) fn prepare_entry(stack: &'static crate::machine::pages::Stack)
                             -> Result<PreparedEntry, EntryError>
 {
     hart::prepare(stack)

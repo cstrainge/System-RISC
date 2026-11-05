@@ -33,7 +33,7 @@ pub(crate) enum Error
     Tables(mac_riscv_pages::walk::Error<FrameError>),
     Allocation,
     Layout,
-    Pages(super::super::pages::Error)
+    Pages(crate::machine::pages::Error)
 }
 impl fmt::Display for Error
 {
@@ -293,7 +293,7 @@ impl crate::toolbox::inspection::memory::Source for Native
         Ok(wire::Summary { revision: regions.revision,
                            page_bytes: PAGE_BYTES,
                            ram_bytes,
-                           free_pages: super::super::pages::free_pages().map_err(Error::Pages)?,
+                           free_pages: crate::machine::pages::free_pages().map_err(Error::Pages)?,
                            heap_used: used,
                            heap_capacity: capacity,
                            root_physical: root,
