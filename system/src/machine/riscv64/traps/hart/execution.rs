@@ -16,7 +16,7 @@ use crate::{allocator,
 pub(crate) mod policy;
 pub(crate) mod dispatch;
 mod maintenance;
-pub(in crate::machine::riscv64) use maintenance::with_system_maintenance;
+pub(crate) use maintenance::with_system_maintenance;
 
 pub(crate) const IDLE: usize = usize::MAX;
 /// Reset-lifetime row binding for prepared metadata. Unlike HartKey, this is

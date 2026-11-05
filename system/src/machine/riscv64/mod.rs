@@ -11,7 +11,6 @@ pub(crate) fn hart_id() -> usize
 pub(crate) mod clock;
 pub(crate) mod cpu;
 
-pub(crate) mod scheduler;
 
 pub(crate) mod interrupts;
 

@@ -473,7 +473,7 @@ struct Frames
 {
     head:    usize,
     count:   usize,
-    account: Option<super::scheduler::accounting::AllocationAuthority>,
+    account: Option<crate::machine::scheduler::accounting::AllocationAuthority>,
     source:  BackingSource
 }
 impl Frames

@@ -1036,21 +1036,9 @@ fn arm()
 fn arm_ticks(interval: u64)
 {
     let deadline = crate::platform::ticks().wrapping_add(interval);
-    // Sstc was admitted by firmware before supervisor entry. Enable STIE only
-    // with an actual deadline and only when hardware reports it clear. Warm
-    // admitted-idle entry enables SSIE alone; this preserves that separate bit.
-    unsafe {
-        asm!("csrw 0x14d, {deadline}",
-             "csrr {enabled}, sie",
-             "and {enabled}, {enabled}, {timer}",
-             "bnez {enabled}, 2f",
-             "csrs sie, {timer}",
-             "2:",
-             deadline = in(reg) deadline,
-             timer = in(reg) 32usize,
-             enabled = out(reg) _,
-             options(nostack));
-    }
+    // The timer is a CPU primitive: programming a deadline and enabling its
+    // interrupt differ per architecture, the scheduling policy above does not.
+    super::cpu::set_timer_deadline(deadline);
 }
 
 fn prepare_system_idle(target: super::traps::execution::IdleTarget)
@@ -1259,11 +1247,9 @@ extern "C" fn idle() -> !
 {
     loop
     {
-        // No application is runnable. Only this dedicated stack executes WFI;
-        // an application can never suspend while holding a resident guard.
-        unsafe {
-            asm!("wfi", options(nomem, nostack));
-        }
+        // No application is runnable. Only this dedicated stack executes the
+        // wait; an application can never suspend while holding a resident guard.
+        super::cpu::wait_for_interrupt();
     }
 }
 
@@ -1737,10 +1723,8 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     {
         // Idle peers have no local author quantum. Primary maintenance owns
         // global wait deadlines/input; genuine readiness posts a target wake.
-        // A drained peer likewise retains SSIP for admission or shutdown.
-        unsafe {
-            asm!("csrc sie, {timer}", timer = in(reg) 32usize, options(nostack));
-        }
+        // A drained peer likewise retains its admission interrupt source.
+        super::cpu::disable_timer_interrupt();
     }
     hart.resume_activity(idle);
     next
