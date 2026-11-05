@@ -27,7 +27,10 @@ Three facts about these files:
 * **The board device tree is copied byte-for-byte**, under the name the firmware
   publishes, because it *is* the firmware's contract during bring-up. Regenerating
   or rewriting it would mean we were testing our description rather than the
-  machine's, and its hash would no longer identify what a board run used.
+  machine's, and its hash would no longer identify what a board run used. The boot
+  partition carries the files under their published names, which needs long-name
+  entries: the writer emits them, and gives each such file a generated `NAME~1.EXT`
+  short alias alongside.
 * **The image records every firmware file's sha256** in `dist/disk.json`, so the
   same freshness gate that catches a rebuilt kernel catches a swapped blob or a
   regenerated tree.
