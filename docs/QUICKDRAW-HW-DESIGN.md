@@ -370,6 +370,11 @@ is byte equality of the surface.
 
 What it requires to be true:
 
+* **the destination is the drawable the video driver owns**, not an arbitrary
+  caller-supplied pixel buffer. This is not automatic: the QuickDraw destination
+  arrives as a bare pixel pointer with no allocation identity (G7), so the
+  interposer must ask and delegate when the answer is "not a GPU-writable
+  surface";
 * the surface is linear, with stride = width × 4, in XRGB32;
 * the GPU can write it at its device address, with cache maintenance around the
   write;
@@ -520,13 +525,14 @@ stride = width × 4.
 
 | Id | Requirement | Why this design needs it |
 |---|---|---|
-| **R1** | The surface handover must expose the drawable allocation's **device (bus) address**, not only the CPU address. | The GPU cannot name a CPU address. It is a bus master with no MMU. |
-| **R2** | The allocation must be **GPU-accessible**: either mapped uncached, or with a documented cache-maintenance handover (`clean before device reads`, `invalidate before CPU reads`). | A cached surface written by the GPU is read as stale by the CPU, and vice versa. The driver already does this for the firmware; the GPU path needs the same operation exposed. |
+| **R1** | The surface handover must expose the drawable allocation's **device (bus) address**, not only the CPU address. | The GPU cannot name a CPU address. It is a bus master with no MMU. The driver already receives this address from the Device service and drops it (G1). |
+| **R2** | The allocation must be **GPU-accessible**: either coherent by construction, or with a documented cache-maintenance handover (`clean before device reads`, `invalidate before CPU reads`). | A cached surface written by the GPU is read as stale by the CPU, and vice versa. The resident DMA module already provides coherent pinned storage with a contiguous bus alias; the video driver's surface is not allocated from it (G2). |
 | **R3** | The surface must stay allocated and **pinned until GPU work referencing it has completed**, with a completion signal the GPU subsystem can observe. | Decision 5. Today's `RELEASE` drains after System has switched *CPU views*, which is not the same as "the GPU has finished writing". |
 | **R4** | A present must be able to be told that the pixels were produced by the GPU, so it can order cache maintenance and (later) flips. | Without it, `SERVICE` can copy a rectangle before the GPU's write is visible. |
 | **R5** | Damage should be expressible as a **rectangle list**, not one rectangle. | Spans and multi-rectangle batches produce several disjoint damaged regions; the bounding box is correct but copies more than necessary. Correctness first: the bounding box is acceptable in the first landing. |
 | **R6** | A mode change must **notify** the GPU subsystem that the surface is being replaced, before the old one is released. | A mode change reallocates; a job referencing the old allocation must be drained first. |
 | **R7** | The surface's byte layout must remain **linear XRGB32, stride = width × 4**, or the driver must declare its layout. | Byte-exact conformance compares whole pixels; a tiled or padded surface changes what "the same bytes" means. |
+| **R8** | There must be a way to ask whether a given destination is a surface the GPU may write, and to be told "no" with a reason. | The QuickDraw destination is a caller-supplied pixel buffer with no allocation identity (G7). The interposer's divert decision depends on this answer. |
 
 ### 9.2 Named interface gaps
 
@@ -536,17 +542,19 @@ satisfy a requirement. They are recorded as work items, not designed around.
 
 | Gap | Observation | Consequence | Suggested routing |
 |---|---|---|---|
-| **G1 — no device address in the surface** | `mac_video_interface::Surface` carries `address`, which the driver fills with the CPU address of its own allocation; the driver's internal `Allocation` sets `device_address: 0`. The Device DMA service *does* return a device address (`mac_device_interface::Allocation` has both), so the information exists and is discarded. | The GPU cannot render into the surface at all. | Add a device address to the surface handover (or a separate "surface for device use" operation). The driver must stop zeroing it. |
-| **G2 — cache maintenance is private** | The driver's machine adapter owns `clean`/`invalidate` and uses them for the firmware buffer. There is no operation by which another agent can make its writes visible to the display or the GPU. | A GPU-written surface may be copied by a stale CPU cache line. | Either guarantee the drawable allocation is mapped uncached, or expose an explicit maintenance operation on the surface. |
-| **G3 — no GPU in-flight pin** | `RELEASE` waits for the CPU view to switch, which is a CPU-side drain. There is no notion of a device still reading the allocation. | Freeing a surface under an in-flight job is exactly decision 5's forbidden case. | Add an explicit "device hold" reference the GPU subsystem takes and drops on completion; `RELEASE` waits for holds to reach zero or reports busy. |
+| **G1 — the surface drops a device address it already has** | The Device DMA service returns both a CPU address and a device address (`mac_device_interface::Allocation`). The driver's `allocate_deferred` receives `buffer.device_address` and returns a struct carrying only `cpu_address`; `free` then reconstructs the interface record with `device_address: 0`. `mac_video_interface::Surface` therefore carries a CPU address only. | The GPU cannot name the surface. | Three lines in the driver, not a missing capability: carry the device address through the driver's own `Allocation` and into the surface handover. |
+| **G2 — cache maintenance is private to the driver** | The driver's machine adapter owns `clean`/`invalidate` and uses them for the firmware buffer. The resident DMA module (`system/src/machine/dma.rs`) already provides pinned, charged, coherent resident DMA storage with a contiguous bus alias via `machine::paging::bus_address`, so the *mechanism* exists — but there is no operation by which the video driver's surface can be handed to another device with a documented maintenance handover. | A GPU-written surface may be copied by a stale CPU cache line. | Either allocate the drawable from the resident DMA module (which is coherent by contract) or expose an explicit maintenance operation on the surface. |
+| **G3 — no device-side in-flight hold on the surface** | `RELEASE` drains CPU views: the Device service refuses a free while System holds a CPU pin, which proves no *CPU* view remains. The resident DMA buffer's own comment says its storage is retained "until GPU completion/reset and all CPU view pins have drained" — so the rule exists for DMA buffers. The video driver's surface is a Device allocation without that device-side hold. | Freeing a surface under an in-flight job is exactly decision 5's forbidden case. | Add a device hold reference the GPU subsystem takes and drops on completion; `RELEASE` waits for holds to reach zero or reports busy. |
 | **G4 — no producer identity on present** | `SERVICE(damage)` has no field saying who wrote the pixels or when. | The present cannot order itself after GPU completion. | Add a producer/ordering token, or require the caller to have waited on the fence before presenting (simplest, and acceptable for the first landing). |
 | **G5 — single-rectangle damage** | `Damage` is one rectangle. | Multi-region batches present a bounding box. Correct but wasteful. | A rectangle list in a later revision. Not blocking. |
 | **G6 — mode change replaces the surface silently** | `APPLY`/`COMMIT` allocate a new surface; there is no notification to another device that the old one is going away. | A job in flight against the old allocation. | Notification hook, or `RELEASE` already waits for device holds (G3) and the GPU subsystem is told the surface identity changed. |
+| **G7 — the QuickDraw destination is not the scanout surface** | The QuickDraw drawing destination arrives as `mac_abi::Surface`: a bare `*mut u32` with width, height, origin and clip. It is the caller's own pixel buffer, supplied as a wire buffer whose length must equal `width × height × 4`; the only bound is that the pixel count does not exceed the display's (`system/src/display.rs::pixels()`), which is a size check, not an identity. Nothing in that record says which allocation the pointer belongs to, whether it is GPU-addressable, or how long it lives. | The interposer cannot assume the destination is the compositing driver's surface. It may be an application's off-screen buffer, which the GPU has no way to name. A design that assumed otherwise would render into the wrong memory. | The interposer must ask whether the destination pointer is backed by a GPU-registered allocation and **delegate when it is not**. Registering an arbitrary application buffer for GPU use is a separate facility that does not exist today; the first landing should divert only into the drawable the video driver owns. |
 
-**G1 and G3 are blocking.** The first landing cannot render into the surface
-without them. G2 is blocking for correctness unless the allocation is uncached.
-G4, G5 and G6 have acceptable interim answers (wait before present; bounding
-box; hold-based release) and should be recorded rather than rushed.
+**G1, G3 and G7 are blocking.** The first landing cannot render into the surface
+without G1 and G3, and it cannot decide *which* surface to render into without
+G7. G2 is blocking for correctness unless the allocation is coherent. G4, G5 and
+G6 have acceptable interim answers (wait before present; bounding box;
+hold-based release) and should be recorded rather than rushed.
 
 ---
 
@@ -572,9 +580,13 @@ box; hold-based release) and should be recorded rather than rushed.
    QuickDraw's, and reproducing it through a shader that may read and write the
    same surface needs a board test (a tile-buffer read of the destination is the
    likely mechanism).
-8. **Q8 — nothing here is testable in QEMU.** The V3D is a placeholder at a
-   different address; the HVS is not modelled. Only the interposer's decisions,
-   the span algebra and the corpus's software side can be tested on the host.
+8. **Q8 — what QEMU can and cannot reach.** Not "nothing": the block is an
+   unimplemented placeholder returning zero at the silicon's own address, so the
+   hardware provider's *refusal* and the fallback to the software provider are
+   verifiable, as are the interposer's decisions, the span algebra and the
+   corpus's software side on the host. The HVS is not modelled at all. The
+   accelerator, the surface handover and every pixel comparison are board-only —
+   `docs/QPU-RESEARCH.md` §3.5.
 
 ---
 
@@ -610,20 +622,20 @@ an accident.
 
 ## 12. Decisions a reviewer must make
 
-1. **Accept the first-landing divert set** in §4.1, and accept that everything
-   else delegates. In particular, accept that ovals, arcs, polygons and complex
-   regions are not accelerated in the first landing.
-2. **Accept that the interposer is resident and in-process**, and that the
-   hardware provider is a client of the GPU subsystem rather than a direct
-   driver caller.
-3. **Accept `Rasterise` as a capability with a software default**, so that a
-   board without a working GPU path behaves exactly as today.
-4. **Accept the resolved-span interface** as the boundary, including that the
-   provider may know nothing about QuickDraw.
-5. **Accept the batch window derivation** and its clamp, subject to tuning.
-6. **Accept that G1 and G3 are prerequisites** and route them to the platform
-   lane rather than working around them.
-7. **Decide the ignored-byte policy** (Q1) before the corpus is written, because
-   it changes what the corpus asserts.
-8. **Accept that model (b) is not scheduled**, and that §7.3 is the list of
-   conditions rather than a plan.
+Identifiers are global and defined once, in `docs/QPU-RESEARCH.md` §16.1. This
+document originates these:
+
+| Id | Decision | Argued in |
+|---|---|---|
+| **D15** | The first-landing divert set; everything else delegates. | §4.1, §4.2 |
+| **D16** | The interposer is resident and in-process; the hardware provider is a GPU client. | §2 |
+| **D17** | `Rasterise` is a capability with a software default. | §1, §4.3 |
+| **D18** | The resolved-span interface is the boundary. | §5 |
+| **D19** | The batch window derivation, subject to tuning. | §6.2 |
+| **D20** | The ignored-byte policy, decided before the corpus is written. | §8.3, §10 Q1 |
+| **D21** | Model (b) is not scheduled. | §7 |
+
+D1, D2 and D4 (construction, the no-addressing subset, and the linear XRGB32
+target) are argued elsewhere and are prerequisites here. The routing this
+document needs is G1, G2, G3 and G7 in §9.2 — recorded as gaps, not decided
+here.

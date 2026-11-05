@@ -253,7 +253,8 @@ program.** That forecloses:
 
 For this system's stated purpose — a desktop, QuickDraw acceleration and a small
 3D API — that is acceptable, and it is the price of running without an IOMMU on
-a bus master. It is recorded as decision D1 in §8.
+a bus master. It is decision D1 in the consolidated list
+(`docs/QPU-RESEARCH.md` §16.1).
 
 If raw compute becomes a requirement, the smallest trusted path is **not** to
 open the boundary. It is:
@@ -512,7 +513,11 @@ not the display.
 6. **Whether `imul24` is sufficient for the integer multiplies the API needs.**
    The QPU has no 32-bit integer multiply; the compiler synthesises one or
    avoids it. Which shaders need one is not yet known.
-7. **Nothing here is testable in QEMU.** The V3D is a placeholder.
+7. **Which parts are verifiable in QEMU.** The block is an unimplemented
+   placeholder returning zero at the silicon's own address, so the API's
+   *refusals* are exercisable and its *draws* are not. Nothing about
+   rasterisation, the interrupt or the reset is verifiable there —
+   `docs/QPU-RESEARCH.md` §3.5.
 
 ---
 
@@ -541,18 +546,16 @@ caller must be able to continue without 3D, and nothing may hang.
 
 ## 10. Decisions a reviewer must make
 
-1. **D1 — accept the construction model**, and therefore accept that no
-   application may submit a control list or a raw QPU program. §3.2 states the
-   cost; §3.2 also states the smallest trusted path if compute is later needed.
-2. **D2 — accept the API surface in §1.3**, including what is deliberately
-   absent (no mips, no multiple render targets, no instancing, no compute).
-3. **D3 — accept that blending is a shader variant** and therefore that
-   pipeline state is part of the program key, with a refusal for a mismatch.
-4. **D4 — accept that the driver's template is a closed set of list shapes**,
-   and that a job needing another shape is refused rather than hand-built.
-5. **D5 — accept that a reset kills every context with outstanding work**, not
-   just the offending one, because their fences can never complete.
-6. **D6 — set the timeout policy** (a constant, and whether it is per job or per
-   context).
-7. **D7 — decide whether the privileged compute tier is in scope at all**, so
-   that the interface's shape is not accidentally closed to it.
+Identifiers are global and defined once, in `docs/QPU-RESEARCH.md` §16.1. This
+document originates these:
+
+| Id | Decision | Argued in |
+|---|---|---|
+| **D22** | The API surface in §1.3, including what is deliberately absent. | §1.3 |
+| **D23** | Blending is a shader variant, so pipeline state is part of the program key. | §1.4 |
+| **D24** | The driver's template is a closed set of list shapes. | §5.3 |
+
+D1 (construction), D5 (a reset kills every context with outstanding work), D11
+(the timeout) and D13 (whether a privileged compute tier is in scope) are argued
+here and are defined in the consolidated list. §3.2 states D1's cost and the
+smallest trusted path if compute is later needed.
