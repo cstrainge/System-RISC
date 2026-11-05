@@ -210,6 +210,18 @@ This is the same "one claimant per page" rule doing its job on a block where the
 page is not the unit of use, and it is the reason a driver cannot simply be
 written against the existing claim operation.
 
+The arbiter exists: `system/src/drivers/leases.rs`, with the pool coming from the
+record as an optional mask on an MMIO device (`PLATFORM_DEVICE_POOLS`; the DMA
+controller declares the channels this board leaves to the ARM). It leases a
+resource with owner attribution, refuses a second lease naming the holder,
+releases explicitly, and reclaims an owner's leases when its admission ends. Its
+invariants are exercised once at start-up and printed, so a boot log carries the
+evidence.
+
+The second instance is why it knows nothing about channels: a GPIO controller is
+one page with dozens of independently usable pins, and the same ledger serves it
+with the pin mask as the pool.
+
 ## Arbitration
 
 * A claim names the serialiser and the feeder. Both are exclusive and both are

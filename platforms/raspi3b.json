@@ -212,6 +212,7 @@
       "address": "0x3f007000",
       "bytes": 4096,
       "interrupt": 16,
+      "pool": 32557,
       "flags": 2
     },
     {
