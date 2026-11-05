@@ -46,8 +46,8 @@ pub(crate) use super::traps::execution::{activate_context, authenticate_module, 
                                          module_callback_allowed, module_owner,
                                          reserve_allocation, reserve_replacement};
 // Generated from the same checked platform policy as the linker artifacts.
-const STACK_BYTES: usize = super::memory::APPLICATION_STACK_BYTES as usize;
-const IDLE_STACK_BYTES: usize = super::memory::SYSTEM_STACK_BYTES as usize;
+const STACK_BYTES: usize = crate::machine::memory::APPLICATION_STACK_BYTES as usize;
+const IDLE_STACK_BYTES: usize = crate::machine::memory::SYSTEM_STACK_BYTES as usize;
 // Convert the checked platform quantum through the admitted DT clock once,
 // before any frame is dispatched. QEMU defaults to 250 us; a freshly woken
 // input consumer still takes priority in bootstrap round robin. This is not

@@ -7,9 +7,9 @@ use core::{cell::UnsafeCell,
 
 use mac_kernel_model::emergency::{EmergencyManifest, EmergencyService, Requirement};
 
-use super::{input,
-            paging::ProtectedRange,
+use super::{paging::ProtectedRange,
             traps::execution::{TerminalClaim, TerminalOwnership}};
+use crate::machine::input;
 use crate::emergency::{Action, Cursor, Kind, Record, Screen};
 
 struct State
@@ -77,13 +77,13 @@ pub(crate) fn prepare() -> Result<(), Error>
         let bytes = crate::display::width().checked_mul(crate::display::height())
             .and_then(|pixels| pixels.checked_mul(size_of::<u32>())).ok_or(Error::Size)?;
         let (frame, stack) = super::paging::reserve_terminal_storage(
-            bytes, super::memory::SYSTEM_STACK_BYTES as usize).map_err(Error::Reserve)?;
+            bytes, crate::machine::memory::SYSTEM_STACK_BYTES as usize).map_err(Error::Reserve)?;
         let input = input::prepare_terminal().map_err(Error::Input)?;
         // SAFETY: exclusive single-hart bootstrap, permanent independent scanout
         // lease and stable CPU-to-bus translation. The sealed capability retains
         // the separate DMA scratch until reset, including on transfer timeout.
         let display = unsafe {
-            mac_boot_screen::ramfb::prepare_terminal(super::memory::FW_CFG_BASE as usize,
+            mac_boot_screen::ramfb::prepare_terminal(crate::machine::memory::FW_CFG_BASE as usize,
                 frame.physical().0, crate::display::width(), crate::display::height(),
                 |pointer, length| super::paging::bus_address(pointer as u64, length as u64))
         }.map_err(Error::Display)?;
@@ -106,7 +106,7 @@ pub(crate) fn prepare() -> Result<(), Error>
             service: EmergencyService::SystemPanicRestart,
             bytes: reserve_bytes.checked_add(image_storage)
                 .and_then(|n| n.checked_add(image_assets as u64)).ok_or(Error::Size)?,
-            alignment: super::memory::PAGE_BYTES
+            alignment: crate::machine::memory::PAGE_BYTES
         };
         let requirements = [requirement];
         let manifest = EmergencyManifest::new(&requirements).map_err(Error::Manifest)?;
@@ -149,7 +149,7 @@ pub(crate) fn serial(arguments: fmt::Arguments<'_>)
                     // SAFETY: selected platform's permanently mapped bootstrap
                     // UART. Volatile access creates no shared register borrow.
                     if unsafe {
-                        core::ptr::read_volatile((super::memory::UART_BASE + 5) as *const u8)
+                        core::ptr::read_volatile((crate::machine::memory::UART_BASE + 5) as *const u8)
                     } & 0x20
                        != 0
                     {
@@ -163,7 +163,7 @@ pub(crate) fn serial(arguments: fmt::Arguments<'_>)
                     return Err(fmt::Error);
                 }
                 unsafe {
-                    core::ptr::write_volatile(super::memory::UART_BASE as *mut u8, byte);
+                    core::ptr::write_volatile(crate::machine::memory::UART_BASE as *mut u8, byte);
                 }
             }
             Ok(())

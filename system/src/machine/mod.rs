@@ -13,7 +13,10 @@
 // Machine-neutral adapters: they use only the generated platform constants and
 // the selected implementation, so they are written once for every architecture.
 pub(crate) mod dma;
+pub(crate) mod driver_devices;
+pub(crate) mod input;
 pub(crate) mod io;
+pub(crate) mod memory;
 pub(crate) mod pages;
 pub(crate) mod smp;
 pub(crate) use smp::eligible_harts;

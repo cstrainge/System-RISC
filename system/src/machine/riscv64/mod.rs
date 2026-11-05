@@ -1,8 +1,5 @@
 //! RISC-V machine adapters: trap entry, page tables, timer, console and devices.
 pub(crate) mod display;
-pub(crate) mod memory;
-pub(crate) mod driver_devices;
-pub(crate) mod input;
 pub(crate) mod traps;
 
 /// Bootstrap hardware identity only; never an application or OS-thread identity.
