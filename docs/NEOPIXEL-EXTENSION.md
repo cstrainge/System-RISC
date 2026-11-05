@@ -84,63 +84,39 @@ asks for them at initialisation.
   the platform as the cause, and **declines to attach**. It does not publish an
   endpoint that will fail later, and it does not leave a partially claimed
   hardware path behind.
+* On a system whose named-pipe facility is absent — which is every system today —
+  it declines for that reason instead, naming the missing facility rather than
+  the hardware. That refusal is the same declared-dependency mechanism, and it is
+  what makes the extension loadable and reviewable before the transport exists.
 
 The second case is not hypothetical: the emulated ARM board used for development
 has no GPIO controller, no PWM and no DMA at all. Loading this extension there
 must produce a visible refusal beside the module — not a crash, and not a loaded
 extension whose first job fails.
 
-## What this example needs from the system, and does not have
+## Dependencies
 
-**There is no named endpoint that an application can connect to.** Stated plainly
-because it is the one part of this design that does not exist:
+**Requires named pipes; unnamed pipes exist today but are stubbed, and making
+them work properly with named pipes is a separate future project.** This
+extension does not build one, and must not: a second pipe implementation inside
+an extension is the duplication that makes the real facility harder to land.
 
-* What exists is a **class-addressed request/reply**: a module publishes an
-  interface class, the kernel selects one provider for it, and a caller sends a
-  request and receives a reply with bounded buffer sizes. That is a good
-  mechanism for "ask the device a question", and it is what every driver in this
-  tree uses.
-* What is missing is a **named endpoint with a connection lifetime**: an
-  application looks up a name, connects, exchanges several messages, and
-  disconnects — with the extension learning of the connect and the disconnect,
-  including the disconnect caused by an application dying.
-* Also missing is **delivery in the other direction**: today a caller asks and a
-  provider answers. An endpoint that must tell an application about a refused
-  refresh or a released strip needs the provider to initiate.
+What exists today is **class-addressed request/reply**: a module publishes an
+interface class, the kernel selects one provider, a caller sends a bounded
+request and receives a reply, with a deferred-completion protocol for work that
+takes time. Services are resolved by class, not by name. That is enough for the
+configuration side of this extension and not enough for the streaming side,
+because there is no endpoint an application can connect to by name, no connection
+lifetime the extension is told about, and no delivery from the extension to an
+application.
 
-A one-off pipe inside this extension would be the wrong answer, for three
-reasons that are reasons of correctness rather than taste:
+The transport being pending does not weaken the design above: the protocol is
+independent of how the bytes arrive, and when named pipes land, this extension
+becomes wiring rather than a design exercise.
 
-1. **Noticing that an application has gone** is the kernel's job. A module cannot
-   safely observe another owner's death, so a per-extension pipe would either leak
-   its connection or trust an application to disconnect cleanly.
-2. **Queueing between two fault domains** needs bounded storage with an owner, a
-   backpressure rule and a teardown order. Every extension that streams would
-   need those rules again, and they would diverge.
-3. **The kernel boundary already exists.** An application cannot call a module
-   directly; a pipe has to be a resident service that owns the queue and relays
-   to the extension. Building it inside the extension would mean building a
-   second boundary beside the real one.
-
-**Recommendation: build the facility once, in the system, and scope this example
-against it.** The shape it needs:
-
-* a name registry: a provider publishes a name, a consumer resolves one, and a
-  duplicate name is a refusal rather than a second endpoint;
-* a connection object with a lifetime: connect, messages both ways, disconnect,
-  and a disconnect the provider is told about — including one caused by the
-  consumer's owner disappearing;
-* per-connection bounded queueing with an explicit full-queue policy, because a
-  consumer that stops reading must not consume kernel memory;
-* exactly the same rules for an application-facing consumer and an
-  extension-facing one, for the same reason the GPIO class has one contract and
-  two presentations: two implementations would disagree invisibly.
-
-Until that exists, this extension can be written and reviewed against the classes
-it does use, but it cannot be run end to end: there is nothing for an application
-to connect to. That is a gap in the system, not a defect in this design, and it
-is the reusable half of the pattern — the next extension that wants to stream
-anything will need the same thing.
+The other dependency — that an application's death closes its connection — is the
+pipe project's to provide for the same reason it is not this extension's to
+detect: a module cannot safely observe another owner's death.
 
 ## What this example does not cover
 

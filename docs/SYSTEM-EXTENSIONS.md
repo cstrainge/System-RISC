@@ -207,13 +207,17 @@ code. This is not an MMU-isolation or recoverable-fault guarantee.
 this machinery: an extension owns a pin, a serialiser and a DMA channel, and
 applications send it colour data instead of attempting sub-microsecond timing of
 their own. It shows the intended split — mechanisms in the system, composition in
-the extension — and it also shows what the system does not yet have: a **named
-endpoint with a connection lifetime**, and delivery from a provider to a
-consumer. What exists is class-addressed request/reply with bounded buffers and a
-deferred-completion protocol. A name registry, a connection object the provider
-is told about (including when the consumer's owner dies), bounded per-connection
-queueing and provider-initiated delivery are all missing, and per that document
-they belong here rather than in one extension.
+the extension — and the argument for that split holds whether or not its transport
+exists.
+
+Its transport is the one dependency this machinery does not yet supply: unnamed
+pipes exist but are stubbed, and making them work with named pipes is a separate
+future project with its own lane. That project owns the name registry, the
+connection lifetime (including a consumer's owner dying), bounded per-connection
+queueing and provider-initiated delivery. Until it lands, an extension that
+streams declares the dependency, refuses to attach with that cause visible, and
+waits — which is the same behaviour as an absent device class, and the reason the
+declared-dependency rule exists.
 
 ## Startup, failure and lifetime
 
