@@ -9,7 +9,7 @@ use super::*;
 pub(super) struct StackBacking
 {
     // Real backing leaves before its original-account charge (Charged's order).
-    stack:     spin::Once<Arc<accounting::Charged<super::super::pages::Stack>>>,
+    stack:     spin::Once<Arc<accounting::Charged<crate::machine::pages::Stack>>>,
     user:      Mutex<UserSlot>,
     owner:     OwnerRef,
     identity:  spin::Once<CompletionKey>,
@@ -37,14 +37,14 @@ impl StackBacking
         Ok(PrepaidStack { backing })
     }
 
-    pub(super) fn prepare(owner: &OwnerRef, stack: accounting::Charged<super::super::pages::Stack>)
+    pub(super) fn prepare(owner: &OwnerRef, stack: accounting::Charged<crate::machine::pages::Stack>)
                           -> Result<Arc<Self>, mac_abi::Status>
     {
         Self::prepay(owner)?.finish(stack, None)
     }
 
     pub(super) fn prepare_user(owner: &OwnerRef,
-                               stack: accounting::Charged<super::super::pages::Stack>,
+                               stack: accounting::Charged<crate::machine::pages::Stack>,
                                space: &super::super::paging::process::Pin)
                                -> Result<Arc<Self>, mac_abi::Status>
     {
@@ -146,7 +146,7 @@ impl StackBacking
 }
 impl Deref for StackBacking
 {
-    type Target = accounting::Charged<super::super::pages::Stack>;
+    type Target = accounting::Charged<crate::machine::pages::Stack>;
 
     fn deref(&self) -> &Self::Target
     {
@@ -164,7 +164,7 @@ pub(super) struct PrepaidStack
 }
 impl PrepaidStack
 {
-    pub(super) fn finish(self, stack: accounting::Charged<super::super::pages::Stack>,
+    pub(super) fn finish(self, stack: accounting::Charged<crate::machine::pages::Stack>,
                          space: Option<&super::super::paging::process::Pin>)
                          -> Result<Arc<StackBacking>, mac_abi::Status>
     {

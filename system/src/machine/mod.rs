@@ -10,6 +10,15 @@
 //! interrupt control, CPU identity and secondary startup, and the platform's
 //! declared devices.
 
+// Machine-neutral adapters: they use only the generated platform constants and
+// the selected implementation, so they are written once for every architecture.
+pub(crate) mod dma;
+pub(crate) mod io;
+pub(crate) mod pages;
+pub(crate) mod smp;
+pub(crate) use smp::eligible_harts;
+pub(crate) mod video;
+
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 #[cfg(target_arch = "riscv64")]

@@ -24,8 +24,8 @@ use mac_riscv_pages::{Entry, Sv39,
                       mapping::{MapError, Mapper, Tables}};
 
 use super::{interrupts::{self, NativeInvocationGate},
-            memory::*,
-            pages::{ArrayError, Backing, OwnedArray, Stack}};
+            memory::*};
+use crate::machine::pages::{ArrayError, Backing, OwnedArray, Stack};
 use crate::allocator::foundation::{self, Foundation};
 const MODE: usize = 8usize << 60;
 const PPN: usize = (1usize << 44) - 1;
@@ -204,7 +204,7 @@ pub(crate) enum Error
     HeapAdmission
     {
         requested: usize,
-        cause:     super::pages::Error
+        cause:     crate::machine::pages::Error
     }
 }
 impl fmt::Display for Error
@@ -406,7 +406,7 @@ pub(crate) fn report_refusal(error: &impl fmt::Display)
 pub(crate) enum FrameError
 {
     Foundation(foundation::Error),
-    Pages(super::pages::Error),
+    Pages(crate::machine::pages::Error),
     Account(mac_kernel_model::account::Error),
     Recovery(crate::allocator::recovery::Error),
     Foreign
@@ -521,7 +521,7 @@ impl Tables for Frames
     fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, FrameError>
     {
         let table_layout = Layout::new::<[u64; 512]>().align_to(PAGE_BYTES as usize)
-            .map_err(|_| FrameError::Pages(super::pages::Error::Geometry))?;
+            .map_err(|_| FrameError::Pages(crate::machine::pages::Error::Geometry))?;
         let charge = self.account
                          .as_ref()
                          .map(|a| {
@@ -534,7 +534,7 @@ impl Tables for Frames
         let cpu = backing.cpu_base();
         let physical = backing.physical();
         let table = RootPage::reserve(backing, Sv39::geometry())
-            .map_err(|cause| FrameError::Pages(super::pages::Error::Model(cause)))?;
+            .map_err(|cause| FrameError::Pages(crate::machine::pages::Error::Model(cause)))?;
         let storage_layout = Layout::new::<Node>();
         let storage_charge = self.account
                                  .as_ref()

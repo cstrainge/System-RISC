@@ -102,7 +102,7 @@ struct IdleRecord
 struct SystemIdleCore
 {
     cpu:         crate::allocator::foundation::Foundation<super::traps::SavedState>,
-    _stack:      crate::allocator::foundation::Foundation<super::pages::Stack>,
+    _stack:      crate::allocator::foundation::Foundation<crate::machine::pages::Stack>,
     context:     Arc<ThreadContext>,
     publication: spin::Once<CompletionKey>,
     name:        ThreadName,
@@ -159,7 +159,7 @@ pub(crate) enum StartError
     Wake(super::monitor::WakeError),
     Load(crate::loader::LoadError),
     Idle(super::traps::execution::IdlePreparationFailure),
-    Cpus(super::smp::Error)
+    Cpus(crate::machine::smp::Error)
 }
 impl core::fmt::Display for StartError
 {
@@ -1063,7 +1063,7 @@ fn prepare_system_idle(target: super::traps::execution::IdleTarget)
             let source = crate::kernel::system_resources(&owner)?;
             let resources = source.with(crate::kernel::current_resource_selection)?;
             let stack =
-                Foundation::<super::pages::Stack>::allocate(IDLE_STACK_BYTES).map_err(|cause| {
+                Foundation::<crate::machine::pages::Stack>::allocate(IDLE_STACK_BYTES).map_err(|cause| {
                     serial!("SYSTEM_IDLE_BACKING_REFUSED hart={} resource=stack cause={cause}",
                             target.number());
                     cause.status()
@@ -1181,7 +1181,7 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
     // Normal CPU initialization completes real warm admission and a startup
     // interrupt ACK before any scheduled-position lock or author execution.
     // Peers remain AdmittedIdle; this grants no dispatch policy permission.
-    super::smp::initialize().map_err(StartError::Cpus)?;
+    crate::machine::smp::initialize().map_err(StartError::Cpus)?;
     let wake_receiver = super::monitor::prepare_primary_wake().map_err(StartError::Wake)?;
     if let Some(token) = pending
     {
@@ -1582,7 +1582,7 @@ fn release_claim(scheduler: &Scheduler, slot: usize, hart: HartKey)
 /// draining target remains counted until it commits its own idle receipt.
 pub(crate) fn active_harts() -> u32
 {
-    super::smp::active_harts() as u32
+    crate::machine::smp::active_harts() as u32
 }
 
 /// Lock order for policy placement is SCHEDULER -> original registration Phase
@@ -1593,7 +1593,7 @@ pub(crate) fn set_policy_harts(pin: &crate::drivers::scheduler::PolicyPin, count
     super::interrupts::with_masked(|| {
         let scheduler = SCHEDULER.lock();
         let result = crate::drivers::scheduler::with_active_policy(pin, pin.generation(), || {
-                         super::smp::apply_harts(pin.generation(), count)
+                         crate::machine::smp::apply_harts(pin.generation(), count)
                      }).and_then(core::convert::identity);
         drop(scheduler);
         result
@@ -1606,7 +1606,7 @@ pub(crate) fn drain_policy_harts() -> bool
 {
     super::interrupts::with_masked(|| {
         let scheduler = SCHEDULER.lock();
-        let drained = super::smp::withdraw_harts();
+        let drained = crate::machine::smp::withdraw_harts();
         drop(scheduler);
         drained
     })
@@ -1637,7 +1637,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     {
         with_system_maintenance(&capture, || {
             wake::report_failure();
-            super::smp::report_failures();
+            crate::machine::smp::report_failures();
             crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
                 // Device input and cursor publication precede all ordinary maintenance.
                 // Never enable nested preemption while a resident manager owns its guards.
@@ -1817,7 +1817,7 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
     }
     else
     {
-        super::smp::observed_runnable(hart);
+        crate::machine::smp::observed_runnable(hart);
     }
     let priority = scheduler.iter()
                             .filter(|(slot, t)| {

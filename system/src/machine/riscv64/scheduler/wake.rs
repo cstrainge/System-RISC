@@ -35,7 +35,7 @@ pub(super) fn runnable(primary_only: bool)
     }
     if !primary_only
     {
-        crate::machine::riscv64::smp::runnable();
+        crate::machine::smp::runnable();
     }
 }
 
@@ -50,7 +50,7 @@ pub(super) fn execution_released(hart: HartKey, primary_only: bool)
     }
     if !primary_only
     {
-        crate::machine::riscv64::smp::execution_released(hart);
+        crate::machine::smp::execution_released(hart);
     }
 }
 
@@ -78,7 +78,7 @@ pub(super) fn admitted(receiver: PrimaryWake)
 /// an IRQ. The real queues/tickets own the payload.
 pub(crate) fn flush()
 {
-    crate::machine::riscv64::smp::flush();
+    crate::machine::smp::flush();
     let work = WORK.load(Ordering::Acquire);
     if work & HINTS == 0 || work & POSTED != 0
     {
@@ -112,7 +112,7 @@ pub(crate) fn flush()
 
 pub(crate) fn acknowledged(hart: HartKey)
 {
-    crate::machine::riscv64::smp::acknowledged(hart);
+    crate::machine::smp::acknowledged(hart);
     if RECEIVER.get().is_some_and(|receiver| receiver.is_target(hart))
     {
         // Runs before this captured turn consumes queues. The Acquire side

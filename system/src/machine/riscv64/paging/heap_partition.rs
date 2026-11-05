@@ -6,7 +6,8 @@ use core::{fmt,
 
 use mac_kernel_model::pages::PhysicalAddress;
 
-use super::super::{memory::*, pages::Backing};
+use super::super::memory::*;
+use crate::machine::pages::Backing;
 
 #[derive(Debug)]
 pub(crate) enum Error

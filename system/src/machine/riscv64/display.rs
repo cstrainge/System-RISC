@@ -38,7 +38,7 @@ fn front_cpu() -> usize
     FRONT.load(Ordering::Acquire)
 }
 
-pub(super) fn use_driver_front(address: usize)
+pub(crate) fn use_driver_front(address: usize)
 {
     FRONT.store(address, Ordering::Release);
     VIDEO_ATTACHED.store(true, Ordering::Release);
@@ -46,7 +46,7 @@ pub(super) fn use_driver_front(address: usize)
 
 /// Caller holds the authenticated new allocation pin and compositor admission.
 /// No data reference escapes this one scene copy.
-pub(super) fn copy_front_to(address: usize)
+pub(crate) fn copy_front_to(address: usize)
 {
     if address != front_cpu()
     {
@@ -60,13 +60,13 @@ pub(super) fn copy_front_to(address: usize)
     }
 }
 
-pub(super) fn use_boot_front()
+pub(crate) fn use_boot_front()
 {
     FRONT.store(FRONT_CPU, Ordering::Release);
     VIDEO_ATTACHED.store(false, Ordering::Release);
 }
 
-pub(super) fn video_attached() -> bool
+pub(crate) fn video_attached() -> bool
 {
     VIDEO_ATTACHED.load(Ordering::Acquire)
 }
@@ -79,7 +79,7 @@ fn pack(rect: mac_abi::geometry::Rect) -> u64
     | u64::from(rect.bottom as u16) << 48
 }
 
-pub(super) fn mark_dirty(rect: mac_abi::geometry::Rect)
+pub(crate) fn mark_dirty(rect: mac_abi::geometry::Rect)
 {
     if rect.right <= rect.left || rect.bottom <= rect.top || !video_attached()
     {
@@ -98,13 +98,13 @@ pub(super) fn mark_dirty(rect: mac_abi::geometry::Rect)
                  });
 }
 
-pub(super) fn peek_dirty() -> bool
+pub(crate) fn peek_dirty() -> bool
 {
     DIRTY.load(Ordering::Acquire) != 0
 }
 
 /// Takes the accumulated changed rectangle clipped to the live mode.
-pub(super) fn take_dirty() -> Option<mac_abi::geometry::Rect>
+pub(crate) fn take_dirty() -> Option<mac_abi::geometry::Rect>
 {
     let packed = DIRTY.swap(0, Ordering::AcqRel);
     if packed == 0
@@ -136,7 +136,7 @@ pub fn back_buffer() -> &'static mut [u32]
 }
 /// The compositor owns these temporary borrows. Pointer/geometry publication
 /// is a separate bounded metadata transaction, never a large IRQ-off clear.
-pub(super) fn clear_mode_buffers()
+pub(crate) fn clear_mode_buffers()
 {
     // SAFETY: current front is held by video::CURRENT or permanent ramfb;
     // all spans admit the current validated geometry, and Desktop serializes
