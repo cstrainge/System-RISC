@@ -83,6 +83,41 @@ pub trait PageLayout
     fn geometry() -> PageGeometry;
     fn leaf_sizes() -> &'static [u64];
     fn valid_virtual_range(range: AddressRange) -> bool;
+
+    /// The table index one address selects at a given leaf size.
+    ///
+    /// This is geometry, not encoding: a page-table walk of any 39-bit,
+    /// three-level format picks an index by shifting the address down to the
+    /// leaf's own size and taking the low nine bits. Keying on the leaf size
+    /// rather than on a level number is what lets both supported architectures
+    /// share it, because they number their levels differently — Sv39 counts the
+    /// 4 KiB level 0 and AArch64 counts it 3.
+    fn index(address: u64, leaf_bytes: u64) -> Option<usize>
+    {
+        if !leaf_bytes.is_power_of_two() || leaf_bytes < Self::geometry().bytes()
+        {
+            return None;
+        }
+        if !Self::leaf_sizes().contains(&leaf_bytes)
+        {
+            return None;
+        }
+        let shift = leaf_bytes.trailing_zeros();
+        Some(((address >> shift) & 511) as usize)
+    }
+
+    /// The number of levels a walk has, derived from the leaves this format
+    /// declares rather than stated twice.
+    fn levels() -> usize
+    {
+        Self::leaf_sizes().len()
+    }
+
+    /// The leaf size used at `level`, counting from the finest leaf.
+    fn leaf_at(level: usize) -> Option<u64>
+    {
+        Self::leaf_sizes().get(level).copied()
+    }
 }
 /// CPU context and its actual invocation gate belong to the resident binding.
 /// Dispatch remains compile-time, not a dyn call per mapped page.

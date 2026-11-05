@@ -131,7 +131,12 @@ impl Sv39
         {
             return Err(Error::NonCanonical { address });
         }
-        Ok(((address >> (size.shift())) & 511) as usize)
+        // The arithmetic itself is geometry and lives on `PageLayout`, so this
+        // format and any other 39-bit three-level format compute an index the
+        // same way. This function only translates a level number into a leaf
+        // size, which is the part that differs between formats.
+        <Self as mac_kernel_model::pages::PageLayout>::index(address, size.bytes())
+            .ok_or(Error::Level { level })
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -439,6 +444,31 @@ mod tests
                       access:  Access::Supervisor,
                       global:  true }
     }
+    #[test]
+    fn index_is_geometry_and_agrees_for_every_leaf_size()
+    {
+        // The arithmetic moved onto `PageLayout`; this pins the values it must
+        // still produce for the addresses the kernel actually maps, so a later
+        // architecture cannot quietly change what Sv39 computes.
+        for (address, page, large, huge) in [
+            (0x0u64, 0, 0, 0),
+            (0x1000, 1, 0, 0),
+            (0x200000, 0, 1, 0),
+            (0x40000000, 0, 0, 1),
+            (0x80200000, 0, 1, 2),
+            (0xffffffc000000000, 0, 0, 256),
+        ]
+        {
+            assert_eq!(Sv39::index(address, 0).unwrap(), page, "page {address:#x}");
+            assert_eq!(Sv39::index(address, 1).unwrap(), large, "large {address:#x}");
+            assert_eq!(Sv39::index(address, 2).unwrap(), huge, "huge {address:#x}");
+        }
+        // A level outside the format, or a leaf the format does not declare, is
+        // refused rather than producing a meaningless index.
+        assert!(Sv39::index(0, 3).is_err());
+        assert!(<Sv39 as mac_kernel_model::pages::PageLayout>::index(0, 8192).is_none());
+    }
+
     #[test]
     fn canonical_ranges_reject_the_hole_and_crossing_with_canonical_endpoints()
     {
