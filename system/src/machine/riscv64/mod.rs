@@ -17,5 +17,4 @@ pub(crate) mod interrupts;
 
 pub(crate) mod power;
 
-pub(crate) mod monitor;
 

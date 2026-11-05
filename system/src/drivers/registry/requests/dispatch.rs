@@ -14,7 +14,7 @@ use crate::toolbox::handles::InvocationGate;
 
 fn alias_released()
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     crate::drivers::request_retirement_alias_released();
 }
 /// Publication-time ownership has the same post-decrement retirement wake as
@@ -67,7 +67,7 @@ pub(crate) fn prepare(subject: &super::Subject, origin: super::Origin, input: &[
         Ok(Preparation { storage: Some(storage),
                          cancellation })
     };
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     if let Some(activity) = subject.recovery_activity()
     {
         if subject.uses_protected_publication()
@@ -323,9 +323,9 @@ impl Drop for Lease
             alias_released();
             if progress_waiter
             {
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 crate::drivers::request_progress_changed(owner);
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 let _ = owner;
             }
         }

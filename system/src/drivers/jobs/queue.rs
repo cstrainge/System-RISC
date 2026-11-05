@@ -50,7 +50,7 @@ impl Queue
         self.signal.load(Ordering::Acquire) != 0
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     fn prepare_records(core: &mut Core) -> Result<(), Status>
     {
         if core.records.prepared()
@@ -65,7 +65,7 @@ impl Queue
         core.records.prepare(kinds)
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn reserve_publication(&self, owner: &crate::toolbox::handles::OwnerRef)
         -> Result<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>, Status>
 {
@@ -81,7 +81,7 @@ impl Queue
             })
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn submit(&self, subject: &subjects::Subject, owner: Owner, work: Work)
                          -> Result<mac_object_table::store::Publication, SubmissionError>
     {

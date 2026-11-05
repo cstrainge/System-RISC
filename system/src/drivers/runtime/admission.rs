@@ -3,9 +3,9 @@
 
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, Status};
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 use crate::boot_screen::ExtensionRefusal;
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(systemrisc))]
 use crate::testing::extension_startup::Refusal as ExtensionRefusal;
 
 /// Module packages historically reject non-memory format failures as BAD_ABI.

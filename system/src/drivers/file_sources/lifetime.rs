@@ -20,9 +20,9 @@ pub(crate) fn specification(storage: bool) -> Specification<'static>
                     capacity: CapacityPolicy::GrowableUntilMemory }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) struct ReleaseSources(pub bool);
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl
     mac_object_table::registry::Release<dyn crate::toolbox::handles::cleanup::context::Context,
                                         crate::toolbox::handles::cleanup::Failure>

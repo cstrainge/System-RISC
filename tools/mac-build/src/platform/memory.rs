@@ -499,6 +499,17 @@ impl Checked
         {
             values.extend(bootstrap_io.constants());
         }
+        else
+        {
+            // A board with no bootstrap IO declares no virtio windows at all.
+            // Emitting the names with zero values keeps the device inventory
+            // code free of an architecture or board test: it simply finds no
+            // virtio slots to probe, which is the truth for such a board.
+            values.extend([("VIRTIO_MMIO_SLOTS", 0),
+                           ("VIRTIO_MMIO_BASE", 0),
+                           ("VIRTIO_MMIO_STRIDE", 0),
+                           ("VIRTIO_INTERRUPT_BASE", 0)]);
+        }
         for (name, value) in values
         {
             writeln!(out, "__platform_{name} = {value:#x};").unwrap();

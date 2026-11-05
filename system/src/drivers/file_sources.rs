@@ -14,7 +14,7 @@ use mac_object_table::{domain::{PoolError, ReleasedResource},
 use spinning_top::Spinlock;
 
 use crate::toolbox::handles::{InvocationGate, KindLease, OwnerRef, Store, cleanup::Failure};
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) mod runtime;
 pub(crate) mod lifetime;
 
@@ -523,7 +523,7 @@ impl<B: Clone> Sources<B>
                 Err(error) =>
                 {
                     let cause = error.cause();
-                    #[cfg(target_arch = "riscv64")]
+                    #[cfg(systemrisc)]
                     if record.failure != Some(cause)
                     {
                         serial!("BACKING_SOURCE_RETIRE_REFUSED source={} cause={}",

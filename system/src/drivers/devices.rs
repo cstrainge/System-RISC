@@ -2,7 +2,7 @@
 //! Only a positive hardware stop acknowledgement permits reclamation. The bus
 //! adapter owns registers; this policy layer contains no hardware or unsafe code.
 #![forbid(unsafe_code)]
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 use alloc::sync::Arc;
 use core::cell::Cell;
 
@@ -32,7 +32,7 @@ struct Physical
 }
 struct Claim
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     frame:      crate::images::ModuleFrame,
     owner:      OwnerRef,
     receipt:    Cell<Option<CompletionKey>>,
@@ -40,13 +40,13 @@ struct Claim
     reset:      Cell<Option<u64>>,
     cleanup:    Cell<bool>,
     reset_sent: Cell<bool>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     allocation: Cell<Option<(u64, CompletionKey)>>
 }
 struct Dma
 {
     claim:  CompletionKey,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     buffer: Option<Arc<crate::machine::dma::Buffer>>
 }
 pub struct Devices<B>
@@ -75,7 +75,7 @@ impl<B: Bus> Devices<B>
     /// The caller checked the exact bus/key against its admitted contract.
     /// A pending or quarantined claim remains exclusive, even after invalidation.
     pub(crate) fn claim(&mut self, owner: &OwnerRef, ordinal: u32, expected: Description,
-                        #[cfg(target_arch = "riscv64")] frame: crate::images::ModuleFrame)
+                        #[cfg(systemrisc)] frame: crate::images::ModuleFrame)
                         -> Result<Description, Status>
     {
         if expected.handle != 0 || expected.flags & mac_device_interface::RESIDENT_OWNED != 0
@@ -94,7 +94,7 @@ impl<B: Bus> Devices<B>
                               .insert_with_receipt(owner,
                                                    Physical { ordinal,
                                                               description: expected },
-                                                   Claim { #[cfg(target_arch = "riscv64")]
+                                                   Claim { #[cfg(systemrisc)]
                                                            frame,
                                                            owner: owner.clone(),
                                                            receipt: Cell::new(None),
@@ -102,7 +102,7 @@ impl<B: Bus> Devices<B>
                                                            reset: Cell::new(None),
                                                            cleanup: Cell::new(false),
                                                            reset_sent: Cell::new(false),
-                                                           #[cfg(target_arch = "riscv64")]
+                                                           #[cfg(systemrisc)]
                                                            allocation: Cell::new(None) })
                               .map_err(alias_status)?;
         let (id, receipt) = publication.into_parts();
@@ -144,7 +144,7 @@ impl<B: Bus> Devices<B>
         let publication = self.maps
                               .insert_with_receipt(owner, |_| {
                                   Dma { claim:                                  receipt,
-                                        #[cfg(target_arch = "riscv64")]
+                                        #[cfg(systemrisc)]
                                         buffer:                                 None }
                               })
                               .map_err(pool_status)?;
@@ -154,7 +154,7 @@ impl<B: Bus> Devices<B>
                      length })
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn start_allocate(&mut self, owner: &OwnerRef, device: u64, bytes: u64, ticket: u64)
                                  -> Result<(), Status>
     {
@@ -187,7 +187,7 @@ impl<B: Bus> Devices<B>
         Ok(())
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn advance_allocate(&mut self, owner: &OwnerRef, ticket: u64, cancel: bool)
                                    -> Result<Option<mac_device_interface::Allocation>, Status>
     {
@@ -254,7 +254,7 @@ impl<B: Bus> Devices<B>
         Ok(Some(result))
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn pin_buffer(&self, owner: &OwnerRef, id: u64)
                              -> Result<Arc<crate::machine::dma::Buffer>, Status>
     {
@@ -272,7 +272,7 @@ impl<B: Bus> Devices<B>
         Ok(buffer.clone())
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn free_completed(&mut self, owner: &OwnerRef, id: u64) -> Result<(), Status>
     {
         let map = self.owned_map(owner, id)?;
@@ -363,7 +363,7 @@ impl<B: Bus> Devices<B>
     pub(crate) fn unmap(&mut self, owner: &OwnerRef, mapping: u64) -> Result<(), Status>
     {
         let map = self.owned_map(owner, mapping)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         if map.buffer
               .as_ref()
               .is_some_and(|buffer| !buffer.ready() || Arc::strong_count(buffer) != 1)
@@ -428,7 +428,7 @@ impl<B: Bus> Devices<B>
                     return Err(Failure::registration_mismatch(ticket));
                 };
                 let ordinal = physical.ordinal;
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 let _execution = match claim.frame.exclude_execution()
                 {
                     Ok(exclusion) => exclusion,
@@ -469,7 +469,7 @@ impl<B: Bus> Devices<B>
                     return Err(Failure::context_unavailable(ticket, "retained device claim"));
                 };
                 let ordinal = physical.ordinal;
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 let _execution = match claim.frame.exclude_execution()
                 {
                     Ok(exclusion) => exclusion,
@@ -495,7 +495,7 @@ impl<B: Bus> Devices<B>
                     }
                     Err(status) => return Err(Failure::device_stop(ticket, ordinal, status))
                 }
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 if map.buffer.as_ref().is_some_and(|buffer| Arc::strong_count(buffer) != 1)
                 {
                     return Err(Failure::device_pending(ticket,

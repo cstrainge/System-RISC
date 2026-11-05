@@ -82,7 +82,7 @@ impl Records
                unreported: 0 }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) fn prepared(&self) -> bool
     {
         self.store.is_some()
@@ -102,7 +102,7 @@ impl Records
         self.store.as_ref().map_or(0, store::Store::reserved_capacity)
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) fn reserve_publication(
         &mut self, owner: &crate::toolbox::handles::OwnerRef)
         -> Result<store::PublicationReservation<InvocationGate>, Status>
@@ -125,11 +125,11 @@ impl Records
                          -> Result<store::Publication, Status>
     {
         let reserved = self.reserved_capacity();
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let activity = subject.recovery_activity();
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let recovery = subject.uses_protected_publication();
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let recovery = false;
         if recovery
         {
@@ -148,12 +148,12 @@ impl Records
                                                                                          .len()))
             }).map_err(|_| NO_MEMORY)?;
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let pin = activity.map(crate::recovery::Activity::acknowledgement_pin);
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let pin = None;
         let store = self.store.as_mut().ok_or(mac_abi::NOT_SUPPORTED)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let publication = if let Some(activity) = activity.filter(|_| recovery)
         {
             activity.publication().with_job(subject, |reservation| {
@@ -166,7 +166,7 @@ impl Records
             store.insert_in_scope_with_acknowledgement(subject.scope(), pin, |_| value)
                  .map_err(pool_status)?
         };
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let publication =
             store.insert_in_scope_with_acknowledgement(subject.scope(), pin, |_| value)
                  .map_err(pool_status)?;
@@ -372,9 +372,9 @@ impl Records
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) struct ReleaseJobs(pub bool);
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl
     mac_object_table::registry::Release<dyn crate::toolbox::handles::cleanup::context::Context,
                                         Failure> for ReleaseJobs

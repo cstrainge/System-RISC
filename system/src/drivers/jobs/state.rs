@@ -36,9 +36,9 @@ impl Core
             return Err(SubmissionError { status: NO_MEMORY,
                                          work });
         };
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let recovery = subject.uses_protected_publication();
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let recovery = false;
         let Some(needed) = self.records.len().checked_add(1).and_then(|n| {
                                                                 n.checked_add(if recovery

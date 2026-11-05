@@ -161,9 +161,9 @@ struct Core
 }
 
 mod state;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod recovery;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use recovery::RecoveryEndpoints;
 pub(crate) mod subjects;
 pub(crate) mod records;

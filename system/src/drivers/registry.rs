@@ -360,7 +360,7 @@ impl Registry
                   module_kernel_bytes })
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn release_request(
         &mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
         -> core::result::Result<(), crate::toolbox::handles::cleanup::Failure>
@@ -478,7 +478,7 @@ impl Registry
         Ok(())
     }
 
-    #[cfg(any(target_arch = "riscv64", test))]
+    #[cfg(any(systemrisc, test))]
     pub(crate) fn dependency_available(&self, dependency: mac_module::Dependency) -> bool
     {
         self.interfaces.iter().any(|(_, interface)| {
@@ -664,9 +664,9 @@ impl Registry
                .iter()
                .any(|o| o.class.0 == *b"SCHD")
         {
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             return self.publish_scheduler_interface(module);
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(not(systemrisc))]
             return Err(Error::State);
         }
         let record = self.modules.get(module).ok_or(Error::Stale)?;
@@ -702,7 +702,7 @@ impl Registry
         Ok(())
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn scheduler_preparation(&mut self, module: u64)
                                         -> Result<(OwnerRef, ModuleAllocation, Offer)>
     {
@@ -741,7 +741,7 @@ impl Registry
         Ok((owner, allocation, offer))
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     fn publish_scheduler_interface(&mut self, module: u64) -> Result<()>
     {
         let owner = self.module_ledger(module)?;
@@ -786,7 +786,7 @@ impl Registry
         Ok(())
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn withdraw_scheduler(
         &mut self, intent: &crate::drivers::scheduler::Withdrawal)
         -> Result<Option<mac_object_table::store::Removed<Interface, InvocationGate>>>
@@ -857,7 +857,7 @@ impl Registry
         Ok(self.interfaces.remove(published.interface.id()))
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn scheduler_withdrawal_ack(&mut self,
                                            intent: &crate::drivers::scheduler::Withdrawal)
                                            -> Result<Option<SchedulerWithdrawalCompletion>>
@@ -910,7 +910,7 @@ impl Registry
         }))
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn authorize_scheduler_cleanup(&self,
                                               subject: &crate::drivers::jobs::subjects::Subject,
                                               caller: u64, provider: u64, operation: u32,
@@ -1008,7 +1008,7 @@ impl Registry
                 crate::allocation::with_kernel_allocation(allocation, || {
                     self.publish_interfaces(module)
                 }).map_err(Error::AllocationScope)??;
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 serial!("MODULE_ASYNC_READY name={} id={}",
                         self.modules.get(module).ok_or(Error::Stale)?.name.text(),
                         module);
@@ -1046,7 +1046,7 @@ impl Registry
                 record.startup.status = status;
                 record.startup.length = cause.len();
                 record.startup.cause[..cause.len()].copy_from_slice(cause.as_bytes());
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 serial!("MODULE_ASYNC_STATUS name={} id={} status={} cause={}",
                         self.modules.get(module).ok_or(Error::Stale)?.name.text(),
                         module,
@@ -1072,12 +1072,12 @@ impl Registry
         record.rollback_pending = true;
         record.state = State::Quiescing;
         self.modules.stop(module)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         if first
         {
             crate::drivers::recovery_changed();
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let _ = first;
         let owner = self.module_ledger(module)?;
         self.requests.cancel_entry(module, owner.owner());

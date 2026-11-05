@@ -179,3 +179,11 @@ pub(crate) unsafe fn terminal_stack(top: usize, entry: unsafe extern "C" fn(*con
     // SAFETY: the caller guarantees the stack and the entry contract.
     unsafe { __system_terminal_stack(top, entry, argument) }
 }
+
+/// Orders instruction-cache maintenance against later fetches. Written code is
+/// not guaranteed to be visible to the fetch pipeline without this.
+pub(crate) fn instruction_barrier()
+{
+    // SAFETY: the fences have no operands and cannot fault.
+    unsafe { core::arch::asm!("fence rw, rw", "fence.i", options(nostack)) };
+}

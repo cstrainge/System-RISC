@@ -22,7 +22,7 @@ struct Kit
 {
     frame:   ProtectedRange,
     stack:   ProtectedRange,
-    display: mac_boot_screen::ramfb::PreparedTerminal,
+    display: crate::machine::display::PreparedTerminal,
     state:   UnsafeCell<State>
 }
 // SAFETY: bootstrap constructs the cell before publication. The only subsequent
@@ -41,7 +41,7 @@ static CLAIMED: TerminalOwnership = TerminalOwnership::new();
 pub(crate) enum Error
 {
     Reserve(crate::machine::paging::Error),
-    Display(mac_boot_screen::ramfb::Error),
+    Display(crate::machine::display::TerminalError),
     Input(input::Error),
     Geometry(crate::emergency::GeometryError),
     Manifest(mac_kernel_model::policy::ModelError),
@@ -83,7 +83,7 @@ pub(crate) fn prepare() -> Result<(), Error>
         // lease and stable CPU-to-bus translation. The sealed capability retains
         // the separate DMA scratch until reset, including on transfer timeout.
         let display = unsafe {
-            mac_boot_screen::ramfb::prepare_terminal(crate::machine::memory::FW_CFG_BASE as usize,
+            crate::machine::display::prepare_terminal(crate::machine::memory::FW_CFG_BASE as usize,
                 frame.physical().0, crate::display::width(), crate::display::height(),
                 |pointer, length| crate::machine::paging::bus_address(pointer as u64, length as u64))
         }.map_err(Error::Display)?;
@@ -93,7 +93,7 @@ pub(crate) fn prepare() -> Result<(), Error>
         let image_storage = (input.bytes as u64)
             .checked_add(size_of::<spin::Once<Kit>>() as u64)
             .and_then(|n| n.checked_add(size_of::<TerminalOwnership>() as u64))
-            .and_then(|n| n.checked_add(mac_boot_screen::ramfb::PreparedTerminal::storage_layout().size() as u64))
+            .and_then(|n| n.checked_add(crate::machine::display::PreparedTerminal::storage_layout().size() as u64))
             .ok_or(Error::Size)?;
         // Exact immutable payloads used by this terminal. Shared code, string
         // literals and the normal/terminal shared RAMFB ownership byte are not
@@ -119,7 +119,7 @@ pub(crate) fn prepare() -> Result<(), Error>
             heap_backing_bytes={} full_recovery_kit=false",
             bytes, frame.bytes(), stack.bytes(), input.bytes, input.alignment,
             input.devices, size_of::<spin::Once<Kit>>() + size_of::<TerminalOwnership>(),
-            mac_boot_screen::ramfb::PreparedTerminal::storage_layout().size(),
+            crate::machine::display::PreparedTerminal::storage_layout().size(),
             size_of::<Record>(), size_of::<Screen>(),
             size_of::<Cursor>(), manifest.bytes(), manifest.alignment(),
             reserve.capacity_bytes, reserve.used_bytes, image_storage, image_assets,

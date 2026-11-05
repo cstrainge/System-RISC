@@ -165,3 +165,20 @@ pub(crate) unsafe fn terminal_stack(top: usize, entry: unsafe extern "C" fn(*con
     // SAFETY: the caller guarantees the stack and the entry contract.
     unsafe { __system_terminal_stack(top, entry, argument) }
 }
+
+/// Orders instruction-cache maintenance against later fetches. Written code is
+/// not guaranteed to be visible to the fetch pipeline without this.
+pub(crate) fn instruction_barrier()
+{
+    // SAFETY: the barriers have no operands and cannot fault.
+    unsafe { core::arch::asm!("dsb ish", "isb", options(nostack)) };
+}
+/// This CPU's hardware identity, from MPIDR_EL1. Affinity level 0 is the core
+/// within a cluster; the full value identifies the core across clusters.
+pub(crate) fn hart_id() -> usize
+{
+    let value: u64;
+    // SAFETY: reading MPIDR_EL1 has no side effects.
+    unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) value, options(nomem, nostack)) };
+    (value & 0xFF) as usize
+}

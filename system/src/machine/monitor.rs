@@ -150,7 +150,7 @@ pub(crate) fn prepare_primary_wake() -> Result<PrimaryWake, WakeError>
     // Receiver admission must not expose an interrupt before first-frame
     // ownership commits; preserve the caller's masked startup invariant.
     unsafe {
-        asm!("csrr {status}, sstatus", status = out(reg) status, options(nostack));
+        status = crate::machine::mmu::status();
     }
     if status & 2 != 0
     {
@@ -159,7 +159,7 @@ pub(crate) fn prepare_primary_wake() -> Result<PrimaryWake, WakeError>
     // This runs once, SIE masked, before the first scheduled claim. Preserve
     // STIE and all other local interrupt enables; no epoch or self-IPI here.
     unsafe {
-        asm!("csrs sie, {ssie}", ssie = in(reg) 2usize, options(nostack));
+        crate::machine::cpu::enable_software_interrupt();
     }
     Ok(PrimaryWake { key,
                      entry })
@@ -497,7 +497,7 @@ fn now() -> u64
 {
     let value;
     unsafe {
-        asm!("rdtime {}",out(reg)value,options(nomem,nostack));
+        value = crate::machine::cpu::ticks();
     }
     value
 }
@@ -579,11 +579,11 @@ pub(crate) fn cpu_observation(ordinal: usize, hardware: u64) -> Option<(u64, boo
 fn notify(entry: &Entry)
 {
     // Release alone does not order MMIO. Neither operation calls foreign code.
+    crate::machine::cpu::barrier();
     unsafe {
-        asm!("fence iorw,iorw", options(nostack));
         ptr::write_volatile(entry.msip as *mut u32, 1);
-        asm!("fence iorw,iorw", options(nostack));
     }
+    crate::machine::cpu::barrier();
 }
 fn selected() -> Result<&'static Admitted, Error>
 {
@@ -671,17 +671,15 @@ impl Publication
 
     fn local(self)
     {
-        // SAFETY: the issue tail reauthenticates the actual primary with local
-        // preemption masked. PTE/code stores precede both local execution and
-        // the subsequent release/MMIO publication to the real remote rows.
-        unsafe {
-            match self
+        // PTE and code stores precede both local execution and the subsequent
+        // release/MMIO publication to the real remote rows.
+        match self
+        {
+            Self::Instructions => crate::machine::cpu::instruction_barrier(),
+            Self::Translations =>
             {
-                Self::Instructions => asm!("fence rw,rw", "fence.i", options(nostack)),
-                Self::Translations =>
-                {
-                    asm!("fence rw,rw", "sfence.vma zero,zero", options(nostack));
-                }
+                crate::machine::cpu::barrier();
+                crate::machine::mmu::flush_translations();
             }
         }
     }
@@ -1230,7 +1228,7 @@ pub(crate) fn wait_for_terminal_stop(key: crate::machine::traps::execution::Hart
     // SAFETY: local terminal path never restores S execution. Higher-privilege
     // machine software interrupts remain deliverable with SIE clear.
     unsafe {
-        asm!("csrci sstatus,2", options(nostack));
+        crate::machine::interrupts::disable();
     }
     let deadline = MONITOR.get()
                           .and_then(|transport| {

@@ -51,7 +51,7 @@ impl<T> Modules<T>
     pub(super) fn insert(&mut self, ledger: OwnerRef, value: T) -> Result<u64, Error>
     {
         let id = self.entries.insert(ledger, value).map_err(Error::Domain)?.incarnation();
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         crate::toolbox::inspection::membership_changed();
         Ok(id)
     }
@@ -80,12 +80,12 @@ impl<T> Modules<T>
     {
         let changed = self.entries.get(id).is_some_and(|entry| entry.ledger().accepting());
         self.entries.stop_admission(id).map_err(Error::Domain)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         if changed
         {
             crate::toolbox::inspection::membership_changed();
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let _ = changed;
         Ok(())
     }
@@ -93,7 +93,7 @@ impl<T> Modules<T>
     pub(super) fn remove(&mut self, id: u64) -> Result<T, Error>
     {
         let value = self.entries.remove(id).map_err(Error::Domain)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         crate::toolbox::inspection::membership_changed();
         Ok(value)
     }
