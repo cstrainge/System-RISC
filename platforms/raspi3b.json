@@ -10,7 +10,7 @@
   "install": {
     "description": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
     "set": "none",
-    "reason": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
+    "reason": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path. The declared storage image is written to a card with 'cargo xtask flash TARGET --yes', which erases the card.",
     "applications": [],
     "modules": []
   },
@@ -368,7 +368,7 @@
       }
     ],
     "tooling": [
-      "dd"
+      "cargo xtask flash"
     ],
     "unused": [
       {
