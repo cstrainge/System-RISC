@@ -30,6 +30,16 @@ impl mac_kernel_model::pages::PageLayout for Sv39
     {
         Self::canonical_range(range)
     }
+
+    fn lower_half_end() -> u64
+    {
+        1 << 38
+    }
+
+    fn upper_half_start() -> u64
+    {
+        u64::MAX << 38
+    }
 }
 /// The supervisor root register value: the Sv39 mode field, the address-space
 /// tag and the root table's physical page number, encoded together. Callers

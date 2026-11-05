@@ -24,6 +24,16 @@ impl mac_kernel_model::pages::PageLayout for Layout
     {
         crate::valid_virtual_range(range)
     }
+
+    fn lower_half_end() -> u64
+    {
+        0x0000_0080_0000_0000
+    }
+
+    fn upper_half_start() -> u64
+    {
+        0xffff_ff80_0000_0000
+    }
 }
 
 /// This architecture's encoding error is the one the walk reports.

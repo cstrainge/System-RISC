@@ -1,5 +1,6 @@
 //! Page geometry, ownership and mapping plans; no PTE bits or CPU instructions.
 pub mod mapping;
+pub mod walk;
 pub mod physical;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -161,6 +162,28 @@ pub trait PageLayout
     fn levels() -> usize
     {
         Self::leaf_sizes().len()
+    }
+
+    /// The first address above the lower canonical half. An extent ending here
+    /// has exhausted the lower half, not the address space.
+    fn lower_half_end() -> u64;
+
+    /// The first address of the upper canonical half.
+    fn upper_half_start() -> u64;
+
+    /// Whether one address is canonical for this format.
+    fn canonical(address: u64) -> bool
+    {
+        let Some(end) = address.checked_add(1)
+        else
+        {
+            return false;
+        };
+        match crate::policy::AddressRange::new(address, end)
+        {
+            Ok(range) => Self::valid_virtual_range(range),
+            Err(_) => false
+        }
     }
 
     /// The leaf size used at `level`, counting from the finest leaf.

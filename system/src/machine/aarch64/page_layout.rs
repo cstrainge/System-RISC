@@ -13,6 +13,7 @@ use mac_kernel_model::pages::{PageGeometry, PageLayout};
 /// architecture's descriptor encoder.
 pub(crate) use mac_aarch64_pages::{Decoded, Entry, LeafSize};
 pub(crate) use mac_aarch64_pages::mapping;
+pub(crate) use mac_aarch64_pages::walk;
 use mac_kernel_model::policy::AddressRange;
 
 /// The base page. AArch64 also permits 16 KiB and 64 KiB granules; the platform
@@ -44,6 +45,16 @@ pub(crate) fn valid_virtual_range(range: AddressRange) -> bool
     mac_aarch64_pages::valid_virtual_range(range)
 }
 
+pub(crate) fn lower_half_end() -> u64
+{
+    0x0000_0080_0000_0000
+}
+
+pub(crate) fn upper_half_start() -> u64
+{
+    0xffff_ff80_0000_0000
+}
+
 /// The name the admission diagnostic reports, so a refused root says which
 /// format it was measured against.
 pub(crate) const NAME: &str = "aarch64-39";
@@ -67,6 +78,16 @@ impl mac_kernel_model::pages::PageLayout for Aarch64Layout
     fn valid_virtual_range(range: AddressRange) -> bool
     {
         valid_virtual_range(range)
+    }
+
+    fn lower_half_end() -> u64
+    {
+        lower_half_end()
+    }
+
+    fn upper_half_start() -> u64
+    {
+        upper_half_start()
     }
 }
 

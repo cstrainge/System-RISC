@@ -609,6 +609,16 @@ impl PageLayout for Rva
     {
         super::page_layout::valid_virtual_range(range)
     }
+
+    fn lower_half_end() -> u64
+    {
+        super::page_layout::lower_half_end()
+    }
+
+    fn upper_half_start() -> u64
+    {
+        super::page_layout::upper_half_start()
+    }
 }
 impl Architecture for Rva
 {
