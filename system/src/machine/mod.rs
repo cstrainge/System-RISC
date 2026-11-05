@@ -19,6 +19,7 @@ pub(crate) mod input;
 pub(crate) mod io;
 pub(crate) mod memory;
 pub(crate) mod pages;
+pub(crate) mod scheduler;
 pub(crate) mod smp;
 pub(crate) use smp::eligible_harts;
 pub(crate) mod video;

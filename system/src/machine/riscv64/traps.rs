@@ -50,8 +50,8 @@ pub(crate) struct TrapFrame
     pub registers:     [usize; 30],
     pub pc:            usize,
     pub status:        usize,
-    pub(super) cause:  usize,
-    pub(super) value:  usize,
+    pub(crate) cause:  usize,
+    pub(crate) value:  usize,
     floating:          [u64; 32],
     fcsr:              usize,
     vl:                usize,
@@ -188,7 +188,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                   // its genuine claim rather than resume through such a branch.
                   let action = if outer
                                   && matches!(action, Dispatch::Resume)
-                                  && super::scheduler::must_leave_current()
+                                  && crate::machine::scheduler::must_leave_current()
                   {
                       Dispatch::Schedule
                   }
@@ -204,7 +204,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           let capture = hart::captured_outer(frame);
                           if capture.hart().requires_schedule()
                           {
-                              super::scheduler::schedule(capture)
+                              crate::machine::scheduler::schedule(capture)
                           }
                           else
                           {
@@ -223,7 +223,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           let key = capture.hart();
                           match super::monitor::acknowledge_wake(key)
                           {
-                              Ok(true) => super::scheduler::wake::acknowledged(key),
+                              Ok(true) => crate::machine::scheduler::wake::acknowledged(key),
                               Ok(false) => (), // Empty/already-ACKed SSIP advances nothing.
                               Err(super::monitor::Error::Stopping) =>
                               {
@@ -247,7 +247,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           }
                           if key.requires_schedule()
                           {
-                              super::scheduler::schedule(capture)
+                              crate::machine::scheduler::schedule(capture)
                           }
                           else
                           {
@@ -263,7 +263,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                       // Every service/frame borrow and scheduler guard ended.
                       // A nested ECALL can still interrupt an outer guard, so
                       // only the genuine outer return posts deferred intent.
-                      super::scheduler::wake::flush();
+                      crate::machine::scheduler::wake::flush();
                   }
                   next
               })
@@ -311,7 +311,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         {
             entry_lost("hardware user fault arrived inside a privileged nested service");
         }
-        match super::scheduler::capture_fault(frame)
+        match crate::machine::scheduler::capture_fault(frame)
         {
             Ok(()) => return Dispatch::Schedule,
             Err(status) =>
@@ -338,7 +338,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     if user_origin
        && (frame.prior_depth != 0
            || number == mac_module::abi::worker::TRAP
-           || number == super::scheduler::service::host::TRAP)
+           || number == crate::machine::scheduler::service::host::TRAP)
     {
         frame.registers[8] = ACCESS_DENIED as usize;
         frame.pc = frame.pc.wrapping_add(4);
@@ -356,20 +356,20 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         return worker_trap(frame);
     }
-    if number == super::scheduler::service::host::TRAP
+    if number == crate::machine::scheduler::service::host::TRAP
     {
         // The one internal System gate validates its actual callsite/scalars;
         // no caller output slot is borrowed on the peer before migration.
-        return match unsafe { super::scheduler::service::host::dispatch(frame) }
+        return match unsafe { crate::machine::scheduler::service::host::dispatch(frame) }
         {
-            super::scheduler::service::host::Outcome::Resume => Dispatch::Resume,
-            super::scheduler::service::host::Outcome::Migrate => Dispatch::Schedule
+            crate::machine::scheduler::service::host::Outcome::Resume => Dispatch::Resume,
+            crate::machine::scheduler::service::host::Outcome::Migrate => Dispatch::Schedule
         };
     }
-    let completion = match super::scheduler::service::enter_ecall(frame)
+    let completion = match crate::machine::scheduler::service::enter_ecall(frame)
     {
-        Ok(super::scheduler::service::Entry::Here(completion)) => completion,
-        Ok(super::scheduler::service::Entry::Migrate) => return Dispatch::Schedule,
+        Ok(crate::machine::scheduler::service::Entry::Here(completion)) => completion,
+        Ok(crate::machine::scheduler::service::Entry::Migrate) => return Dispatch::Schedule,
         Err(status) =>
         {
             frame.registers[8] = status as isize as usize;
@@ -405,7 +405,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     let number = frame.registers[15] as u32;
     let user_pointer = frame.registers[8] as *mut ();
     let user_size = frame.registers[9];
-    let identity = super::scheduler::service::request_identity(frame);
+    let identity = crate::machine::scheduler::service::request_identity(frame);
     let mut user_call = if user_origin
     {
         match user::prepare_or_resume(identity, number, user_pointer, user_size)
@@ -470,20 +470,20 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     };
     let (result, action) = if let Err(status) = admission
     {
-        (status as i64, super::scheduler::service::RequestAction::Return)
+        (status as i64, crate::machine::scheduler::service::RequestAction::Return)
     }
     else if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && physical_depth != 1
     {
-        (WRONG_THREAD as i64, super::scheduler::service::RequestAction::Return)
+        (WRONG_THREAD as i64, crate::machine::scheduler::service::RequestAction::Return)
     }
     else if user_call.is_some() && number == USER_CALLBACK
     {
-        let suspension = super::scheduler::service::request_suspension_allowed(frame);
+        let suspension = crate::machine::scheduler::service::request_suspension_allowed(frame);
         let response = hart::service_scope(physical_depth == 1, || {
             match user_call.as_mut()
             {
                 Some(call) => call.dispatch_callback(suspension),
-                None => super::scheduler::service::RequestResult::done(BAD_ABI)
+                None => crate::machine::scheduler::service::RequestResult::done(BAD_ABI)
             }
         });
         (i64::from(response.status), response.action)
@@ -491,7 +491,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     else if let Some(response) =
         user_call.as_mut().and_then(|call| {
                               let suspension =
-                                  super::scheduler::service::request_suspension_allowed(frame);
+                                  crate::machine::scheduler::service::request_suspension_allowed(frame);
                               hart::service_scope(physical_depth == 1, || {
                                   call.dispatch_definition(suspension)
                               })
@@ -502,7 +502,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     else if matches!(number, NATIVE_THREAD | ADDRESS_WAIT)
               || (number == PROCESS && size == size_of::<mac_abi::processes::NativeExitCall>())
     {
-        let suspension = super::scheduler::service::request_suspension_allowed(frame);
+        let suspension = crate::machine::scheduler::service::request_suspension_allowed(frame);
         let response = hart::service_scope(physical_depth == 1, || unsafe {
             dispatch_native_request(number, request, size, identity, suspension)
         });
@@ -511,7 +511,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     else
     {
         (hart::service_scope(physical_depth == 1, || unsafe { dispatch(number, request, size) }),
-         super::scheduler::service::RequestAction::Return)
+         crate::machine::scheduler::service::RequestAction::Return)
     };
     #[cfg(feature = "event-trace")]
     {
@@ -560,7 +560,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         // All service borrows ended. User requests retain the same owned
         // snapshot and physical pins; replay never rereads mutable app data.
         retain_user_call(user_call.take());
-        match super::scheduler::wait_io(job)
+        match crate::machine::scheduler::wait_io(job)
         {
             Ok(true) => return Dispatch::Schedule,
             Ok(false) => return Dispatch::Resume, // completion won the race; replay now
@@ -590,14 +590,14 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             }
         }
     }
-    if action == super::scheduler::service::RequestAction::Replay
+    if action == crate::machine::scheduler::service::RequestAction::Replay
     {
         retain_user_call(user_call.take());
         // Every Call/executor/manager borrow has ended. The original PC and
         // request identity remain owned by this same canonical continuation.
         return Dispatch::Schedule;
     }
-    let result = if action == super::scheduler::service::RequestAction::Exit
+    let result = if action == crate::machine::scheduler::service::RequestAction::Exit
     {
         // A nonreturning exit has no user output obligation. Release its
         // original request pins after every service/manager borrow has ended.
@@ -613,7 +613,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     // Replay/deferred branches returned above; Yield/Exit do not return here
     // to the user. Never inspect request memory for a report.
     if user_origin
-       && action == super::scheduler::service::RequestAction::Return
+       && action == crate::machine::scheduler::service::RequestAction::Return
        && frame.registers[8] as isize == SERVICE_BUSY as isize
        && !thread.traps.terminal_busy_reported()
     {
@@ -623,14 +623,14 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     }
     if physical_depth == 1
        && matches!(action,
-                   super::scheduler::service::RequestAction::Yield
-                   | super::scheduler::service::RequestAction::Exit)
+                   crate::machine::scheduler::service::RequestAction::Yield
+                   | crate::machine::scheduler::service::RequestAction::Exit)
     {
         return Dispatch::Schedule;
     }
     if matches!(number, WAIT_EVENT | POSITIONED_EVENT)
        && result == OK as i64
-       && super::scheduler::blocked()
+       && crate::machine::scheduler::blocked()
     {
         return Dispatch::Schedule;
     }
@@ -668,11 +668,11 @@ fn retain_user_call(call: Option<user::Call>)
 /// its real result/PC commit before restoring automatic eligibility. Deferred
 /// replay intentionally never calls this helper.
 fn finish_service(frame: &mut TrapFrame,
-                  completion: Option<super::scheduler::service::Completion>, result: i64)
+                  completion: Option<crate::machine::scheduler::service::Completion>, result: i64)
 {
     frame.registers[8] = result as usize;
     frame.pc = frame.pc.wrapping_add(4);
-    if let Err(status) = super::scheduler::service::complete(completion)
+    if let Err(status) = crate::machine::scheduler::service::complete(completion)
     {
         frame.registers[8] = status as isize as usize;
     }
@@ -695,7 +695,7 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
         {
             return Err(WRONG_THREAD);
         }
-        let (id, cancelled) = super::scheduler::worker_current()?;
+        let (id, cancelled) = crate::machine::scheduler::worker_current()?;
         if id != context.identity().thread.0
         {
             return Err(WRONG_THREAD);
@@ -719,7 +719,7 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
             {
                 call.state = worker::PARKED;
                 call.exit_status = if cancelled { OPERATION_CANCELLED } else { OK };
-                super::scheduler::worker_park(None)
+                crate::machine::scheduler::worker_park(None)
             }
             worker::MONOTONIC =>
             {
@@ -736,11 +736,11 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
                     crate::platform::ticks().checked_add(duration).ok_or(BAD_ARGUMENT)?;
                 call.state = worker::PARKED;
                 call.exit_status = if cancelled { OPERATION_CANCELLED } else { OK };
-                super::scheduler::worker_park(Some(deadline))
+                crate::machine::scheduler::worker_park(Some(deadline))
             }
             worker::EXIT =>
             {
-                super::scheduler::worker_exit()?;
+                crate::machine::scheduler::worker_exit()?;
                 call.state = worker::FINISHED;
                 Ok(true)
             }
@@ -804,11 +804,11 @@ fn application_heap_refusal(call: &mut application_heap::Call, status: Status,
 /// Actual action-bearing native families. Each request borrow ends before the
 /// caller commits its saved frame or schedules a different continuation.
 unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
-                                  identity: super::scheduler::service::RequestIdentity,
+                                  identity: crate::machine::scheduler::service::RequestIdentity,
                                   suspension: Result<(), Status>)
-                                  -> super::scheduler::service::RequestResult
+                                  -> crate::machine::scheduler::service::RequestResult
 {
-    use super::scheduler::service::RequestResult;
+    use crate::machine::scheduler::service::RequestResult;
     match number
     {
         PROCESS =>
@@ -831,7 +831,7 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
                                                                      identity,
                                                                      suspension,
                                                                      |pointer, length| {
-                                                                         use super::scheduler::application::Error;
+                                                                         use crate::machine::scheduler::application::Error;
                                                                          if length > name.len() || (length != 0 && pointer.is_null())
                             {
                                 return Err(Error::Invalid("thread name pointer/length exceeds bounded inline storage"));
@@ -859,7 +859,7 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
                 }
                 None =>
                 {
-                    super::scheduler::application::cancel_current();
+                    crate::machine::scheduler::application::cancel_current();
                     RequestResult::done(BAD_ARGUMENT)
                 }
             }
@@ -868,10 +868,10 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
         {
             match unsafe { request::<mac_abi::address_wait::Call>(pointer, size) }
             {
-                Some(call) => super::scheduler::address::request(call, identity, suspension),
+                Some(call) => crate::machine::scheduler::address::request(call, identity, suspension),
                 None =>
                 {
-                    super::scheduler::address::cancel_current();
+                    crate::machine::scheduler::address::cancel_current();
                     RequestResult::done(BAD_ARGUMENT)
                 }
             }
@@ -1351,7 +1351,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                          0,
                                          0);
                     if let Err(status) =
-                        super::scheduler::wait_current(call.mask, runtime.control_layout_wait(call.timeout_ticks))
+                        crate::machine::scheduler::wait_current(call.mask, runtime.control_layout_wait(call.timeout_ticks))
                     {
                         return status;
                     }
@@ -1375,7 +1375,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                          0,
                                          0);
                     if let Err(status) =
-                        super::scheduler::wait_current(call.mask, runtime.control_layout_wait(call.timeout_ticks))
+                        crate::machine::scheduler::wait_current(call.mask, runtime.control_layout_wait(call.timeout_ticks))
                     {
                         return status;
                     }
@@ -1442,7 +1442,7 @@ pub(crate) fn publish_cpu(state: &SavedState)
     state.published();
     hart::publish(state)
 }
-pub(super) fn entry_lost(reason: &str) -> !
+pub(crate) fn entry_lost(reason: &str) -> !
 {
     // Entry failures can occur on admitted peers. The fixed-owner ROM logger
     // is not a secondary service; terminal diagnostics bypass it entirely.
