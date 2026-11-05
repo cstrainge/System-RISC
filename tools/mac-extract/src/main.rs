@@ -57,7 +57,11 @@ struct ExtractEntry
 {
     #[serde(rename = "type")]
     kind:       String,
+    /// The ID the resource carries in the package.
     id:         i16,
+    /// The ID the disc's file uses, when the importer renumbered it.
+    #[serde(default)]
+    source_id:  Option<i16>,
     symbol:     String,
     name:       Option<String>,
     attributes: u8,
@@ -197,9 +201,10 @@ fn extract(args: &[String]) -> Result<ExitCode>
         for entry in &source.resources
         {
             let kind = fourcc(&entry.kind)?;
+            let disc_id = entry.source_id.unwrap_or(entry.id);
             let Some(found) =
                 disc_resources.iter()
-                              .find(|resource| resource.kind == kind && resource.id == entry.id)
+                              .find(|resource| resource.kind == kind && resource.id == disc_id)
             else
             {
                 return Err(error(format!("{} lacks {} {} ({}), which {} names for this \
@@ -209,7 +214,7 @@ fn extract(args: &[String]) -> Result<ExitCode>
                                           package",
                                          disc.display(),
                                          entry.kind,
-                                         entry.id,
+                                         disc_id,
                                          entry.symbol,
                                          list_path.display(),
                                          source.path,
