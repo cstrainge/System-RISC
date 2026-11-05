@@ -48,21 +48,23 @@ include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
 /// author, so nothing here hardcodes a peripheral address.
 static DEVICE_TREE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devicetree.dtb"));
 
-// Translation tables live inside the declared boot window, above the stack and
-// below the firmware heap. The stack grows down from `__stack_top`, so tables
-// placed just above the payload are rewritten by the first stack pushes; that
-// overwrote the level-1 entries for the code and stack and only showed up once
-// a caller's frame grew deep enough to force a table walk. In the current image
-// `__stack_top` is 0xf1040 and its 256 KiB window starts at 0xb1040, so these
-// four tables at 0x110000 clear it, and the heap begins at 0x130000. A
-// 39-bit regime with a 4 KiB granule starts its walk at level 1, so TTBR0/TTBR1
-// name the level-1 tables directly. Every descriptor we touch sets AF; a table
-// walker that reaches a descriptor without AF faults on first access even when
-// the rest of the entry looks right.
-const L1_LOW: u64 = 0x11_0000;
-const L2_LOW: u64 = 0x11_1000;
-const L1_HIGH: u64 = 0x11_2000;
-const L2_PHYSMAP: u64 = 0x11_3000;
+// The bootstrap translation tables. They are not a section — the entry code
+// writes them with plain stores, so the linker cannot place them — so their
+// address comes from `link.ld`, which owns it and asserts that the four pages
+// clear the stack window and stop short of the firmware heap. That ordering
+// matters because the stack grows down from `__stack_top`: tables inside the
+// stack window are overwritten by the first deep call, and the result is a data
+// abort inside whatever function forced the walk rather than anything that names
+// the tables. Stating the address here as well is what once let a comment carry
+// one build's stack top into another build.
+unsafe extern "C"
+{
+    // The script's own symbol; its address is the table base.
+    static __tables_start: u8;
+}
+
+/// One translation table: 512 descriptors of eight bytes.
+const TABLE_BYTES: u64 = 4096;
 const BLOCK: u64 = 0x20_0000;
 const TABLE: u64 = 0x3;
 // Valid block, AttrIndx 0 (normal write-back), inner shareable, AF.
@@ -100,25 +102,33 @@ pub extern "C" fn mmu_init()
     // extent rather than any individual peripheral address.
     assert!(PHYSICAL_RAM_BYTES % BLOCK == 0, "RAM must end on a block boundary");
     assert!(physmap_index < 512, "the physmap must sit inside the kernel half");
+    // A 39-bit regime with a 4 KiB granule starts its walk at level 1, so
+    // TTBR0/TTBR1 name the level-1 tables directly. Every descriptor we touch
+    // sets AF; a table walker that reaches a descriptor without AF faults on
+    // first access even when the rest of the entry looks right.
+    let l1_low = core::ptr::addr_of!(__tables_start) as u64;
+    let l2_low = l1_low + TABLE_BYTES;
+    let l1_high = l1_low + 2 * TABLE_BYTES;
+    let l2_physmap = l1_low + 3 * TABLE_BYTES;
     unsafe
     {
-        for table in [L1_LOW, L2_LOW, L1_HIGH, L2_PHYSMAP]
+        for table in [l1_low, l2_low, l1_high, l2_physmap]
         {
             clear(table);
         }
-        entry(L1_LOW, 0, L2_LOW | TABLE);
+        entry(l1_low, 0, l2_low | TABLE);
         for index in 0..ram_blocks
         {
-            entry(L2_LOW, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
+            entry(l2_low, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
         }
         for index in ram_blocks..512
         {
-            entry(L2_LOW, index, index as u64 * BLOCK | DEVICE);
+            entry(l2_low, index, index as u64 * BLOCK | DEVICE);
         }
-        entry(L1_HIGH, physmap_index, L2_PHYSMAP | TABLE);
+        entry(l1_high, physmap_index, l2_physmap | TABLE);
         for index in 0..ram_blocks
         {
-            entry(L2_PHYSMAP, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
+            entry(l2_physmap, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
         }
         core::arch::asm!(
             "dsb sy",
@@ -129,8 +139,8 @@ pub extern "C" fn mmu_init()
             "isb",
             mair = in(reg) MAIR,
             tcr = in(reg) TCR,
-            ttbr0 = in(reg) L1_LOW,
-            ttbr1 = in(reg) L1_HIGH,
+            ttbr0 = in(reg) l1_low,
+            ttbr1 = in(reg) l1_high,
             options(nostack)
         );
         core::arch::asm!(
