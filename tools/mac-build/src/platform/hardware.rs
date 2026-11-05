@@ -201,7 +201,10 @@ pub enum PeripheralKind
     Audio,
     /// A block that multiplexes several functions behind one register window, so
     /// its clients share an enable register and an interrupt.
-    Auxiliary
+    Auxiliary,
+    /// The clock generator: it divides the oscillators, so it is the rate every
+    /// other peripheral and any timed output is derived from.
+    Clock
 }
 
 impl Definition

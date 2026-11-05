@@ -201,6 +201,20 @@ SMP behavior defined. Kernel modules are trusted code in the kernel's fault
 domain: Rust interfaces reduce mistakes but do not isolate a panic or bad native
 code. This is not an MMU-isolation or recoverable-fault guarantee.
 
+## Worked example, and the endpoint gap
+
+[The addressable-LED extension](NEOPIXEL-EXTENSION.md) is the shaping example for
+this machinery: an extension owns a pin, a serialiser and a DMA channel, and
+applications send it colour data instead of attempting sub-microsecond timing of
+their own. It shows the intended split — mechanisms in the system, composition in
+the extension — and it also shows what the system does not yet have: a **named
+endpoint with a connection lifetime**, and delivery from a provider to a
+consumer. What exists is class-addressed request/reply with bounded buffers and a
+deferred-completion protocol. A name registry, a connection object the provider
+is told about (including when the consumer's owner dies), bounded per-connection
+queueing and provider-initiated delivery are all missing, and per that document
+they belong here rather than in one extension.
+
 ## Startup, failure and lifetime
 
 The boot ROM still locates and boots the blessed System. System discovers enabled

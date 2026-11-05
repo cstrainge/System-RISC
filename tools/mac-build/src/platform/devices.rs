@@ -12,7 +12,16 @@ pub struct Definition
     pub key:       String,
     pub address:   String,
     pub bytes:     u64,
-    pub interrupt: u32,
+    /// The ARM interrupt this window raises.
+    ///
+    /// Three states, and they are deliberately three: a number is an interrupt,
+    /// JSON `null` is a window that raises none, and a field that is absent is
+    /// refused. A plain optional field would collapse the last two, so a typo
+    /// that dropped the key would read as "this block has no interrupt" and the
+    /// record would quietly lose a fact. A device with no interrupt has to say
+    /// so on purpose.
+    #[serde(default, deserialize_with = "declared_interrupt")]
+    pub interrupt: Option<Option<u32>>,
     pub flags:     u32
 }
 pub struct Checked
@@ -22,8 +31,17 @@ pub struct Checked
     pub key:       [u8; 16],
     pub address:   u64,
     pub bytes:     u64,
-    pub interrupt: u32,
+    pub interrupt: Option<u32>,
     pub flags:     u32
+}
+
+/// Keep "present and null" distinct from "absent": the missing field stays
+/// `None`, while an explicit null becomes `Some(None)`.
+fn declared_interrupt<'de, D>(deserializer: D)
+                             -> std::result::Result<Option<Option<u32>>, D::Error>
+    where D: serde::Deserializer<'de>
+{
+    Option::<u32>::deserialize(deserializer).map(Some)
 }
 pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Result<Vec<Checked>>
 {
@@ -73,6 +91,16 @@ pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Res
             return Err(error("platform MMIO range must be page aligned, outside RAM/flash, \
                               with valid device flags"));
         }
+        let interrupt = match d.interrupt
+        {
+            Some(interrupt) => interrupt,
+            None =>
+            {
+                return Err(error("platform MMIO device must declare its interrupt: a number, \
+                                  or null for a block that raises none on the ARM side. The \
+                                  field being absent is not the same statement"));
+            }
+        };
         if checked.iter().any(|other| {
                              other.id == d.id
                              || (address < other.address + other.bytes && other.address < end)
@@ -86,11 +114,16 @@ pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Res
                                key,
                                address,
                                bytes: d.bytes,
-                               interrupt: d.interrupt,
+                               interrupt,
                                flags: d.flags });
     }
     Ok(checked)
 }
+/// What a window with no ARM interrupt carries in the generated table. The
+/// tuple that consumers read is a plain integer, so absence needs a value; this
+/// one is outside every interrupt the controller can raise, and the record is
+/// what says which windows mean it.
+pub const NO_INTERRUPT: u32 = u32::MAX;
 pub fn constants(devices: &[Checked]) -> String
 {
     let mut result = String::from("\npub const PLATFORM_MMIO_DEVICES: \
@@ -98,7 +131,12 @@ pub fn constants(devices: &[Checked]) -> String
     for d in devices
     {
         result.push_str(&format!("({:?},{:?},{},{},{},{}),\n",
-                                 d.bus, d.key, d.address, d.bytes, d.interrupt, d.flags));
+                                 d.bus,
+                                 d.key,
+                                 d.address,
+                                 d.bytes,
+                                 d.interrupt.unwrap_or(NO_INTERRUPT),
+                                 d.flags));
     }
     result.push_str("];\n");
     result

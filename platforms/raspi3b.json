@@ -231,6 +231,42 @@
       "bytes": 4096,
       "interrupt": 29,
       "flags": 2
+    },
+    {
+      "id": "bcm2835-pwm",
+      "bus": "MMIO",
+      "key": "6272636d2c70776d0000000000000000",
+      "address": "0x3f20c000",
+      "bytes": 4096,
+      "interrupt": null,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-i2s",
+      "bus": "MMIO",
+      "key": "6272636d2c6932730000000000000000",
+      "address": "0x3f203000",
+      "bytes": 4096,
+      "interrupt": null,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-cprman-0",
+      "bus": "MMIO",
+      "key": "6272636d2c6370726d616e0000000000",
+      "address": "0x3f101000",
+      "bytes": 4096,
+      "interrupt": null,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-cprman-1",
+      "bus": "MMIO",
+      "key": "6272636d2c6370726d616e0000000000",
+      "address": "0x3f102000",
+      "bytes": 4096,
+      "interrupt": null,
+      "flags": 2
     }
   ],
   "bootloader": {
@@ -441,6 +477,24 @@
         "base": "0x3f215000",
         "bytes": "0x1000",
         "interrupt": 29
+      },
+      {
+        "kind": "pwm",
+        "model": "bcm2835-pwm",
+        "base": "0x3f20c000",
+        "bytes": "0x28"
+      },
+      {
+        "kind": "audio",
+        "model": "bcm2835-i2s",
+        "base": "0x3f203000",
+        "bytes": "0x24"
+      },
+      {
+        "kind": "clock",
+        "model": "bcm2835-cprman",
+        "base": "0x3f101000",
+        "bytes": "0x2000"
       }
     ],
     "tooling": [

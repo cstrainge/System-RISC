@@ -632,57 +632,73 @@ impl Platform
                                                     self.name, window.compatible, window.base,
                                                     window.bytes))
                            })?;
-            let containing: Vec<&devices::Checked> = ranges.iter()
-                                                           .filter(|range| {
-                                                               range.address <= window.base
-                                                               && end <= range.address + range.bytes
-                                                           })
-                                                           .collect();
-            match containing.as_slice()
+            // A device window must be covered by declared MMIO ranges, and a
+            // block that genuinely spans several pages claims one range per
+            // page: the clock manager's two-page extent is one device and two
+            // claimable pages. The ranges therefore have to tile the window
+            // exactly — no gap, no overlap — rather than all contain it.
+            let mut covering: Vec<&devices::Checked> =
+                ranges.iter()
+                      .filter(|range| {
+                          range.address < end && window.base < range.address + range.bytes
+                      })
+                      .collect();
+            covering.sort_by_key(|range| range.address);
+            if covering.is_empty()
             {
-                [range] =>
-                {
-                    let occupants = windows.iter()
-                                           .filter(|other| {
-                                               range.address <= other.base
-                                               && other.base + other.bytes
-                                                  <= range.address + range.bytes
-                                           })
-                                           .count();
-                    if occupants > 1
-                    {
-                        return Err(crate::error(format!("platform '{}' MMIO range {} \
-                                                         0x{:x}+0x{:x} contains {occupants} \
-                                                         declared peripheral windows; one \
-                                                         claim would cover more than one \
-                                                         device",
-                                                        self.name,
-                                                        range.id,
-                                                        range.address,
-                                                        range.bytes)));
-                    }
-                }
-                [] =>
+                return Err(crate::error(format!("platform '{}' peripheral {} window \
+                                                 0x{:x}+0x{:x} lies outside every declared MMIO \
+                                                 range, so no module can claim it",
+                                                self.name,
+                                                window.compatible,
+                                                window.base,
+                                                window.bytes)));
+            }
+            let mut cursor = window.base;
+            for range in &covering
+            {
+                if range.address > cursor
                 {
                     return Err(crate::error(format!("platform '{}' peripheral {} window \
-                                                     0x{:x}+0x{:x} lies outside every \
-                                                     declared MMIO range, so no module can \
-                                                     claim it",
+                                                     0x{:x}+0x{:x} is not covered at 0x{:x}: the \
+                                                     declared MMIO ranges leave a gap, so part of \
+                                                     the device could not be claimed",
                                                     self.name,
                                                     window.compatible,
                                                     window.base,
-                                                    window.bytes)));
+                                                    window.bytes,
+                                                    cursor)));
                 }
-                _ =>
+                cursor = cursor.max(range.address + range.bytes);
+                let occupants = windows.iter()
+                                       .filter(|other| {
+                                           range.address <= other.base
+                                           && other.base + other.bytes
+                                              <= range.address + range.bytes
+                                       })
+                                       .count();
+                if occupants > 1
                 {
-                    return Err(crate::error(format!("platform '{}' peripheral {} window \
-                                                     0x{:x}+0x{:x} is contained by more than \
-                                                     one MMIO range",
+                    return Err(crate::error(format!("platform '{}' MMIO range {} \
+                                                     0x{:x}+0x{:x} contains {occupants} declared \
+                                                     peripheral windows; one claim would cover \
+                                                     more than one device",
                                                     self.name,
-                                                    window.compatible,
-                                                    window.base,
-                                                    window.bytes)));
+                                                    range.id,
+                                                    range.address,
+                                                    range.bytes)));
                 }
+            }
+            if cursor < end
+            {
+                return Err(crate::error(format!("platform '{}' peripheral {} window \
+                                                 0x{:x}+0x{:x} runs past its last declared MMIO \
+                                                 range at 0x{:x}",
+                                                self.name,
+                                                window.compatible,
+                                                window.base,
+                                                window.bytes,
+                                                cursor)));
             }
         }
         Ok(())
