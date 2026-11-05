@@ -91,7 +91,7 @@ What is new here:
                                     list construction · registers
                                           │
                                           ▼
-                                    V3D at 0x3FEC0000
+                                    V3D at 0x3FC00000
                                           │ writes
                                           ▼
                                     surface ──► compositing driver (platform lane)
@@ -595,6 +595,16 @@ box; hold-based release) and should be recorded rather than rushed.
 8. **A cache experiment:** write the surface from the CPU, present without
    cleaning, and observe whether stale pixels appear. This establishes whether
    G2 is real on this board or whether the allocation is already uncached.
+
+What QEMU can and cannot reach is stated in `docs/QPU-RESEARCH.md` §3.5. In
+short: the interposer's divert/delegate decisions, the span algebra, the batch
+triggers, the crash path's bookkeeping and the software side of the corpus are
+all exercisable on the host or under QEMU. The hardware provider, the surface
+handover and the accelerator are not — under QEMU the V3D is an unimplemented
+placeholder that returns zero, so the driver refuses to attach. That refusal,
+and the fallback to the software provider it must produce, is the one
+hardware-related behaviour QEMU does verify, and it should be a test rather than
+an accident.
 
 ---
 

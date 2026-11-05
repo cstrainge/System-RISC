@@ -573,6 +573,12 @@ time.
    are refused. This is the test that matters most for memory safety, and it
    must be run on silicon, not only against the checker.
 
+Everything in §5.1–§5.4 runs without hardware and without QEMU: the checker, the
+interpreter, the golden encodings and the differential generator are host tools
+over machine code. They establish that the compiler emits the program it means
+to emit, and nothing about what the silicon does with it. §5.5 is the board
+list, and `docs/QPU-RESEARCH.md` §3.5 records why QEMU cannot substitute for it.
+
 ---
 
 ## 11. Decisions a reviewer must make

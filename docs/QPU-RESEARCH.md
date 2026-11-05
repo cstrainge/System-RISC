@@ -6,11 +6,12 @@ documents that follow it — and any later lane that reads only the repository �
 do not have to re-derive it or guess.
 
 It extends `docs/VIDEOCORE-2D-DESIGN.md` §7 rather than repeating it. That
-section establishes reachability: the V3D is at bus `0x7EC00000`, its clock
-comes from the clock manager and its reset from the power-management block, it
-raises GPU interrupt 10, and it is therefore tier 1 (direct register access from
-the ARM), not tier 3. Nothing here re-opens that. This document is about what
-the block *does* once reached.
+section establishes reachability: the V3D is at bus `0x7EC00000` — ARM
+`0x3FC00000`; §2.7 corrects the ARM figure that section states — its clock comes
+from the clock manager and its reset from the power-management block, it raises
+GPU interrupt 10, and it is therefore tier 1 (direct register access from the
+ARM), not tier 3. Nothing here re-opens that. This document is about what the
+block *does* once reached.
 
 Nothing in this document is code. Facts are stated in prose and tables, and no
 source's identifiers, comments or structure are reproduced. That is deliberate:
@@ -214,51 +215,97 @@ backend will need and what is not established.
 
 ### 2.7 Sources that disagree, and which is believed
 
-Two of this project's own documents contradict each other about the V3D, and a
-later lane reading only one of them would reach the opposite conclusion. This is
-recorded here because the contradiction is the single most consequential
-provenance fact in this document.
+Several sources disagree about the V3D, including two of this project's own
+documents, and a later lane reading only one of them would reach the opposite
+conclusion. This is recorded here because the disagreement is the single most
+consequential provenance fact in this document.
 
-**Conflict 1 — the V3D's address, size, interrupt and reachability.**
+**Conflict 1 — the V3D's ARM address.**
 
-| Source | Claim |
-|---|---|
-| `docs/PI-HARDWARE-INVENTORY.md`, row "V3D (3D engine)" | Base `0x3FC00000`, 64 KiB, interrupts 66 and 67, category **VideoCore**, "Three interrupt lines (job done, MMU error, flo). The firmware runs the 3D stack; the ARM has no supported way to submit jobs." |
-| `docs/VIDEOCORE-2D-DESIGN.md` §7 | Bus `0x7EC00000` / ARM `0x3FEC0000`, `0x1000` bytes, GPU interrupt 10, **tier 1**: directly programmable from the ARM, no firmware and no blob. |
-| Linux device tree, `bcm2835-common.dtsi` | `v3d@7ec00000`, `reg = <0x7ec00000 0x1000>`, `interrupts = <1 10>`, `resets = <&pm BCM2835_RESET_V3D>`. |
-| Linux `vc4_v3d.c` | Binds the node, enables the clock, releases the reset, reads `V3D_IDENT0`, installs one interrupt handler and programs the block from the ARM. |
+The translation rule on a 1 GiB part is
+`ARM = bus - 0x7E000000 + 0x3F000000`. Calibrate it on two points the record
+already agrees on, then apply it to the third:
 
-**Believed: the device tree and §7.** Reasons:
+| Device | Bus address | Arithmetic | ARM address |
+|---|---|---|---|
+| RNG | `0x7E104000` | `0x3F000000 + 0x00104000` | `0x3F104000` ✓ |
+| HVS | `0x7E400000` | `0x3F000000 + 0x00400000` | `0x3F400000` ✓ |
+| **V3D** | **`0x7EC00000`** | **`0x3F000000 + 0x00C00000`** | **`0x3FC00000`** |
 
-1. The device tree is the bootloader-to-kernel contract for this board and it
-   states one window of `0x1000` bytes at `0x7ec00000` with one interrupt,
-   `<1 10>` (GPU interrupt 10). It is the same source that gives the HVS, the
-   pixel valves and the transposer their addresses, and those have been
-   consistent with every other source.
-2. `vc4_v3d.c` is a driver that runs on this silicon and does exactly what §7
-   says: clock, reset, identity read, direct programming. It cannot bind to a
-   node that does not exist, and it does not call the firmware to submit work.
-3. The inventory's `0x3FC00000` is **QEMU's placeholder address**, which
-   `docs/VIDEOCORE-2D-DESIGN.md` §10 already records as being wrong: QEMU
-   instantiates an unimplemented device for the V3D at `0x3FC00000` rather than
-   the silicon's `0x3FEC0000`, and reads return zero. The inventory appears to
-   have recorded the model's address as the hardware's.
-4. The inventory's "interrupts 66 and 67" and "three interrupt lines" have no
-   support in the device tree or the register map. There is **one** ARM
-   interrupt for the block; the *internal* status register has several bits
-   (`FRDONE`, `FLDONE`, `OUTOMEM`, `SPILLUSE`), which is a different thing and
-   is probably the origin of the "three lines" claim.
-5. The inventory's "the ARM has no supported way to submit jobs" is refuted by
-   that same driver, and §7 already states the wider conclusion: the widely
-   repeated claim that 3D on this part requires firmware services is not
-   supported by the sources.
+The converse check is decisive: `0x3FEC0000` would be bus `0x7EEC0000`, which no
+source gives for anything.
 
-**Consequences.** The inventory row is stale and should be corrected to bus
-`0x7EC00000` / ARM `0x3FEC0000`, `0x1000`, GPU interrupt 10, category **ARM**
-(a driver is possible), with the firmware's 3D stack noted as an *owner of the
-current boot path*, not as an access restriction. The platform lane is adding
-exactly that window to `platforms/raspi3b.json`, which agrees with this
-document. This document does not edit the record; it records the finding.
+| Source | Claim | Verdict |
+|---|---|---|
+| `docs/PI-HARDWARE-INVENTORY.md`, row "V3D (3D engine)" | Base `0x3FC00000`, 64 KiB, interrupts 66 and 67, category **VideoCore** | **Address correct**; size, interrupt count and category wrong (below) |
+| `docs/VIDEOCORE-2D-DESIGN.md` §7 | Bus `0x7EC00000` / ARM `0x3FEC0000` | Bus correct; **ARM address wrong** — the offset `0x00C00000` was written as `0x00EC0000` |
+| Linux device tree, `bcm2835-common.dtsi` | `v3d@7ec00000`, `reg = <0x7ec00000 0x1000>` | Consistent with the rule → ARM `0x3FC00000` |
+| QEMU `include/hw/arm/raspi_platform.h` | `V3D_OFFSET 0xc00000` from the peripheral base | `0x3F000000 + 0x00C00000` = `0x3FC00000` — **the same address as the silicon** |
+
+So the earlier claim, repeated in §2.7's first draft and in the 2D design's §10,
+that QEMU places the V3D "at `0x3FC00000` rather than the silicon's
+`0x3FEC0000`", is itself wrong. QEMU's offset is the correct bus offset; what
+was wrong was the ARM translation in the design document. This document's first
+draft repeated that translation and asserted the inventory was wrong. **That is
+withdrawn**: the inventory's address is right, and the design document and this
+one were wrong. It is recorded rather than silently corrected because the whole
+purpose of this section is to stop the next lane from re-deriving it differently
+again.
+
+**Conflict 1b — the interrupt number.**
+
+The device tree property is `interrupts = <1 10>` under
+`brcm,bcm2835-armctrl-ic`. That binding has two cells: the bank, then the bit
+within the bank. Bank 0 is the "IRQ basic pending" register, bank 1 is "IRQ
+pending 1", bank 2 is "IRQ pending 2", and the binding enumerates the sources by
+name. It lists **bank 1, bit 10 as `VC_3D`** — the 3D block's interrupt — and
+bank 2, bit 1 as `VIDEOSCALER`.
+
+Calibrate the encoding against sources that already agree:
+
+| Property | Encoding | Meaning | Cross-check |
+|---|---|---|---|
+| system timer | `<1 0>`–`<1 3>` | GPU IRQs 0–3 | The timer's four compare channels |
+| GPIO | `<2 17>`–`<2 20>` | GPU IRQs 49–52 | Inventory: GPIO interrupts 49–52 |
+| UART0 | `<2 25>` | GPU IRQ 57 | Inventory: PL011 is 57 |
+| SPI0 | `<2 22>` | GPU IRQ 54 | Inventory: SPI0 is 54 |
+| sdhci | `<2 30>` | GPU IRQ 62 | Inventory: sdhci is 62 |
+| mailbox | `<0 1>` | basic pending bit 1 | The binding's `ARM_MAILBOX` |
+
+So `<1 10>` is **GPU interrupt 10**, and QEMU's header independently defines
+`INTERRUPT_3D 10`. The inventory's "66, 67" cannot be right: bank 2's bit field
+is 0–31, so bits 34 and 35 do not exist, and GPU IRQs stop at 63. The "three
+interrupt lines (job done, MMU error, flo)" is also wrong: there is **one** ARM
+interrupt line for the block. The *internal* status register has four bits
+(`FRDONE`, `FLDONE`, `OUTOMEM`, `SPILLUSE`), which is a different thing and is
+probably the origin of the "three lines" claim.
+
+**Conflict 1c — the window size.** The device tree gives `0x1000`; the register
+map in §3.3 uses nothing above `0xF20`. One page is the window on this part.
+64 KiB is not this block's window.
+
+**Conflict 1d — reachability and category.** The inventory classifies the block
+as **VideoCore** and says "the ARM has no supported way to submit jobs".
+`vc4_v3d.c` does exactly that from the ARM: clock, reset, identity read, control
+lists, interrupt. The category should be **ARM** (a driver is possible), with
+the firmware's 3D stack noted as the owner of the *current* boot path rather
+than as an access restriction.
+
+**Consequences, and one thing to check before the record is written.**
+
+* The inventory's **address stands**. Its size, interrupt count, category and
+  reachability claim need correcting.
+* The 2D design's ARM address is wrong and should be corrected where that
+  document lives; it is not on this branch, so this document records the finding
+  and does not edit it.
+* The window the platform lane is adding is described as "bus `0x7EC00000` /
+  ARM `0x3FEC0000`". **That pair is internally inconsistent**: by the derivation
+  above, bus `0x7EC00000` is ARM `0x3FC00000`, and ARM `0x3FEC0000` is bus
+  `0x7EEC0000`. If the record stores the ARM address, `0x3FEC0000` is the wrong
+  page — a driver would probe `0x3FEC0000`, which is bus `0x7EEC0000`, and find
+  nothing. This is the one item in this section that could cause a bring-up
+  failure rather than a documentation error, and it should be checked before the
+  record is committed.
 
 **Conflict 2 — "Mesa `vc4` is not available on 64-bit Pi 3".** A web search
 returned this claim, attributed to Raspberry Pi's 64-bit images. It is not
@@ -298,9 +345,9 @@ that cannot enable the clock cannot trust any register read.
 | Item | Value | Source |
 |---|---|---|
 | Bus base | `0x7EC00000` | Guide Appendix B; device tree |
-| ARM physical base | `0x3FEC0000` | Bus base minus `0x3F000000` on a 1 GiB part |
-| Window size | `0x1000` (one page) | Device tree |
-| ARM interrupt | GPU interrupt 10 | Device tree `interrupts = <1 10>` |
+| ARM physical base | `0x3FC00000` | `0x3F000000 + (0x7EC00000 - 0x7E000000)` — see §2.7 for the calibration |
+| Window size | `0x1000` (one page) | Device tree `reg = <0x7ec00000 0x1000>` |
+| ARM interrupt | GPU interrupt 10 | Device tree `interrupts = <1 10>`; bank 1 bit 10 is `VC_3D` in the binding |
 | Clock | clock manager's V3D clock | Device tree (PM node lists it) |
 | Reset | PM block's V3D reset | Device tree `resets = <&pm BCM2835_RESET_V3D>` |
 
@@ -383,6 +430,33 @@ is recorded as a decision in `docs/GPU-SUBSYSTEM.md` §10.
 
 The block raises one ARM interrupt (GPU 10) for all of them; the handler reads
 `INTCTL` and clears the bits it handled. There is no per-context interrupt.
+
+### 3.5 What QEMU can and cannot establish
+
+The gate runs under QEMU's `raspi3b`, and the V3D there is an **unimplemented
+placeholder at the correct address**. QEMU's peripheral container places the
+device at `V3D_OFFSET 0xc00000` from the peripheral base, which is
+`0x3FC00000` — the same address as the silicon (§2.7) — and an unimplemented
+device answers reads with zero and discards writes.
+
+That produces a clean split, and the design is written so the split is useful:
+
+| Behaviour | Under QEMU | Why |
+|---|---|---|
+| Probing `0x3FC00000` | Reads return zero, so `V3D_IDENT0` ≠ `0x02443356` | Unimplemented device |
+| The driver's refusal path | **Verifiable**: it must refuse to attach, report the capability absent, and leave the desktop on the software provider | This is exactly the path a board with a disabled or absent block takes |
+| Register writes "sticking" | Not a test of anything | An unimplemented device discards writes; a window that falls through to RAM would echo them. Neither is evidence the block is present |
+| Any control list, shader, tile or interrupt | **Not verifiable** | There is no model of the binner, the QPUs, the tile buffer or the interrupt |
+| Identification from the identity register | **Not verifiable under QEMU, required on the board** | The only proof the block is alive |
+
+So the parts of this design that QEMU can exercise are: the refusal and
+degradation path, the object and handle bookkeeping, admission and accounting,
+the scheduler's queue discipline, the span and request construction, and the
+compiler's checker and encoder. The parts that need the board are: every
+register interaction, every control list, every shader execution, the interrupt,
+the reset, and every timing figure. A run under QEMU must not be reported as
+evidence that the block works — only that the system behaves correctly when it
+does not.
 
 ---
 
@@ -1113,6 +1187,13 @@ profile, not a variant of the first.
   `vc4_regs.h` (GPL-2.0-only).
 * Linux, `arch/arm/boot/dts/broadcom/bcm2835-common.dtsi` (GPL-2.0):
   `v3d@7ec00000`, the PM node's clock list, the DMA channel mask.
+* Linux, `Documentation/devicetree/bindings/interrupt-controller/brcm,bcm2835-armctrl-ic.yaml`
+  (kernel binding documentation): the bank/bit interrupt encoding and the named
+  source list that makes `<1 10>` the 3D block's interrupt.
+* QEMU, `include/hw/arm/raspi_platform.h` and `hw/arm/bcm2835_peripherals.c`
+  (GPL-2.0): `V3D_OFFSET 0xc00000`, `INTERRUPT_3D 10`, the peripheral base and
+  the unimplemented-device registration. Cited for facts about the model, not
+  about the silicon.
 * `py-videocore` (Idein), MIT: `README.rst`, `APPENDIX.rst`,
   `videocore/encoding.py`, `videocore/driver.py`.
 
@@ -1126,10 +1207,11 @@ profile, not a variant of the first.
 
 * `docs/VIDEOCORE-2D-DESIGN.md` §2 (address spaces), §7 (the V3D and the QPU),
   §10 (what QEMU models), §15 (residual uncertainties).
-* `docs/PI-HARDWARE-INVENTORY.md` — its V3D row is **stale and contradicted**;
-  see §2.7 for the finding and the evidence. Every other row of that inventory
-  used here (DMA channel mask, clock manager, PM block) agrees with the device
-  tree.
+* `docs/PI-HARDWARE-INVENTORY.md` — its V3D row is **partly wrong**: the address
+  is correct, and the size, interrupt count, category and reachability claim are
+  not. See §2.7 for the derivation and the evidence. Every other row of that
+  inventory used here (DMA channel mask, clock manager, PM block) agrees with
+  the device tree.
 * `docs/TIMED-OUTPUT-CLASS.md` — the job model that `docs/GPU-SUBSYSTEM.md` §5.4
   adopts in shape and not in feeder.
 
@@ -1163,9 +1245,10 @@ Each item names what would resolve it.
    block without a firmware step is the bring-up question that `V3D_IDENT0`
    answers. Resolution: read `V3D_IDENT0` after clock/reset on the board.
 9. **QEMU.** `docs/VIDEOCORE-2D-DESIGN.md` §10 measured the V3D as an
-   unimplemented placeholder at a *different* address (`0x3FC00000`), returning
-   zero. Nothing in this document can be tested in that environment, and the
-   placeholder's address is not the silicon's.
+   unimplemented placeholder returning zero. Its address is the silicon's
+   (`0x3FC00000`, §2.7); the earlier claim that the model's address differed was
+   a transposition in that document, not a property of the model. The model
+   still has no binner, QPU, tile buffer or interrupt, so §3.5's split stands.
 10. **Timing.** No claim is made here about shader throughput, TMU latency, VPM
     bank conflicts or binner throughput. All are board measurements.
 11. **The VPM configuration register's mode encoding.** The existence of a
@@ -1235,11 +1318,15 @@ failure early stops work that depends on it.
    rejected, the design reverts to implementing the whole of §6.2.
 5. **Decide the semaphore budget** — how many of the block's semaphores the
    submission path may use for fences, and what happens when they are exhausted.
-6. **Route the correction to `docs/PI-HARDWARE-INVENTORY.md`'s V3D row**
-   (§2.7): its address, size, interrupt count and "no supported way to submit
-   jobs" are all contradicted by the device tree and by the driver that runs on
-   this silicon. Leaving it uncorrected means a later lane reading only the
-   inventory will conclude that the design in these documents is impossible.
+6. **Route the corrections to the two records** (§2.7). The inventory's V3D
+   **address is correct** (`0x3FC00000`); its size (64 KiB → `0x1000`), its
+   interrupt count ("66, 67" and "three lines" → one line, GPU IRQ 10), its
+   category (VideoCore → ARM-reachable) and its "no supported way to submit
+   jobs" claim need correcting. The 2D design's ARM address
+   (`0x3FEC0000` → `0x3FC00000`) needs correcting where that document lives.
+   **And before the platform record is written:** a window described as "bus
+   `0x7EC00000` / ARM `0x3FEC0000`" is internally inconsistent, and if the
+   record stores the ARM address it will probe the wrong page.
 
 
 
