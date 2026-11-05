@@ -36,19 +36,25 @@ impl<'a> Pipes<'a>
     /// Create an anonymous pipe. Both endpoints start in blocking mode.
     pub fn create(self, capacity: usize) -> Result<(PipeReader<'a>, PipeWriter<'a>)>
     {
-        self.pair(wire::CREATE, "", capacity)
+        self.pair(wire::CREATE, "", capacity, 0)
     }
 
     /// Create a pipe and register `name` for `connect`. The name is removed when
     /// the last handle closes, including when the owning process exits.
-    pub fn create_named(self, name: &str, capacity: usize)
+    /// `writers` bounds how many applications may hold a writer obtained from
+    /// `connect` at once; zero is unlimited. The creator's own writer is not a
+    /// connection, so `1` gives one connecting owner at a time and a second
+    /// `connect` is refused with `AccessDenied`.
+    pub fn create_named(self, name: &str, capacity: usize, writers: u32)
                         -> Result<(PipeReader<'a>, PipeWriter<'a>)>
     {
-        self.pair(wire::CREATE_NAMED, name, capacity)
+        self.pair(wire::CREATE_NAMED, name, capacity, u64::from(writers))
     }
 
     /// Obtain the writer end of a registered name. An unknown name is `NotFound`;
-    /// a name whose last handle closed is gone rather than a dead endpoint.
+    /// a name whose last handle closed is gone rather than a dead endpoint. A
+    /// name already holding its declared number of connections is
+    /// `AccessDenied`, so the existing owner is never joined.
     pub fn connect(self, name: &str) -> Result<PipeWriter<'a>>
     {
         let mut call = wire::Call { operation: wire::CONNECT,
@@ -61,13 +67,14 @@ impl<'a> Pipes<'a>
                         active: true })
     }
 
-    fn pair(self, operation: u32, name: &str, capacity: usize)
+    fn pair(self, operation: u32, name: &str, capacity: usize, writers: u64)
             -> Result<(PipeReader<'a>, PipeWriter<'a>)>
     {
         let capacity = u32::try_from(capacity).map_err(|_| Error::BadArgument)?;
         let mut call = wire::Call { operation,
                                     nonblocking: 0,
                                     capacity,
+                                    writers,
                                     ..Default::default() };
         name_into(&mut call, name)?;
         self.client.pipes(&mut call)?;

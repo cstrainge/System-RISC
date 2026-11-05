@@ -68,6 +68,7 @@ fn run(system: &System<'_>) -> Result<(), Line>
     eof(system)?;
     broken(system)?;
     named(system)?;
+    writer_limit(system)?;
     folder(system)?;
     Ok(())
 }
@@ -154,7 +155,7 @@ fn refusal<T>(stage: &'static str, result: core::result::Result<T, Error>) -> Re
 fn block(system: &System<'_>) -> Result<(), Line>
 {
     let (mut reader, mut writer) = system.pipes()
-                                         .create_named(NAME, wire::MIN_CAPACITY)
+                                         .create_named(NAME, wire::MIN_CAPACITY, 0)
                                          .map_err(|error| failed("create_named", error))?;
     let fill = [0x55u8; 512];
     check(writer.write(&fill).map_err(|error| failed("fill write", error))? == fill.len(),
@@ -249,7 +250,7 @@ fn named(system: &System<'_>) -> Result<(), Line>
 {
     {
         let (reader, writer) = system.pipes()
-                                     .create_named(NAME, wire::MIN_CAPACITY)
+                                     .create_named(NAME, wire::MIN_CAPACITY, 0)
                                      .map_err(|error| failed("create named", error))?;
         let connected = system.pipes().connect(NAME).map_err(|error| failed("connect", error))?;
         drop(connected);
@@ -259,6 +260,34 @@ fn named(system: &System<'_>) -> Result<(), Line>
     check(matches!(system.pipes().connect(NAME), Err(Error::NotFound)),
           "a name survived its last handle")?;
     note(system, "PIPES_PROBE_NAME_OK\n");
+    Ok(())
+}
+
+/// A name that declares one writer has exactly one connecting owner: the second
+/// application is refused at the connection rather than joined to the first
+/// one's stream, and the slot is free again when that owner closes.
+fn writer_limit(system: &System<'_>) -> Result<(), Line>
+{
+    const OWNED: &str = "OwnedPipe";
+    let (reader, writer) = system.pipes()
+                                  .create_named(OWNED, wire::MIN_CAPACITY, 1)
+                                  .map_err(|error| failed("create exclusive", error))?;
+    let owner = system.pipes().connect(OWNED).map_err(|error| failed("first connect", error))?;
+    note(system, "PIPES_WRITER_FIRST_OK\n");
+    check(matches!(system.pipes().connect(OWNED), Err(Error::AccessDenied)),
+          "a second connect was not refused")?;
+    note(system, "PIPES_WRITER_SECOND_REFUSED\n");
+    drop(owner);
+    let again = system.pipes()
+                      .connect(OWNED)
+                      .map_err(|error| failed("connect after release", error))?;
+    note(system, "PIPES_WRITER_RELEASE_OK\n");
+    drop(again);
+    drop(writer);
+    drop(reader);
+    check(matches!(system.pipes().connect(OWNED), Err(Error::NotFound)),
+          "the name survived its last handle")?;
+    note(system, "PIPES_WRITER_CLOSED_OK\n");
     Ok(())
 }
 
@@ -332,7 +361,7 @@ fn folder(system: &System<'_>) -> Result<(), Line>
     check(folder.is_directory(), "Pipes is not a folder")?;
 
     let (reader, writer) = system.pipes()
-                                  .create_named(PIPE, wire::MIN_CAPACITY)
+                                  .create_named(PIPE, wire::MIN_CAPACITY, 0)
                                   .map_err(|error| failed("create folder pipe", error))?;
     let first = listing(files, volume.id, folder.id, PIPE)?;
     check(first.items == 1, "the folder does not hold exactly one named pipe")?;
@@ -362,7 +391,7 @@ fn folder(system: &System<'_>) -> Result<(), Line>
     let gone = listing(files, volume.id, folder.id, PIPE)?;
     check(gone.items == 0 && gone.found.is_none(), "a destroyed pipe is still listed")?;
     let (reader2, writer2) = system.pipes()
-                                   .create_named(PIPE2, wire::MIN_CAPACITY)
+                                   .create_named(PIPE2, wire::MIN_CAPACITY, 0)
                                    .map_err(|error| failed("create second pipe", error))?;
     let fresh = listing(files, volume.id, folder.id, PIPE2)?;
     let Some(fresh_cnid) = fresh.found
