@@ -214,7 +214,8 @@ Semantics worth recording because they are easy to get wrong:
   the base address and size actually allocated;
 * the base address in the reply is a bus address (section 2);
 * the pitch in bytes may exceed width × bytes-per-pixel, so a stride taken from
-  the reply is authoritative.
+  the reply is authoritative, and it belongs to the mode it was asked under
+  rather than to the driver — see section 4.6.
 
 ### 4.5 What the property channel cannot do
 
@@ -222,6 +223,48 @@ It configures one linear framebuffer and one mode. It has no notion of planes,
 z-order, alpha, a cursor, a blit or a pattern. Every compositing and drawing
 question in this document is outside it, which is why composition has to be
 either software or direct HVS programming.
+
+### 4.6 The scan-out base is not the ARM's to choose
+
+This is the single most consequential limitation of the property channel and it
+determines what the first implementation can and cannot save.
+
+The framebuffer the firmware scans out is placed at a fixed offset inside the
+VPU's own RAM region: the base is the VC RAM base plus 1 MiB, and every
+reconfigure recomputes it rather than accepting one from the caller. The
+allocate-buffer tag reports that base, so a driver learns the address but cannot
+choose it — there is no tag in the interface that sets it. The set of
+framebuffer tags is complete and none of them takes a base: geometry, depth,
+pixel order, alpha mode, virtual offset, overscan, palette, allocate, release
+and blank. The base is decided by the firmware at boot from its own memory
+split, so even on silicon the only influence over it is boot configuration, not
+a runtime call.
+
+Measured on the model, and consistent with that rule: the VC RAM base is the top
+of the 1 GiB of RAM less the default 64 MiB reserved for the VPU, giving
+0x3C000000, and the allocation came back at 0x3C100000 — exactly base plus
+1 MiB. The reply is the firmware's decision, reported.
+
+Two consequences follow, and both belong in any plan that starts from this path:
+
+* **The surface the OS draws into and the surface being scanned out are not the
+  same buffer unless a copy puts them there.** The resident video class requires
+  a driver's reported surface address to be the pinned allocation it owns, and
+  the firmware will not fetch from that allocation. So on the mailbox path a
+  per-damage copy out of the driver's allocation into the firmware's buffer is
+  mandatory, followed by cache maintenance for the copied range: the VPU is not
+  coherent with the ARM's caches, which is consistent with §1.2.3 describing a
+  separate uncached bus alias for RAM as the VPU sees it.
+* **There is no staged apply.** The property channel has no "stage then commit"
+  pair: setting the mode applies it immediately. A mode change therefore puts
+  the display into the new mode while System still holds the old surface, and
+  presenting during that window is refused as busy rather than dropped. That is
+  correct behaviour, not a fault, and a reader who sees a refused frame at a
+  mode change should know it is by construction.
+
+Pitch has the same character: it is a property of the current mode, returned per
+reply, and must be taken per allocation rather than cached. Two surfaces at
+different modes do not share a stride even when they share a width.
 
 ---
 
@@ -719,9 +762,12 @@ A request containing set-physical-width/height 800×600, set-virtual 800×600,
 set-depth 32, set-pixel-order 1, allocate-buffer and get-pitch returned
 request code 0x80000000 (success), an allocate-buffer reply of base
 0x3C100000 with 0x001D4C00 bytes (1 920 000 = 800×600×4) and value length 8,
-and a pitch of 0x0C80 (3200) with value length 4. Two things follow: the reply's
-base is the 0x0-based alias (section 2), and the pitch must be read because the
-model returns a real value rather than an echo.
+and a pitch of 0x0C80 (3200) with value length 4. Three things follow: the
+reply's base is the 0x0-based alias (section 2); the pitch must be read because
+the model returns a real value rather than an echo; and the base is exactly the
+VC RAM base the machine chose (1 GiB less the 64 MiB default VPU reservation,
+0x3C000000) plus the fixed 1 MiB offset, which is the rule section 4.6 records
+and the reason the ARM cannot move the scan-out surface.
 
 **HVS.** Not modelled. QEMU's peripheral container covers
 0x3F000000–0x3FFFFFFF, but only leaf regions are inserted into the address
@@ -785,7 +831,7 @@ hardware's contribution is to remove work *around* the drawing.
 | CopyBits with mask / `srcOr` / `srcXor` / `srcBic` | No ROP hardware. Blending exists only at scan-out, over the composed result, not against a destination in memory. | CPU. |
 | Pattern fill | No pattern repetition. The tiling field selects the *memory layout* of a source (linear, 64-byte, 128-byte, 256-byte/T), not UV repetition. | CPU. A static patterned desktop is a plane carrying the pattern. |
 | Region clipping | Not a drawing operation, but: the hardware clips each plane to the screen and to the z-order, so obscured content is never fetched and a window never has to repaint what is behind it. Destination coordinates are 12-bit unsigned, so off-screen edges are clipped by the driver adjusting source pointer and size. | Hardware for composition; CPU for drawing inside a surface. |
-| CopyBits into the visible framebuffer (present) | The current path composites the scene into the front buffer every frame. With planes there is no front buffer to composite into: each surface is scanned out directly. | **Hardware: the copy disappears.** This is the single largest saving. |
+| CopyBits into the visible framebuffer (present) | Depends on the path. With planes, each surface is scanned out directly and there is no front buffer to composite into. On the mailbox path the firmware owns the scan-out base (section 4.6), so a per-damage copy is mandatory. | **Hardware on the HVS path: the copy disappears.** On the mailbox path the copy remains, narrowed to the damage. Section 11.1. |
 | Window drag | Plane position update; both old and new positions are correct without repainting either. | **Hardware.** |
 | Overlapping windows | Z-order in the display list; the occluded window's pixels are not fetched or redrawn. | **Hardware.** |
 | Cursor move | Cursor plane position update (section 6.3). | **Hardware.** |
@@ -796,7 +842,41 @@ hardware's contribution is to remove work *around* the drawing.
 The honest summary: **no QuickDraw drawing primitive is accelerated; the
 compositing and presentation of the results are.** That is worth doing, because
 the per-frame scene copy and the repaint of obscured content are the costs that
-scale with window count and pointer motion, and both go to zero.
+scale with window count and pointer motion, and both go to zero — on the path
+where planes exist.
+
+### 11.1 Where the saving actually lands
+
+The table above describes what the hardware can do, not what the first
+implementation will deliver. Those differ, and conflating them would size the
+work against a saving that the mailbox path cannot produce.
+
+**The "copy disappears" saving is a property of the HVS path.** It holds there
+because a display-list pointer word names any address the OS chooses, so the
+buffer System draws into is the buffer being fetched, and nothing has to move.
+It does not hold on the mailbox path, where the firmware fixes the scan-out base
+(section 4.6) and the OS cannot point the display at its own allocation.
+
+So the two paths differ in exactly one respect that matters for planning:
+
+| | Mailbox path | HVS path |
+|---|---|---|
+| Scan-out base | fixed by firmware, reported to the driver | any address in a pointer word |
+| Present | copy the damaged rows into the firmware buffer, then clean that range | publish a list; no pixel movement |
+| Cost per frame | proportional to damage area | proportional to plane count |
+| Composition | one buffer, software | planes, hardware |
+| Cursor move | save-under and restore in software | position word only |
+
+The first phase therefore delivers **hardware scan-out with a narrowed copy**,
+not hardware composition: it removes the "no display at all" gap on this
+platform and it moves the copy from the whole mode to the damaged rectangle,
+which is a real gain but not the same gain. The saving in the last column is
+what phase 3 buys, and it should not be claimed before phase 3 exists.
+
+This is also why the two kinds of work section 12.3 separates must be kept
+separate from the start: on the mailbox path the copy is unavoidable but its
+size is the damage, so a scene-level invalidation on a cursor move costs a
+full-screen copy, while a cursor-only damage costs 16×16.
 
 ---
 
@@ -831,21 +911,35 @@ specified here.
 
 The bootloader keeps its current job — early console and MMU bring-up — and the
 firmware has already established a mode and a linear buffer before the ARM
-starts. System takes that buffer over, as it does today.
+starts. System takes that mode over, as it does today.
 
-**The firmware's buffer becomes plane 0.** It is not replaced and its address
-does not change. Plane 0 is the "the ARM draws here" surface: the resident
-compositor keeps drawing into it exactly as it draws into the current front
-buffer. The other planes layer *on top of* it, and the HVS composites them.
+Which buffer gets drawn into depends on the path, and the difference is the
+subject of section 4.6:
 
-This choice is what keeps the software path simple and the fallback honest:
+* **Mailbox path.** The firmware's buffer is the only thing scanned out and its
+  address is not ours to set, so the driver owns a separate allocation that
+  System draws into and copies each damage into the firmware buffer. The
+  compositor is unchanged; only the destination of the copy moves.
+* **HVS path.** The driver's own allocation is what the display list points at,
+  so it is scanned out directly and the copy stops existing. The firmware's
+  buffer is then unused — not overwritten, just no longer fetched from, and left
+  in place so the firmware's own display list still describes a valid frame if
+  the OS has to hand back.
+
+In both cases the surface System draws into is one buffer that the resident
+compositor owns and paints exactly as it paints the current front buffer. On the
+HVS path that buffer is **plane 0**, the bottom of the stack, with the other
+planes layered above it; windows that are not promoted to their own plane
+simply remain part of plane 0's content.
+
+This is what keeps the software path simple and the fallback honest:
 
 * With no HVS, or with a driver that reports no composition capability, the
-  system behaves exactly as it does today: one buffer, software composition,
-  the existing damage tracking and the existing `FRAME_COPY` trace.
+  system behaves as it does today: one drawn buffer, software composition, the
+  existing damage tracking and the existing `FRAME_COPY` trace, plus the copy to
+  the firmware buffer that the mailbox path requires.
 * With composition available, plane 0 still exists and still receives anything
-  the compositor draws; windows that are not promoted to planes simply remain
-  part of plane 0's content.
+  the compositor draws.
 * The two paths are the same driver crate with a capability gate, not two
   drivers and not a duplicate stack.
 
@@ -870,6 +964,14 @@ Keeping those separate is the same principle the project already applies to
 cursor and control damage: a change is repainted only where the changed object
 is. A cursor move must never produce a scene-level repaint, and a window drag
 must never produce a pixel copy.
+
+On the mailbox path the first of those has a direct cost consequence rather than
+a stylistic one: the copy to the firmware buffer still happens, so its size is
+the whole of the difference between a well-scoped damage rectangle and a
+scene-level one. A cursor move reported as scene damage costs a full-mode copy
+per mouse event; reported as a 16×16 rectangle it costs 1 KiB. That makes exact
+damage accounting load-bearing in phase 1 rather than an optimisation to be
+added later.
 
 ### 12.4 Concurrency and lifetime
 
@@ -947,15 +1049,22 @@ is designed so that everything except the register writes is already proven.
 
 **Phase 1 — mailbox scan-out on `qemu_arm64`.** A video driver that obtains the
 framebuffer and mode over the property channel, reports geometry and pitch, and
-presents damage by writing into that buffer. It replaces the ramfb path on this
+presents damage by copying the damaged rows from its own allocation into the
+firmware's buffer and cleaning that range. The copy is not optional here
+(section 4.6) and its size is the damage, so phase 1 is also where exact damage
+accounting starts paying for itself. It replaces the ramfb path on this
 platform: the resident display adapter is still written against a firmware
 configuration device that this platform does not declare, so the mailbox path is
 what makes scan-out exist here at all, and it is the foundation every later
 phase sits on. Success is measurable and fully testable here: the desktop
 reaches its ready marker with the display driver attached, the reported mode and
 pitch match what the property channel returned, a deliberately unsupported mode
-is refused with a typed cause rather than a black screen, and the existing
-present/damage trace is unchanged in shape.
+is refused with a typed cause rather than a black screen, a present after a mode
+change is refused as busy and then succeeds on retry rather than showing a
+stale stride, and the existing present/damage trace is unchanged in shape.
+
+What phase 1 does **not** deliver is the saving in section 11.1. It removes the
+absence of scan-out and narrows the copy; it does not remove it.
 
 **Phase 2 — the plane model with a software backend.** Z-order, per-plane
 clipping, per-plane content damage and the cursor conversion exist as a scene
@@ -1030,6 +1139,13 @@ Each of these is specific, and each names what would resolve it.
    writes a colour, so the fill's actual value is the hardware default. It is
    not used as a design element — the desktop pattern is a plane — but a
    bring-up check should record what colour appears where no plane reaches.
+9. **The firmware's offset on silicon.** Section 4.6 records the base rule as
+   VC RAM base plus 1 MiB, measured on the model. That the same fixed offset
+   holds on silicon is an inference from the interface — no tag sets a base, so
+   the firmware must be choosing one — rather than a measurement here. What
+   would settle it: reading the allocate-buffer reply on real hardware and
+   comparing it with the reported VC RAM base. The design does not depend on the
+   offset being 1 MiB, only on the base not being settable.
 
 ---
 
@@ -1106,7 +1222,10 @@ Each of these is specific, and each names what would resolve it.
   space, and the framebuffer and property channel placed on mailbox channels 1
   and 8.
 * `hw/display/bcm2835_fb.c`, `hw/misc/bcm2835_property.c` — the single linear
-  framebuffer and the implemented property tags.
+  framebuffer and the implemented property tags; the framebuffer base is
+  recomputed as the VC RAM base plus a fixed 1 MiB offset on every reconfigure
+  and on initial configuration, and the allocate-buffer reply reports that
+  stored base, which is the fact behind section 4.6.
 * Measured: the probe results in section 10, and the memory tree reported by
   the monitor, which shows the peripheral container's leaf regions and the
   absence of any HVS device.
@@ -1119,7 +1238,9 @@ Each of these is specific, and each names what would resolve it.
   external-driver shape and the scan-out lifecycle this design extends.
 * `crates/mac-video-interface/src/lib.rs` — the current video class contract.
 * `system/src/machine/display.rs`, `system/src/machine/video.rs` — the resident
-  front/back buffers, damage accumulation and the present path.
+  front/back buffers, damage accumulation and the present path; the check that a
+  reported surface address must equal the pinned allocation is what makes the
+  mailbox path's copy mandatory rather than a choice (section 4.6).
 * `crates/mac-boot-screen/` — the software framebuffer path this platform
   currently lacks a device for.
 * `docs/CURSORS.md`, `docs/DRIVERS.md`, `docs/DEVICE-TREE.md`,
