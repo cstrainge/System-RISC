@@ -35,8 +35,18 @@ pub struct Definition
     pub boot_image:  Option<String>,
     #[serde(default)]
     pub console:     Option<Console>,
+    /// Whether this workspace compiles the record's device information into a
+    /// device-tree blob bound into the bootloader.
+    ///
+    /// Absence means false, and false does **not** mean the platform has no
+    /// device tree: every platform hands the kernel one. It means no tree is
+    /// generated here, so the bootloader supplies the platform's own native
+    /// description at boot - the firmware's blob where there is one, or a
+    /// translation of ACPI on a machine that has no device tree of its own.
+    /// A platform that neither generates a tree nor receives one fails at boot
+    /// with a named error rather than being handed an invented one.
     #[serde(default)]
-    pub device_tree: Option<DeviceTree>,
+    pub generate_device_tree: bool,
     /// The RAM window the SoC maps, as a board fact. This is not the platform
     /// level `memory` section: that describes the paging, linker and ROM ranges
     /// this workspace's kernel runs in, while this states where the board puts
@@ -123,24 +133,6 @@ pub struct Console
     pub baud:   Option<u32>
 }
 
-/// A device tree is supplied by board firmware, shipped as a file, or generated
-/// from this record at build time. Which one is a platform fact, not a build
-/// assumption: a board whose firmware passes no tree needs the record to be the
-/// author, so the bootloader and the kernel consume the same declared hardware
-/// rather than each hardcoding it.
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum DeviceTree
-{
-    Firmware,
-    Generated,
-    File
-    {
-        path: String
-    },
-    None
-}
-
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Region
@@ -220,15 +212,9 @@ impl Definition
             return Err(reject("boot_image",
                               "must name the storage image this board is written with".into()));
         }
-        if self.boot.first_stage == FirstStage::VendorFirmware && self.device_tree.is_none()
-        {
-            // Vendor firmware normally hands over a device tree; a board that
-            // says neither is a record the author has not finished.
-            return Err(reject("device_tree",
-                              "a board booted by vendor firmware must say where its device \
-                               tree comes from"
-                                               .into()));
-        }
+        // Vendor firmware that hands over its own tree needs no generated one,
+        // so there is nothing to require here. A platform that generates one
+        // declares it with `generate_device_tree`.
         for tool in &self.tooling
         {
             if tool.trim().is_empty()

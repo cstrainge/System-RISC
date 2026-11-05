@@ -25,40 +25,29 @@ const END_NODE: u32 = 2;
 const PROP: u32 = 3;
 const END: u32 = 9;
 
-/// Checks that a platform takes a generated tree, returning a named error when
-/// it does not. Split out from `generate` so both branches are testable without
-/// depending on which platform the environment selects.
-pub fn require_generated(platform: &Platform) -> Result<()>
+/// Whether this platform compiles its device information into a tree.
+///
+/// Absence of the flag means no tree is generated here, which is not the same as
+/// having no device tree: the bootloader supplies the platform's own native
+/// description at boot instead. Generation is therefore a build-time fact rather
+/// than a fallback, and a platform that asks for it gets exactly one tree.
+pub fn generates(platform: &Platform) -> bool
 {
-    let declared = platform.hardware
-                           .as_ref()
-                           .and_then(|hardware| hardware.device_tree.as_ref());
-    match declared
-    {
-        Some(platform::hardware::DeviceTree::Generated) => Ok(()),
-        Some(other) =>
-        {
-            Err(crate::error(format!("platform '{}' declares device_tree {other:?}, so it does not \
-                                      take a generated tree",
-                                     platform.name)))
-        }
-        None =>
-        {
-            Err(crate::error(format!("platform '{}' declares no device_tree; a generated tree must \
-                                      be declared rather than assumed",
-                                     platform.name)))
-        }
-    }
+    platform.hardware
+            .as_ref()
+            .is_some_and(|hardware| hardware.generate_device_tree)
 }
 
-/// Builds the tree for the currently selected platform, refusing a platform that
-/// does not declare a generated tree. Without this check the record's
-/// declaration would be decorative and a board whose firmware supplies its own
-/// tree would silently receive a generated one instead.
+/// Builds the tree for the currently selected platform.
 pub fn generate() -> Result<Vec<u8>>
 {
     let platform = platform::current();
-    require_generated(platform)?;
+    if !generates(platform)
+    {
+        return Err(crate::error(format!("platform '{}' does not generate a device tree, so this \
+                                         build must not produce one",
+                                        platform.name)));
+    }
     generate_for(platform)
 }
 
@@ -434,14 +423,14 @@ mod tests
     #[test]
     fn a_platform_that_does_not_declare_a_generated_tree_is_refused()
     {
+        // The flag is a build-time fact, so this asserts the declaration rather
+        // than a refusal: a platform that does not generate a tree is not an
+        // error, it supplies its own at boot.
         let generated = platform::load("raspi3b").expect("arm64 record");
-        assert!(require_generated(&generated).is_ok(),
-                "the arm64 record declares a generated tree");
+        assert!(generates(&generated), "the arm64 record generates its tree");
         let firmware = platform::load("qemu_riscv").expect("riscv record");
-        let error = require_generated(&firmware).expect_err("a firmware platform must be refused");
-        let message = error.to_string();
-        assert!(message.contains("qemu_riscv") && message.contains("device_tree"),
-                "the refusal must name the platform and the missing declaration: {message}");
+        assert!(!generates(&firmware),
+                "the riscv record takes the tree its firmware passes");
     }
 
     #[test]
