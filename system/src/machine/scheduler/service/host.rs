@@ -16,6 +16,7 @@ use crate::machine::traps::TrapFrame;
 /// `Option<ServiceLease>` output on its actual, retained continuation stack.
 pub(crate) const TRAP: u32 = 0x4d535256; // MSRV
 
+#[cfg(target_arch = "riscv64")]
 global_asm!(
     ".pushsection .text.system_primary_service,\"ax\",@progbits",
     ".balign 4",
@@ -26,6 +27,25 @@ global_asm!(
     ".global __system_primary_service_acquire_ecall",
     "__system_primary_service_acquire_ecall:",
     "ecall",
+    "ret",
+    ".size __system_primary_service_acquire, .-__system_primary_service_acquire",
+    ".popsection",
+    trap = const TRAP
+);
+
+// The same gate on AArch64: the trap number travels in x8 and the call is an
+// svc. The symbol names are kept so the caller and its test probe do not change.
+#[cfg(target_arch = "aarch64")]
+global_asm!(
+    ".pushsection .text.system_primary_service,\"ax\",@progbits",
+    ".balign 4",
+    ".global __system_primary_service_acquire",
+    ".type __system_primary_service_acquire,%function",
+    "__system_primary_service_acquire:",
+    "mov x8, {trap}",
+    ".global __system_primary_service_acquire_ecall",
+    "__system_primary_service_acquire_ecall:",
+    "svc #0",
     "ret",
     ".size __system_primary_service_acquire, .-__system_primary_service_acquire",
     ".popsection",
