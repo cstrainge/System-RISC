@@ -680,7 +680,7 @@ pub(crate) fn system_stacks() -> Option<&'static [Foundation<Stack>]>
 /// Actual permanent roots and one canonical service-stack slot. Construction
 /// borrows the owning Spaces, never caller-supplied SATP values. The proof
 /// neither selects a hart nor grants execution; the native row binding does.
-pub(in crate::machine) struct PreparedRoots
+pub(in crate::machine::riscv64) struct PreparedRoots
 {
     spaces: &'static Spaces,
     boot:   &'static Bootstrap,
@@ -688,17 +688,17 @@ pub(in crate::machine) struct PreparedRoots
 }
 impl PreparedRoots
 {
-    pub(in crate::machine) fn firmware_register(&self) -> usize
+    pub(in crate::machine::riscv64) fn firmware_register(&self) -> usize
     {
         self.spaces.firmware.register
     }
 
-    pub(in crate::machine) fn hardware_tag_mask(&self) -> u16
+    pub(in crate::machine::riscv64) fn hardware_tag_mask(&self) -> u16
     {
         self.boot.tag_mask
     }
 
-    pub(in crate::machine) fn service_stack(&self) -> &'static Stack
+    pub(in crate::machine::riscv64) fn service_stack(&self) -> &'static Stack
     {
         self.stack
     }
@@ -708,7 +708,7 @@ impl PreparedRoots
     /// it in the permanent firmware root, and has installed the poisoned local
     /// System vector. Both roots map this same stack and all live Rust views.
     /// This is a permanent local transition: no guard restores firmware root.
-    pub(in crate::machine) unsafe fn activate_kernel(&self) -> Result<(), Error>
+    pub(in crate::machine::riscv64) unsafe fn activate_kernel(&self) -> Result<(), Error>
     {
         if root_register() != self.spaces.firmware.register
         {
@@ -727,7 +727,7 @@ impl PreparedRoots
         Ok(())
     }
 }
-pub(in crate::machine) fn prepared_roots(ordinal: usize) -> Option<PreparedRoots>
+pub(in crate::machine::riscv64) fn prepared_roots(ordinal: usize) -> Option<PreparedRoots>
 {
     let spaces = SPACES.get()?;
     let stack: &'static Stack = spaces.stacks.as_slice().get(ordinal)?;

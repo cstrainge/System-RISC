@@ -34,7 +34,7 @@ impl Drop for Entered<'_>
 /// selection. No scope caller can nominate a Context, owner, role or thread ID.
 /// Only short metadata transitions are masked; operation retains entry's SIE
 /// state and must remain synchronous on the original System stack.
-pub(in crate::machine) fn with_system_maintenance<R>(capture: &crate::machine::traps::OuterCapture,
+pub(in crate::machine::riscv64) fn with_system_maintenance<R>(capture: &crate::machine::traps::OuterCapture,
                                                      operation: impl FnOnce() -> R)
                                                      -> R
 {

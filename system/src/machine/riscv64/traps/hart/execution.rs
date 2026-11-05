@@ -16,7 +16,7 @@ use crate::{allocator,
 pub(crate) mod policy;
 pub(crate) mod dispatch;
 mod maintenance;
-pub(in crate::machine) use maintenance::with_system_maintenance;
+pub(in crate::machine::riscv64) use maintenance::with_system_maintenance;
 
 pub(crate) const IDLE: usize = usize::MAX;
 /// Reset-lifetime row binding for prepared metadata. Unlike HartKey, this is
@@ -123,8 +123,8 @@ pub(crate) fn selected_hart() -> HartKey
 /// Genuine COLD may claim before the registry, without becoming a runtime key.
 /// Its pointer stays private: labels and caller-chosen numbers cannot create a
 /// winner, and no factory can reconstruct execution authority from this cell.
-pub(in crate::machine) struct TerminalOwnership(AtomicPtr<HartLocal>);
-pub(in crate::machine) enum TerminalClaim
+pub(in crate::machine::riscv64) struct TerminalOwnership(AtomicPtr<HartLocal>);
+pub(in crate::machine::riscv64) enum TerminalClaim
 {
     Winner(TerminalWinner),
     Recursive,
@@ -133,19 +133,19 @@ pub(in crate::machine) enum TerminalClaim
 /// Winner affinity is valid for the actual current hot or cold selection.
 /// It grants terminal stop only, never runtime/firmware execution authority.
 /// A boot owner cannot transfer this native claim to another CPU.
-pub(in crate::machine) struct TerminalWinner
+pub(in crate::machine::riscv64) struct TerminalWinner
 {
     local: &'static HartLocal,
     _cpu:  core::marker::PhantomData<*mut ()>
 }
 impl TerminalWinner
 {
-    pub(in crate::machine) fn number(&self) -> usize
+    pub(in crate::machine::riscv64) fn number(&self) -> usize
     {
         self.local.id
     }
 
-    pub(in crate::machine) fn is_current(&self) -> bool
+    pub(in crate::machine::riscv64) fn is_current(&self) -> bool
     {
         with_masked(|| {
             super::terminal_local().is_some_and(|local| core::ptr::eq(local, self.local))
@@ -154,14 +154,14 @@ impl TerminalWinner
 }
 impl TerminalOwnership
 {
-    pub(in crate::machine) const fn new() -> Self
+    pub(in crate::machine::riscv64) const fn new() -> Self
     {
         Self(AtomicPtr::new(core::ptr::null_mut()))
     }
 
     /// Claims only for the genuine current CPU. Never reset/release this owner:
     /// terminal execution abandons all contexts and backing until machine reset.
-    pub(in crate::machine) fn claim(&self) -> TerminalClaim
+    pub(in crate::machine::riscv64) fn claim(&self) -> TerminalClaim
     {
         with_masked(|| {
             let local = match super::terminal_local()
