@@ -704,10 +704,10 @@ fn validate(mode: Mode) -> Result<(), Error>
 
 /// Request `mode`, allocate the scanout and read back its pitch.
 ///
-/// The request is the sequence the design document measured against the QEMU
-/// model: physical size, virtual size, depth, pixel order, allocate buffer, get
-/// pitch. The virtual offset is deliberately *not* part of it — it is a scroll
-/// control, sent by [`scroll`] once the scanout exists.
+/// The request is the sequence the design document records: physical size,
+/// virtual size, depth, pixel order, allocate buffer, get pitch. The virtual
+/// offset is deliberately *not* part of it — it is a scroll control, sent by
+/// [`scroll`] once the scanout exists.
 pub fn acquire(channel: &mut impl Channel, message: &mut Message, mode: Mode, alignment: u32)
                -> Result<Framebuffer, Error>
 {
