@@ -8,6 +8,10 @@
 //! four-level shape a wider VA would have.
 
 use mac_kernel_model::pages::{PageGeometry, PageLayout};
+
+/// The encoder types shared paging stores and decodes, provided by this
+/// architecture's descriptor encoder.
+pub(crate) use mac_aarch64_pages::{Decoded, Entry, LeafSize};
 use mac_kernel_model::policy::AddressRange;
 
 /// The base page. AArch64 also permits 16 KiB and 64 KiB granules; the platform
@@ -44,6 +48,50 @@ pub(crate) fn valid_virtual_range(range: AddressRange) -> bool
 /// The name the admission diagnostic reports, so a refused root says which
 /// format it was measured against.
 pub(crate) const NAME: &str = "aarch64-39";
+
+/// This format as the shared `PageLayout` trait, so the geometry arithmetic is
+/// reached through one interface rather than re-derived here.
+struct Aarch64Layout;
+
+impl mac_kernel_model::pages::PageLayout for Aarch64Layout
+{
+    fn geometry() -> mac_kernel_model::pages::PageGeometry
+    {
+        geometry()
+    }
+
+    fn leaf_sizes() -> &'static [u64]
+    {
+        leaf_sizes()
+    }
+
+    fn valid_virtual_range(range: AddressRange) -> bool
+    {
+        valid_virtual_range(range)
+    }
+}
+
+/// The encoder's failure type, which is this architecture's descriptor error.
+pub(crate) use mac_aarch64_pages::Error as EncodingError;
+
+/// The table index one address selects at `level`, counting from the finest
+/// leaf. The arithmetic is shared geometry; only the level-to-leaf mapping is
+/// this format's.
+pub(crate) fn index(address: u64, level: usize) -> Result<usize, EncodingError>
+{
+    use mac_kernel_model::pages::PageLayout;
+    let leaf = leaf_sizes().get(level)
+                           .copied()
+                           .ok_or(EncodingError::Level { level: level as u8 })?;
+    let range = AddressRange::new(address, address.saturating_add(1))
+        .map_err(|_| EncodingError::NonCanonical { address })?;
+    if !Aarch64Layout::valid_virtual_range(range)
+    {
+        return Err(EncodingError::NonCanonical { address });
+    }
+    <Aarch64Layout as PageLayout>::index(address, leaf)
+        .ok_or(EncodingError::Level { level: level as u8 })
+}
 
 /// Whether `root` is the TTBR0_EL1 value this architecture expects for the
 /// record's root page.

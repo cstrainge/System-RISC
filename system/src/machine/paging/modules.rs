@@ -12,7 +12,7 @@ use mac_formats::native::{Descriptor, Role,
                           image::{self, Destination}};
 use mac_kernel_model::{account::{AccountUse, Committed},
                        pages::{Access, PageBacking, PageOwnership, Permissions, PhysicalAddress}};
-use mac_riscv_pages::{Decoded, Entry, LeafSize, Sv39};
+use crate::machine::page_layout::{Decoded, Entry, LeafSize};
 use spinning_top::Spinlock as Mutex;
 
 use super::{BOOT, Backing, BackingSource, Foundation, PagingBacking, SPACES, interrupts};
@@ -125,7 +125,7 @@ pub(crate) enum Error
     Frames(super::FrameError),
     Foundation(crate::allocator::foundation::Error),
     OrdinaryPhysical(crate::allocator::ordinary_physical::Error),
-    Encoding(mac_riscv_pages::Error),
+    Encoding(crate::machine::page_layout::EncodingError),
     Conflict
     {
         address:  u64,
@@ -1728,7 +1728,7 @@ impl Plan
                                                              .bits();
                 let slot = Slot { root: root.0,
                                   cpu: l0.cpu,
-                                  index: Sv39::index(address, 0).map_err(Error::Encoding)?,
+                                  index: crate::machine::page_layout::index(address, 0).map_err(Error::Encoding)?,
                                   bits,
                                   address };
                 // Branch edits consume their own admitted positions. Keep
@@ -1753,7 +1753,8 @@ impl Plan
         {
             return Ok(table);
         }
-        let index = Sv39::index(address, key.level + 1).map_err(Error::Encoding)?;
+        let index = crate::machine::page_layout::index(address, usize::from(key.level) + 1)
+            .map_err(Error::Encoding)?;
         let mut slot = Slot { root: key.root,
                               cpu: parent.cpu,
                               index,
@@ -2106,14 +2107,14 @@ fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin], entri
                 for level in [2, 1]
                 {
                     let cpu = table_in_space(space, physical).ok_or(Error::State)?;
-                    let index = Sv39::index(address, level).map_err(Error::Encoding)?;
+                    let index = crate::machine::page_layout::index(address, level).map_err(Error::Encoding)?;
                     let mut slot = Slot { root: space.owner.root_physical().0,
                                           cpu,
                                           index,
                                           bits: 0,
                                           address };
                     slot.bits = slot.load();
-                    let child = match Entry::decode_raw(slot.bits, level).map_err(Error::Encoding)?
+                    let child = match Entry::decode_raw(slot.bits, level as u8).map_err(Error::Encoding)?
                     {
                         Decoded::Table { physical,
                                          .. } => physical,
@@ -2136,7 +2137,7 @@ fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin], entri
                                                              .bits();
                 let slot = Slot { root: space.owner.root_physical().0,
                                   cpu,
-                                  index: Sv39::index(address, 0).map_err(Error::Encoding)?,
+                                  index: crate::machine::page_layout::index(address, 0).map_err(Error::Encoding)?,
                                   bits,
                                   address };
                 // A root prepared after publication inherited this mapping;
