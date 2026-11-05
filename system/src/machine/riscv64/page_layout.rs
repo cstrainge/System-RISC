@@ -12,6 +12,22 @@ use mac_kernel_model::policy::AddressRange;
 
 pub(crate) use mac_riscv_pages::Sv39;
 
+/// The encoder types shared paging stores and decodes. It reaches them through
+/// this module so it never names a format.
+pub(crate) use mac_riscv_pages::{Decoded, Entry, LeafSize};
+
+/// The encoder's failure type, exposed through the selection point so shared
+/// paging reports a refusal without naming a format.
+pub(crate) use mac_riscv_pages::Error as EncodingError;
+
+/// The table index one address selects at `level`, counting from the finest
+/// leaf. The arithmetic is shared geometry; only the level-to-leaf mapping is
+/// this format's.
+pub(crate) fn index(address: u64, level: usize) -> Result<usize, EncodingError>
+{
+    Sv39::index(address, level as u8)
+}
+
 /// Sv39 is mode 8 in the satp mode field, the tag is 16 bits wide, and the
 /// physical page number occupies the low 44 bits.
 const MODE: usize = 8;

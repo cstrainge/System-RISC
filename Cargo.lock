@@ -391,6 +391,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-aarch64-pages"
+version = "0.1.0"
+dependencies = [
+ "mac-kernel-model",
+]
+
+[[package]]
 name = "mac-abi"
 version = "0.1.0"
 
@@ -662,6 +669,7 @@ dependencies = [
  "hashbrown",
  "libm",
  "linked_list_allocator",
+ "mac-aarch64-pages",
  "mac-abi",
  "mac-boot-screen",
  "mac-build",

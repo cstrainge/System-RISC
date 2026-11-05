@@ -8,7 +8,8 @@ use core::{fmt,
 use mac_kernel_model::pages::{AddressSpace, AsidTag, PhysicalAddress};
 use mac_object_table::{domain::{DomainId, DomainKind},
                        store::PreparedError};
-use mac_riscv_pages::{Decoded, Entry, LeafSize, mapping::Tables};
+use mac_riscv_pages::mapping::Tables;
+use crate::machine::page_layout::{Decoded, Entry, LeafSize};
 use spinning_top::Spinlock;
 
 use super::*;
@@ -67,7 +68,7 @@ pub(crate) enum Error
     Busy,
     Closed,
     Tables(super::Error),
-    Encoding(mac_riscv_pages::Error),
+    Encoding(crate::machine::page_layout::EncodingError),
     Publication(PreparedError),
     Pool(mac_object_table::domain::PoolError),
     Monitor(crate::machine::monitor::Error),

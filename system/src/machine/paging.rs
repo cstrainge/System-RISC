@@ -20,8 +20,8 @@ use mac_kernel_model::{DomainId,
                                PhysicalAddress, VirtualAddress,
                                physical::{DirectMap, Error as PhysicalError}},
                        policy::{AddressRange, ModelError}};
-use mac_riscv_pages::{Entry,
-                      mapping::{MapError, Mapper, Tables}};
+use crate::machine::page_layout::Entry;
+use mac_riscv_pages::mapping::{MapError, Mapper, Tables};
 
 use super::interrupts::{self, NativeInvocationGate};
 use crate::machine::memory::*;

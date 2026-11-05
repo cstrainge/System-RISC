@@ -13,6 +13,7 @@ members = [
     "crates/mac-object-table",
     "crates/mac-kernel-model",
     "crates/mac-riscv-pages",
+    "crates/mac-aarch64-pages",
     "crates/mac-fork-file",
     "crates/mac-host-protocol",
     "crates/mac-vdagent-protocol",
@@ -64,6 +65,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+mac-aarch64-pages = { path = "crates/mac-aarch64-pages" }
 mac-bootloader = { path = "crates/mac-bootloader" }
 mac-host-clipboard = { path = "crates/mac-host-clipboard" }
 mac-vdagent-protocol = { path = "crates/mac-vdagent-protocol" }
