@@ -283,7 +283,7 @@
     }
   },
   "emulation": {
-    "description": "BCM2837-class SoC machine, 4x Cortex-A53, 1 GiB RAM, PL011 UART console, bcm2835 RNG and a VideoCore mailbox framebuffer; the emulated machine offers sdhci for the card, while the board's card slot is on bcm2835-sdhost",
+    "description": "BCM2837-class SoC machine, 4x Cortex-A53, 1 GiB RAM, PL011 UART console, sdhci SD storage, bcm2835 RNG and a VideoCore mailbox framebuffer",
     "family": "qemu",
     "binary": "qemu-system-aarch64",
     "machine": "raspi3b",
@@ -402,7 +402,7 @@
       {
         "model": "bcm2835-sdhost",
         "base": "0x3f202000",
-        "reason": "The board's microSD slot is wired to this controller, and the Arasan sdhci at 0x3f300000 carries the wireless SDIO interface instead. The boot payload reads its card through sdhci because that is the only SD controller the emulated machine models, so that read path works in emulation and cannot see the card on the board. Reading the card on silicon needs an sdhost reader; until one exists this window is undeclared in mmio_devices rather than granted to a module that would have nothing to drive it with."
+        "reason": "This SoC carries two SD controllers and the platform drives the Arasan sdhci at 0x3f300000: a self-test binary on the board read the user's card, including its partition table, through that block. Some public descriptions of this family attach the microSD slot to bcm2835-sdhost instead; that does not hold for this board, and the board is the authority. Nothing drives bcm2835-sdhost, so it has no mmio_devices window: a window granted to no module is a claim nobody can use."
       }
     ]
   }
