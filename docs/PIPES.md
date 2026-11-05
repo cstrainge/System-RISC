@@ -404,53 +404,79 @@ one carrying the child's standard input, one its standard output, one its
 standard error. Three one-way byte transports is the whole requirement; there is
 no framing, no record boundary and no terminal-protocol object inside the pipe.
 
-The intended arrangement is that the **Terminal creates the pipes, not System**:
+The intended chain is:
 
-- The Terminal creates three anonymous pipes.
-- It keeps one end of each: the writer of the input pipe, the reader of the
-  output pipe, the reader of the error pipe.
-- It gives the other end of each to the child: the reader of the input pipe, the
-  writer of the output pipe, the writer of the error pipe.
-- It installs those three handles as the child's standard input, output and
-  error before the child enters its program.
+1. The **Terminal**, an ordinary application, creates the three pipes and keeps
+   one end of each: the writer of the input pipe, the reader of the output pipe,
+   the reader of the error pipe.
+2. The Terminal asks the **process API** to execute the application, naming the
+   three other ends.
+3. An **extension that has registered as an execute handler** gets first pass on
+   executing a file. Seeing that the file's type is `CLAP`, it attaches the three
+   requested pipes and calls the **base exec handler** to take it from there.
+4. The **base exec handler** only knows how to start GUI applications and attach
+   stub pipes.
 
-This facility supports the first two steps as an ordinary application: `create`
-is a normal application operation, not a System-only one. There is no privileged
-caller and no resident caller requirement. Any process may create pipes, hold one
-end and hand the other end to a child, exactly as the Terminal intends.
+So the pipes are created by the caller and travel through the process API into
+System, which installs them on the child. The extension does not create them; it
+receives them.
 
-**The launch gap.** The third step cannot be expressed today, and this facility
-does not pretend otherwise. The Process Manager's launch call identifies a target
-by volume and catalog node ID and carries no handle, endpoint or attachment
-field. The services table an application receives at entry is a single
-System-wide immutable record holding a version, a size, a trap entry point and a
-capability bit set; there is no per-application attachment record, and no
-per-application table exists to hang one on. Standard input and output are
-supplied by the application's own standard-library profile, which knows nothing
-about pipes.
+This facility supports step 1 as an ordinary application: `create` is a normal
+application operation, not a System-only one. There is no privileged caller, no
+resident caller requirement and no handle kind reserved to System. Any process
+may create a pipe, hold one end and offer the other end to an execute request.
 
-A Terminal therefore needs the following from launch, none of which exists in
-v1:
+**What exists, and what does not.**
 
-1. A launch call that accepts three pre-made pipe handles, one per standard
-   stream, in addition to the target identity.
-2. A defined ownership transfer. The handles the Terminal passes stop belonging
-   to the Terminal at the moment the launch commits; from then on they belong to
-   the child, and the Terminal's copies are invalid. If the launch is refused or
-   fails, the handles remain the Terminal's. Without this rule the child and the
-   parent would both hold the same endpoint, which this facility's ownership
-   model forbids.
-3. A child-side way to read its three endpoints — an attachment record, a query,
-   or an entry-point parameter — so the platform standard-library profile can
-   bind real `stdin`/`stdout`/`stderr` instead of the null profile.
+- *Exists:* application-created pipes, one reader and one writer end, ordinary
+  ownership and last-close consequences.
+- *Does not exist — the execute request carries no pipe handles.* The Process
+  Manager's launch call identifies a target only by volume and catalog node ID.
+  It has no handle, endpoint or attachment field, so there is nowhere for a
+  caller to name the three ends it is offering.
+- *Does not exist — a handle cannot leave its process.* A handle is valid only
+  for the process it was issued to; another process's live handle is refused
+  with `AccessDenied`, and this facility has no transfer, adoption or duplication
+  operation. At the moment the Terminal hands a handle to the process API, the
+  handle still belongs to the Terminal and System may not use it on the child's
+  behalf. Without a transfer rule this architecture cannot work at all, and that
+  is the most important thing to know before anything is built on it.
+- *Does not exist — a child-side attachment record.* The services table an
+  application receives at entry is a single System-wide immutable record holding
+  a version, a size, a trap entry point and a capability bit set. There is no
+  per-application attachment, and no per-application table to hang one on. The
+  standard-library profile binds the null streams and knows nothing about pipes.
+
+**What the execute path would need from this facility.** A complete chain needs
+four things, three of which are outside this facility:
+
+1. An execute request that carries three pipe handles in addition to the target
+   identity. (Process API.)
+2. A defined ownership transfer: the handles stop belonging to the requesting
+   process when the execute request commits and belong to the child from then
+   on; on refusal or failure they remain the requester's. This facility's
+   ownership model supplies the rule for what a handle means after transfer, and
+   it is the reason a transfer must be explicit rather than a copied number.
+3. A child-side way to read its three endpoints, so the standard-library profile
+   can bind real `stdin`/`stdout`/`stderr` instead of the null streams.
+   (Platform/runtime.)
 4. The ordinary last-close consequences that already follow from this contract:
    when the child exits, its ends close, the Terminal's reads see end-of-stream
-   and its writes fail with broken pipe.
+   and its writes fail with broken pipe. (This facility.)
 
-This facility supplies the pipes and the ownership rules for (2) and (4). It does
-not supply (1) or (3), and v1 does not add them: the Terminal and the `CLAP`
-launch path are separate work. The gap is recorded here rather than designed
-around, so that the launches that exist today keep their single meaning.
+**Named dependency, not part of this facility.** The execute-handler chain —
+extensions registering for first pass on execution, the extension seeing `CLAP`,
+attaching the requested pipes, and falling through to the base handler — is a
+separate mechanism with its own design. This facility does not build it and
+nothing here implies it. In particular, adding pipes does not add an execute
+chain, and adding an execute chain would not by itself make pipes work.
+
+**Why the base handler's stub pipes are correct.** The base exec handler starts
+GUI applications and attaches stub pipes. For a GUI application the standard
+streams are placeholders by design, so the null standard-stream profile is the
+correct behaviour rather than a missing implementation. This is the same
+conclusion as section 10, arrived at from the execute side: the stubs belong to
+the GUI profile and stay.
 
 ## 11. Authority
 
