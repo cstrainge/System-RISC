@@ -571,3 +571,495 @@ Verified on the merged tree:
 
 Pushed as c5ebbea9 (the merge) and cdfc3f85 (the fallout fixes). Main has not
 been fast-forwarded; that is the coordinator's call.
+
+Pipes facility: collision audit, feasibility report and specification
+=====================================================================
+[Pipes / facilities agent] 2026-11-05
+
+State: audit and specification only. No implementation and no source change
+outside docs/PIPES.md and this entry. Nothing was pushed.
+
+1. Gate zero: the Toolbox surface the facility must not step on
+----------------------------------------------------------------
+Trap allocation. Native service numbers are hand-allocated in
+crates/mac-abi/src/traps.rs and dispatched by one match in
+system/src/machine/traps.rs (dispatch), after size and pointer validation in
+system/src/machine/traps/user.rs plus the wire table in user/wire.rs. The
+block 0x10000..0x1002e is fully occupied with no gaps:
+
+  10000 LOG        1000f MAPPING          1001f CRASH
+  10001 WINDOW     10010 RESOURCE         10020 STANDARD_FILE
+  10002 DRAW       10011 ICON             10021 SCROLL_BOX
+  10003 NEXT_EVENT 10012 FILE             10022 DRAG
+  10004 DEFINITION 10013 CONTROL          10023 POSITIONED_EVENT
+  10005 CLASSIC    10014 MEMORY           10024 INSPECTION
+  10006 GEOMETRY   10015 IMAGE            10025 THEME
+  10007 SURFACE    10016 MENU             10026 DEFINITION_PANIC
+  10008 QUICKDRAW  10017 DIALOG           10027 POWER
+  10009 FONT       10018 CLOCK            10028 APPLICATION_HEAP
+  1000a REGION     10019 SCRAP            10029 CPU_INFO
+  1000b COPY_BITS  1001a EVENTS           1002a NATIVE_THREAD
+  1000c WORLD      1001b TEXTEDIT         1002b TLS
+  1000d PICTURE    1001c PROCESS          1002c ADDRESS_WAIT
+  1000e CURSOR     1001d WAIT_EVENT       1002d ENTROPY
+                   1001e MONOTONIC_CLOCK  1002e USER_CALLBACK
+
+Bit 0x20000 is a modifier (Pascal/Mac Roman text variant), not an allocation,
+so it consumes no number. The supervisor scheduler's MSRV entry is a separate
+custom instruction encoding (0x4d535256 in a different encoding space).
+Allocated: 0x1002f = PIPES. Operation selectors 0..6 live inside the pipes call
+and share no namespace with any other service.
+
+Status values 0..-20 are taken (OK through INVALID_NAME). Allocated: -21
+WOULD_BLOCK, -22 BROKEN_PIPE.
+
+Module/interface class ids are open four-byte values owned by the interface
+crate and compared by value; there is no central assignment. In use: VBYT,
+VDEV, ENTR, FORK, FSYS, HDIR, MLIF, MPRE, POWR, SCHD, SCTL, SCEX, VIDO; buses
+BUS!, VIRT, PCI!, VMMI; fixtures TEST/PCTL/TIME/NETW. Allocated: PIPE; it
+appears in no class position.
+
+Object/lifetime namespaces are registered centrally (mac-object-table registry
+through system/src/toolbox/handles.rs). The older fixed Kind table is closed;
+new managers use KindCode pools. Allocated: PIPE (endpoints) and PPST
+(runtime state), following the endpoint/state pair shape. Neither code appears
+anywhere in the tree.
+
+File type and creator: PIPE/PIPE appear in no FinderInfo position, no resource
+and not in crates/mac-file-types/default.json. Resource type PIPE: unused, and
+the facility allocates no resource type at all. The repeated four bytes are
+deliberate across three identifier spaces that are never compared with each
+other.
+
+Operation names. read/write/open/close already exist as inherent methods on
+distinct handle types in distinct modules (toolbox-files OpenFile, toolbox-
+memory, toolbox-resources, toolbox-crashes, ...). The classic File Manager's
+Open/Read/Write/Close are not implemented in this build: the classic
+dispatcher serves drag, rect/point geometry, text/fonts, cursors, events and
+TickCount only. So no classic number or selector is shadowed, and pipe methods
+are disambiguated by module and receiver type rather than renamed.
+
+One real coupling found: crates/mac-toolbox/tests/file_icons.rs
+(native_system_icon_reservation_preserves_classic_ids_and_rejects_import_
+collisions) treats -30031..=-30000 as a reserved native icon block and allows
+only DRIVERS_FOLDER (-30000) and DRIVER (-30001) inside it. New folder and
+document icon families at -30002/-30003 must extend that allowlist, or the
+canonical suite fails. That is a policy-allowlist update, not a harness
+accommodation.
+
+2. Sub-volume provider mounts and merged listings: neither exists
+-------------------------------------------------------------------
+system/src/toolbox/files/provider/ models a provider as a whole volume.
+reserve_provider_mount returns a volume id; Mounted holds provider, source and
+an optional VolumeInfo; volume_info is built from the fs::Mount root descriptor
+(name, dates, FinderInfo, capacity, filesystem code). There is no mount point
+below a volume root. Enumeration and lookup are either/or, not merged:
+provider/runtime.rs gates on read_provider(volume) and then dispatches to
+either the resident HFS scanner or the provider job. A directory read returns
+one source's children only.
+
+Two implementation shapes, with the provider finding stated first:
+
+  (a) True sub-volume provider mount. Add a mount point to Mounted, project
+      provider entries into the real directory's catalogue, allocate a shared
+      synthetic CNID space both sources agree on, merge the cursor across two
+      revisions, and route lookup/path/open by node. Plus a pipes provider
+      module and its admission/acknowledgement path. Rough estimate 1,800-2,500
+      lines resident, excluding the pipes facility itself.
+
+  (b) File Manager enumeration directly from the resident name registry.
+      Named pipes are resident System state, not an independently owned storage
+      format, so the File Manager merges its own catalog children with the
+      registry's entries for the one registered folder CNID: merged cursor with
+      one revision, lookup fallback, synthetic ids never reused within a boot,
+      mutations refused. Rough estimate 600-1,000 lines resident.
+
+The specification (docs/PIPES.md, section 9.5) requires (b) and records why:
+(b) adds no driver boundary around state that never leaves the System, and a
+general sub-volume mount is a separate, larger change that nothing in the pipe
+contract depends on. This is the one design point that departs from the
+settled wording ("a virtual provider mounts at that path") and is the item for
+review.
+
+3. Where the stubbed pipes actually are
+----------------------------------------
+There are no pipe stubs in system/, crates/, toolbox/, apps/, drivers/ or
+extensions/. A case-insensitive search for "pipe" over those trees matches
+nothing in Rust sources; the only implementation-shaped code in the repository
+is the platform standard-library null stream profile:
+
+  platforms/rust/library/std/src/sys/stdio/systemrisc.rs
+
+stdin returns 0 forever (permanent end of stream); stdout and stderr accept
+every byte and report a successful flush. It states in its own header that it
+is not a Terminal/session endpoint or a pipe implementation. Stderr is a type
+alias of the discarding stdout. There is no sys/pipe module in the vendored
+std, no PAL pipe call, and no resident stdio endpoint table: the loader
+attaches the SystemServices table, which carries no stream endpoints.
+
+So docs/RUST-STD.md:239 ("replacing kernel stubs through the service
+boundary") and 434-437 ("replaces resident stubs", "a parallel full kernel
+pipe implementation") describe stubs that do not exist on this tree. The
+honest statement is: the GUI profile has intentionally null standard streams,
+and no anonymous-pipe stub exists anywhere.
+
+Consequence for acceptance: GUI launch keeps the null streams unchanged, as
+directed. The launch path installs no endpoints, so there is nothing to convert
+and nothing to break. In v1 the facility's only caller is an application that
+asks for pipes explicitly; the named first caller is the NeoPixel extension.
+
+4. Proposed API surface
+------------------------
+Trap PIPES = 0x1002f. One call struct with operation, endpoint handle, capacity,
+blocking flag, buffer pointer and length, transferred count, two out handles and
+a bounded inline name. Operations: create, create_named, connect, read, write,
+set_blocking, close. New SDK crate toolbox-pipes behind System::pipes(), with
+PipeReader and PipeWriter handle types (Drop closes), read/write/set_blocking/
+close as methods.
+
+Blocking uses the existing suspended-request path (RequestResult/RequestAction,
+per-thread pending storage, a new Wait variant, wake::request), so a blocked
+caller parks and is woken by ring state change or peer close. Non-preemptible
+frames are refused with WRONG_THREAD rather than spinning.
+
+Semantics fixed in the spec: 512-byte all-or-nothing writes and no implied
+record size; partial transfers for larger writes and for reads; capacity fixed
+at creation (512..65536, at most 64 pipes); distinct end-of-stream,
+would-block and broken-pipe outcomes; name removed when the last handle closes;
+no authority in v1.
+
+5. What was produced
+---------------------
+docs/PIPES.md: code-free contract, 14 sections, including the numbering and
+register tables above, the folder merge and item identity, opening as connect,
+the icon plan (-30002 folder placeholder copied from the standard folder
+family, -30003 document family plus a PIPE-signature bundle), the launch-path
+table that keeps the stubs, and the deferred list.
+
+Validation: documentation only. No build or check was run for this entry, and
+no guest acceptance is claimed. Boot check remains at its last recorded state
+(17/17 on the merged tree) until an implementation tip is built.
+
+6. Next
+-------
+Review of (i) the merge shape in section 9.5 and (ii) the API surface, before
+any code. Implementation order after that: pipe core and handles, blocking
+integration, File Manager merge, folder creation, Finder open, icons.
+
+Pipes: Terminal/CLAP requirement, launch gap, and review decisions
+===================================================================
+[Pipes / facilities agent] 2026-11-05
+
+Scope update from Chloe. CLAP is the file type for command-line applications and
+a Terminal connects to one with three anonymous pipes. Recorded in
+docs/PIPES.md section 10.1.
+
+Findings:
+
+- CLAP appears in the tree only as prose (docs/TERMINAL.md, RUST-STD.md,
+  CORE-TOOLBOX-ROADMAP.md, EXTENSION-TRAITS-DESIGN.md). No code, resource or
+  FinderInfo use. The type is unused and is not allocated by this facility.
+- create is already an ordinary application operation in the specified surface.
+  There is no System-only creation path and no privileged caller, so a Terminal
+  can create the three pipes and hold one end of each as specified.
+- The launch interface cannot carry pre-made handles. ProcessCall identifies a
+  target only by volume and CNID and has no attachment, endpoint or handle
+  field. The services table an application receives at entry is one System-wide
+  immutable 16-byte record (version, size, trap gate, capability bits) with no
+  per-application attachment record. Standard streams come from the
+  application's own standard-library profile. A Terminal would additionally
+  need: a launch call accepting three pipe handles; a defined ownership
+  transfer of those handles to the child at commit, with the parent's copies
+  invalidated (and no transfer on refusal); and a child-side way to read its
+  endpoints so the std profile can bind real streams. This facility supplies
+  the pipes and the last-close consequences only. The gap is recorded in the
+  spec rather than designed around; no launch ABI was changed.
+
+Review decisions applied:
+
+- Merge shape (b) confirmed: the File Manager enumerates the Pipes folder from
+  the resident name registry. Section 9.5 now states the correctness argument
+  first: a provider exists because a volume's contents come from somewhere
+  else, and a pipe registry's contents do not, so a provider boundary would
+  exist for nobody. The estimate stands, but is presented as supporting rather
+  than deciding.
+- The icon reservation allowlist in
+  crates/mac-toolbox/tests/file_icons.rs will be extended for -30002/-30003 as
+  a deliberate policy change, with the reason in the commit.
+- Process exit with a named pipe open is stated explicitly in section 8: every
+  handle closes, last close destroys the pipe and removes the name, and a
+  concurrent connect gets NOT_FOUND.
+
+Documentation defect corrected in passing: docs/RUST-STD.md said full pipe
+functionality would replace "kernel stubs"/"resident kernel placeholders", but
+no such stub exists. Both places now point at docs/PIPES.md and say the null
+standard-stream profile is the only stub and stays.
+
+Validation: documentation only. No build run; boot check unchanged until an
+implementation tip exists.
+
+Pipes implementation: core, blocking, ABI, SDK — folder merge not yet landed
+============================================================================
+[Pipes / facilities agent] 2026-11-05
+
+State: pipe facility core is implemented and the guest builds and boots. The
+File Manager merge, Pipes folder creation, Finder open and icons are NOT
+implemented. Nothing was pushed.
+
+What landed
+-----------
+crates/mac-abi/src/pipes.rs
+  Call struct (112 bytes, checked offsets), operations 0..6, capacity bounds
+  512..65536, ATOMIC_WRITE 512, NAME_BYTES 31, MAX_PIPES 64.
+crates/mac-abi/src/traps.rs
+  PIPES = 0x1002f.
+crates/mac-abi/src/lib.rs
+  WOULD_BLOCK = -21, BROKEN_PIPE = -22.
+crates/mac-traps
+  Error::WouldBlock / BrokenPipe and Client::pipes.
+system/src/toolbox/pipes/{mod,ring,manager}.rs
+  Architecture-neutral fixed ring with wrap-around and bounds tests; resident
+  manager with a System-owned pipe store (PPST) and per-process generation-tagged
+  endpoint handles (PIPE) issued through system/src/toolbox/handles.rs.
+  One reader and one writer endpoint, fixed capacity, registration-order name
+  lookup with HFS-style case folding, name removal at last close, process-exit
+  cleanup through the registered release path, and the three outcomes kept
+  distinct. No framing, no record API.
+  Identity: a pipe object has no single owning domain, so it is owned by the
+  System in the PPST store; the endpoints are owned by the processes that hold
+  them in the PIPE store. A per-domain object store was rejected because
+  remove_owner would destroy a pipe other processes still hold.
+system/src/machine/scheduler/pipe.rs
+  Wait::Pipe variant, per-thread pending storage, park on the pipes guard so a
+  peer cannot change the condition before the wait is published, wake after the
+  guard drops, and cancel/reap paths. Blocking never spins.
+system/src/machine/traps.rs, user.rs, user/wire.rs
+  Size/pointer validation for the caller buffer in the operation's direction,
+  the wire table entry, and the suspending dispatch arm.
+toolbox/pipes (new crate) and mac-toolbox re-export
+  Pipes::create / create_named / connect, PipeReader/PipeWriter with
+  read/write/set_blocking/close and Drop-closes.
+
+Verification actually performed
+-------------------------------
+  cargo xtask build --platform qemu_riscv        exit 0; System packaged,
+                                                  500 MiB HFS-B image built
+  cargo xtask boot-check --platform qemu_riscv   exit 0, 17 of 17 checks
+  rustfmt --check on every new or rewritten file  clean
+
+The boot check compiles and boots the pipe facility, but no pipe operation is
+exercised by it. Nothing in this entry is evidence that read/write/close/blocking
+behave correctly at runtime: that needs a native application caller, which does
+not exist yet. One earlier `cargo xtask boot-check` invocation exited -1 with no
+output immediately after a build; the canonical command then ran normally. The
+transient was not diagnosed and is recorded rather than explained away.
+
+Not landed, and why it matters
+------------------------------
+- File Manager merged listing: named pipes are not visible in any folder. The
+  resident manager no longer exposes folder rows, because that code had no
+  consumer and would be dead scaffolding.
+- System Folder/Pipes creation and boot ensure.
+- Finder open-as-connect.
+- Pipes folder icon (-30002), PIPE/PIPE document family (-30003) and the
+  canonical icon-reservation allowlist extension.
+So v1 currently has no visible endpoint and no caller: a named pipe can be
+created and connected by name, but nothing presents it and no application uses
+it. That is a partial implementation, not an accepted facility.
+
+Host testing limitation
+-----------------------
+The pure ring carries unit tests and no architecture-specific code, and the
+resident manager has no #[cfg(target_arch)] inside it (one module gate in
+system/src/toolbox/pipes/mod.rs keeps the manager out of host builds). But the
+host build of mac-system is already broken at this baseline: cargo test -p
+mac-system --lib fails with 231 pre-existing errors unrelated to this work
+(missing allocator/machine/spin in host configuration). The ring tests therefore
+cannot run in this tree right now, and no host-test claim is made.
+
+Pipes transport verified in the guest
+=====================================
+[Pipes / facilities agent] 2026-11-05
+
+State: the pipe transport is now executed in the guest on the real ROM, System,
+trap gate and scheduler. The File Manager merge, folder, Finder open and icons
+are still not implemented.
+
+Named registry is separate from the transport table
+---------------------------------------------------
+manager.rs now keeps `named: Vec<Named>` for the folder's namespace and puts no
+name in the pipe object at all. Anonymous pipes never enter that vector, so they
+have no name, no CNID and no object in the folder's namespace; enumeration cannot
+reveal them through a filtered count or timing because there is nothing to
+filter. `connect` resolves only through `named`; destroying a pipe removes its
+entry and bumps the registry revision. This was a correction to the earlier
+shape, where a single table held both kinds and enumeration filtered by
+`name.is_some()` — the exact construction that leaks existence.
+
+Guest execution evidence
+------------------------
+Fixture: crates/mac-toolbox/tests/fixtures/pipes-probe (public SDK, `application`
+feature, replaces Finder on a cloned disk).
+Transport: scripts/capture_pipes_probe.py builds the fixture, installs it as
+Finder on a copy of dist/qemu_riscv/system7.hfsb, boots the recorded QEMU
+command and captures serial.
+
+Serial markers observed, in order, on the final tip:
+  DESKTOP_READY: pipes probe
+  PIPES_PROBE_ECHO_OK bytes=5
+  PIPES_PROBE_WRITER_ARMED
+  PIPES_PROBE_WRITER_PARKED
+  PIPES_PROBE_MAKE_ROOM
+  PIPES_PROBE_WRITER_RESUMED transferred=512
+  PIPES_PROBE_BLOCK_OK parked=1 resumed=1 eof=1
+  PIPES_PROBE_WOULD_BLOCK_OK
+  PIPES_PROBE_EOF_OK
+  PIPES_PROBE_BROKEN_OK
+  PIPES_PROBE_NAME_OK
+  PIPES_PROBE_PASS cases=5
+
+What the markers establish:
+- echo: five bytes written and read back identically.
+- blocking: the writer thread armed, a 512-byte atomic write into a full ring
+  did not complete (`WRITER_PARKED` is asserted on !DONE), the reader drained,
+  and only then did the write report 512 bytes. The main thread made progress
+  while the writer was blocked.
+- would-block: an empty pipe with a live writer reported WOULD_BLOCK, not a
+  zero-byte success; after the last writer closed the same reader got 0.
+- broken pipe: a write with no readers reported BROKEN_PIPE.
+- name: after the last handle closed, connect reported NOT_FOUND. The same name
+  was then created again for the earlier cases, proving removal, not refusal.
+
+Provenance: exit 0, serial sha256
+3ed1f9385b04372fbceb11e48b6c0a1d460a1f5b8ca6e3df01cc6e1e7646279a
+at serial.log in the capture directory; capture.json records the exact QEMU
+command and the fixture package hash.
+
+Gates on the final tip
+----------------------
+  cargo xtask build --platform qemu_riscv        exit 0, 500 MiB HFS-B image
+  cargo xtask boot-check --platform qemu_riscv   exit 0, 17 of 17
+  scripts/capture_pipes_probe.py                 exit 0, PIPES_PROBE_PASS
+
+Not covered by the probe: multiple concurrent writers, a lost wake under load,
+cancellation of a blocked caller by process exit, and stale/foreign handle
+refusals. Those stay unverified.
+
+Baseline limitation, recorded as directed
+-----------------------------------------
+`cargo test -p mac-toolbox` cannot build in this tree: the host `mac-system`
+library fails with 238 pre-existing errors (missing allocator/machine/spin/
+application in the host configuration), none involving pipes. The canonical
+suite and the ring's host unit tests are therefore not runnable here. This lane
+takes the guest path for evidence and does not attempt the host-config repair.
+
+Command capture policy: from now on every run is recorded with its command, full
+output and exit status together. The earlier unexplained -1 boot-check exit stays
+recorded as undiagnosed.
+
+Remaining work
+--------------
+File Manager merged enumeration + lookup + path + synthetic ids + mutation
+refusals; System Folder/Pipes creation and boot ensure; Finder open-as-connect;
+icon families -30002/-30003 with the deliberate allowlist extension.
+
+Pipe probe is now a boot-check case (18/18) and the Terminal model is corrected
+=============================================================================
+[Pipes / facilities agent] 2026-11-05
+
+Gate change
+-----------
+The transport evidence is no longer a hand run. `cargo xtask boot-check` now
+builds the probe through the public SDK and packages it into
+dist/qemu_riscv/pipes-probe, clones the built image, replaces
+/System Folder/Finder, boots it, and requires the marker
+"PIPES_PROBE_PASS cases=5". The new baseline is 18 ROM boot checks, not 17.
+
+Verified on the committed tip:
+  cargo xtask boot-check --platform qemu_riscv   exit 0, 18 of 18
+  ROM check pipes-probe: passed
+with the serial markers:
+  PIPES_PROBE_ECHO_OK bytes=5
+  PIPES_PROBE_WRITER_ARMED / WRITER_PARKED / MAKE_ROOM
+  PIPES_PROBE_WRITER_RESUMED transferred=512
+  PIPES_PROBE_BLOCK_OK parked=1 resumed=1 eof=1
+  PIPES_PROBE_WOULD_BLOCK_OK / EOF_OK / BROKEN_OK / NAME_OK
+  PIPES_PROBE_PASS cases=5
+
+One integration detail worth keeping: the boot loop stops reading at the
+platform's readiness line. The probe therefore logs DESKTOP_READY last, after the
+pass or fail marker; logging it first truncated the log at readiness and made the
+case look like a hang. That ordering is required by any future probe app.
+
+Terminal/CLAP model corrected
+-----------------------------
+Finder binds the CLAP type to Terminal; Terminal asks a System execute extension;
+the extension creates the pipes, spawns and attaches; Terminal only reads and
+writes handles it is given. The earlier requirement that ordinary applications
+create anonymous pipes is withdrawn: Terminal never creates one under this model,
+so the requirement is unnecessary and would have created a permission question
+for no benefit. Named create/connect stay application operations because the
+folder and NeoPixel need them. Anonymous create remains in the ABI only because
+the execute extension's context and identity do not exist yet and this facility
+has no authority model to gate it; restricting it later is the executor's
+decision.
+
+Still a gap, verified rather than assumed: the execute request carries no pipe
+handles, a handle cannot cross a process boundary, there is no child attachment
+record, and there is no way for Terminal to adopt handles delivered by the
+extension.
+
+Dependency gates recorded in docs/PIPES.md section 10.1, not just here:
+- no lost wake under load, exercised with concurrent readers/writers/closes;
+- cancellation of a blocked caller by process exit.
+Both must close before the Terminal/CLAP path depends on pipes.
+
+Remaining
+---------
+File Manager merged enumeration/lookup/path/synthetic ids/mutation refusals,
+System Folder/Pipes creation and boot ensure, Finder open-as-connect, icon
+families -30002/-30003 with the allowlist extension.
+
+Pipes: Terminal/CLAP model reverted to Terminal-as-creator
+==========================================================
+[Pipes / facilities agent] 2026-11-05
+
+Section 10.1 of docs/PIPES.md is corrected after review. The previous revision
+inverted the specified design and could not work.
+
+Restored model
+--------------
+Finder binds the CLAP type to Terminal. Terminal creates the three pipes and
+keeps one end of each; it asks the process API to execute the file, naming the
+other ends. The execute chain gives an extension first pass on the file; seeing
+CLAP, the extension attaches the named endpoints and calls the base handler. If
+no handler claims a CLAP, the execute call fails and Terminal receives the error
+through the ordinary return code. Terminal does not look the extension up and
+does not ask it for anything.
+
+Anonymous create is therefore a load-bearing application operation again; the
+earlier withdrawal is itself withdrawn. The reason is recorded in the spec so it
+is not proposed again: an extension that created the pipes would have to hand one
+end to Terminal, and a handle belongs to the process it was issued to, so either a
+general handle-transfer facility would have to be invented or the architecture
+would not work. With Terminal as creator nothing crosses: Terminal creates both
+ends, keeps one and offers the other in the child's launch record.
+
+Gap list reduced to the two that are real
+-----------------------------------------
+1. The execute request has no field for pipe endpoints, so Terminal cannot name
+   the ends and the execute chain cannot say which the child receives.
+2. The child has no per-application attachment record for its standard streams,
+   so the standard-library profile cannot bind real streams.
+
+The process-ownership fact stays as context, not as a third gap: handles are
+process-owned and there is no general transfer/adoption facility. The execute
+request must therefore define that the endpoints it names pass to the child at
+commit and are invalid in Terminal afterwards. That rule belongs to the launch
+record, not to a new kernel transfer mechanism.
+
+Named create/connect remain application operations; NeoPixel's dependency is
+unchanged.
+
+Evidence: documentation only. The code is identical to the 18-of-18 boot-check tip
+verified immediately before this edit; the gate was not rerun for a prose change.

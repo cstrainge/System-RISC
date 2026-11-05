@@ -390,6 +390,50 @@ fn altered_system(workspace: &Workspace, image: &Path, alteration: &str) -> Resu
     })
 }
 
+/// Replace Finder with the pipe transport probe on a clone of the built image.
+/// The probe is built through the public SDK here so the gate cannot pass on a
+/// stale artifact.
+fn pipes_probe_image(workspace: &Workspace, destination: &Path) -> Result<()>
+{
+    let manifest =
+        workspace.root().join("crates/mac-toolbox/tests/fixtures/pipes-probe/Cargo.toml");
+    let target = workspace.target().join("pipes-probe");
+    let mut build = workspace.cargo();
+    build.args(["build", "--locked", "--release", "--target", &workspace.platform.rust_target,
+                "--target-dir"])
+         .arg(&target)
+         .arg("--manifest-path")
+         .arg(&manifest)
+         .args(["--bin", "Finder"]);
+    mac_build::platform::configure_for(&workspace.platform, &mut build);
+    run_command(&mut build)?;
+    let elf = target.join(&workspace.platform.rust_target).join("release").join("Finder");
+    let packaged = workspace.dist().join("pipes-probe");
+    let mut package = workspace.cargo();
+    package.args(["run", "--locked", "--manifest-path"])
+           .arg(&manifest)
+           .args(["--bin", "package", "--target-dir"])
+           .arg(&target)
+           .arg("--")
+           .arg(&elf)
+           .arg(&packaged);
+    run_command(&mut package)?;
+    let probe = macbinary::decode(&fs::read(packaged.join("Finder.bin"))?)?;
+    clone_raw(&workspace.dist().join("system7.hfsb"), destination)?;
+    disk::edit(destination, |volume| {
+        let folder = volume.blessed_folder()?.id;
+        let old = volume.lookup(folder, "Finder")?;
+        volume.remove(old.id, hfs_b::now()?)?;
+        hfs_b::import_macbinary(volume, folder, &probe)?;
+        // The boot-check medium is attached read-only, so the folder the probe
+        // enumerates has to exist already. It is the same directory the guest
+        // would create, and the probe still creates it when a writable volume
+        // lacks one.
+        volume.create(folder, "Pipes", true, hfs_b::now()?)?;
+        Ok(())
+    })
+}
+
 /// Wrap the generated volume in an actual Apple partition map.
 fn apm(source: &Path, destination: &Path) -> Result<()>
 {
@@ -482,6 +526,32 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                                 "blessed folder 'System Folder' CNID=",
                                 "System: native service table ready", "BOOT_SYSTEM_READY:"],
                               true)?];
+    let probe_image = directory.join("pipes-probe.hfsb");
+    pipes_probe_image(workspace, &probe_image)?;
+    cases.push(case(workspace,
+                    &directory,
+                    "pipes-probe",
+                    &[probe_image.clone()],
+                    // The pipe transport and the Pipes folder are one guest
+                    // case: the folder markers are the added coverage, not a
+                    // separate boot-check case.
+                    &["PIPES_PROBE_ECHO_OK",
+                      "PIPES_PROBE_BLOCK_OK",
+                      "PIPES_PROBE_WOULD_BLOCK_OK",
+                      "PIPES_PROBE_EOF_OK",
+                      "PIPES_PROBE_BROKEN_OK",
+                      "PIPES_PROBE_NAME_OK",
+                      "PIPES_WRITER_FIRST_OK",
+                      "PIPES_WRITER_SECOND_REFUSED",
+                      "PIPES_WRITER_RELEASE_OK",
+                      "PIPES_WRITER_CLOSED_OK",
+                      "PIPES_FOLDER_LIST_OK items=1",
+                      "PIPES_FOLDER_LOOKUP_OK",
+                      "PIPES_FOLDER_STABLE_OK",
+                      "PIPES_FOLDER_ANON_ABSENT_OK",
+                      "PIPES_FOLDER_REFUSED_OK refusals=11",
+                      "PIPES_PROBE_PASS cases=5"],
+                    true)?);
     if converted.is_some()
     {
         cases.push(case(workspace,
