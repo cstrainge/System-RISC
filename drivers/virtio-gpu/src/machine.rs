@@ -110,7 +110,16 @@ fn fence()
 {
     // SAFETY: a full fence has no memory operands. It is the required
     // device/CPU publication ordering, not diagnostic instrumentation.
-    unsafe { core::arch::asm!("fence iorw, iorw", options(nostack)) };
+    // RISC-V's full fence is `fence iorw, iorw`; AArch64's is a system-wide
+    // data synchronization barrier.
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("fence iorw, iorw", options(nostack))
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack))
+    };
 }
 
 /// Little-endian command builder over a fixed stack buffer.

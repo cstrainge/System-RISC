@@ -19,7 +19,7 @@ mac-abi.workspace = true
 mac-driver = { path = "../../crates/mac-driver" }
 mac-video-interface.workspace = true
 
-[target.'cfg(target_arch = "riscv64")'.dependencies]
+[target.'cfg(target_os = "none")'.dependencies]
 spinning_top = "=0.2.5"
 
 [build-dependencies]
