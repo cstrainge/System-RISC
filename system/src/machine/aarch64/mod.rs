@@ -17,5 +17,6 @@ pub(crate) mod cpu;
 pub(crate) mod display;
 pub(crate) mod interrupts;
 pub(crate) mod mmu;
+pub(crate) mod page_layout;
 pub(crate) mod power;
 pub(crate) mod trap_entry;

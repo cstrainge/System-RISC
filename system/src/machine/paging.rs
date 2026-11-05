@@ -20,15 +20,13 @@ use mac_kernel_model::{DomainId,
                                PhysicalAddress, VirtualAddress,
                                physical::{DirectMap, Error as PhysicalError}},
                        policy::{AddressRange, ModelError}};
-use mac_riscv_pages::{Entry, Sv39,
+use mac_riscv_pages::{Entry,
                       mapping::{MapError, Mapper, Tables}};
 
 use super::interrupts::{self, NativeInvocationGate};
 use crate::machine::memory::*;
 use crate::machine::pages::{ArrayError, Backing, OwnedArray, Stack};
 use crate::allocator::foundation::{self, Foundation};
-const MODE: usize = 8usize << 60;
-const PPN: usize = (1usize << 44) - 1;
 /// Closed native physical ownership; no variant can be made from a PPN.
 /// Recovery backing is an exclusive sublease of the real protected heap parent.
 enum PagingBacking
@@ -256,9 +254,10 @@ impl fmt::Display for Error
                               mask } =>
             {
                 write!(f,
-                       "supervisor admission refused satp={root:#x} sstatus={status:#x} \
-                        hart={hart} tag_mask={mask:#x}; expected masked Sv39 bootstrap on hart0 \
-                        with the admitted root")
+                       "supervisor admission refused root={root:#x} status={status:#x} \
+                        hart={hart} tag_mask={mask:#x}; expected masked {} bootstrap on hart0 \
+                        with the admitted root",
+                       super::page_layout::NAME)
             }
             Self::ForeignRoot { physical } =>
             {
@@ -315,10 +314,8 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
           .map_err(Error::Execution)?;
     let root = root_register();
     let status = super::mmu::status();
-    if root >> 60 != 8
-       || root & PPN != record.root_physical as usize >> 12
-       || (root >> 44) & 0xffff != 0
-       || status & 2 != 0
+    if !super::page_layout::validate_root(root, record.root_physical)
+       || !super::page_layout::admission_interrupts_clear(status)
        || record.hart != 0
        || record.hardware_tag_mask > 0xffff
        || !(record.hardware_tag_mask + 1).is_power_of_two()
@@ -328,7 +325,7 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
                                       hart: record.hart,
                                       mask: record.hardware_tag_mask });
     }
-    let ram=DirectMap::new::<Sv39>(memory,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END).map_err(Error::Policy)?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE)).map_err(Error::Physical)?;
+    let ram=DirectMap::new::<Rva>(memory,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END).map_err(Error::Policy)?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE)).map_err(Error::Physical)?;
     // ROM already installed the admitted permanent RAM physmap; DirectMap is
     // its checked software view, not a hardware mapping operation. Monitor
     // admission checks every isolated control extent against that view before
@@ -526,7 +523,7 @@ impl Tables for Frames
         let backing = self.source.allocate_zeroed(table_layout)?;
         let cpu = backing.cpu_base();
         let physical = backing.physical();
-        let table = RootPage::reserve(backing, Sv39::geometry())
+        let table = RootPage::reserve(backing, Rva::geometry())
             .map_err(|cause| FrameError::Pages(crate::machine::pages::Error::Model(cause)))?;
         let storage_layout = Layout::new::<Node>();
         let storage_charge = self.account
@@ -598,17 +595,17 @@ impl PageLayout for Rva
 {
     fn geometry() -> PageGeometry
     {
-        Sv39::geometry()
+        super::page_layout::geometry()
     }
 
     fn leaf_sizes() -> &'static [u64]
     {
-        Sv39::leaf_sizes()
+        super::page_layout::leaf_sizes()
     }
 
     fn valid_virtual_range(range: AddressRange) -> bool
     {
-        Sv39::valid_virtual_range(range)
+        super::page_layout::valid_virtual_range(range)
     }
 }
 impl Architecture for Rva
@@ -816,7 +813,7 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     let (physical, mut tables) = mapper.into_tables();
     let (root, root_charge) = tables.take_root(physical)?;
     let owner=AddressSpace::<Rva, PagingBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
-    let register = MODE | (tag << 44) | (owner.root_physical().0 as usize >> 12);
+    let register = super::page_layout::encode_root(owner.root_physical().0, tag as u64);
     Ok(Space { owner,
                tables,
                register,
@@ -892,8 +889,9 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
     unsafe {
         super::mmu::activate(spaces.kernel.register);
     }
-    serial!("MMU_READY mode=sv39 actual={:#x} kernel_root={:#x} firmware_root={:#x} tables={} \
+    serial!("MMU_READY mode={} actual={:#x} kernel_root={:#x} firmware_root={:#x} tables={} \
              leaves={} stack={:#x}+{} guards=2 service_stacks={} stack_table={:#x}+{}",
+            super::page_layout::NAME,
             root_register(),
             spaces.kernel.owner.root_physical().0,
             spaces.firmware.owner.root_physical().0,
