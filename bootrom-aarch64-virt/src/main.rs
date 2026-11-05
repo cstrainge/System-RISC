@@ -223,10 +223,15 @@ pub extern "C" fn virt_probe() -> u64
                 puts("\n");
                 disks.push(disk);
             }
-            Err(_) =>
+            Err(error) =>
             {
                 puts("BOOT_AARCH64_VIRTIO_BLK_REFUSED: base=");
                 puthex(base as u64);
+                puts(" cause=");
+                for byte in alloc::format!("{error}").bytes()
+                {
+                    putc(byte);
+                }
                 puts("\n");
             }
         }
