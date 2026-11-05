@@ -2,6 +2,7 @@
 #![no_std]
 #![deny(unsafe_code)]
 use mac_abi::geometry::Rect;
+pub mod backend;
 pub mod ramfb;
 pub const HAPPY: &[u8; 256] = include_bytes!("../assets/happy-mac.icn");
 pub const MISSING: &[u8; 256] = include_bytes!("../assets/missing-disk.icn");
@@ -11,23 +12,40 @@ pub struct Raster<'a>
 {
     pixels: &'a mut [u32],
     width:  usize,
-    height: usize
+    height: usize,
+    /// Words per row. Equal to `width` for a tightly packed buffer; a device
+    /// that pads rows reports a larger pitch and drawing must advance by it.
+    stride: usize
 }
 impl<'a> Raster<'a>
 {
     pub fn new(pixels: &'a mut [u32], width: usize, height: usize) -> Option<Self>
     {
+        if width.checked_mul(height)? != pixels.len()
+        {
+            return None;
+        }
+        Self::strided(pixels, width, height, width)
+    }
+
+    /// A raster over rows of `stride` words, at least `width` and at most
+    /// `pixels.len() / height`.
+    pub fn strided(pixels: &'a mut [u32], width: usize, height: usize, stride: usize)
+                   -> Option<Self>
+    {
         if width == 0
            || height == 0
            || width > i16::MAX as usize
            || height > i16::MAX as usize
-           || width.checked_mul(height)? != pixels.len()
+           || stride < width
+           || stride.checked_mul(height)? > pixels.len()
         {
             return None;
         }
         Some(Self { pixels,
                     width,
-                    height })
+                    height,
+                    stride })
     }
 
     pub fn fill(&mut self, r: Rect, color: u32)
@@ -42,7 +60,7 @@ impl<'a> Raster<'a>
         }
         for y in top..bottom
         {
-            self.pixels[y * self.width + left..y * self.width + right].fill(color);
+            self.pixels[y * self.stride + left..y * self.stride + right].fill(color);
         }
     }
 
@@ -66,14 +84,14 @@ impl<'a> Raster<'a>
         {
             for x in left..right
             {
-                self.pixels[y * self.width + x] =
+                self.pixels[y * self.stride + x] =
                     if (x + y) & 1 == 0 { 0x878787 } else { 0xc0c0c0 };
             }
         }
         for y in top + 2..bottom
         {
-            let start = (top + ((y - top) & 1)) * self.width + left;
-            self.pixels.copy_within(start..start + right - left, y * self.width + left);
+            let start = (top + ((y - top) & 1)) * self.stride + left;
+            self.pixels.copy_within(start..start + right - left, y * self.stride + left);
         }
     }
 
