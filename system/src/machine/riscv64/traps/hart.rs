@@ -21,15 +21,9 @@ use crate::{allocator::foundation::{self, Foundation},
 /// does not order by itself. Only actual class changes/row queries call this.
 fn residency_ticks() -> u64
 {
-    let value;
-    // SAFETY: the admitted native profile grants rdtime. The I/RW fences and
-    // compiler memory clobber keep this sample inside the protected interval.
-    // See RISC-V Zicsr, CSR Access Ordering. Cost is not measured here.
-    unsafe {
-        asm!("fence rw,i", "rdtime {value}", "fence i,rw",
-             value = out(reg) value, options(nostack));
-    }
-    value
+    // SAFETY: the admitted native profile grants the time counter. The fences
+    // inside the primitive keep this sample inside the protected interval.
+    crate::machine::cpu::ticks()
 }
 
 #[derive(Clone, Copy)]
@@ -276,7 +270,7 @@ fn scratch() -> usize
     let control;
     // SAFETY: only this audited native binding reads the local selection CSR.
     unsafe {
-        asm!("csrr {},sscratch",out(reg)control,options(nomem,nostack));
+        control = crate::machine::cpu::hart_control();
     }
     control
 }
@@ -286,7 +280,7 @@ pub(crate) fn admit_bootstrap(admitted: usize) -> Result<(), Error>
 {
     let status: usize;
     unsafe {
-        asm!("csrr {},sstatus",out(reg)status,options(nomem,nostack));
+        status = crate::machine::mmu::status();
     }
     if status & 2 != 0
     {
@@ -312,7 +306,7 @@ pub(crate) fn admit_bootstrap(admitted: usize) -> Result<(), Error>
     // SAFETY: this masked primary owns cold admission; stable BSS metadata was
     // initialized before the actual CSR can name it. No System vector is active.
     unsafe {
-        asm!("csrw sscratch,{}",in(reg)pointer,options(nostack));
+        crate::machine::cpu::set_hart_control(pointer);
     }
     Ok(())
 }
@@ -363,7 +357,7 @@ fn unadmitted() -> !
     // Invalid System execution selection is contract failure, distinct from
     // ROM's intentional secondary parking. No context/firmware lookup occurs.
     unsafe {
-        asm!("csrci sstatus,2", options(nostack));
+        crate::machine::interrupts::disable();
     }
     crate::machine::emergency::serial(format_args!("SYSTEM_HART_SELECTION_FAILED \
                                                     sscratch={:#x}; no matching admitted \
@@ -384,7 +378,7 @@ pub(crate) fn prepare(stack: &'static Stack) -> Result<PreparedEntry, Error>
 {
     let status: usize;
     unsafe {
-        asm!("csrr {},sstatus",out(reg)status,options(nomem,nostack));
+        status = crate::machine::mmu::status();
     }
     if status & 2 != 0
     {
@@ -476,7 +470,7 @@ pub(crate) fn prepare(stack: &'static Stack) -> Result<PreparedEntry, Error>
     // is invalid; only the pure M monitor may interrupt this tiny transition.
     let hart = &registry.rows.as_slice()[primary_index];
     unsafe {
-        asm!("csrw sscratch,{}",in(reg)hart.control,options(nostack));
+        crate::machine::cpu::set_hart_control(hart.control);
     }
     serial!("SYSTEM_STACK_READY base={:#x} bytes={} control={:#x} cpu_slots={} cpu_stride={} \
              prepared_harts={} control_bytes={}",
@@ -547,7 +541,7 @@ pub(super) unsafe fn captured_outer(frame: *mut TrapFrame) -> OuterCapture
     // SAFETY: checked selected Control has reset-lifetime backing; native entry
     // owns it masked. Verify the address before touching any supplied frame.
     let valid = unsafe {
-        asm!("csrr {},sstatus", out(reg)status, options(nostack));
+        status = crate::machine::mmu::status();
         let control = hart.control as *const Control;
         status & 2 == 0
         && ptr::addr_of!((*control).entering).read_volatile() == 0
@@ -609,7 +603,7 @@ impl PreparedEntry
         // SAFETY: this single-use authority may enter only with its admitted
         // local interrupts still masked; it cannot migrate between CPUs.
         unsafe {
-            asm!("csrr {},sstatus", out(reg)status, options(nostack));
+            status = crate::machine::mmu::status();
         }
         if status & 2 != 0
         {
@@ -800,7 +794,7 @@ pub(crate) fn observe_entry(frame: usize)
             let floor = ptr::addr_of!((*control).floor).read_volatile();
             let top = ptr::addr_of!((*control).top).read_volatile();
             let sp: usize;
-            asm!("mv {value},sp",value=out(reg)sp,options(nomem,nostack));
+            sp = crate::machine::cpu::stack_pointer();
             if sp <= floor || sp > top || (floor..top).contains(&frame)
             {
                 super::entry_lost("native Rust entry or owned frame is on the wrong stack");
@@ -976,9 +970,9 @@ impl StartingHart
         let enabled: usize;
         let stack: usize;
         unsafe {
-            asm!("csrr {},sstatus",out(reg)status, options(nomem,nostack));
-            asm!("csrr {},sie",out(reg)enabled, options(nomem,nostack));
-            asm!("mv {},sp",out(reg)stack, options(nomem,nostack));
+            status = crate::machine::mmu::status();
+            enabled = crate::machine::cpu::interrupt_enables();
+            stack = crate::machine::cpu::stack_pointer();
         }
         if status & 2 != 0 || enabled != 0
         {
@@ -1076,8 +1070,8 @@ pub(crate) fn start_secondary(payload: *const (), bytes: usize) -> !
     let vector_bytes: usize;
     let timer_compare: usize;
     unsafe {
-        asm!("csrr {},vlenb",out(reg)vector_bytes,options(nomem,nostack));
-        asm!("csrr {},stimecmp",out(reg)timer_compare,options(nomem,nostack));
+        vector_bytes = crate::machine::cpu::vector_bytes();
+        timer_compare = crate::machine::cpu::timer_compare() as usize;
     }
     if timer_compare != usize::MAX
     {
@@ -1119,7 +1113,7 @@ pub(crate) fn start_secondary(payload: *const (), bytes: usize) -> !
     // returns this real idle frame until core policy admits scheduling. The
     // scheduler enables STIE when it arms the first genuine local deadline.
     unsafe {
-        asm!("csrs sie,{}",in(reg)2usize,options(nomem,nostack));
+        crate::machine::cpu::enable_software_interrupt();
         proof.row.activity.resume(true);
         __system_start_frame(frame)
     }
