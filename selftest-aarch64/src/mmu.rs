@@ -18,32 +18,44 @@ const TABLE: u64 = 0x3;
 /// Device-nGnRnE slot in MAIR -- and that maps RAM uncached, so every store
 /// goes straight to DRAM and no cache experiment can observe anything.
 const NORMAL: u64 = 0x701;
+/// Valid 4 KiB page, AttrIndx 2 (normal non-cacheable), inner shareable, AF.
+const PAGE_NON_CACHEABLE: u64 = 0x70b;
+/// MAIR: index 0 normal write-back, index 1 Device-nGnRnE, index 2 normal
+/// non-cacheable. Index 2 is the alias attribute: a read through it reaches
+/// memory itself, which is what the scanout and every other device see.
+const MAIR: u64 = 0xff | (0x44 << 16);
 /// Valid block, AttrIndx 1 (Device-nGnRnE), AF, never executable.
 const DEVICE: u64 = 0x405 | (1 << 54) | (1 << 53);
 /// 39-bit VA at TTBR0, 4 KiB granule, write-back walks, EPD1 set, 40-bit PA.
 const TCR: u64 = 0x2_0099_3519;
-/// MAIR[0] normal write-back, MAIR[1] Device-nGnRnE.
-const MAIR: u64 = 0xff;
 
 #[repr(align(4096))]
 struct Table([u64; 512]);
 
 static mut L1: Table = Table([0; 512]);
 static mut L2: Table = Table([0; 512]);
+static mut L2_ALIAS: Table = Table([0; 512]);
+static mut L3_ALIAS: Table = Table([0; 512]);
 
-/// Builds the map and turns the MMU and caches on. Returns false when the
-/// record's RAM base is not zero, because the identity map below assumes it.
-pub fn enable() -> bool
+/// The non-cacheable view of the test page. Chosen above the peripheral
+/// aperture, where the level-1 table had no entry, so nothing is displaced.
+pub const ALIAS_BASE: usize = 0x4000_0000;
+
+/// Builds the map and turns the MMU and caches on. `alias_page` is a 4 KiB
+/// aligned physical address that also gets a non-cacheable second VA, so the
+/// cache experiment can read what a device would see. Returns false when the
+/// record's RAM base is not zero, because the identity map assumes it.
+pub fn enable(alias_page: usize) -> bool
 {
-    if DECLARED_RAM_BASE != 0
+    if DECLARED_RAM_BASE != 0 || alias_page & 0xfff != 0
     {
         return false;
     }
-    // SAFETY: the tables are statics owned by this single-threaded boot; taking
-    // their addresses here does not create a reference and the primary core is
-    // the only one running.
-    let (l1, l2) = unsafe {
-        (core::ptr::addr_of_mut!(L1.0) as *mut u64, core::ptr::addr_of_mut!(L2.0) as *mut u64)
+    let (l1, l2, l2a, l3a) = unsafe {
+        (core::ptr::addr_of_mut!(L1.0) as *mut u64,
+         core::ptr::addr_of_mut!(L2.0) as *mut u64,
+         core::ptr::addr_of_mut!(L2_ALIAS.0) as *mut u64,
+         core::ptr::addr_of_mut!(L3_ALIAS.0) as *mut u64)
     };
     let ram_blocks = (DEVICE_BASE / BLOCK) as usize;
     if ram_blocks >= 512
@@ -57,6 +69,8 @@ pub fn enable() -> bool
         {
             core::ptr::write_volatile(l1.add(index), 0);
             core::ptr::write_volatile(l2.add(index), 0);
+            core::ptr::write_volatile(l2a.add(index), 0);
+            core::ptr::write_volatile(l3a.add(index), 0);
         }
         core::ptr::write_volatile(l1, l2 as u64 | TABLE);
         for index in 0..ram_blocks
@@ -67,6 +81,12 @@ pub fn enable() -> bool
         {
             core::ptr::write_volatile(l2.add(index), index as u64 * BLOCK | DEVICE);
         }
+        // One page of RAM, reachable a second time without caching. Reads
+        // through this alias see memory rather than the cache, which is the
+        // only way this core can observe what the scanout would show.
+        core::ptr::write_volatile(l1.add(1), l2a as u64 | TABLE);
+        core::ptr::write_volatile(l2a, l3a as u64 | TABLE);
+        core::ptr::write_volatile(l3a, alias_page as u64 | PAGE_NON_CACHEABLE);
         asm!("dsb sy", options(nostack));
         asm!("msr mair_el1, {}", in(reg) MAIR, options(nostack));
         asm!("msr tcr_el1, {}", in(reg) TCR, options(nostack));
