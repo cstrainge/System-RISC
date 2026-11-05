@@ -45,6 +45,7 @@ members = [
     "apps/*",
     "tools/mac-build",
     "tools/mac-extract",
+    "tools/mac-fonts",
     "tools/extract-list",
     "tools/hfs-b",
     "tools/risc-forks",

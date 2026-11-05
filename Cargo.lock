@@ -532,6 +532,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-fonts"
+version = "0.1.0"
+dependencies = [
+ "mac-formats",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mac-fork-file"
 version = "0.1.0"
 dependencies = [
