@@ -41,6 +41,7 @@ members = [
     "crates/mac-hfs-b",
     "crates/mac-filesystem",
     "crates/mac-boot-screen",
+    "crates/mac-videocore-fb",
     "toolbox/*",
     "system",
     "apps/finder",
