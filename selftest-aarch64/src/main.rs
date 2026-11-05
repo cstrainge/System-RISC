@@ -728,9 +728,26 @@ pub extern "C" fn rust_entry() -> !
                     }
                     else
                     {
+                        // Distinguishing "the transfer produced nothing" from
+                        // "the transfer produced the wrong bytes" decides
+                        // whether to look at the controller or the card.
+                        let mut nonzero = 0u32;
+                        for byte in sector.iter()
+                        {
+                            if *byte != 0
+                            {
+                                nonzero += 1;
+                            }
+                        }
+                        let head =
+                            u32::from_be_bytes([sector[0], sector[1], sector[2], sector[3]]);
                         report.push("sdhci", false, "no-mbr")
                               .push_str("signature ")
-                              .push_hex(u64::from(signature[0]) << 8 | u64::from(signature[1]));
+                              .push_hex(u64::from(signature[0]) << 8 | u64::from(signature[1]))
+                              .push_str(" nz ")
+                              .push_dec(u64::from(nonzero))
+                              .push_str(" head ")
+                              .push_hex(u64::from(head));
                     }
                 }
                 Err(failure) =>
