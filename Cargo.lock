@@ -43,6 +43,8 @@ dependencies = [
  "linked_list_allocator",
  "mac-block",
  "mac-build",
+ "mac-filesystem",
+ "mac-hfs",
  "serde_json",
 ]
 

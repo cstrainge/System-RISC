@@ -261,7 +261,121 @@ pub extern "C" fn sdhci_probe() -> u64
     puts(" type=");
     puthex(u64::from(sector[450]));
     puts("\n");
+    find_system(&mut disk);
     u64::from(signature == 0xAA55)
+}
+
+/// Locates the blessed System Folder on the card. The partition table, the
+/// volume and the folder are all read through the shared filesystem stack, so
+/// this exercises the same code the kernel uses rather than a bootloader-only
+/// reader. The kernel gains no FAT32 or SD knowledge from it: the bootloader
+/// hands on a loaded image.
+fn find_system(disk: &mut sdhci::Disk)
+{
+    use mac_block::BlockDevice;
+    use mac_filesystem::{Format, Partition, Volume};
+    // The table format comes from the shared reader, not from the filesystem
+    // crate: an MBR medium is not an Apple partition map, and reading it with
+    // the wrong parser reports a valid disk as having no partitions.
+    let partitions = match mac_block::mbr_partitions(disk)
+    {
+        Ok(partitions) => partitions,
+        Err(_) =>
+        {
+            // An unpartitioned medium is a whole-disk volume, not a refusal.
+            puts("BOOT_AARCH64_NO_PARTITION_TABLE: trying the whole disk\n");
+            alloc::vec::Vec::new()
+        }
+    };
+    puts("BOOT_AARCH64_PARTITIONS: count=");
+    puthex(partitions.len() as u64);
+    for partition in &partitions
+    {
+        puts(" type=");
+        puthex(u64::from(partition.kind));
+        puts(" start=");
+        puthex(partition.range.start);
+    }
+    puts("\n");
+    // A partitioned medium states its own extents; a whole-disk volume is
+    // mounted as one partition covering the card.
+    let mut candidates: alloc::vec::Vec<Partition> =
+        partitions.into_iter().map(|partition| partition.range).collect();
+    candidates.push(Partition { start:   0,
+                                sectors: disk.sector_count() });
+    for candidate in candidates
+    {
+        let mut volume = match Volume::mount(disk, candidate)
+        {
+            Ok(volume) => volume,
+            Err(error) =>
+            {
+                puts("BOOT_AARCH64_MOUNT_FAILED: start=");
+                puthex(candidate.start);
+                puts(" sectors=");
+                puthex(candidate.sectors);
+                puts(" cause=");
+                for byte in alloc::format!("{error}").bytes()
+                {
+                    putc(byte);
+                }
+                puts("\n");
+                continue;
+            }
+        };
+        puts("BOOT_AARCH64_VOLUME: start=");
+        puthex(candidate.start);
+        puts(" name=");
+        let name_end = volume.name.iter().position(|byte| *byte == 0).unwrap_or(volume.name.len());
+        for byte in &volume.name[..name_end]
+        {
+            putc(*byte);
+        }
+        puts(" format=");
+        puts(if volume.format == Format::HfsB { "hfsb" } else { "other" });
+        puts("\n");
+        if volume.format != Format::HfsB
+        {
+            continue;
+        }
+        let folder = match volume.blessed_folder()
+        {
+            Ok(folder) => folder,
+            Err(_) =>
+            {
+                puts("BOOT_AARCH64_SYSTEM_REFUSED: no blessed System Folder\n");
+                return;
+            }
+        };
+        puts("BOOT_AARCH64_BLESSED: cnid=");
+        puthex(u64::from(folder.id));
+        puts(" name=");
+        let folder_end = folder.name.iter().position(|byte| *byte == 0).unwrap_or(folder.name.len());
+        for byte in &folder.name[..folder_end]
+        {
+            putc(*byte);
+        }
+        puts("\n");
+        match volume.find_file(folder.id, b"System")
+        {
+            Ok(file) =>
+            {
+                puts("BOOT_AARCH64_SYSTEM_FOUND: type=");
+                for byte in file.file_type
+                {
+                    putc(byte);
+                }
+                puts(" data=");
+                puthex(file.data.length);
+                puts(" resource=");
+                puthex(file.resources.length);
+                puts("\n");
+            }
+            Err(_) => puts("BOOT_AARCH64_SYSTEM_REFUSED: no System file in the blessed folder\n")
+        }
+        return;
+    }
+    puts("BOOT_AARCH64_SYSTEM_REFUSED: no mountable volume\n");
 }
 
 #[panic_handler]
