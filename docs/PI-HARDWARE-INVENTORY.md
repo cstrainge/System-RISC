@@ -1,0 +1,172 @@
+# BCM2837 hardware inventory
+
+What a Raspberry Pi 3 model B exposes to software, which of it the ARM cores can
+drive, and who owns each piece. This is the inventory a device class and a driver
+are chosen from; it is deliberately not a driver description.
+
+Two sources disagree and both are recorded here:
+
+* `platforms/raspi3b.json` is the **declared contract**. The kernel, the
+  bootloader and the build all consume it, so a fact only in this document does
+  not yet exist as far as the machine is concerned.
+* The SoC documentation is the **authority on the silicon**. Where the record and
+  the documentation disagree, this document says so and states which is right.
+
+A row marked *record gap* is work for `platforms/raspi3b.json`, not for a driver.
+
+## Addresses
+
+The BCM2837 gives the ARM cores a legacy peripheral aperture at `0x3F000000`.
+The VideoCore sees the same registers at `0x7E000000`; the offset from each base
+is identical, so one offset serves both. Every address below is the **ARM** view.
+The peripheral RAM (the `0x3F000000`-based aperture) is 16 MiB; the ARM-local
+block is separate and is not in that aperture.
+
+Offsets are from the base the row names. A window is inclusive of its base and
+exclusive of base+size, as the platform record states it.
+
+## Ownership categories
+
+| Category | Meaning |
+| --- | --- |
+| **ARM** | Registers the ARM cores may read and write. A driver is possible. |
+| **VideoCore** | Registers the ARM can address but the VideoCore firmware owns. A bare-metal driver must not reprogram them: the firmware's state and the driver's would diverge silently. |
+| **Firmware-mediated** | The ARM reaches the function only through the mailbox property channel, never by touching the block. |
+| **Not addressable** | No ARM-visible register interface exists for this function. |
+
+"VideoCore-owned" is not the same as "unusable": the mailbox property channel is
+how the ARM asks the firmware to change framebuffer, clock, power and memory
+state, and that is a supported interface rather than a bypass.
+
+## Peripherals
+
+| Device | Base | Size | Interrupt | Category | Driver class | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| GPIO | `0x3F200000` | 4 KiB | 49, 50, 51, 52 | ARM | **GPIO** (new) | 54 pins in three banks: 0–27, 28–45, 46–53. Bank 0/1/2 have their own interrupt and the fourth line is the "up to 4 pins" acknowledge path. Not in the record. |
+| PL011 UART0 | `0x3F201000` | 4 KiB | 57 | ARM | **SERIAL** (PL011) | The console. Declared in the record as `pl011`/`uart`. |
+| Mini UART (AUX) | `0x3F215040` | — | 29 | ARM | SERIAL (auxiliary) | Part of the AUX block; shares AUX's enable register and IRQ 29 with SPI1/SPI2. |
+| AUX block | `0x3F215000` | 4 KiB | 29 | ARM | — (container) | Enables mini UART, SPI1 and SPI2 individually. One interrupt line covers all three, so each driver must share and acknowledge. Not in the record. |
+| SPI0 | `0x3F204000` | 4 KiB | 56 | ARM | SPI0 | Master SPI with two chip selects. Not in the record. |
+| SPI1 / SPI2 (AUX) | `0x3F215080` / `0x3F2150C0` | — | 29 | ARM | SPI (auxiliary) | Inside the AUX block; a different programming model from SPI0. |
+| I2C0 (BSC0) | `0x3F205000` | 4 KiB | 53 | ARM | **I2C** (new) | The camera/EEPROM bus. Reserved for the camera connector and the HAT ID EEPROM on some models; the record must state whether it is available here. Not in the record. |
+| I2C1 (BSC1) | `0x3F804000` | 4 KiB | 55 | ARM | I2C | The user/GPIO-header bus. Not in the record. |
+| I2C2 (BSC2) | `0x3F805000` | 4 KiB | 55 | ARM | I2C | Wired to the HDMI DDC lines. Shared interrupt source with I2C1 on this SoC. Not in the record. |
+| I2S / PCM | `0x3F203000` | 4 KiB | 23 | ARM | AUDIO (future) | No audio device class exists yet. Not in the record. |
+| PWM | `0x3F20C000` | 4 KiB | 22 | ARM | **PWM** (new) | Two independent channels; the audio output is wired to them on the header models, so channel ownership matters as much as controller ownership. Not in the record. |
+| System timer | `0x3F003000` | 4 KiB | 0 | ARM | resident timing | Free-running 1 MHz counter plus four compare channels. Channel 3 is conventionally the ARM's; channels 0–1 are used by the VideoCore firmware's own timers. Declared in the record as `bcm2835-systimer`. |
+| ARM timer | `0x3F00B400` | 4 KiB | 64 | ARM | resident timing | A second timer inside the ARM-peripheral area, with its own prescaler and free-running counter. Not in the record. |
+| ARM-local block (intc + local timers) | `0x40000000` | 4 KiB | — | ARM | resident interrupt controller | Outside the `0x3F` peripheral aperture. Four cores: per-core control/IRQ-source/FIQ-source registers, per-core mailbox, and the generic timer path. Declared in the record as `bcm2836-l1-intc`. |
+| DMA controller | `0x3F007000` | 4 KiB | 16 | ARM | DMA (resident) | 15 channels, each with a control block in memory. The firmware keeps control blocks alive for its own channels after boot, so a driver must take its channels from the firmware's report rather than assume all 15 are free. Not in the record. |
+| Mailbox | `0x3F00B000` | 4 KiB | 1 | ARM | resident firmware channel | Four FIFOs (one per ARM core to VideoCore, one VideoCore to all ARMs). The property channel runs inside FIFO 0 and is the only supported way to ask the firmware for clocks, power, framebuffer and memory. Declared in the record as `bcm2835-mbox`. |
+| VideoCore framebuffer | (no ARM-visible registers) | — | — | VideoCore | **VIDO** (VideoCore framebuffer driver) | The ARM configures and queries it entirely through mailbox property tags. The scan-out base is chosen by the firmware and cannot be selected by the ARM, which is why a driver must copy into the buffer the firmware reports. |
+| HVS (hardware video scaler) | `0x3F400000` | 4 KiB | 65 | VideoCore | — | Composes planes and selects the display composition. The address is not modelled by the emulator at all, and the firmware owns the display list. Should be marked VideoCore-owned in the record rather than merely absent. |
+| Pixel valve, scaler, dither, HDMI | `0x3F902000` and the `0x3F800000`-based MMR block | — | 65 | VideoCore | — | The HDMI display pipeline. Only meaningful if the firmware is bypassed for the display, which is not supported here. |
+| V3D (3D engine) | `0x3FC00000` | 64 KiB | 66, 67 | VideoCore | — | Three interrupt lines (job done, MMU error, flo). The firmware runs the 3D stack; the ARM has no supported way to submit jobs. |
+| TXP (texture pixel processor) | inside the MMR block | — | 65 | VideoCore | — | Legacy 2D path. Superseded by V3D, still owned by the firmware. |
+| SMI (secondary memory interface) | `0x3F600000` | 4 KiB | 43, 44 | ARM | SMI | A parallel bus for things like a camera/VGA interface. No consumer on a stock board; listed so nobody wires it by accident. Not in the record. |
+| Clock manager (CPRMAN) | `0x3F101000` | 4 KiB | — | ARM (read), VideoCore (rate policy) | resident | Divides the oscillators for every peripheral and for the ARM cores. A driver may set a peripheral's own divider through its control registers, and may query or ask for rates through the mailbox; it must not reprogram the ARM/AXI/display clocks the firmware is using. **Not covered by any declared window.** The record's `bcm2835-pm` window ends exactly where this block starts. |
+| Power management (PM) | `0x3F100000` | 4 KiB | — | ARM | resident | Reset controller (offset `0x1C`), watchdog (offset `0x24`), reset-strap status (offset `0x20`). Declared in the record as `bcm2835-pm` and used for the fatal-shutdown path. |
+| RNG | `0x3F104000` | 4 KiB | 61 | ARM | **ENTR** (existing class) | A ring-oscillator entropy source. Declared in the record as `bcm2835-rng`; the existing entropy interface has no BCM2837 driver. |
+| sdhci (Arasan EMMC) | `0x3F300000` | 4 KiB | 62 | ARM | storage controller | The SD Host Controller Standard Interface. This is the controller the boot payload reads the card through. Declared in the record as `sdhci`. |
+| sdhost (SD host) | `0x3F202000` | 4 KiB | 30 (see note) | ARM | storage controller | The older, simpler SD controller. On this board the card slot is wired to **one** of sdhci and sdhost by the board design, not both; the record deliberately declares sdhci only and lists sdhost as `unused`. That choice is what the boot payload implements. The interrupt number is not declared in the record and is not needed while sdhost is unused. |
+| USB OTG (dwc2) | `0x3F980000` | 4 KiB | 9 | ARM | USB host (future) | The single OTG port. On this board the visible USB sockets are behind an on-board hub chip attached to it, so a driver sees the hub, and a host controller stack is needed before anything downstream is reachable. Not in the record. |
+| MPHI (message passing host interface) | `0x3F00B000`-adjacent | — | 32 | ARM | — | Host-interface channels used by the firmware's message protocol. Overlaps the region the record gives the mailbox controller. No driver planned; listed to explain the shared window. |
+
+### Notes on the rows above
+
+* **sdhost's interrupt.** The SD host controller's own interrupt number is not
+  used anywhere in this platform today, because the record selects sdhci. The
+  number must be resolved from the SoC's interrupt table if the boot medium is
+  ever moved to sdhost; a wrong number there would present as a boot that hangs
+  with no fault, so it is better left undeclared than guessed.
+* **systimer interrupt 0.** The record declares interrupt 0, which is the
+  system timer's GPU interrupt, raised through the ARM-local block's basic
+  pending register. It is not a GIC-style private interrupt.
+* **PL011 at `0x3F201000`.** This is the only UART the board's `enable_uart=1`
+  firmware configuration leaves on the GPIO header. It is a full PL011, not the
+  mini UART in the AUX block, and the difference matters for FIFO depth,
+  fractional baud divisors and interrupt behaviour.
+
+## What the record is missing
+
+Each of these is a gap in `platforms/raspi3b.json` found by this inventory. They
+are recorded here first because a window that no module can claim is a window no
+driver may touch: the resident MMIO inventory is what grants a module its claim.
+
+1. **GPIO (`0x3F200000`, 4 KiB, interrupts 49–52).** Required for pin-level
+   application access.
+2. **Clock manager (`0x3F101000`, 4 KiB).** Required for any driver that has to
+   know or set a peripheral clock.
+3. **sdhost (`0x3F202000`).** Already listed under `hardware.unused` with a
+   reason; it has no `mmio_devices` window, which is correct while it is unused,
+   and it must gain both together if that ever changes.
+4. **USB (`0x3F980000`).** Needed only when a USB stack exists.
+5. **HVS (`0x3F400000`) and V3D (`0x3FC00000`).** These should be recorded as
+   VideoCore-owned so that their absence is a stated decision rather than an
+   omission. The resident inventory should be able to express "exists, not
+   claimable by a module".
+6. **The `hardware.devices` list and `mmio_devices` list describe different
+   things and disagree about naming.** `hardware.devices` is the board's physical
+   inventory with functional kinds (`uart`, `storage`, `display`, `entropy`,
+   `gpio-mailbox`); `mmio_devices` is the claimable register inventory with
+   compatible keys. Both are needed, but a device that is present in one and
+   absent from the other is currently indistinguishable from a device that does
+   not exist. The record should say which of the two lists a new peripheral
+   belongs in.
+
+## Device classes this inventory calls for
+
+Classes are the kernel's selection contract: a driver publishes an interface
+class, the kernel selects a driver by class and device key, and applications
+reach the function through a Toolbox service that the class defines. A class is
+defined by its interface crate, never by a driver.
+
+### GPIO — new class
+
+Applications must be able to drive individual pins. That requirement fixes the
+shape now:
+
+* The unit of ownership is **one pin**, not one controller. A claim names a pin
+  number, the mode it is claimed in (input, output, alternate function *n*), and
+  the electrical configuration the claimant requires (pull direction, slew,
+  hysteresis). Everything not named stays with its previous owner.
+* Two claimants for the same pin are an arbitration decision made by the
+  resident owner of the class, not by whichever driver initialised last. A
+  refused claim must be distinguishable from a failed one.
+* A pin claimed in an alternate-function mode is owned by the peripheral that
+  function selects. The class must therefore be able to hand a pin over to, for
+  example, the PL011 or SPI0 class rather than treating modes as a GPIO-only
+  concept.
+* Reads and writes are per-pin and must not require a controller-wide lock that
+  a second application can hold.
+* The class owns no state that outlives a claim: releasing a pin returns it to
+  its prior configuration, because a crashed application must not strand the
+  header.
+
+### I2C, SPI, PWM — new classes, same granularity rule
+
+* **I2C** claims a *bus and an address*, not the controller: a second application
+  may use another address on the same bus. Clock rate is a bus property, so
+  changing it requires exclusive bus ownership.
+* **SPI** claims a *bus and a chip select*. Two drivers on the same bus with
+  different chip selects are legitimate; the bus's clock mode is a negotiated
+  property.
+* **PWM** claims a *channel*, because the two channels are independent and one
+  of them may drive audio.
+
+### Existing classes that apply unchanged
+
+* `VIDO` (video output) — the VideoCore framebuffer driver.
+* `ENTR` (entropy) — the `bcm2835-rng` driver.
+* `VDEV` (claim/DMA service) — every external driver, as today.
+* Serial, storage and networking have no class in this tree yet; the PL011 is
+  the first one that will need a serial class rather than a private interface.
+
+## Not verifiable from this document
+
+The board is the only oracle for anything that is a silicon behaviour rather
+than an architectural one: cache maintenance ordering, card-insertion timing,
+the pull-up state of a pin at reset, and whether a given firmware call is
+accepted in a given power state. Where this document states such a rule, it is
+stating what the architecture or the SoC documentation requires, and the
+implementation must be reviewable against the rule rather than against a run.

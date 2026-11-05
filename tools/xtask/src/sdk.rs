@@ -622,7 +622,11 @@ pub(super) fn build_std(workspace: &Workspace, sdk: &Private) -> Result<()>
            .env("CARGO_ENCODED_RUSTFLAGS", "")
            .env(PROXY_ENV, &sdk.rustc)
            .env(SYSROOT_ENV, &sdk.sysroot)
-           .env("RUSTUP_TOOLCHAIN", &workspace.toolchain);
+           .env("RUSTUP_TOOLCHAIN", &workspace.toolchain)
+           // Every guest crate's build script resolves its platform from this
+           // variable. A std build started without it would compile against the
+           // default platform's record, which is a different machine.
+           .env(mac_build::platform::PLATFORM_ENV, &workspace.platform.name);
 
     for variable in SCRUBBED
     {
@@ -896,6 +900,10 @@ pub(super) fn applications(workspace: &Workspace, apps: &[App]) -> Result<Vec<Va
            .env("RUST_TARGET_PATH", sdk.target.parent().expect("the target spec has a parent"))
            .env("CARGO_ENCODED_RUSTFLAGS", "-C\u{1f}relocation-model=pic")
            .env("CARGO_BUILD_RUSTFLAGS", "")
+           // The application's own build script reads the platform record to
+           // configure itself, so the selection has to travel with the build
+           // rather than defaulting to whichever record is the default one.
+           .env(mac_build::platform::PLATFORM_ENV, &workspace.platform.name)
            .env_remove("SR_CARGO_ARTIFACT_DIR")
            .stdout(Stdio::piped());
 
