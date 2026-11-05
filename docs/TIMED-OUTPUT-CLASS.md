@@ -167,6 +167,12 @@ claim of its own to drive a strip, and an extension that does the composition
 declines to attach on a board with no serialiser rather than publishing an
 endpoint that cannot work.
 
+The transport between the two is **pending**: unnamed pipes exist but are stubbed,
+and named pipes are a separate future project. That does not weaken the split —
+the argument for it is about who holds the deadline, and the deadline is held by
+the extension either way — but it does mean the worked example describes a
+composition that cannot yet be run end to end.
+
 ## Arbitration
 
 * A claim names the serialiser and the feeder. Both are exclusive and both are
