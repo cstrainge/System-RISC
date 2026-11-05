@@ -17,7 +17,7 @@ pub(crate) fn fatal_shutdown() -> !
     // Terminal execution cannot return to an interrupted ordinary service.
     // SAFETY: masking IRQ and waiting changes only this CPU's state.
     unsafe { core::arch::asm!("msr daifset, #2", options(nostack)) };
-    super::emergency::serial(format_args!("SYSTEM_SHUTDOWN: fatal privileged fault; recovery is \
+    crate::machine::emergency::serial(format_args!("SYSTEM_SHUTDOWN: fatal privileged fault; recovery is \
                                            not proven\n"));
     // SAFETY: the current platform declares this finisher window in its record.
     // The write requests the board's guest-panic shutdown and execution never
@@ -42,7 +42,7 @@ pub(crate) fn emergency_restart() -> !
 {
     // SAFETY: as `fatal_shutdown`; only this CPU's mask state changes.
     unsafe { core::arch::asm!("msr daifset, #2", options(nostack)) };
-    super::emergency::serial(format_args!("SYSTEM_RESTART: emergency terminal requested reset\n"));
+    crate::machine::emergency::serial(format_args!("SYSTEM_RESTART: emergency terminal requested reset\n"));
     // SAFETY: terminal admission retains the mapped checked board register and
     // execution never resumes. The record supplies the restart value.
     unsafe {

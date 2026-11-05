@@ -1,5 +1,4 @@
 //! The only native trap entry: register/CSR preservation and checked ABI dispatch.
-use core::arch::{asm, global_asm};
 
 use mac_abi::{traps::*, *};
 
