@@ -876,3 +876,89 @@ host build of mac-system is already broken at this baseline: cargo test -p
 mac-system --lib fails with 231 pre-existing errors unrelated to this work
 (missing allocator/machine/spin in host configuration). The ring tests therefore
 cannot run in this tree right now, and no host-test claim is made.
+
+Pipes transport verified in the guest
+=====================================
+[Pipes / facilities agent] 2026-11-05
+
+State: the pipe transport is now executed in the guest on the real ROM, System,
+trap gate and scheduler. The File Manager merge, folder, Finder open and icons
+are still not implemented.
+
+Named registry is separate from the transport table
+---------------------------------------------------
+manager.rs now keeps `named: Vec<Named>` for the folder's namespace and puts no
+name in the pipe object at all. Anonymous pipes never enter that vector, so they
+have no name, no CNID and no object in the folder's namespace; enumeration cannot
+reveal them through a filtered count or timing because there is nothing to
+filter. `connect` resolves only through `named`; destroying a pipe removes its
+entry and bumps the registry revision. This was a correction to the earlier
+shape, where a single table held both kinds and enumeration filtered by
+`name.is_some()` — the exact construction that leaks existence.
+
+Guest execution evidence
+------------------------
+Fixture: crates/mac-toolbox/tests/fixtures/pipes-probe (public SDK, `application`
+feature, replaces Finder on a cloned disk).
+Transport: scripts/capture_pipes_probe.py builds the fixture, installs it as
+Finder on a copy of dist/qemu_riscv/system7.hfsb, boots the recorded QEMU
+command and captures serial.
+
+Serial markers observed, in order, on the final tip:
+  DESKTOP_READY: pipes probe
+  PIPES_PROBE_ECHO_OK bytes=5
+  PIPES_PROBE_WRITER_ARMED
+  PIPES_PROBE_WRITER_PARKED
+  PIPES_PROBE_MAKE_ROOM
+  PIPES_PROBE_WRITER_RESUMED transferred=512
+  PIPES_PROBE_BLOCK_OK parked=1 resumed=1 eof=1
+  PIPES_PROBE_WOULD_BLOCK_OK
+  PIPES_PROBE_EOF_OK
+  PIPES_PROBE_BROKEN_OK
+  PIPES_PROBE_NAME_OK
+  PIPES_PROBE_PASS cases=5
+
+What the markers establish:
+- echo: five bytes written and read back identically.
+- blocking: the writer thread armed, a 512-byte atomic write into a full ring
+  did not complete (`WRITER_PARKED` is asserted on !DONE), the reader drained,
+  and only then did the write report 512 bytes. The main thread made progress
+  while the writer was blocked.
+- would-block: an empty pipe with a live writer reported WOULD_BLOCK, not a
+  zero-byte success; after the last writer closed the same reader got 0.
+- broken pipe: a write with no readers reported BROKEN_PIPE.
+- name: after the last handle closed, connect reported NOT_FOUND. The same name
+  was then created again for the earlier cases, proving removal, not refusal.
+
+Provenance: exit 0, serial sha256
+3ed1f9385b04372fbceb11e48b6c0a1d460a1f5b8ca6e3df01cc6e1e7646279a
+at serial.log in the capture directory; capture.json records the exact QEMU
+command and the fixture package hash.
+
+Gates on the final tip
+----------------------
+  cargo xtask build --platform qemu_riscv        exit 0, 500 MiB HFS-B image
+  cargo xtask boot-check --platform qemu_riscv   exit 0, 17 of 17
+  scripts/capture_pipes_probe.py                 exit 0, PIPES_PROBE_PASS
+
+Not covered by the probe: multiple concurrent writers, a lost wake under load,
+cancellation of a blocked caller by process exit, and stale/foreign handle
+refusals. Those stay unverified.
+
+Baseline limitation, recorded as directed
+-----------------------------------------
+`cargo test -p mac-toolbox` cannot build in this tree: the host `mac-system`
+library fails with 238 pre-existing errors (missing allocator/machine/spin/
+application in the host configuration), none involving pipes. The canonical
+suite and the ring's host unit tests are therefore not runnable here. This lane
+takes the guest path for evidence and does not attempt the host-config repair.
+
+Command capture policy: from now on every run is recorded with its command, full
+output and exit status together. The earlier unexplained -1 boot-check exit stays
+recorded as undiagnosed.
+
+Remaining work
+--------------
+File Manager merged enumeration + lookup + path + synthetic ids + mutation
+refusals; System Folder/Pipes creation and boot ensure; Finder open-as-connect;
+icon families -30002/-30003 with the deliberate allowlist extension.

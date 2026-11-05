@@ -6,14 +6,18 @@
 //! No framing, record boundary or message operation exists here. The 512-byte
 //! bound is an atomicity rule only.
 #![forbid(unsafe_code)]
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use mac_abi::{Status, pipes as wire, *};
 use mac_object_table::{domain::ReleasedResource,
-                       registry::{Release, Source, Specification}};
+                       registry::{Release, Source, Specification},
+                       shared::InvocationGate as _};
 use spinning_top::Spinlock;
 
 use super::ring::Ring;
 use crate::{machine::scheduler::service::{RequestAction, RequestIdentity, RequestResult},
-            toolbox::handles::{CapacityPolicy, KindCode, OwnerRef, Store}};
+            toolbox::handles::{CapacityPolicy, InvocationGate as Gate, KindCode, OwnerRef, Store}};
 
 /// A named pipe is also a Finder item, so its name uses the HFS item bound.
 type Name = (u8, [u8; wire::NAME_BYTES]);
@@ -27,8 +31,16 @@ struct Pipe
 {
     ring:    Ring,
     readers: u32,
-    writers: u32,
-    name:    Option<Name>
+    writers: u32
+}
+/// The named-pipe registry. Anonymous pipes never enter this vector, so they
+/// have no name, no catalog identity and no object in the folder's namespace:
+/// enumeration cannot reveal them, not even through a count.
+struct Named
+{
+    name: Name,
+    pipe: u64,
+    cnid: u32
 }
 #[derive(Clone, Copy)]
 struct Endpoint
@@ -41,10 +53,12 @@ struct Manager
 {
     pipes:     Store<Pipe>,
     endpoints: Store<Endpoint>,
+    named:     Vec<Named>,
     revision:  u64
 }
 
 static MANAGER: spin::Once<Spinlock<Manager>> = spin::Once::new();
+static NEXT_CNID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn specification(handles: bool) -> Specification<'static>
 {
@@ -93,6 +107,7 @@ fn manager() -> Result<&'static Spinlock<Manager>, Status>
                let (pipe, endpoint) = crate::toolbox::handles::pipe_kinds()?;
                Ok::<_, Status>(Spinlock::new(Manager { pipes:     Store::registered(pipe),
                                                        endpoints: Store::registered(endpoint),
+                                                       named:     Vec::new(),
                                                        revision:  1 }))
            })
 }
@@ -133,9 +148,15 @@ fn same_name(left: &[u8], right: &[u8]) -> bool
     left.len() == right.len() && left.iter().zip(right).all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
-fn named(pipe: &Pipe) -> Option<&[u8]>
+fn named(entry: &Named) -> &[u8]
 {
-    pipe.name.as_ref().map(|name| &name.1[..name.0 as usize])
+    &entry.name.1[..entry.name.0 as usize]
+}
+
+fn free_cnid() -> u32
+{
+    // 0x8000_0000.. is reserved for entries that are not HFS catalog records.
+    (0x8000_0000u64 | NEXT_CNID.fetch_add(1, Ordering::Relaxed)) as u32
 }
 
 /// Validate a delivered request, perform it, and park only when the contract
@@ -266,21 +287,22 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
     let mut manager = manager.lock();
     if let Some(name) = &name
     {
-        for (_, pipe) in manager.pipes.iter()
+        for entry in &manager.named
         {
-            if named(pipe).is_some_and(|existing| same_name(existing, &name.1[..name.0 as usize]))
+            if same_name(named(entry), &name.1[..name.0 as usize])
             {
                 return Err(ALREADY_EXISTS);
             }
         }
+        // Preflight the registry slot before any pipe or endpoint exists, so a
+        // refused insertion cannot leave a half-registered name.
+        Gate::with_system_allocation(|| manager.named.try_reserve(1)).map_err(|_| NO_MEMORY)?;
     }
-    let is_named = name.is_some();
     let pipe = manager.pipes
                       .insert(&system,
                               Pipe { ring,
                                      readers: 1,
-                                     writers: 1,
-                                     name })
+                                     writers: 1 })
                       .map_err(status)?;
     let reader = match manager.endpoints.insert(owner,
                                                 Endpoint { pipe,
@@ -307,8 +329,11 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
             return Err(status(error));
         }
     };
-    if is_named
+    if let Some(name) = name
     {
+        manager.named.push(Named { name,
+                                   pipe,
+                                   cnid: free_cnid() });
         manager.revision = manager.revision.wrapping_add(1);
     }
     call.reader = reader;
@@ -320,14 +345,10 @@ fn connect(call: &mut wire::Call, owner: &OwnerRef, name: Name) -> Result<Reques
 {
     let manager = manager()?;
     let mut manager = manager.lock();
-    let Some(pipe) = manager.pipes
+    let Some(pipe) = manager.named
                             .iter()
-                            .find(|(_, pipe)| {
-                                named(pipe).is_some_and(|existing| {
-                                               same_name(existing, &name.1[..name.0 as usize])
-                                           })
-                            })
-                            .map(|(id, _)| id)
+                            .find(|entry| same_name(named(entry), &name.1[..name.0 as usize]))
+                            .map(|entry| entry.pipe)
     else
     {
         return Err(NOT_FOUND);
@@ -513,9 +534,10 @@ fn retire_endpoint(manager: &mut Manager, endpoint: Endpoint)
     }
     if pipe.readers == 0 && pipe.writers == 0
     {
-        let named = pipe.name.is_some();
         let _ = manager.pipes.remove(endpoint.pipe);
-        if named
+        let before = manager.named.len();
+        manager.named.retain(|entry| entry.pipe != endpoint.pipe);
+        if manager.named.len() != before
         {
             manager.revision = manager.revision.wrapping_add(1);
         }
