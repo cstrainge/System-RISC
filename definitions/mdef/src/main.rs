@@ -318,7 +318,7 @@ pub unsafe extern "C" fn standard_menu_definition(pointer: *mut DefinitionCall) 
     };
     result.map_or_else(|e| e.status() as i64, |_| 0)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 /// # Safety
