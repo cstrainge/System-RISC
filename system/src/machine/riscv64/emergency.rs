@@ -98,9 +98,9 @@ pub(crate) fn prepare() -> Result<(), Error>
         // Exact immutable payloads used by this terminal. Shared code, string
         // literals and the normal/terminal shared RAMFB ownership byte are not
         // extra reserve allocations and are not a dedicated terminal footprint.
-        let image_assets = include_bytes!("../../assets/crashes/classic-bomb.icon").len()
-            + include_bytes!("../../assets/cursors/arrow.curs").len()
-            + include_bytes!("../toolbox/quickdraw/assets/chicago-12.font").len();
+        let image_assets = include_bytes!("../../../assets/crashes/classic-bomb.icon").len()
+            + include_bytes!("../../../assets/cursors/arrow.curs").len()
+            + include_bytes!("../../toolbox/quickdraw/assets/chicago-12.font").len();
         let reserve_bytes = frame.bytes().checked_add(stack.bytes()).ok_or(Error::Size)?;
         let requirement = Requirement {
             service: EmergencyService::SystemPanicRestart,
