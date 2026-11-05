@@ -11,12 +11,13 @@ the wait.
 
 ## Which controller owns the card
 
-On this board the card answers on **this** controller. A self-test binary ran on
-the physical board, brought the Arasan block up and read the card's partition
-table through it — a real card with real partitions, not the built image. Public
-descriptions of this SoC family attach the microSD slot of some models to the
-other SD controller (`sdhost` at `0x3F202000`) and this one to the wireless
-interface; that description does not hold here, and the board is the authority.
+On this board the card answers on **this** controller. The observation record
+`docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md` states what was run on a physical
+Pi 3, from which commit, at which register window, and what the board reported —
+cite it rather than this document for that evidence. Public descriptions of this
+SoC family attach the microSD slot of some models to the other SD controller
+(`sdhost` at `0x3F202000`) and this one to the wireless interface; that
+description does not hold here, and the board is the authority.
 
 The distinction still matters, and it is worth stating what it cost: an earlier
 reading of those descriptions concluded that this controller could not reach the
@@ -35,7 +36,8 @@ check on a response that has no CRC field: the emulated controller does not
 report the error the real one does.
 
 Three behaviours are therefore recorded as board-established rather than
-specification-derived:
+specification-derived, and the evidence for each is the observation record cited
+above:
 
 * the reader waits for present-state bit 11 (a word is waiting) or the
   buffer-read-ready interrupt, and drains the port only while bit 11 is set;
