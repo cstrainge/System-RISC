@@ -212,6 +212,9 @@ mod tests
 pub fn run(workspace: &crate::workspace::Workspace, target: &str, yes: bool) -> Result<()>
 {
     let platform = mac_build::platform::current();
+    // Refuse a platform with no card before anything else, so the message names
+    // what that platform actually boots from rather than a missing image.
+    removable_media(platform)?;
     let hardware = platform.hardware.as_ref().ok_or_else(|| {
                                                 error(format!("platform '{}' declares no \
                                                                hardware section, so it names no \
@@ -286,5 +289,57 @@ fn existing_contents(target: &str) -> Vec<String>
             }
         }
         Err(_) => vec!["contents not readable".into()]
+    }
+}
+/// Whether this platform boots from removable media, which is the only kind of
+/// platform this tool may write.
+///
+/// The gate is the record, not a list of platform names: a machine whose boot
+/// medium is an SD card has a card to flash, and an emulator that attaches a
+/// drive to a virtual machine does not. A tool that can be pointed at a virt
+/// platform is a tool someone will point at a virt platform.
+pub fn removable_media(platform: &mac_build::platform::Platform) -> Result<()>
+{
+    use mac_build::platform::hardware::Medium;
+    let hardware = platform.hardware.as_ref();
+    let removable = hardware.map(|hardware| matches!(hardware.boot.medium, Medium::Sd { .. }))
+                            .unwrap_or(false);
+    if removable
+    {
+        return Ok(());
+    }
+    let boots_from = match hardware
+    {
+        Some(hardware) => format!("its boot medium is {:?}", hardware.boot.medium),
+        None => "it declares no hardware boot medium".to_string()
+    };
+    Err(error(format!("platform '{}' is not a removable-media machine: {boots_from}. Flashing \
+                       writes a physical card, so it applies only to a platform whose record \
+                       declares an SD boot medium. This platform boots in an emulator, which \
+                       attaches its image directly.",
+                      platform.name)))
+}
+
+#[cfg(test)]
+mod removable_tests
+{
+    use super::removable_media;
+
+    #[test]
+    fn only_a_removable_media_platform_may_be_flashed()
+    {
+        use mac_build::platform;
+        let board = platform::load("raspi3b").expect("the board record loads");
+        removable_media(&board).expect("a board that boots from an SD card can be flashed");
+
+        for virt in ["qemu_arm64", "qemu_riscv"]
+        {
+            let record = platform::load(virt).expect("the virt record loads");
+            let error = removable_media(&record)
+                .expect_err("a platform that boots in an emulator must be refused");
+            let message = error.to_string();
+            assert!(message.contains("not a removable-media machine"), "{message}");
+            assert!(message.contains(virt), "the refusal must name the platform: {message}");
+        }
     }
 }
