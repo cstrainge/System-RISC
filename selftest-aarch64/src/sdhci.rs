@@ -61,6 +61,29 @@ pub const SECTOR_BYTES: usize = 512;
 const INITIALISE_POLLS: usize = 20_000;
 const TRANSFER_POLLS: usize = 1_000_000;
 
+/// Why a step refused, with enough state to tell the possibilities apart on
+/// real hardware: which command stopped it, and what the two interrupt status
+/// registers held when it did. `command` is `u8::MAX` for failures that are not
+/// tied to a command.
+pub struct Failure
+{
+    pub what:    &'static str,
+    pub command: u8,
+    pub normal:  u16,
+    pub error:   u16
+}
+
+impl Failure
+{
+    fn plain(what: &'static str) -> Self
+    {
+        Self { what,
+               command: u8::MAX,
+               normal:  0,
+               error:   0 }
+    }
+}
+
 /// The controller and the one card in it.
 pub struct Disk
 {
@@ -74,7 +97,7 @@ impl Disk
     /// Brings the controller and card up. Every refusal names the step that
     /// stopped it, because "no card" and "the card answered garbage" are
     /// different findings.
-    pub fn probe(base: usize) -> Result<Self, &'static str>
+    pub fn probe(base: usize) -> Result<Self, Failure>
     {
         let mut disk = Self { base,
                               relative: 0,
@@ -129,7 +152,7 @@ impl Disk
         unsafe { write_volatile((self.base + offset) as *mut u32, value.to_le()) };
     }
 
-    fn reset(&mut self) -> Result<(), &'static str>
+    fn reset(&mut self) -> Result<(), Failure>
     {
         self.write8(SOFTWARE_RESET, RESET_ALL);
         for _ in 0..TRANSFER_POLLS
@@ -139,7 +162,7 @@ impl Disk
                 return Ok(());
             }
         }
-        Err("controller did not leave reset")
+        Err(Failure::plain("controller did not leave reset"))
     }
 
     fn base_hz(&self) -> u32
@@ -148,7 +171,7 @@ impl Disk
         if megahertz == 0 { 50_000_000 } else { megahertz * 1_000_000 }
     }
 
-    fn set_clock(&mut self, hz: u32) -> Result<(), &'static str>
+    fn set_clock(&mut self, hz: u32) -> Result<(), Failure>
     {
         let base = self.base_hz();
         let mut divider = base / (2 * hz);
@@ -174,14 +197,14 @@ impl Disk
         }
         if !stable
         {
-            return Err("internal clock never stabilised");
+            return Err(Failure::plain("internal clock never stabilised"));
         }
         self.write32(CLOCK_CONTROL,
                      encoded | CLOCK_INTERNAL_ENABLE | CLOCK_INTERNAL_STABLE | CLOCK_SD_ENABLE);
         Ok(())
     }
 
-    fn wait_inhibit(&self) -> Result<(), &'static str>
+    fn wait_inhibit(&self) -> Result<(), Failure>
     {
         for _ in 0..TRANSFER_POLLS
         {
@@ -190,11 +213,11 @@ impl Disk
                 return Ok(());
             }
         }
-        Err("controller stayed inhibited")
+        Err(Failure::plain("controller stayed inhibited"))
     }
 
     fn command(&mut self, index: u32, argument: u32, response: u16, data: bool)
-               -> Result<[u32; 4], &'static str>
+               -> Result<[u32; 4], Failure>
     {
         self.wait_inhibit()?;
         self.write16(NORMAL_INT_STATUS, 0xffff);
@@ -223,7 +246,10 @@ impl Disk
             let status = self.read16(NORMAL_INT_STATUS);
             if status & INT_ERROR != 0
             {
-                return Err("command failed");
+                return Err(Failure { what:    "command failed",
+                                     command: index as u8,
+                                     normal:  status,
+                                     error:   self.read16(ERROR_INT_STATUS) });
             }
             if status & INT_COMMAND_COMPLETE != 0
             {
@@ -233,10 +259,13 @@ impl Disk
                            self.read32(0x1c)]);
             }
         }
-        Err("command did not complete")
+        Err(Failure { what:    "command did not complete",
+                      command: index as u8,
+                      normal:  self.read16(NORMAL_INT_STATUS),
+                      error:   self.read16(ERROR_INT_STATUS) })
     }
 
-    fn identify(&mut self) -> Result<(), &'static str>
+    fn identify(&mut self) -> Result<(), Failure>
     {
         self.command(CMD_GO_IDLE, 0, RESPONSE_NONE, false)?;
         self.command(CMD_SEND_IF_COND, 0x1aa, RESPONSE_48, false)?;
@@ -254,7 +283,7 @@ impl Disk
         }
         if !ready
         {
-            return Err("card never finished initialising");
+            return Err(Failure::plain("card never finished initialising"));
         }
         self.command(CMD_ALL_SEND_CID, 0, RESPONSE_136, false)?;
         let relative = self.command(CMD_SEND_RELATIVE_ADDRESS, 0, RESPONSE_48, false)?;
@@ -265,7 +294,7 @@ impl Disk
     }
 
     /// Reads sector zero through the controller's buffer port.
-    pub fn read_sector_zero(&mut self) -> Result<[u8; SECTOR_BYTES], &'static str>
+    pub fn read_sector_zero(&mut self) -> Result<[u8; SECTOR_BYTES], Failure>
     {
         self.command(CMD_READ_SINGLE_BLOCK, 0, RESPONSE_48, true)?;
         let mut bytes = [0u8; SECTOR_BYTES];
@@ -275,7 +304,10 @@ impl Disk
             let status = self.read16(NORMAL_INT_STATUS);
             if status & INT_ERROR != 0
             {
-                return Err("read failed");
+                return Err(Failure { what:    "read failed",
+                                     command: CMD_READ_SINGLE_BLOCK as u8,
+                                     normal:  status,
+                                     error:   self.read16(ERROR_INT_STATUS) });
             }
             while words < SECTOR_BYTES / 4 && self.read32(PRESENT_STATE) & PRESENT_BUFFER_READ != 0
             {
@@ -289,10 +321,16 @@ impl Disk
             }
             if status & INT_TRANSFER_COMPLETE != 0 && words < SECTOR_BYTES / 4
             {
-                return Err("transfer completed short");
+                return Err(Failure { what:    "transfer completed short",
+                                     command: CMD_READ_SINGLE_BLOCK as u8,
+                                     normal:  status,
+                                     error:   self.read16(ERROR_INT_STATUS) });
             }
         }
-        Err("read did not complete")
+        Err(Failure { what:    "read did not complete",
+                      command: CMD_READ_SINGLE_BLOCK as u8,
+                      normal:  self.read16(NORMAL_INT_STATUS),
+                      error:   self.read16(ERROR_INT_STATUS) })
     }
 }
 
