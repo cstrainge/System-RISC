@@ -1,5 +1,50 @@
 # Flashing a card
 
+## Before anything: the firmware the card needs
+
+A bootable card needs the board's own firmware, and the build will not produce an
+image without it. Copy the four files into a `firmware/` directory at the
+repository root, keeping the names as published:
+
+| File | What it is |
+| --- | --- |
+| `bootcode.bin` | first-stage loader the board's GPU runs from the card |
+| `start.elf` | second stage: initialises the board and loads the kernel and the tree |
+| `fixup.dat` | relocates `start.elf`'s sections so it can run |
+| a board device tree, e.g. `bcm2710-rpi-3-b.dtb` | the firmware's own description of this board variant during bring-up |
+
+All four come from the firmware distribution's `boot/` directory. **The board
+device tree is not hardcoded**: `platforms/raspi3b.json` names it in
+`hardware.board_device_tree`, because the correct file differs between a 3B and a
+3B+ and a build that inferred it would ship a tree for the wrong board.
+
+Three facts about these files:
+
+* **They are not in this repository and must not be added to it.** They are
+  Broadcom binaries, redistributable only unmodified, only for their own hardware,
+  and only with their licence travelling alongside. `firmware/` is gitignored;
+  the image carries them and the checkout does not.
+* **The board device tree is copied byte-for-byte**, under the name the firmware
+  publishes, because it *is* the firmware's contract during bring-up. Regenerating
+  or rewriting it would mean we were testing our description rather than the
+  machine's, and its hash would no longer identify what a board run used.
+* **The image records every firmware file's sha256** in `dist/disk.json`, so the
+  same freshness gate that catches a rebuilt kernel catches a swapped blob or a
+  regenerated tree.
+
+If a file is missing, the image stage refuses by name and lists exactly what to
+fetch — it does not emit an image whose partition table and kernel verify and
+which cannot boot.
+
+**An image built here must not be published**: it contains the firmware, and the
+licence permits redistribution only for Raspberry Pi hardware and only with the
+licence alongside. Build it for your own card.
+
+Our own kernel does not use the firmware's tree: `hardware.device_tree` says
+`generated`, so the kernel walks the tree this build produces. The firmware loads
+its tree before any of our code runs, so it is required regardless — the two are
+separate and neither replaces the other.
+
 `cargo xtask flash TARGET --yes` writes this platform's declared storage image to
 a card. **It erases the card.** Everything currently on the target is destroyed.
 

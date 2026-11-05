@@ -216,13 +216,51 @@ fn resolve_files(workspace: &Workspace, files: &[Entry]) -> Result<Vec<FatFile>>
         {
             Source::Artifact { artifact } => format!("artifact:{artifact}"),
             Source::File { file } => format!("file:{file}"),
-            Source::BoardConfig { .. } => "generated:board-config".to_string()
+            Source::BoardConfig { .. } => "generated:board-config".to_string(),
+            Source::BoardDeviceTree => format!("firmware:{}", board_tree(workspace)?)
         };
-        resolved.push(FatFile { path: entry.path.clone(),
+        // A destination that names the board tree follows the record rather than
+        // repeating the file name in two places: the firmware publishes it under
+        // its variant name and `start.elf` looks for that name, so renaming it
+        // here would be our change to the machine's description.
+        let path = if entry.path == BOARD_TREE_TOKEN
+        {
+            board_tree(workspace)?
+        }
+        else
+        {
+            entry.path.clone()
+        };
+        resolved.push(FatFile { path,
                                 source,
                                 bytes: resolve_source(workspace, &entry.source)? });
     }
     Ok(resolved)
+}
+
+/// Where the developer-supplied firmware lives.
+///
+/// The binaries are Broadcom's, redistributable only unmodified and only with
+/// their licence, so they are input rather than repository content: the image
+/// carries them and the checkout does not.
+pub const FIRMWARE_DIR: &str = "firmware";
+
+/// A destination that means "under the name the record gives the board tree".
+pub const BOARD_TREE_TOKEN: &str = "{board_device_tree}";
+
+/// The board tree name the record states, or a refusal naming what to add.
+fn board_tree(workspace: &Workspace) -> Result<String>
+{
+    workspace.platform
+             .hardware
+             .as_ref()
+             .and_then(|hardware| hardware.board_device_tree.clone())
+             .ok_or_else(|| {
+                 error(format!("platform '{}' stores a boot partition with a \
+                                board-device-tree entry but declares no hardware.board_device_tree, \
+                                so the build cannot know which .dtb this board variant needs",
+                               workspace.platform.name))
+             })
 }
 
 fn resolve_source(workspace: &Workspace, source: &Source) -> Result<Vec<u8>>
@@ -241,6 +279,18 @@ fn resolve_source(workspace: &Workspace, source: &Source) -> Result<Vec<u8>>
             let path = workspace.root().join(file);
             fs::read(&path).map_err(|why| {
                                error(format!("cannot read file {}: {why}", path.display()))
+                           })
+        }
+        Source::BoardDeviceTree =>
+        {
+            let name = board_tree(workspace)?;
+            let path = workspace.root().join(FIRMWARE_DIR).join(&name);
+            fs::read(&path).map_err(|why| {
+                               error(format!("cannot read the board device tree {}: {why}. It is \
+                                              the file the firmware distribution ships for this \
+                                              board variant; copy it into {FIRMWARE_DIR}/ \
+                                              unchanged",
+                                             path.display()))
                            })
         }
         Source::BoardConfig { lines } =>
