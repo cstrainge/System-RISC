@@ -4,7 +4,7 @@
 use mac_videocore_fb::{Channel, Error, Framebuffer, Message, Mode, PixelOrder, RESPONSE_SUCCESS,
                        TAG_ALLOCATE_BUFFER, TAG_END, TAG_GET_PITCH, TAG_SET_DEPTH,
                        TAG_SET_PHYSICAL_SIZE, TAG_SET_PIXEL_ORDER, TAG_SET_VIRTUAL_OFFSET,
-                       TAG_SET_VIRTUAL_SIZE, Tag, acquire, scroll};
+                       TAG_SET_VIRTUAL_SIZE, Tag, WORDS, acquire, scroll};
 
 const ADDRESS: u32 = 0x0001_0000;
 const MODE: Mode = Mode { width:       800,
@@ -12,6 +12,18 @@ const MODE: Mode = Mode { width:       800,
                           depth:       32,
                           pixel_order: PixelOrder::Bgr };
 const ALIGNMENT: u32 = 4096;
+
+/// The message storage a boot path would own statically. It must be 16-byte
+/// aligned, which is the alignment the mailbox requires of the address.
+#[repr(align(16))]
+struct Storage([u32; WORDS]);
+impl Storage
+{
+    const fn new() -> Self
+    {
+        Self([0; WORDS])
+    }
+}
 
 /// What the simulated firmware answers with. The defaults are the values the
 /// QEMU 11.1.0 `raspi3b` model returned for an 800x600x32 request.
@@ -193,9 +205,9 @@ fn offset_of(words: &[u32], id: u32) -> usize
     }
 }
 
-fn encoded_request() -> Message
+fn encode(storage: &mut Storage) -> Message<'_>
 {
-    let mut message = Message::new(ADDRESS).unwrap();
+    let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
     message.set_mode(MODE).unwrap();
     message.allocate(ALIGNMENT).unwrap();
     message.pitch().unwrap();
@@ -206,7 +218,8 @@ fn encoded_request() -> Message
 #[test]
 fn the_request_is_the_documented_tag_sequence_and_ends_with_the_end_tag()
 {
-    let message = encoded_request();
+    let mut storage = Storage::new();
+    let message = encode(&mut storage);
     let words = message.words();
     assert_eq!(words[0] as usize, words.len() * 4, "size word covers the buffer");
     assert_eq!(words[1], 0, "a request carries no response code");
@@ -237,8 +250,9 @@ fn the_request_is_the_documented_tag_sequence_and_ends_with_the_end_tag()
 #[test]
 fn the_acquisition_sequence_yields_the_physical_base_size_and_pitch()
 {
+    let mut storage = Storage::new();
+    let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
     let mut sim = Sim::new(Device::qemu());
-    let mut message = Message::new(ADDRESS).unwrap();
     let framebuffer = acquire(&mut sim, &mut message, MODE, ALIGNMENT).unwrap();
     assert_eq!(sim.address, Some(ADDRESS), "the mailbox receives the buffer address");
     assert_eq!(framebuffer,
@@ -262,9 +276,10 @@ fn the_bus_address_is_masked_below_and_above_the_0x40000000_boundary()
                             (0xc000_0000, 0x0000_0000)]
     // alias of physical zero
     {
+        let mut storage = Storage::new();
+        let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
         let mut sim = Sim::new(Device { base: bus,
                                         ..Device::qemu() });
-        let mut message = Message::new(ADDRESS).unwrap();
         let result = acquire(&mut sim, &mut message, MODE, ALIGNMENT);
         if physical == 0
         {
@@ -316,8 +331,9 @@ fn a_failed_request_is_a_named_error_and_never_a_zeroed_descriptor()
                                         Error::EmptyAllocation)];
     for (device, expected) in cases
     {
+        let mut storage = Storage::new();
+        let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
         let mut sim = Sim::new(device);
-        let mut message = Message::new(ADDRESS).unwrap();
         let result = acquire(&mut sim, &mut message, MODE, ALIGNMENT);
         assert_eq!(result, Err(expected), "expected {expected:?}");
         let text = expected.to_string();
@@ -328,17 +344,17 @@ fn a_failed_request_is_a_named_error_and_never_a_zeroed_descriptor()
 #[test]
 fn geometry_the_allocation_cannot_hold_is_refused()
 {
+    let mut storage = Storage::new();
+    let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
     // A pitch narrower than one row of the accepted mode.
     let mut sim = Sim::new(Device { pitch: 0x0c00,
                                     ..Device::qemu() });
-    let mut message = Message::new(ADDRESS).unwrap();
     assert_eq!(acquire(&mut sim, &mut message, MODE, ALIGNMENT),
                Err(Error::PitchTooSmall { pitch:   0x0c00,
                                           minimum: 0x0c80 }));
     // A pitch that fits one row but an allocation that does not fit the rows.
     let mut sim = Sim::new(Device { size: 0x0c80 * 599,
                                     ..Device::qemu() });
-    let mut message = Message::new(ADDRESS).unwrap();
     assert_eq!(acquire(&mut sim, &mut message, MODE, ALIGNMENT),
                Err(Error::AllocationTooSmall { size:    0x0c80 * 599,
                                                minimum: 0x0c80 * 600 }));
@@ -366,8 +382,9 @@ fn a_reply_whose_structure_does_not_match_the_request_is_refused()
           "a missing end tag")];
     for (tamper, description) in corruptions
     {
+        let mut storage = Storage::new();
+        let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
         let mut channel = Tamper(tamper);
-        let mut message = Message::new(ADDRESS).unwrap();
         let result = acquire(&mut channel, &mut message, MODE, ALIGNMENT);
         assert!(result.is_err(), "{description} must be refused");
         assert!(matches!(result,
@@ -381,9 +398,15 @@ fn a_reply_whose_structure_does_not_match_the_request_is_refused()
 #[test]
 fn the_message_buffer_and_alignment_are_checked_before_delivery()
 {
-    assert_eq!(Message::new(ADDRESS + 4).unwrap_err(),
+    let mut storage = Storage::new();
+    assert_eq!(Message::new(&mut storage.0, ADDRESS + 4).unwrap_err(),
                Error::MessageAlignment { address: ADDRESS + 4 });
-    let mut message = Message::new(ADDRESS).unwrap();
+    // The storage's own alignment matters too: an unaligned array cannot carry
+    // a 16-byte aligned address under any page mapping.
+    let mut words = [0u32; WORDS + 1];
+    let unaligned: &mut [u32; WORDS] = (&mut words[1..]).try_into().unwrap();
+    assert!(Message::new(unaligned, ADDRESS).is_err());
+    let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
     message.set_mode(MODE).unwrap();
     assert_eq!(message.transact(&mut Sim::new(Device::qemu())).unwrap_err(), Error::Unfinished);
     assert_eq!(acquire(&mut Sim::new(Device::qemu()),
@@ -401,7 +424,8 @@ fn the_message_buffer_and_alignment_are_checked_before_delivery()
 #[test]
 fn the_fixed_buffer_refuses_a_message_that_does_not_fit()
 {
-    let mut message = Message::new(ADDRESS).unwrap();
+    let mut storage = Storage::new();
+    let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
     let mut refused = None;
     for _ in 0..16
     {
@@ -412,14 +436,15 @@ fn the_fixed_buffer_refuses_a_message_that_does_not_fit()
         }
     }
     assert_eq!(refused, Some(Error::TooLong { tag: TAG_GET_PITCH }));
-    assert!(message.words().len() <= 64, "no partial tag is written past the buffer");
+    assert!(message.words().len() <= WORDS, "no partial tag is written past the buffer");
 }
 
 #[test]
 fn scrolling_checks_that_the_firmware_applied_the_offset()
 {
+    let mut storage = Storage::new();
+    let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
     let mut sim = Sim::new(Device::qemu());
-    let mut message = Message::new(ADDRESS).unwrap();
     scroll(&mut sim, &mut message, 0, 12).unwrap();
     let tags = tags(message.words());
     assert_eq!(tags.len(), 2, "one offset tag and the end tag");
