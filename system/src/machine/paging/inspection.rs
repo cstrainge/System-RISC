@@ -70,7 +70,7 @@ struct Reader<'a>(&'a Space);
 impl ReadTables for Reader<'_>
 {
     type Descriptor = super::Entry;
-    type Layout = super::Rva;
+    type Layout = super::SelectedLayout;
     type Error = FrameError;
 
     fn read_table(&self, physical: PhysicalAddress, output: &mut [u64; 512])

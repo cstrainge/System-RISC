@@ -34,8 +34,6 @@ mac-video-interface.workspace = true
 mac-entropy-interface.workspace = true
 mac-object-table.workspace = true
 mac-kernel-model.workspace = true
-mac-riscv-pages.workspace = true
-mac-aarch64-pages.workspace = true
 spinning_top = "=0.2.5"
 mac-abi.workspace = true
 sr-control-reflow-handling.workspace = true
@@ -70,6 +68,15 @@ mac-traps.workspace = true
 # Bare metal on any architecture: both guest targets report target_os = "none",
 # while the host does not. Cargo cannot see the custom `systemrisc` cfg, so this
 # is the built-in that distinguishes a guest build from the host test build.
+# Exactly one descriptor encoder per target. Declaring both would make the
+# aarch64 build compile and link the RISC-V crate, so a change there could break
+# a target that never uses it.
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+mac-riscv-pages.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+mac-aarch64-pages.workspace = true
+
 [target.'cfg(target_os = "none")'.dependencies]
 hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 spin = { version = "=0.12.3", default-features = false, features = ["once"] }

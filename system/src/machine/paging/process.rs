@@ -755,7 +755,7 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, source: Backi
                                            revision: footprint.revision });
     }
     let (root, charge) = tables.take_root(physical).map_err(Error::Tables)?;
-    let owner=AddressSpace::<Rva, PagingBacking>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
+    let owner=AddressSpace::<SelectedLayout, PagingBacking>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
     let register = super::super::page_layout::encode_root(physical.0, 0);
     Ok(Space { owner,
                tables,
