@@ -10,6 +10,12 @@
 //! and an output directory, so a third package with another disc is the same
 //! command.
 //!
+//! The output covers the package's whole extract list and nothing less, because
+//! the include that consumes it has the same granularity as the rip-out: a
+//! package either takes its extracted resources from the disc or does not. There
+//! is no per-family or subset mode, and none should be added — finer review
+//! granularity is a review matter, not an extraction mode.
+//!
 //! Gates, in order:
 //!  * every listed resource is present in the source file the list names;
 //!  * every emitted payload is byte-identical to the disc's payload;

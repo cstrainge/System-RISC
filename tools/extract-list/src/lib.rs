@@ -930,7 +930,7 @@ fn write_usage(text: &mut String, report: &Report, usage: &Usage, package: &Pack
     let _ = writeln!(text, "  of the referenced, {} are named only by test code", counts.tests);
     let _ = writeln!(text,
                      "  excluded from the extract list on this basis: {} (listed below; they \
-                      stay in resources.json — the rip-out is separate)",
+                      stay in resources.json and are not extracted at all)",
                      unreferenced(report, usage, package).len());
     let ambiguous = report.classifications
                           .iter()
