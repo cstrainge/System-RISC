@@ -87,6 +87,19 @@ cargo xtask run --platform qemu_riscv --no-build  # boot what is already built
 cargo xtask run --platform qemu_riscv --headless  # the same boot with no window
 ```
 
+Graphical launches use a fixed 1.5x window zoom (GTK on Windows/Linux, Cocoa
+on macOS), without changing the guest resolution. Headless launches remain
+windowless. Cocoa requires the scale patch linked below.
+
+The `qemu_riscv` graphical launcher also attaches the Host Clipboard extension's
+vdagent transport and enables the display's clipboard peer. GTK requires QEMU
+11.1 or newer with the `qemu-vdagent` backend and `clipboard` display option;
+unsupported QEMU builds report an error rather than silently dropping sharing.
+The platform's `emulation.clipboard.transport` reserves virtio-MMIO slot 4,
+separate from disk slots. Windowless launches omit this transport because there
+is no host clipboard peer; the extension is consequently skipped in that mode.
+Guest Host Clipboard preferences still control sharing policy.
+
 The platform record decides how the emulator is invoked: its machine, memory,
 harts, devices, firmware, which storage image boots, and the console and screen
 each mode gets. `--headless` therefore still boots the real guest and writes its
