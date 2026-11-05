@@ -898,3 +898,86 @@ mac-host-clipboard's Limits::qemu(), mac-vdagent-protocol's
 QEMU_MAX_MESSAGE_BYTES and qemu(), and platforms/qemu_arm64.json as a
 filename. None ship as product vocabulary.
 
+Device tree and SD storage on qemu_arm64 - 2026-11-04
+-----------------------------------------------------
+The bootloader now discovers hardware from a device tree generated from the
+platform record, and reads the SD card through SDHCI.
+
+Record -> blob -> bootloader -> kernel. tools/mac-build/src/devicetree.rs
+emits a flattened device tree from the selected record: header, memory
+reservation block, structure block (the RAM window, one cpu node per declared
+hart, a soc node per declared peripheral window) and the strings block.
+hardware.device_tree.kind gains "generated" and qemu_arm64 declares it, because
+-machine raspi3b passes no firmware tree. generate() refuses a platform that
+does not declare "generated", so the declaration is enforced rather than
+decorative.
+
+bootrom-aarch64 links the blob read-only and walks it for the sdhci and pl011
+windows instead of using compile-time constants. The console is still
+initialised from the record before the tree can be parsed, because a bad tree
+has to be reported somewhere; the discovered pl011 is then compared against the
+console in use and a divergence is a named failure. docs/DEVICE-TREE.md records
+the contract and the remaining gates.
+
+bootrom-aarch64/src/sdhci.rs implements mac_block::BlockDevice over the Arasan
+SDHCI controller: reset, clock, power, card identification, single-block PIO
+read, capacity from the CSD. It is pre-module boot code and stays in the
+bootrom: it must work before any module can load. drivers/sdhci/ remains the
+runtime block driver.
+
+Verified on QEMU 11.1.0 -machine raspi3b -m 1G -kernel <elf> -drive if=sd:
+  BOOT_AARCH64_EL1_READY: running at EL1
+  BOOT_AARCH64_MMU_READY: 39-bit three-level translation active
+  BOOT_AARCH64_PHYSMAP_READY: physmap aliases physical RAM
+  BOOT_AARCH64_DT_SDHCI: base=0x3f300000 bytes=0x1000
+  BOOT_AARCH64_DT_PL011: base=0x3f201000
+  BOOT_AARCH64_SD_READY: sectors=0x3c08000
+  BOOT_AARCH64_SD_MBR: signature=0xaa55 first_lba=0x800 type=0x0c
+The MBR signature, first LBA and partition type match the image the test
+attached, so the read returns the bytes written rather than merely succeeding.
+
+Caveat: sectors=0x3c08000 is QEMU's card model, not the 16 MiB image attached,
+so sector_count does not reflect the medium here.
+
+Four SDHCI defects were found from QEMU traces rather than guessed: Normal
+Interrupt Status Enable masked Command Complete so every command polled
+forever; Clock Control carries Internal Clock Enable in bit 0, Stable in bit 1,
+SD Clock Enable in bit 2 and the divider in bits 8-15, and the original bit-15
+numbering left the card with no clock; CPACR_EL1.FPEN is zero at reset and the
+platform's neon profile makes the compiler emit vector instructions for
+ordinary slice copies; and the 136-bit card description arrives
+most-significant word last, with CMD9 readable only before SELECT_CARD.
+
+Host tests: 5 in mac-build::devicetree, parsing the emitted blob with a parser
+separate from the emitter. They assert the memory region, four cpu nodes, the
+sdhci and pl011 windows, header and offset bounds, and that a platform which
+does not declare a generated tree is refused. They load qemu_arm64 explicitly,
+so they give the same answer under any SR_PLATFORM.
+
+Review rounds: six passes, 15 findings, all fixed. The workflow is commit,
+hostile review, fix, re-review, iterate until a pass finds nothing blocking,
+then push. Findings included a spec violation (CMD8 sent before GO_IDLE_STATE),
+a duplicated transfer-mode write, a clock probe that proceeded when the clock
+never stabilised, boot_cpuid_phys carrying the hart count, diagnostic statics
+storing on the poll hot path, the boot MMU reaching for three peripheral
+addresses only to find where devices begin, a device_tree declaration nothing
+consulted, tests that depended on ambient SR_PLATFORM, a driver importing the
+whole filesystem stack for one trait, a window declared twice, and a CSD
+refusal that did not name the structure.
+
+Still blocking a desktop on qemu_arm64
+--------------------------------------
+1. The System kernel has no aarch64 implementation. system/src/machine is
+   28,394 lines of RISC-V adapters with 463 crate::machine references outside
+   it; 33,611 lines of the kernel are RISC-V-only today. This is the gate for
+   BOOT_SYSTEM_READY:, and therefore for DESKTOP_READY:, input and launching an
+   application.
+2. The bootrom does not yet read FAT32 or HFS-B to find and load the System
+   image; it reads sector zero and reports the partition table only.
+3. The VideoCore mailbox framebuffer and the driver module crates are not
+   written. No frame has been captured on ARM, so there is no frame_report.py
+   result for a splash or a desktop.
+4. mac-sdhci is not yet a shared crate: the reader lives in bootrom-aarch64 and
+   the kernel consumer does not exist.
+
+
