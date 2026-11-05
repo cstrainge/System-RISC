@@ -9,6 +9,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "mac-sdhci"
+version = "0.1.0"
+
+[[package]]
 name = "mac-videocore-fb"
 version = "0.1.0"
 
@@ -40,6 +44,7 @@ dependencies = [
 name = "selftest-aarch64"
 version = "0.1.0"
 dependencies = [
+ "mac-sdhci",
  "mac-videocore-fb",
  "serde_json",
 ]

@@ -88,6 +88,14 @@ Board revision, firmware revision, clock rates, ARM memory size, framebuffer
 base and size, and the partition table all belong to the particular board and
 card. Only the pass/fail column is portable.
 
+## Recorded hardware result
+
+A physical Raspberry Pi 3 run (11 OK / 0 FAIL, including the SDHCI read of the
+real card's MBR) is recorded in
+[`docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md`](../docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md).
+That record is the evidence and names its own limits; this README is the
+operating procedure.
+
 ## QEMU
 
 ```
