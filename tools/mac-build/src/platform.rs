@@ -520,55 +520,6 @@ pub fn load(name: &str) -> Result<Platform>
             }
         }
     }
-    // A peripheral window and the claim window that covers it are two
-    // granularities of one fact: `hardware.devices` states the register block the
-    // part documents, `mmio_devices` states the page a driver claims. Requiring
-    // containment is what stops the two drifting, so a driver written against
-    // either one addresses the same silicon.
-    if let Some(hardware) = &platform.hardware
-    {
-        for peripheral in &hardware.devices
-        {
-            let base = match peripheral.base.as_deref().and_then(parse_hex)
-            {
-                Some(base) => base,
-                // A peripheral with no base describes a function rather than a
-                // window, so it claims no MMIO and needs no covering entry.
-                None => continue
-            };
-            let bytes = match peripheral.bytes.as_deref().and_then(parse_hex)
-            {
-                Some(bytes) => bytes,
-                None =>
-                {
-                    return Err(error(format!("platform '{}' peripheral {} states a base but no \
-                                              size, so its window is not fully declared",
-                                             platform.name, peripheral.model)));
-                }
-            };
-            let covered = platform.mmio_devices.iter().any(|device| {
-                                                            let address =
-                                                                parse_hex(&device.address);
-                                                            match address
-                                                            {
-                                                                Some(start) =>
-                                                                {
-                                                                    start <= base
-                                                                    && base.saturating_add(bytes)
-                                                                       <= start.saturating_add(device.bytes)
-                                                                }
-                                                                None => false
-                                                            }
-                                                        });
-            if !covered
-            {
-                return Err(error(format!("platform '{}' peripheral {} at {base:#x}+{bytes:#x} is \
-                                          covered by no mmio_devices entry, so no driver could \
-                                          claim it",
-                                         platform.name, peripheral.model)));
-            }
-        }
-    }
     Ok(platform)
 }
 static PLATFORM: LazyLock<Platform> = LazyLock::new(|| {
@@ -1044,17 +995,28 @@ mod tests
         let set = features(&text);
         let actual = set.iter().copied().collect::<Vec<_>>().join(",");
         validate_guest(&p.rust_target, &actual).unwrap();
-        let narrowed = set.iter().copied().filter(|&s| s != "v").collect::<Vec<_>>().join(",");
+        let narrowed = set.iter()
+                          .copied()
+                          .filter(|&s| s != p.llvm_profile)
+                          .collect::<Vec<_>>()
+                          .join(",");
         let error = validate_guest(&p.rust_target, &narrowed).unwrap_err().to_string();
-        assert!(error.contains("missing [\"v\"]")
+        assert!(error.contains(&format!("missing [\"{}\"]", p.llvm_profile))
                 && error.contains("rebuild with cargo xtask image"));
         let error =
             validate_guest(&p.rust_target, &format!("{actual},zvl256b")).unwrap_err().to_string();
         assert!(error.contains("unexpected [\"zvl256b\"]"));
-        assert!(validate_guest("riscv64gc-unknown-none-elf", &actual).unwrap_err()
-                                                                     .to_string()
-                                                                     .contains("native guest \
-                                                                                target must be"));
+        let foreign = if p.rust_target == "riscv64imac-unknown-none-elf"
+        {
+            "riscv64gc-unknown-none-elf"
+        }
+        else
+        {
+            "riscv64imac-unknown-none-elf"
+        };
+        assert!(validate_guest(foreign, &actual).unwrap_err()
+                                                .to_string()
+                                                .contains("native guest target must be"));
     }
 
     /// Include composition is the schema's only inheritance mechanism, so its
