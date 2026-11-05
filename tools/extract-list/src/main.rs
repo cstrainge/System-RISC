@@ -285,6 +285,21 @@ fn disc_command(args: &[String]) -> Result<ExitCode>
     let description = option(args, "--description").unwrap_or("disc image").to_string();
     let path = option(args, "--path").unwrap_or("");
     let disc = iso::require(&name, &description)?;
+    if let Some(kinds) = option(args, "--scan-types")
+    {
+        let kinds: Vec<String> = kinds.split(',').map(String::from).collect();
+        let (found, examined) = iso::scan(&disc, &kinds)?;
+        for (path, hits) in &found
+        {
+            println!("{path}");
+            for (kind, id) in hits
+            {
+                println!("    {kind} {id}");
+            }
+        }
+        println!("\n{} of {examined} files carry {}", found.len(), kinds.join(", "));
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(spec) = option(args, "--dump")
     {
         let (kind, id) =
