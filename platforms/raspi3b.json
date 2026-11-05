@@ -1,6 +1,7 @@
 {
   "name": "raspi3b",
   "rust_target": "aarch64-unknown-none",
+  "std_target": "aarch64-unknown-systemrisc",
   "toolchain": "rust/sdk.json",
   "guest_linker": "platforms/linker/aarch64.ld",
   "llvm_profile": "neon",
@@ -8,11 +9,30 @@
     "neon"
   ],
   "install": {
-    "description": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
-    "set": "none",
-    "reason": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path. The declared storage image is written to a card with 'cargo xtask flash TARGET --yes', which erases the card.",
-    "applications": [],
-    "modules": []
+    "description": "The aarch64 System set for the board: the resident kernel and the startup Finder, with the applications that build for this architecture. The board has no virtio bus and no display driver of its own yet, so no external driver is installed: the resident kernel boots and the desktop is drawn only once a VideoCore mailbox display driver exists.",
+    "set": "packages",
+    "applications": [
+      "mac-finder",
+      "quickdraw-test",
+      "text-edit",
+      "cursor-test",
+      "panic-test",
+      "resedit",
+      "reactor",
+      "control-suite"
+    ],
+    "modules": [
+      "mac-system"
+    ],
+    "folders": {
+      "applications": "Applications",
+      "system": "System Folder",
+      "drivers": "System Folder/Drivers",
+      "extensions": "System Folder/Extensions"
+    },
+    "exceptions": {
+      "mac-finder": "System Folder"
+    }
   },
   "memory": {
     "page_bytes": 4096,
@@ -185,6 +205,13 @@
       "flags": 2
     }
   ],
+  "bootloader": {
+    "description": "AArch64 boot ROM that the board's own VideoCore firmware loads from the FAT32 boot partition into RAM at 0x80000 and starts at EL2 with the MMU off; it installs the 39-bit translation regime and reads the System volume from the SD card",
+    "package": "bootrom-aarch64",
+    "artifact": "bootrom-aarch64",
+    "entry": "bootrom-aarch64/src/entry.S",
+    "linker_script": "bootrom-aarch64/link.ld"
+  },
   "storage": {
     "images": {
       "sd-card": {
@@ -236,7 +263,7 @@
                 {
                   "source": {
                     "kind": "artifact",
-                    "artifact": "system-image"
+                    "artifact": "bootrom-aarch64"
                   },
                   "path": "kernel8.img"
                 }
@@ -268,7 +295,7 @@
     "disks": {
       "transport": "sdhci",
       "format": "raw",
-      "readonly": true,
+      "readonly": false,
       "attach": [
         {
           "image": "sd-card",

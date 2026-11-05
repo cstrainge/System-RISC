@@ -14,21 +14,21 @@ use linked_list_allocator::LockedHeap;
 mod devicetree;
 mod sdhci;
 
-/// The filesystem code above the block device needs storage for its own
-/// bookkeeping. This is a bounded firmware heap in the image's own BSS, not a
-/// claim about the machine's RAM.
-const HEAP_BYTES: usize = 256 * 1024;
-
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
 
-static mut HEAP_STORAGE: [u8; HEAP_BYTES] = [0; HEAP_BYTES];
-
+/// The filesystem code above the block device needs storage for its own
+/// bookkeeping. It comes from the platform record's firmware heap window, which
+/// is the region the boot stage owns, so the payload itself stays small enough
+/// to fit beside its own stack.
 fn init_heap()
 {
-    // SAFETY: the bootrom is single-threaded on the primary CPU and this runs
-    // once before any allocation; no reference to the storage escapes.
-    unsafe { HEAP.lock().init(core::ptr::addr_of_mut!(HEAP_STORAGE) as *mut u8, HEAP_BYTES) };
+    // SAFETY: the bootrom is single-threaded on the primary CPU, this runs once
+    // before any allocation, the MMU is already on, and the window is RAM the
+    // record reserves for exactly this purpose. No reference to it escapes.
+    unsafe {
+        HEAP.lock().init(FIRMWARE_HEAP_BASE as *mut u8, FIRMWARE_HEAP_BYTES as usize)
+    };
 }
 
 #[alloc_error_handler]

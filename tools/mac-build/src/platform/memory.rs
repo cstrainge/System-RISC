@@ -459,6 +459,15 @@ impl Checked
         self.flash.clone()
     }
 
+    /// The window the boot payload occupies once the first stage has placed it.
+    /// On a platform with a flash bank this is where the bank's contents are
+    /// mapped; on a board whose firmware copies the payload from removable
+    /// media it is the address and extent that copy is made to.
+    pub fn boot(&self) -> Range<u64>
+    {
+        self.boot.clone()
+    }
+
     pub(super) fn linker_symbols(&self) -> String
     {
         let mut out = String::from("\n/* Generated from the checked platform memory record. */\n");
