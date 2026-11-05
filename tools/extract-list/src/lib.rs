@@ -32,7 +32,13 @@ pub struct ExtractEntry
 {
     #[serde(rename = "type")]
     pub kind:       String,
+    /// The ID the resource carries in the package.
     pub id:         i16,
+    /// The ID the disc's file uses, when the two differ. Fonts are imported by
+    /// enumeration and the disc reuses IDs per suitcase, so the importer
+    /// assigns its own from a range it owns; the disc's ID stays as provenance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id:  Option<i16>,
     /// The package symbol the extracted resource carries, so the generated file
     /// can replace a hand-authored entry without breaking code that names it.
     pub symbol:     String,
@@ -308,6 +314,8 @@ pub struct Classification
     pub source:     String,
     pub kind:       String,
     pub id:         i16,
+    /// The disc's own ID when it differs from the package ID (fonts).
+    pub source_id:  Option<i16>,
     pub symbol:     String,
     pub name:       Option<Vec<u8>>,
     pub attributes: u8,
@@ -417,6 +425,7 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
             classifications.push(Classification { source: ours.source.clone(),
                                                   kind: ours.kind.clone(),
                                                   id: ours.id,
+                                                  source_id: None,
                                                   symbol: ours.symbol.clone(),
                                                   name: ours.name.clone(),
                                                   attributes: ours.attributes,
@@ -444,6 +453,20 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
 /// (`sfnt 9217`) is reused by every family that has a single face. The entry
 /// keeps the disc's own ID and name; the package's numbering is a Phase B
 /// decision, made when the tables are regenerated.
+/// IDs the importer hands out. The 12000 block is already ours, so the
+/// allocation starts at 13000; a later disc takes the next free numbers and
+/// nothing can silently collide with this range.
+pub const FIRST_ASSIGNED_FONT_ID: i16 = 13000;
+
+/// Import every instance of `types` the approved sources carry, regardless of
+/// whether our manifest uses that key.
+///
+/// Fonts are the case this exists for: the disc's TrueType faces are what we
+/// want, not the exact `sfnt` IDs our current tables happen to hold, and one ID
+/// (`sfnt 9217`) is reused by every family that has a single face. Because the
+/// disc's numbering is per file and cannot be imported as-is, each new face gets
+/// a unique ID from the range above; the disc's own ID is kept as `source_id`.
+/// A face that already exists in the package with identical bytes keeps its ID.
 pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, types: &[String],
                 form: Form)
 {
@@ -460,21 +483,21 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
                        .map(|source| (source.clone(), entry.kind.clone(), entry.id))
               })
               .collect();
-    for entry in iso
+    let mut candidates: Vec<&IsoResource> =
+        iso.iter()
+           .filter(|entry| !entry.held)
+           .filter(|entry| types.contains(kind_str(&entry.resource.kind)))
+           .filter(|entry| {
+               present.insert((entry.source.clone(),
+                               kind_str(&entry.resource.kind).to_string(),
+                               entry.resource.id))
+           })
+           .collect();
+    candidates.sort_by(|a, b| (&a.source, a.resource.id).cmp(&(&b.source, b.resource.id)));
+    let mut used: BTreeSet<i16> = package.resources.iter().map(|resource| resource.id).collect();
+    for entry in candidates
     {
-        if entry.held
-        {
-            continue;
-        }
         let kind = kind_str(&entry.resource.kind).to_string();
-        if !types.contains(kind.as_str())
-        {
-            continue;
-        }
-        if !present.insert((entry.source.clone(), kind.clone(), entry.resource.id))
-        {
-            continue;
-        }
         let base =
             format!("EXTRACTED_{}_{}",
                     kind.chars()
@@ -490,9 +513,16 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
             symbol = format!("{base}_{suffix}");
             suffix += 1;
         }
+        let mut id = FIRST_ASSIGNED_FONT_ID;
+        while used.contains(&id)
+        {
+            id += 1;
+        }
+        used.insert(id);
         report.classifications.push(Classification { source: package.source.clone(),
                                                      kind,
-                                                     id: entry.resource.id,
+                                                     id,
+                                                     source_id: Some(entry.resource.id),
                                                      symbol,
                                                      name: entry.resource.name.clone(),
                                                      attributes: entry.resource.attributes,
@@ -503,6 +533,7 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
     }
     report.classifications.sort_by(|a, b| (&a.kind, a.id).cmp(&(&b.kind, b.id)));
 }
+
 
 /// Turn the extract verdicts into the package's checked-in extract list.
 ///
@@ -533,6 +564,7 @@ pub fn extract_list(description: &str, iso: &str, report: &Report, source_order:
         };
         section.resources.push(ExtractEntry { kind:       entry.kind.clone(),
                                               id:         entry.id,
+                                              source_id:  entry.source_id,
                                               symbol:     entry.symbol.clone(),
                                               name:       entry.name
                                                                .as_deref()
@@ -820,7 +852,7 @@ fn write_fonts(text: &mut String, report: &Report)
     {
         for face in faces
         {
-            by_id.entry(face.id).or_default().push(family.as_str());
+            by_id.entry(face.source_id.unwrap_or(face.id)).or_default().push(family.as_str());
         }
     }
     let shared: Vec<String> = by_id.iter()
@@ -828,11 +860,13 @@ fn write_fonts(text: &mut String, report: &Report)
                                    .map(|(id, users)| format!("{id} ({})", users.join(", ")))
                                    .collect();
     let _ = writeln!(text,
-                     "  numbering: the disc reuses sfnt IDs across families — {}. These are not \
-                      unique (type, id) pairs, so this list keeps the disc's ID as source \
-                      identity only; Phase B must give every imported face a distinct ID in the \
-                      package and regenerate FOND against those IDs.",
-                     shared.join("; "));
+                     "  numbering: the disc reuses sfnt IDs across families — {}, so its \
+                      numbering is per file and cannot be imported as-is. Every imported face is \
+                      assigned a unique ID from {} upward; a face we already carry \
+                      byte-identically keeps its ID, and the disc's ID stays beside it as \
+                      source_id.",
+                     shared.join("; "),
+                     FIRST_ASSIGNED_FONT_ID);
     let _ = writeln!(text,
                      "  bitmaps: the disc's font files also carry NFNT bitmaps (IDs 1025+ per \
                       family). This list takes the outlines only, so every family above ends \
