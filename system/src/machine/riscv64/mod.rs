@@ -9,6 +9,7 @@ pub(crate) fn hart_id() -> usize
 }
 
 pub(crate) mod clock;
+pub(crate) mod cpu;
 
 pub(crate) mod scheduler;
 
@@ -18,5 +19,4 @@ pub(crate) mod power;
 
 pub(crate) mod paging;
 pub(crate) mod monitor;
-pub(crate) mod emergency;
 

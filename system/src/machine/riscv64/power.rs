@@ -15,7 +15,7 @@ pub(crate) fn fatal_shutdown() -> !
     unsafe {
         core::arch::asm!("csrci sstatus, 2", options(nostack));
     }
-    super::emergency::serial(format_args!("SYSTEM_SHUTDOWN: fatal privileged fault; recovery is \
+    crate::machine::emergency::serial(format_args!("SYSTEM_SHUTDOWN: fatal privileged fault; recovery is \
                                            not proven\n"));
     // SAFETY: the current platform is QEMU virt in S mode. Mask local
     // interrupts and request its mapped finisher's guest-panic shutdown/code 1.
@@ -43,7 +43,7 @@ pub(crate) fn emergency_restart() -> !
     unsafe {
         core::arch::asm!("csrci sstatus, 2", options(nostack));
     }
-    super::emergency::serial(format_args!("SYSTEM_RESTART: emergency terminal requested reset\n"));
+    crate::machine::emergency::serial(format_args!("SYSTEM_RESTART: emergency terminal requested reset\n"));
     // SAFETY: terminal admission retains the mapped checked board register and
     // execution never resumes. Mask interrupts before submitting its reset value.
     unsafe {

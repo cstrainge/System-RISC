@@ -354,7 +354,7 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
                    });
     // BOOT_LOG and the cold execution selector are not installed yet. Admission
     // diagnostics use the independent UART path, never a firmware callback.
-    super::emergency::serial(format_args!("CPU_TOPOLOGY enabled={} primary={} \
+    crate::machine::emergency::serial(format_args!("CPU_TOPOLOGY enabled={} primary={} \
                                            admission=primary-only",
                                           boot.topology.cpus().len(),
                                           boot.hart));

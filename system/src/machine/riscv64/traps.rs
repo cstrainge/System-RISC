@@ -238,7 +238,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                                   // ACK has no allocation/contention refusal. An
                                   // invalid mandatory directory/key/epoch binding
                                   // is structural corruption, not lost work to retry.
-                                  super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                  crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                                                           format_args!("Supervisor wake binding \
                                                                         lost on hart {}: {}.",
                                                                        key.number(),
@@ -316,7 +316,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             Ok(()) => return Dispatch::Schedule,
             Err(status) =>
             {
-                super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                                         format_args!("User fault lost its genuine running \
                                                       Process claim: status {status}."))
             }
@@ -324,12 +324,12 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     }
     if !matches!((user_origin, frame.cause), (true, 8) | (false, 9))
     {
-        super::emergency::serial(format_args!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}",
+        crate::machine::emergency::serial(format_args!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}",
                                               frame.cause, frame.pc, frame.value));
         // No context/definition/registry lock is safe to reacquire after an
         // arbitrary privileged fault. Report trusted CPU fields and terminate;
         // this is a terminal screen/reset, never mid-call recovery (M-D04).
-        super::emergency::enter(crate::emergency::Kind::PrivilegedFault,
+        crate::machine::emergency::enter(crate::emergency::Kind::PrivilegedFault,
                                 format_args!("Privileged trap: cause {}, PC {:#x}, fault \
                                               address {:#x}. Execution cannot safely continue.",
                                              frame.cause, frame.pc, frame.value));
@@ -573,7 +573,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                         Ok(call) => call,
                         Err(status) =>
                         {
-                            super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                                                     format_args!("Owned user I/O lost its \
                                                                   original request binding: \
                                                                   status {status}."))
@@ -658,7 +658,7 @@ fn retain_user_call(call: Option<user::Call>)
         // The validated request owns the vacant slot on this same THRD. A
         // lost internal binding cannot free an in-flight buffer: the returned
         // envelope remains live on this terminal, nonunwinding path.
-        super::emergency::enter(crate::emergency::Kind::SystemPanic,
+        crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                                 format_args!("Owned user request lost its native continuation: \
                                               status {status}."));
     }
@@ -1110,24 +1110,24 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             let bytes = kind.to_be_bytes();
             let family = core::str::from_utf8(&bytes).unwrap_or("invalid family");
             let identity = crate::context::current_thread_context().identity();
-            super::emergency::serial(format_args!("DEFINITION_PANIC_FATAL: kind={family} \
+            crate::machine::emergency::serial(format_args!("DEFINITION_PANIC_FATAL: kind={family} \
                                                    id={id} app={} thread={} flags={} {text}",
                                                   identity.app.0, identity.thread.0, report.flags));
             if report.flags & mac_abi::definitions::DefinitionPanic::TRUNCATED != 0
             {
-                super::emergency::serial(format_args!("DEFINITION_DIAGNOSTIC_TRUNCATED: \
+                crate::machine::emergency::serial(format_args!("DEFINITION_DIAGNOSTIC_TRUNCATED: \
                                                        retained {} UTF-8 bytes",
                                                       report.length));
             }
             if report.flags & mac_abi::definitions::DefinitionPanic::FORMAT_FAILED != 0
             {
-                super::emergency::serial(format_args!("DEFINITION_DIAGNOSTIC_FORMAT_FAILED: \
+                crate::machine::emergency::serial(format_args!("DEFINITION_DIAGNOSTIC_FORMAT_FAILED: \
                                                        partial panic information retained"));
             }
             #[cfg(feature = "emergency-qualification")]
             crate::kernel::qualify_emergency_with_allocator_locked();
             #[cfg(not(feature = "emergency-qualification"))]
-            super::emergency::enter(crate::emergency::Kind::SystemPanic,
+            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                                     format_args!("Definition panic: {family} {id}, app {}, \
                                                   thread {}, flags {}.\n{text}",
                                                  identity.app.0, identity.thread.0, report.flags))
@@ -1446,7 +1446,7 @@ pub(super) fn entry_lost(reason: &str) -> !
 {
     // Entry failures can occur on admitted peers. The fixed-owner ROM logger
     // is not a secondary service; terminal diagnostics bypass it entirely.
-    super::emergency::serial(format_args!("SYSTEM_ENTRY_LOST: {reason}\n"));
+    crate::machine::emergency::serial(format_args!("SYSTEM_ENTRY_LOST: {reason}\n"));
     crate::machine::power::fatal_shutdown()
 }
 
