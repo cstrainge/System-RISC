@@ -1140,7 +1140,15 @@ impl Platform
                                           fatal_shutdown device",
                                          self.name)));
             }
-            return Ok((devices::constants(&devices), String::new()));
+            // A machine with no power-management device still has to compile:
+            // the terminal path asks for these constants unconditionally. Zero
+            // is the absence marker, matching how a record without bootstrap IO
+            // reports its windows, so the finisher path can report the gap
+            // instead of writing to an address that does not exist.
+            let absent = "pub const FATAL_FINISHER_ADDRESS: u64 = 0;\npub const \
+                          FATAL_FINISHER_FAILURE: u32 = 0;\npub const FATAL_FINISHER_RESTART: u32 = \
+                          0;\n";
+            return Ok((format!("{absent}{}", devices::constants(&devices)), String::new()));
         };
         let (mut rust, linker) = artifacts_for(fatal_shutdown, &devices, include_restart)?;
         rust.push_str(&devices::constants(&devices));

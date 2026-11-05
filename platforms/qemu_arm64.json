@@ -214,8 +214,20 @@
     }
   },
   "install": {
-    "description": "No aarch64 guest set is produced yet; this record describes the virtual machine the aarch64 System is being brought up on",
-    "set": "none",
-    "reason": "The definitions and applications are std programs, and no aarch64 std target exists: the only std_target in the tree is riscv64-unknown-systemrisc. The aarch64 std platform layer has to land before this set can be packaged."
+    "description": "The aarch64 System set under construction: the resident kernel plus the applications that build for this architecture",
+    "set": "packages",
+    "applications": [
+      "control-suite"
+    ],
+    "modules": [
+      "mac-system"
+    ],
+    "folders": {
+      "applications": "Applications",
+      "system": "System Folder",
+      "drivers": "System Folder/Drivers",
+      "extensions": "System Folder/Extensions"
+    },
+    "exceptions": {}
   }
 }
