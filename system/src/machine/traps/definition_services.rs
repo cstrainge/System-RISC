@@ -5,7 +5,7 @@ use mac_abi::{quickdraw::*, traps::*, *};
 
 /// The native ABI still requires live request pointees. This checks the request
 /// layout before inspecting it; the ordinary dispatcher validates its contents.
-pub(super) unsafe fn admit(invocation: &crate::context::DefinitionInvocations, number: u32,
+pub(crate) unsafe fn admit(invocation: &crate::context::DefinitionInvocations, number: u32,
                            pointer: *mut (), size: usize)
                            -> Result<(), Status>
 {

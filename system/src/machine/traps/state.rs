@@ -101,7 +101,7 @@ impl SavedState
         Ok(())
     }
 
-    pub(super) fn published(&self)
+    pub(crate) fn published(&self)
     {
         self.published.store(true, Ordering::Release);
     }
@@ -109,7 +109,7 @@ impl SavedState
     /// Compare this independently measured CPU against the actual admitted
     /// backing/layout, rather than treating the primary's cached width as an
     /// observation of another CPU. No frame/header borrow escapes.
-    pub(super) fn matches_vector_profile(&self, vector_bytes: usize) -> bool
+    pub(crate) fn matches_vector_profile(&self, vector_bytes: usize) -> bool
     {
         let Some(stride) =
             vector_bytes.checked_mul(32)

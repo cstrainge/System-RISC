@@ -7,7 +7,7 @@ use crate::toolbox;
 mod state;
 mod definition_services;
 pub(crate) mod user;
-mod hart;
+pub(crate) mod hart;
 pub(crate) use hart::{Error as EntryError, OuterCapture, PreparedEntry, PreparedHart,
                       StartingHart, activity as cpus, admit_bootstrap, execution,
                       prepare_secondary};
@@ -17,29 +17,7 @@ pub(crate) const MAX_TRAP_DEPTH: usize = 8;
 pub(crate) const CPU_SLOTS: usize = MAX_TRAP_DEPTH + 2;
 pub(crate) use state::SavedState;
 static CPU_STATE_BYTES: spin::Once<usize> = spin::Once::new();
-global_asm!(include_str!("traps.S"),
-    frame_bytes=const core::mem::size_of::<TrapFrame>(),
-    fp=const core::mem::offset_of!(TrapFrame,floating),
-    fcsr=const core::mem::offset_of!(TrapFrame,fcsr),
-    vl=const core::mem::offset_of!(TrapFrame,vl),
-    vtype=const core::mem::offset_of!(TrapFrame,vtype),
-    vstart=const core::mem::offset_of!(TrapFrame,vstart),
-    vcsr=const core::mem::offset_of!(TrapFrame,vcsr),
-    saved_sp=const core::mem::offset_of!(TrapFrame,stack_pointer),
-    prior_depth=const core::mem::offset_of!(TrapFrame,prior_depth),
-    ctl_entering=const core::mem::offset_of!(hart::Control,entering),
-    ctl_depth=const core::mem::offset_of!(hart::Control,depth),
-    ctl_frames=const core::mem::offset_of!(hart::Control,frames),
-    ctl_stride=const core::mem::offset_of!(hart::Control,stride),
-    ctl_floor=const core::mem::offset_of!(hart::Control,floor),
-    ctl_top=const core::mem::offset_of!(hart::Control,top),
-    ctl_tmp0=const core::mem::offset_of!(hart::Control,temporary0),
-    ctl_tmp1=const core::mem::offset_of!(hart::Control,temporary1),
-    ctl_tmp2=const core::mem::offset_of!(hart::Control,temporary2),
-    ctl_sp=const core::mem::offset_of!(hart::Control,interrupted_sp),
-    cpu_slots=const CPU_SLOTS);
 unsafe extern "C" {
-    fn __system_trap_vector();
     pub(crate) fn __system_trap_gateway(number: u32, request: *mut (), size: usize) -> i64;
 }
 pub(crate) use __system_trap_gateway as gateway;
@@ -52,12 +30,12 @@ pub(crate) struct TrapFrame
     pub status:        usize,
     pub(crate) cause:  usize,
     pub(crate) value:  usize,
-    floating:          [u64; 32],
-    fcsr:              usize,
-    vl:                usize,
-    vtype:             usize,
-    vstart:            usize,
-    vcsr:              usize,
+    pub(crate) floating:          [u64; 32],
+    pub(crate) fcsr:              usize,
+    pub(crate) vl:                usize,
+    pub(crate) vtype:             usize,
+    pub(crate) vstart:            usize,
+    pub(crate) vcsr:              usize,
     pub stack_pointer: usize,
     pub prior_depth:   usize
 }
@@ -158,7 +136,7 @@ fn install_local()
 {
     // SAFETY: `__system_trap_vector` is this crate's own trap entry.
     unsafe {
-        crate::machine::cpu::install_trap_vector(__system_trap_vector as *const() as usize);
+        crate::machine::cpu::install_trap_vector(crate::machine::trap_entry::vector());
     }
 }
 pub(crate) fn install()

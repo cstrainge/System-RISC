@@ -85,7 +85,7 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
                                })?;
     let mut frame = TrapFrame::default();
     frame.pc = entry;
-    frame.status = super::super::super::traps::USER_STATUS;
+    frame.status = crate::machine::traps::USER_STATUS;
     frame.stack_pointer = top;
     frame.registers[0] = runtime.thread_return();
     frame.registers[8] = data;

@@ -28,7 +28,7 @@ fn residency_ticks() -> u64
 
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
-pub(super) struct Control
+pub(crate) struct Control
 {
     pub entering:       usize,
     pub depth:          usize,
@@ -81,7 +81,7 @@ struct Cold
 static COLD: spin::Once<Cold> = spin::Once::new();
 static REGISTRY: spin::Once<Registry> = spin::Once::new();
 
-pub(super) struct Hart
+pub(crate) struct Hart
 {
     ordinal:  usize,
     _stack:   &'static Stack,
@@ -94,7 +94,7 @@ pub(super) struct Hart
 }
 /// Control has plain assembly-mutated words. Owning only raw Backing avoids
 /// freezing those words through an accidental immutable typed slice.
-struct ControlArena
+pub(crate) struct ControlArena
 {
     backing: Foundation<Backing>,
     bytes:   usize
@@ -522,7 +522,7 @@ impl OuterCapture
 /// # Safety
 /// Sole assembly entry supplied this complete live frame. All Rust frame and
 /// service borrows must have ended before the scheduler consumes this capture.
-pub(super) unsafe fn captured_outer(frame: *mut TrapFrame) -> OuterCapture
+pub(crate) unsafe fn captured_outer(frame: *mut TrapFrame) -> OuterCapture
 {
     let Some(hart) = selected_hart()
     else

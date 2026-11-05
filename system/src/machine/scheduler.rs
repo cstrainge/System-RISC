@@ -9,7 +9,7 @@ use core::{cell::Cell,
 use mac_object_table::{domain::ReleasedResource, store::CompletionKey};
 use spinning_top::Spinlock as Mutex;
 
-use super::traps::TrapFrame;
+use crate::machine::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
@@ -38,9 +38,9 @@ pub(crate) use worker::{activate_workers, prepare_worker, publish_worker, worker
 pub(crate) mod accounting;
 pub(crate) use lifetime::{ReleaseThreads, specification};
 
-use super::traps::execution::{HartKey, IDLE, activate_idle_context, current, idle_frame, in_io,
+use crate::machine::traps::execution::{HartKey, IDLE, activate_idle_context, current, idle_frame, in_io,
                               select_current, selected_hart, with_system_maintenance};
-pub(crate) use super::traps::execution::{activate_context, authenticate_module, critical_active,
+pub(crate) use crate::machine::traps::execution::{activate_context, authenticate_module, critical_active,
                                          current_context, io_enter, io_leave,
                                          module_callback_allowed, module_owner,
                                          reserve_allocation, reserve_replacement};
@@ -57,7 +57,7 @@ fn timer_interval() -> u64
     let ticks = TIMER_INTERVAL.load(Ordering::Acquire);
     if ticks == 0
     {
-        super::traps::entry_lost("scheduler frame commitment preceded validated platform timer \
+        crate::machine::traps::entry_lost("scheduler frame commitment preceded validated platform timer \
                                   initialization");
     }
     ticks
@@ -100,13 +100,13 @@ struct IdleRecord
 }
 struct SystemIdleCore
 {
-    cpu:         crate::allocator::foundation::Foundation<super::traps::SavedState>,
+    cpu:         crate::allocator::foundation::Foundation<crate::machine::traps::SavedState>,
     _stack:      crate::allocator::foundation::Foundation<crate::machine::pages::Stack>,
     context:     Arc<ThreadContext>,
     publication: spin::Once<CompletionKey>,
     name:        ThreadName,
     // Last: the row cannot be prepared again before all actual owners above die.
-    target:      super::traps::execution::IdleTarget
+    target:      crate::machine::traps::execution::IdleTarget
 }
 /// Affine owner of the exact canonical idle publication. The actual store and
 /// this holder retain the same core, including its receipt, until machine reset.
@@ -117,7 +117,7 @@ pub(crate) struct SystemIdle
 }
 impl SystemIdle
 {
-    pub(crate) fn target(&self) -> &super::traps::execution::IdleTarget
+    pub(crate) fn target(&self) -> &crate::machine::traps::execution::IdleTarget
     {
         &self.core.target
     }
@@ -127,7 +127,7 @@ impl SystemIdle
         &self.core.context
     }
 
-    pub(crate) fn cpu(&self) -> &super::traps::SavedState
+    pub(crate) fn cpu(&self) -> &crate::machine::traps::SavedState
     {
         &self.core.cpu
     }
@@ -157,7 +157,7 @@ pub(crate) enum StartError
     Clock(super::monitor::Error),
     Wake(super::monitor::WakeError),
     Load(crate::loader::LoadError),
-    Idle(super::traps::execution::IdlePreparationFailure),
+    Idle(crate::machine::traps::execution::IdlePreparationFailure),
     Cpus(crate::machine::smp::Error)
 }
 impl core::fmt::Display for StartError
@@ -548,7 +548,7 @@ pub(crate) fn has_threads(app: u64) -> bool
 struct ThreadBacking
 {
     // CPU/stack disappear before code-dependent launch/image pins.
-    cpu:   accounting::Charged<super::traps::SavedState>,
+    cpu:   accounting::Charged<crate::machine::traps::SavedState>,
     stack: Arc<stack::StackBacking>,
     image: Option<ApplicationImageUse>
 }
@@ -612,7 +612,7 @@ impl ThreadCore
                                     format_args!("Claimed thread lost CPU backing before frame \
                                                   publication."));
         };
-        super::traps::publish_cpu(&backing.cpu);
+        crate::machine::traps::publish_cpu(&backing.cpu);
     }
 }
 pub(crate) struct PreparedThread
@@ -682,7 +682,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
         let top = stack.user_top()?;
         let mut initial = TrapFrame::default();
         initial.pc = loaded.entry();
-        initial.status = super::traps::USER_STATUS;
+        initial.status = crate::machine::traps::USER_STATUS;
         initial.stack_pointer = top;
         initial.registers[8] = runtime.descriptor();
         cpu.initialize(initial).map_err(|cause| cause.status())?;
@@ -848,7 +848,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
         let top = stack.user_top()?;
         let mut frame = TrapFrame::default();
         frame.pc = loaded.entry();
-        frame.status = super::traps::USER_STATUS;
+        frame.status = crate::machine::traps::USER_STATUS;
         frame.stack_pointer = top;
         frame.registers[8] = runtime.descriptor();
         cpu.initialize(frame).map_err(|cause| cause.status())?;
@@ -1040,7 +1040,7 @@ fn arm_ticks(interval: u64)
     super::cpu::set_timer_deadline(deadline);
 }
 
-fn prepare_system_idle(target: super::traps::execution::IdleTarget)
+fn prepare_system_idle(target: crate::machine::traps::execution::IdleTarget)
                        -> Result<SystemIdle, mac_abi::Status>
 {
     use crate::allocator::{SystemClass, foundation::Foundation};
@@ -1057,9 +1057,9 @@ fn prepare_system_idle(target: super::traps::execution::IdleTarget)
                 })?;
             let mut initial = TrapFrame::default();
             initial.pc = idle as *const () as usize;
-            initial.status = super::traps::INITIAL_STATUS;
+            initial.status = crate::machine::traps::INITIAL_STATUS;
             initial.stack_pointer = stack.top();
-            let cpu = Foundation::<super::traps::SavedState>::new(initial).map_err(|cause| {
+            let cpu = Foundation::<crate::machine::traps::SavedState>::new(initial).map_err(|cause| {
                           serial!("SYSTEM_IDLE_BACKING_REFUSED hart={} resource=CPU cause={cause}",
                                   target.number());
                           cause.status()
@@ -1164,7 +1164,7 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
     // Genuine owner/kind services now exist. Registry preparation allocates and
     // publishes each affine idle before we borrow the scheduled-position table.
     // A typed install refusal retains its actual SystemIdle through boot report.
-    super::traps::execution::prepare_idles(prepare_system_idle).map_err(StartError::Idle)?;
+    crate::machine::traps::execution::prepare_idles(prepare_system_idle).map_err(StartError::Idle)?;
     // Normal CPU initialization completes real warm admission and a startup
     // interrupt ACK before any scheduled-position lock or author execution.
     // Peers remain AdmittedIdle; this grants no dispatch policy permission.
@@ -1181,10 +1181,10 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
         }
         let hart = selected_hart();
         let frame = idle_frame();
-        super::traps::execution::select_space(None);
+        crate::machine::traps::execution::select_space(None);
         activate_idle_context();
         select_current(IDLE);
-        super::traps::execution::dispatch::idle_committed(hart, frame);
+        crate::machine::traps::execution::dispatch::idle_committed(hart, frame);
         // StartupFlight owns all real admission/job/image/boot-panel resources.
         // This sealed, non-Clone token owns no account pin and must not survive
         // forever on the abandoned bootstrap stack.
@@ -1497,7 +1497,7 @@ fn claim_lost(hart: HartKey, slot: usize, reason: &str) -> !
                                          slot,
                                          reason));
 }
-fn validate_capture(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
+fn validate_capture(scheduler: &Scheduler, capture: &crate::machine::traps::OuterCapture)
 {
     let hart = capture.hart();
     let slot = capture.current();
@@ -1597,7 +1597,7 @@ pub(crate) fn drain_policy_harts() -> bool
     })
 }
 
-pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
+pub(super) fn schedule(capture: crate::machine::traps::OuterCapture) -> *mut TrapFrame
 {
     let hart = capture.hart();
     let current = capture.current();
@@ -1731,7 +1731,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
 
 /// Bounded frame/claim commitment only: no foreign callback, allocation,
 /// owning retirement or fallible work follows the first ownership mutation.
-fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, index: usize,
+fn commit_choice(scheduler: &Scheduler, capture: &crate::machine::traps::OuterCapture, index: usize,
                  quantum: u64)
                  -> Option<(*mut TrapFrame, u64, bool)>
 {
@@ -1760,10 +1760,10 @@ fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, in
     }
     let next = if current == IDLE { capture.frame() } else { idle_frame() };
     activate_idle_context();
-    super::traps::execution::select_space(None);
+    crate::machine::traps::execution::select_space(None);
     select_current(IDLE);
     release_claim(scheduler, current, hart);
-    super::traps::execution::dispatch::idle_committed(hart, next);
+    crate::machine::traps::execution::dispatch::idle_committed(hart, next);
     Some((next, quantum, true))
 }
 
@@ -1787,7 +1787,7 @@ fn wake_deadlines(scheduler: &Scheduler, now: u64)
     }
 }
 
-fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture) -> Option<usize>
+fn bootstrap_choice(scheduler: &Scheduler, capture: &crate::machine::traps::OuterCapture) -> Option<usize>
 {
     let current = capture.current();
     let hart = capture.hart();
@@ -1868,22 +1868,22 @@ fn select_space(core: &ThreadCore)
     {
         if core.space.is_some()
         {
-            super::traps::entry_lost("module THRD carries a Process space")
+            crate::machine::traps::entry_lost("module THRD carries a Process space")
         }
-        super::traps::execution::select_space(None);
+        crate::machine::traps::execution::select_space(None);
     }
     else
     {
         let Some(space) = core.space.as_ref()
         else
         {
-            super::traps::entry_lost("application THRD has no canonical Process space")
+            crate::machine::traps::entry_lost("application THRD has no canonical Process space")
         };
         if space.owner().incarnation() != core.binding.owner()
         {
-            super::traps::entry_lost("application THRD Process space owner changed")
+            crate::machine::traps::entry_lost("application THRD Process space owner changed")
         }
-        super::traps::execution::select_space(Some(space));
+        crate::machine::traps::execution::select_space(Some(space));
     }
 }
 

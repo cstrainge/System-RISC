@@ -22,7 +22,7 @@ pub(crate) const IDLE: usize = usize::MAX;
 /// Reset-lifetime row binding for prepared metadata. Unlike HartKey, this is
 /// not proof that the caller executes on the row or may dispatch work there.
 #[derive(Clone, Copy)]
-pub(crate) struct HartBinding(pub(super) &'static super::Hart);
+pub(crate) struct HartBinding(pub(crate) &'static super::Hart);
 impl HartBinding
 {
     pub(crate) fn number(self) -> usize
@@ -140,12 +140,12 @@ pub(crate) struct TerminalWinner
 }
 impl TerminalWinner
 {
-    pub(in crate::machine::riscv64) fn number(&self) -> usize
+    pub(crate) fn number(&self) -> usize
     {
         self.local.id
     }
 
-    pub(in crate::machine::riscv64) fn is_current(&self) -> bool
+    pub(crate) fn is_current(&self) -> bool
     {
         with_masked(|| {
             super::terminal_local().is_some_and(|local| core::ptr::eq(local, self.local))
@@ -190,9 +190,9 @@ impl TerminalOwnership
     }
 }
 
-pub(super) struct HartLocal
+pub(crate) struct HartLocal
 {
-    pub(super) id: usize,
+    pub(crate) id: usize,
     active:        Spinlock<Option<Arc<ThreadContext>>>,
     current:       AtomicUsize,
     return_root:   AtomicUsize,
@@ -341,7 +341,7 @@ impl HartLocal
 {
     /// Primary cold -> registry transition cannot silently discard state.
     /// This runs once, masked, before any runtime HartKey/THRD is published.
-    pub(super) fn is_cold(&self) -> bool
+    pub(crate) fn is_cold(&self) -> bool
     {
         let active_empty = self.active.lock().is_none();
         let idle_empty = self.idle.lock().is_none();
@@ -355,7 +355,7 @@ impl HartLocal
         && idle_empty
     }
 
-    pub(super) const fn new(id: usize) -> Self
+    pub(crate) const fn new(id: usize) -> Self
     {
         Self { id,
                active: Spinlock::new(None),
@@ -713,7 +713,7 @@ pub(crate) fn idle_frame() -> *mut TrapFrame
 
 /// Preparation examines the same canonical affine idle that the starting CPU
 /// will select. No numeric thread/hart label substitutes for its owned target.
-pub(super) fn idle_prepared(local: &'static HartLocal) -> bool
+pub(crate) fn idle_prepared(local: &'static HartLocal) -> bool
 {
     if !local.idle_claimed.load(Ordering::Acquire)
     {
@@ -722,7 +722,7 @@ pub(super) fn idle_prepared(local: &'static HartLocal) -> bool
     let idle = local.idle.lock();
     idle.as_ref().is_some_and(|idle| core::ptr::eq(idle.target().local, local))
 }
-pub(super) fn idle_matches_profile(local: &'static HartLocal, vector_bytes: usize) -> bool
+pub(crate) fn idle_matches_profile(local: &'static HartLocal, vector_bytes: usize) -> bool
 {
     let idle = local.idle.lock();
     idle.as_ref().is_some_and(|idle| {
@@ -734,7 +734,7 @@ pub(super) fn idle_matches_profile(local: &'static HartLocal, vector_bytes: usiz
 /// interrupts masked. It cannot fall back to Bootstrap/None and does not
 /// publish ordinary dispatch permission. The canonical Store/local core pins
 /// both the real context and CPU backing until reset.
-pub(super) fn initialize_starting_idle(local: &'static HartLocal)
+pub(crate) fn initialize_starting_idle(local: &'static HartLocal)
                                        -> Result<*mut TrapFrame, mac_abi::Status>
 {
     if local.current.load(Ordering::Relaxed) != IDLE || local.io.load(Ordering::Relaxed)
@@ -762,7 +762,7 @@ pub(super) fn initialize_starting_idle(local: &'static HartLocal)
 /// Startup SSIP acknowledgment must come from this installed affine idle,
 /// never merely a pointer copied into Control.frames. No lock is nested and
 /// the reset-lifetime canonical core pins the compared context/backing.
-pub(super) fn admitted_idle_capture(local: &'static HartLocal, frame: *mut TrapFrame) -> bool
+pub(crate) fn admitted_idle_capture(local: &'static HartLocal, frame: *mut TrapFrame) -> bool
 {
     if local.current.load(Ordering::Relaxed) != IDLE || local.io.load(Ordering::Relaxed)
     {

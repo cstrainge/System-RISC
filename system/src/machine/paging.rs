@@ -615,7 +615,7 @@ impl Architecture for Rva
 {
     type InvocationGate = NativeInvocationGate;
     type PageTable = [u64; 512];
-    type TrapFrame = super::traps::TrapFrame;
+    type TrapFrame = crate::machine::traps::TrapFrame;
 }
 struct Space
 {
@@ -996,7 +996,7 @@ pub(crate) fn with_firmware<R>(call: impl FnOnce() -> R) -> Result<R, Error>
 {
     interrupts::with_masked(|| {
         let boot = BOOT.get().ok_or(Error::Missing)?;
-        if super::traps::execution::hart_id() != Some(boot.hart)
+        if crate::machine::traps::execution::hart_id() != Some(boot.hart)
         {
             return Err(Error::ForeignHart);
         }
@@ -1025,7 +1025,7 @@ pub(crate) unsafe fn with_kernel<R>(outer: bool, call: impl FnOnce() -> R) -> Re
     let current = root_register();
     let firmware_call = if outer && current == spaces.firmware.register
     {
-        Some(super::traps::execution::current())
+        Some(crate::machine::traps::execution::current())
     }
     else
     {
@@ -1047,12 +1047,12 @@ pub(crate) unsafe fn with_kernel<R>(outer: bool, call: impl FnOnce() -> R) -> Re
     let result = call();
     if outer
     {
-        let selected = super::traps::execution::return_root(spaces.kernel.register);
+        let selected = crate::machine::traps::execution::return_root(spaces.kernel.register);
         // Preserve a still-affine firmware/cold callback, including bootstrap
         // calls outside I/O. A real outgoing claim change discards its old
         // root intent; the abandoned stack must never restore that root.
         let selected =
-            if firmware_call.is_some_and(|before| before == super::traps::execution::current())
+            if firmware_call.is_some_and(|before| before == crate::machine::traps::execution::current())
             {
                 current
             }
@@ -1077,9 +1077,9 @@ pub(crate) unsafe fn activate_scheduled_root()
     let Some(spaces) = SPACES.get()
     else
     {
-        super::traps::entry_lost("scheduler root directory missing")
+        crate::machine::traps::entry_lost("scheduler root directory missing")
     };
-    let selected = super::traps::execution::return_root(spaces.kernel.register);
+    let selected = crate::machine::traps::execution::return_root(spaces.kernel.register);
     if root_register() != selected
     {
         // SAFETY: `selected` is the root this path just chose from the live

@@ -1,11 +1,11 @@
 //! RISC-V machine adapters: trap entry, page tables, timer, console and devices.
 pub(crate) mod display;
-pub(crate) mod traps;
+pub(crate) mod trap_entry;
 
 /// Bootstrap hardware identity only; never an application or OS-thread identity.
 pub(crate) fn hart_id() -> usize
 {
-    traps::execution::hart_id().unwrap_or(usize::MAX)
+    crate::machine::traps::execution::hart_id().unwrap_or(usize::MAX)
 }
 
 pub(crate) mod clock;
