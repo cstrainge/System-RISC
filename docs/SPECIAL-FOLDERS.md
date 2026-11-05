@@ -112,11 +112,19 @@ registration with no consumer — dead configuration, which this project removes
 rather than adds. The table is the right place for it on the day the folder is
 created by the facility that owns it.
 
-## What is not established
+## Renaming, decided
 
-Whether a renamed classic folder should keep its special identity, or whether the
-original System treated a rename as losing it. The design above keeps it, because
-identity on the folder is what makes every consumer agree; a system that decided
-otherwise would need the rename path to clear the type deliberately. That
-decision belongs with the File Manager change that introduces the types, and is
-recorded here as open rather than assumed.
+**A renamed special folder keeps its identity.** The type is on the folder, so a
+rename moves the name and leaves the type alone.
+
+The consequence is worth stating because it is a gain rather than a side effect:
+a **new** folder that happens to be called `Fonts` is not special, because
+identity is the type and not the name. Today the opposite is true in both
+directions — a rename destroys the identity, and a look-alike acquires it. Both
+disappear together.
+
+Clearing a type is therefore a deliberate operation, not something that happens
+as a side effect of moving a folder or editing its name. A system that wanted the
+opposite behaviour would have to make the rename path clear the type on purpose,
+and the burden of proof is on that change, because identity that survives is what
+lets independent consumers agree.
