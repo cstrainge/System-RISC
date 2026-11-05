@@ -367,7 +367,7 @@ mod tests
     fn approved_layout_emits_identical_rust_and_linker_values()
     {
         let checked = definition().check("riscv64imac-unknown-none-elf",
-                                         &super::super::current().memory().unwrap())
+                                         &super::super::load("qemu_riscv").unwrap().memory().unwrap())
                                   .unwrap();
         for (name, value) in checked.symbols()
         {
@@ -393,7 +393,7 @@ mod tests
     #[test]
     fn heap_window_checks_full_reservations_canonicality_alignment_and_overflow()
     {
-        let memory = super::super::current().memory().unwrap();
+        let memory = super::super::load("qemu_riscv").unwrap().memory().unwrap();
         let check_error = |base: &str, word: &str| {
             let mut d = definition();
             d.system_heap_base = base.into();
@@ -426,7 +426,7 @@ mod tests
     {
         let target = "riscv64imac-unknown-none-elf";
         let check_error = |d: &Definition, word: &str| {
-            let error = d.check(target, &super::super::current().memory().unwrap())
+            let error = d.check(target, &super::super::load("qemu_riscv").unwrap().memory().unwrap())
                          .err()
                          .unwrap()
                          .to_string();
@@ -463,13 +463,13 @@ mod tests
         image.system_image_base = "0xfffffffffff00000".into();
         check_error(&image, "overflows");
         let d = definition();
-        assert!(d.check("aarch64-unknown-none", &super::super::current().memory().unwrap())
+        assert!(d.check("aarch64-unknown-none", &super::super::load("qemu_riscv").unwrap().memory().unwrap())
                  .err()
                  .unwrap()
                  .to_string()
                  .contains("requires the RV64 target"));
         assert!(d.check(target, &{
-                     let mut memory = super::super::current().memory().unwrap();
+                     let mut memory = super::super::load("qemu_riscv").unwrap().memory().unwrap();
                      memory.page_bytes = 65536;
                      memory
                  })
