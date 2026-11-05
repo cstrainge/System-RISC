@@ -75,6 +75,11 @@ pub enum Command
     {
         disk: Option<String>
     },
+    Flash
+    {
+        target: String,
+        yes:    bool
+    },
     Inspect(String),
     Rebuild
     {
@@ -101,6 +106,7 @@ pub enum Shape
     One(fn(String) -> Command),
     Run,
     Boot,
+    Flash,
     Stage,
     SdkApp,
     Tools,
@@ -166,6 +172,13 @@ pub const COMMANDS: &[Spec] =
              writes:   true,
              checking: false,
              shape:    Shape::Boot },
+      Spec { name:     "flash",
+             aliases:  &[],
+             usage:    "cargo xtask flash TARGET [--yes]",
+             summary:  "Write this platform's image to a card, erasing it; needs --yes",
+             writes:   true,
+             checking: false,
+             shape:    Shape::Flash },
       Spec { name:     "boot-check",
              aliases:  &[],
              usage:    "cargo xtask boot-check",
@@ -459,6 +472,7 @@ fn command(spec: &Spec, arguments: &[String]) -> Result<Command>
         }
         Shape::Run => run(arguments),
         Shape::Boot => boot(arguments),
+        Shape::Flash => flash(arguments),
         Shape::Stage =>
         {
             match arguments
@@ -540,6 +554,42 @@ fn boot(arguments: &[String]) -> Result<Command>
         [disk] if !disk.starts_with('-') => Ok(Command::Boot { disk: Some(disk.clone()) }),
         _ => Err(error("boot takes at most one disk image"))
     }
+}
+
+/// The operator names the target; nothing here chooses a device. Without `--yes`
+/// the command still runs, but it stops after describing what it would do, so a
+/// bare invocation cannot destroy a card by accident.
+fn flash(arguments: &[String]) -> Result<Command>
+{
+    let mut target = None;
+    let mut yes = false;
+    for argument in arguments
+    {
+        match argument.as_str()
+        {
+            "--yes" => yes = true,
+            other if other.starts_with('-') =>
+            {
+                return Err(error(format!("flash does not take {other}; usage: cargo xtask flash \
+                                          TARGET [--yes]")));
+            }
+            other =>
+            {
+                if target.is_some()
+                {
+                    return Err(error("flash takes exactly one target device or file"));
+                }
+                target = Some(other.to_string());
+            }
+        }
+    }
+    let target = target.ok_or_else(|| {
+                                       error("flash needs the target device to write, for example \
+                                              '\\\\.\\PhysicalDrive2' or a file path; it will \
+                                              never choose one for you")
+                                   })?;
+    Ok(Command::Flash { target,
+                        yes })
 }
 
 fn sdk_app(arguments: &[String]) -> Result<Command>

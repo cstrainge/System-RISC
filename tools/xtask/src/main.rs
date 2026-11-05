@@ -9,6 +9,7 @@ mod modules;
 mod sdk;
 mod elf;
 mod emulator;
+mod flash;
 mod tools;
 mod workspace;
 mod crates;
@@ -238,6 +239,10 @@ fn dispatch(workspace: &Workspace, command: cli::Command) -> Result<()>
         cli::Command::Boot { disk } =>
         {
             build::run_platform(workspace, emulator::Mode::Interactive, disk.as_deref(), &[])?
+        }
+        cli::Command::Flash { target, yes } =>
+        {
+            flash::run(workspace, &target, yes)?
         }
         cli::Command::Inspect(path) =>
         {
