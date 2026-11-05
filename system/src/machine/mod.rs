@@ -21,6 +21,7 @@ pub(crate) mod memory;
 pub(crate) mod monitor;
 pub(crate) mod pages;
 pub(crate) mod paging;
+pub(crate) mod power_shutdown;
 pub(crate) mod scheduler;
 pub(crate) mod smp;
 pub(crate) mod traps;

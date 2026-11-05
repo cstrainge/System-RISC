@@ -37,9 +37,9 @@ pub(crate) fn fatal_shutdown() -> !
     }
     else
     {
-        crate::machine::emergency::serial(format_args!("SYSTEM_SHUTDOWN_NO_FINISHER: this machine \
-                                                        declares no power-management device; halting \
-                                                        instead of powering off\n"));
+        // No register powers this machine off, so the shared path takes over:
+        // the classic notice with a Restart button, or a reported halt.
+        crate::machine::power_shutdown::without_finisher(crate::machine::power_shutdown::Request::Shutdown);
     }
     // The controller completes the shutdown asynchronously. This is quiescence
     // after an explicit, reported shutdown request, never a silent spin.
@@ -71,12 +71,21 @@ pub(crate) fn emergency_restart() -> !
     }
     else
     {
-        crate::machine::emergency::serial(format_args!("SYSTEM_RESTART_NO_FINISHER: this machine \
-                                                        declares no power-management device; halting \
-                                                        instead of resetting\n"));
+        crate::machine::power_shutdown::without_finisher(crate::machine::power_shutdown::Request::Restart);
     }
     loop
     {
+        unsafe { core::arch::asm!("wfi", options(nostack)) };
+    }
+}
+
+/// Waits for a reset that only the operator can perform. The CPU is quiescent:
+/// interrupts are masked by the caller and no ordinary work resumes.
+pub(crate) fn halt() -> !
+{
+    loop
+    {
+        // SAFETY: waiting for an interrupt changes only this CPU's state.
         unsafe { core::arch::asm!("wfi", options(nostack)) };
     }
 }
