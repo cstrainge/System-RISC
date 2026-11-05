@@ -94,7 +94,7 @@ impl Bus for PlatformBus
         let address = base(ordinal)?;
         unsafe {
             write_volatile((address + 0x70) as *mut u32, 0);
-            core::arch::asm!("fence iorw, iorw", options(nostack));
+            crate::machine::cpu::barrier();
         }
         Ok(())
     }

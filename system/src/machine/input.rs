@@ -320,7 +320,7 @@ impl Queue
 fn fence()
 {
     unsafe {
-        asm!("fence iorw, iorw", options(nostack));
+        crate::machine::cpu::barrier();
     }
 }
 static mut QUEUES: [Queue; DEVICE_COUNT] = [Queue::new(), Queue::new()];

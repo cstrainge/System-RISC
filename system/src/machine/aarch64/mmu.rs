@@ -94,9 +94,11 @@ pub(crate) unsafe fn write_word(address: usize, value: usize)
 pub(crate) unsafe fn read_byte(address: usize) -> u8
 {
     let value: u32;
-    // SAFETY: the caller guarantees the address.
+    // SAFETY: the caller guarantees the address. The `:w` modifier selects the
+    // 32-bit view of the register, which is what a byte load writes into.
     unsafe {
-        asm!("ldrb {}, [{}]", out(reg) value, in(reg) address, options(nostack, readonly));
+        asm!("ldrb {value:w}, [{address}]", value = out(reg) value, address = in(reg) address,
+             options(nostack, readonly));
     }
     value as u8
 }
@@ -107,9 +109,11 @@ pub(crate) unsafe fn read_byte(address: usize) -> u8
 /// `address` must be writable.
 pub(crate) unsafe fn write_byte(address: usize, value: u8)
 {
-    // SAFETY: the caller guarantees the address.
+    // SAFETY: the caller guarantees the address. A byte store reads the 32-bit
+    // view of the value register.
     unsafe {
-        asm!("strb {}, [{}]", in(reg) u32::from(value), in(reg) address, options(nostack));
+        asm!("strb {value:w}, [{address}]", value = in(reg) u32::from(value),
+             address = in(reg) address, options(nostack));
     }
 }
 
@@ -120,7 +124,10 @@ pub(crate) unsafe fn write_byte(address: usize, value: u8)
 pub(crate) unsafe fn zero_word(address: usize)
 {
     // SAFETY: the caller guarantees the address and alignment.
-    unsafe { asm!("str {}, [{}]", in(reg) 0usize, in(reg) address, options(nostack)) };
+    unsafe {
+        asm!("str {zero}, [{address}]", zero = in(reg) 0usize, address = in(reg) address,
+             options(nostack));
+    }
 }
 
 /// Clears one byte at an address the caller has already validated.
@@ -130,5 +137,8 @@ pub(crate) unsafe fn zero_word(address: usize)
 pub(crate) unsafe fn zero_byte(address: usize)
 {
     // SAFETY: the caller guarantees the address.
-    unsafe { asm!("strb {}, [{}]", in(reg) 0u32, in(reg) address, options(nostack)) };
+    unsafe {
+        asm!("strb {zero:w}, [{address}]", zero = in(reg) 0u32, address = in(reg) address,
+             options(nostack));
+    }
 }
