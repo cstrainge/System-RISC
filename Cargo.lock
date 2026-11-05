@@ -481,6 +481,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-extract"
+version = "0.1.0"
+dependencies = [
+ "hfs-b",
+ "mac-build",
+ "mac-formats",
+ "mac-hfs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mac-file-source-interface"
 version = "0.1.0"
 dependencies = [

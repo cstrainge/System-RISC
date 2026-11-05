@@ -8,13 +8,14 @@
 //! payload bytes. `build` reads the disc the list names, classifies the package
 //! against it, and writes the package's extract list.
 
-use std::{collections::BTreeMap,
+use std::{collections::{BTreeMap, BTreeSet},
           env, fs,
           path::{Path, PathBuf},
           process::ExitCode};
 
 use extract_list::{Classification, Form, IsoResource, Package, Report, Verdict, classify,
-                   extract_list, human_report, iso, read_fork, read_package, usage, usage_counts};
+                   extract_list, human_report, iso, read_fork, read_package, take_all,
+                   unreferenced, usage, usage_counts};
 use mac_build::Result;
 
 fn usage() -> String
@@ -219,7 +220,12 @@ fn build_command(args: &[String]) -> Result<ExitCode>
         }
     }
     let paths: Vec<String> = disc_sources.iter().map(|file| file.path.clone()).collect();
-    let report = classify(std::slice::from_ref(&package), &iso_side);
+    let mut report = classify(std::slice::from_ref(&package), &iso_side);
+    let take: Vec<String> = options(args, "--take-all").into_iter().map(String::from).collect();
+    if !take.is_empty()
+    {
+        take_all(&mut report, &iso_side, &package, &take, Form::File);
+    }
     print_report(&report);
     let keys: Vec<usage::Key> =
         report.classifications
@@ -237,7 +243,16 @@ fn build_command(args: &[String]) -> Result<ExitCode>
               reference found",
              counts.named, counts.reachable, counts.unproven, counts.unmatched);
 
-    let list = extract_list(&description, &name, &report, &paths);
+    let excluded = if args.iter().any(|argument| argument == "--exclude-unreferenced")
+    {
+        unreferenced(&report, &usage, &package)
+    }
+    else
+    {
+        BTreeSet::new()
+    };
+    println!("excluded      {:>5} extracted resources with no reference at all", excluded.len());
+    let list = extract_list(&description, &name, &report, &paths, &excluded);
     let mut text = list.to_json()?;
     text.push('\n');
     fs::write(&out, text)?;

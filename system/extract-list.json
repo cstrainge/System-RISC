@@ -8,6 +8,7 @@
         {
           "type": "ALRT",
           "id": -16761,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16761",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -15,6 +16,7 @@
         {
           "type": "ALRT",
           "id": -16504,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16504",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -22,6 +24,7 @@
         {
           "type": "ALRT",
           "id": -16503,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16503",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -29,6 +32,7 @@
         {
           "type": "ALRT",
           "id": -16472,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16472",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -36,6 +40,7 @@
         {
           "type": "ALRT",
           "id": -16471,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16471",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -43,6 +48,7 @@
         {
           "type": "ALRT",
           "id": -16411,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16411",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -50,6 +56,7 @@
         {
           "type": "ALRT",
           "id": -16407,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16407",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -57,6 +64,7 @@
         {
           "type": "ALRT",
           "id": -16406,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16406",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -64,6 +72,7 @@
         {
           "type": "ALRT",
           "id": -16405,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16405",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -71,6 +80,7 @@
         {
           "type": "ALRT",
           "id": -16394,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16394",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -78,6 +88,7 @@
         {
           "type": "ALRT",
           "id": -16392,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N16392",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -85,6 +96,7 @@
         {
           "type": "ALRT",
           "id": -6068,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N6068",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -92,6 +104,7 @@
         {
           "type": "ALRT",
           "id": -6067,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N6067",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -99,6 +112,7 @@
         {
           "type": "ALRT",
           "id": -6066,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N6066",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -106,6 +120,7 @@
         {
           "type": "ALRT",
           "id": -6065,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N6065",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -113,6 +128,7 @@
         {
           "type": "ALRT",
           "id": -6064,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N6064",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -120,6 +136,7 @@
         {
           "type": "ALRT",
           "id": -6063,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N6063",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -127,6 +144,7 @@
         {
           "type": "ALRT",
           "id": -6062,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N6062",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -134,6 +152,7 @@
         {
           "type": "ALRT",
           "id": -6061,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N6061",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -141,6 +160,7 @@
         {
           "type": "ALRT",
           "id": -5758,
+          "symbol": "ORIGINAL_VISUAL_414C5254_N5758",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -148,83 +168,15 @@
         {
           "type": "BNDL",
           "id": 0,
+          "symbol": "ORIGINAL_VISUAL_424E444C_0",
           "name": null,
           "attributes": 0,
           "form": "file"
         },
         {
-          "type": "CNTL",
-          "id": -32512,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -16487,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -16486,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -16485,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -16484,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -16483,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -16482,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -6049,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -6046,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "CNTL",
-          "id": -5760,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
           "type": "CURS",
           "id": -6078,
+          "symbol": "ORIGINAL_VISUAL_43555253_N6078",
           "name": null,
           "attributes": 84,
           "form": "file"
@@ -232,6 +184,7 @@
         {
           "type": "CURS",
           "id": -6077,
+          "symbol": "ORIGINAL_VISUAL_43555253_N6077",
           "name": null,
           "attributes": 84,
           "form": "file"
@@ -239,6 +192,7 @@
         {
           "type": "CURS",
           "id": -6076,
+          "symbol": "ORIGINAL_VISUAL_43555253_N6076",
           "name": null,
           "attributes": 84,
           "form": "file"
@@ -246,6 +200,7 @@
         {
           "type": "CURS",
           "id": -6075,
+          "symbol": "ORIGINAL_VISUAL_43555253_N6075",
           "name": null,
           "attributes": 84,
           "form": "file"
@@ -253,6 +208,7 @@
         {
           "type": "CURS",
           "id": -6074,
+          "symbol": "ORIGINAL_VISUAL_43555253_N6074",
           "name": null,
           "attributes": 84,
           "form": "file"
@@ -260,6 +216,7 @@
         {
           "type": "CURS",
           "id": -6073,
+          "symbol": "ORIGINAL_VISUAL_43555253_N6073",
           "name": null,
           "attributes": 84,
           "form": "file"
@@ -267,6 +224,7 @@
         {
           "type": "CURS",
           "id": -6072,
+          "symbol": "ORIGINAL_VISUAL_43555253_N6072",
           "name": null,
           "attributes": 84,
           "form": "file"
@@ -274,6 +232,7 @@
         {
           "type": "CURS",
           "id": -5760,
+          "symbol": "ORIGINAL_VISUAL_43555253_N5760",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -281,6 +240,7 @@
         {
           "type": "DITL",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N32512",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -288,6 +248,7 @@
         {
           "type": "DITL",
           "id": -32511,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N32511",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -295,6 +256,7 @@
         {
           "type": "DITL",
           "id": -32510,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N32510",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -302,6 +264,7 @@
         {
           "type": "DITL",
           "id": -32509,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N32509",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -309,6 +272,7 @@
         {
           "type": "DITL",
           "id": -29909,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N29909",
           "name": "SndIn Mic",
           "attributes": 96,
           "form": "file"
@@ -316,6 +280,7 @@
         {
           "type": "DITL",
           "id": -29908,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N29908",
           "name": "SndIn Line",
           "attributes": 96,
           "form": "file"
@@ -323,6 +288,7 @@
         {
           "type": "DITL",
           "id": -16761,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16761",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -330,6 +296,7 @@
         {
           "type": "DITL",
           "id": -16760,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16760",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -337,6 +304,7 @@
         {
           "type": "DITL",
           "id": -16750,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16750",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -344,6 +312,7 @@
         {
           "type": "DITL",
           "id": -16601,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16601",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -351,6 +320,7 @@
         {
           "type": "DITL",
           "id": -16592,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16592",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -358,6 +328,7 @@
         {
           "type": "DITL",
           "id": -16535,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16535",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -365,6 +336,7 @@
         {
           "type": "DITL",
           "id": -16504,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16504",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -372,6 +344,7 @@
         {
           "type": "DITL",
           "id": -16503,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16503",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -379,6 +352,7 @@
         {
           "type": "DITL",
           "id": -16494,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16494",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -386,6 +360,7 @@
         {
           "type": "DITL",
           "id": -16493,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16493",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -393,6 +368,7 @@
         {
           "type": "DITL",
           "id": -16492,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16492",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -400,6 +376,7 @@
         {
           "type": "DITL",
           "id": -16487,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16487",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -407,6 +384,7 @@
         {
           "type": "DITL",
           "id": -16485,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16485",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -414,6 +392,7 @@
         {
           "type": "DITL",
           "id": -16484,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16484",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -421,6 +400,7 @@
         {
           "type": "DITL",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -428,6 +408,7 @@
         {
           "type": "DITL",
           "id": -16473,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16473",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -435,6 +416,7 @@
         {
           "type": "DITL",
           "id": -16472,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16472",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -442,6 +424,7 @@
         {
           "type": "DITL",
           "id": -16471,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16471",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -449,6 +432,7 @@
         {
           "type": "DITL",
           "id": -16412,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16412",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -456,6 +440,7 @@
         {
           "type": "DITL",
           "id": -16411,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16411",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -463,6 +448,7 @@
         {
           "type": "DITL",
           "id": -16409,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16409",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -470,6 +456,7 @@
         {
           "type": "DITL",
           "id": -16407,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16407",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -477,6 +464,7 @@
         {
           "type": "DITL",
           "id": -16406,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16406",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -484,6 +472,7 @@
         {
           "type": "DITL",
           "id": -16405,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16405",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -491,6 +480,7 @@
         {
           "type": "DITL",
           "id": -16394,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16394",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -498,6 +488,7 @@
         {
           "type": "DITL",
           "id": -16392,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N16392",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -505,6 +496,7 @@
         {
           "type": "DITL",
           "id": -6079,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6079",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -512,6 +504,7 @@
         {
           "type": "DITL",
           "id": -6068,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6068",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -519,6 +512,7 @@
         {
           "type": "DITL",
           "id": -6067,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6067",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -526,6 +520,7 @@
         {
           "type": "DITL",
           "id": -6066,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6066",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -533,6 +528,7 @@
         {
           "type": "DITL",
           "id": -6065,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6065",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -540,6 +536,7 @@
         {
           "type": "DITL",
           "id": -6064,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6064",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -547,6 +544,7 @@
         {
           "type": "DITL",
           "id": -6063,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6063",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -554,6 +552,7 @@
         {
           "type": "DITL",
           "id": -6062,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6062",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -561,6 +560,7 @@
         {
           "type": "DITL",
           "id": -6061,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6061",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -568,6 +568,7 @@
         {
           "type": "DITL",
           "id": -6046,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6046",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -575,6 +576,7 @@
         {
           "type": "DITL",
           "id": -6045,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6045",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -582,6 +584,7 @@
         {
           "type": "DITL",
           "id": -6044,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6044",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -589,6 +592,7 @@
         {
           "type": "DITL",
           "id": -6043,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6043",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -596,6 +600,7 @@
         {
           "type": "DITL",
           "id": -6042,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6042",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -603,6 +608,7 @@
         {
           "type": "DITL",
           "id": -6041,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6041",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -610,6 +616,7 @@
         {
           "type": "DITL",
           "id": -6040,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N6040",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -617,6 +624,7 @@
         {
           "type": "DITL",
           "id": -5856,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5856",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -624,6 +632,7 @@
         {
           "type": "DITL",
           "id": -5792,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5792",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -631,6 +640,7 @@
         {
           "type": "DITL",
           "id": -5791,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5791",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -638,6 +648,7 @@
         {
           "type": "DITL",
           "id": -5790,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5790",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -645,6 +656,7 @@
         {
           "type": "DITL",
           "id": -5789,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5789",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -652,6 +664,7 @@
         {
           "type": "DITL",
           "id": -5788,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5788",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -659,6 +672,7 @@
         {
           "type": "DITL",
           "id": -5787,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5787",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -666,6 +680,7 @@
         {
           "type": "DITL",
           "id": -5786,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5786",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -673,6 +688,7 @@
         {
           "type": "DITL",
           "id": -5760,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5760",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -680,6 +696,7 @@
         {
           "type": "DITL",
           "id": -5758,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5758",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -687,6 +704,7 @@
         {
           "type": "DITL",
           "id": -5696,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N5696",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -694,6 +712,7 @@
         {
           "type": "DITL",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -701,6 +720,7 @@
         {
           "type": "DITL",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_4449544C_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -708,6 +728,7 @@
         {
           "type": "DITL",
           "id": 1,
+          "symbol": "ORIGINAL_VISUAL_4449544C_1",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -715,6 +736,7 @@
         {
           "type": "DLOG",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N32512",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -722,6 +744,7 @@
         {
           "type": "DLOG",
           "id": -32511,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N32511",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -729,6 +752,7 @@
         {
           "type": "DLOG",
           "id": -32510,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N32510",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -736,6 +760,7 @@
         {
           "type": "DLOG",
           "id": -32509,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N32509",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -743,6 +768,7 @@
         {
           "type": "DLOG",
           "id": -29909,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N29909",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -750,6 +776,7 @@
         {
           "type": "DLOG",
           "id": -29908,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N29908",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -757,6 +784,7 @@
         {
           "type": "DLOG",
           "id": -16760,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16760",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -764,6 +792,7 @@
         {
           "type": "DLOG",
           "id": -16750,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16750",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -771,6 +800,7 @@
         {
           "type": "DLOG",
           "id": -16592,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16592",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -778,6 +808,7 @@
         {
           "type": "DLOG",
           "id": -16535,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16535",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -785,6 +816,7 @@
         {
           "type": "DLOG",
           "id": -16494,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16494",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -792,6 +824,7 @@
         {
           "type": "DLOG",
           "id": -16493,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16493",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -799,6 +832,7 @@
         {
           "type": "DLOG",
           "id": -16492,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16492",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -806,6 +840,7 @@
         {
           "type": "DLOG",
           "id": -16490,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16490",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -813,6 +848,7 @@
         {
           "type": "DLOG",
           "id": -16489,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16489",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -820,6 +856,7 @@
         {
           "type": "DLOG",
           "id": -16487,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16487",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -827,6 +864,7 @@
         {
           "type": "DLOG",
           "id": -16485,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16485",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -834,6 +872,7 @@
         {
           "type": "DLOG",
           "id": -16484,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16484",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -841,6 +880,7 @@
         {
           "type": "DLOG",
           "id": -16483,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16483",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -848,6 +888,7 @@
         {
           "type": "DLOG",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -855,6 +896,7 @@
         {
           "type": "DLOG",
           "id": -16473,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16473",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -862,6 +904,7 @@
         {
           "type": "DLOG",
           "id": -16412,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16412",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -869,6 +912,7 @@
         {
           "type": "DLOG",
           "id": -16409,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N16409",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -876,6 +920,7 @@
         {
           "type": "DLOG",
           "id": -6079,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N6079",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -883,6 +928,7 @@
         {
           "type": "DLOG",
           "id": -6046,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N6046",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -890,6 +936,7 @@
         {
           "type": "DLOG",
           "id": -6045,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N6045",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -897,6 +944,7 @@
         {
           "type": "DLOG",
           "id": -6044,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N6044",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -904,6 +952,7 @@
         {
           "type": "DLOG",
           "id": -6043,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N6043",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -911,6 +960,7 @@
         {
           "type": "DLOG",
           "id": -6042,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N6042",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -918,6 +968,7 @@
         {
           "type": "DLOG",
           "id": -6041,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N6041",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -925,6 +976,7 @@
         {
           "type": "DLOG",
           "id": -6040,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N6040",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -932,6 +984,7 @@
         {
           "type": "DLOG",
           "id": -5856,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5856",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -939,6 +992,7 @@
         {
           "type": "DLOG",
           "id": -5792,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5792",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -946,6 +1000,7 @@
         {
           "type": "DLOG",
           "id": -5791,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5791",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -953,6 +1008,7 @@
         {
           "type": "DLOG",
           "id": -5790,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5790",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -960,6 +1016,7 @@
         {
           "type": "DLOG",
           "id": -5789,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5789",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -967,6 +1024,7 @@
         {
           "type": "DLOG",
           "id": -5788,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5788",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -974,6 +1032,7 @@
         {
           "type": "DLOG",
           "id": -5787,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5787",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -981,6 +1040,7 @@
         {
           "type": "DLOG",
           "id": -5786,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5786",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -988,6 +1048,7 @@
         {
           "type": "DLOG",
           "id": -5760,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5760",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -995,6 +1056,7 @@
         {
           "type": "DLOG",
           "id": -5696,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N5696",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1002,6 +1064,7 @@
         {
           "type": "DLOG",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1009,6 +1072,7 @@
         {
           "type": "DLOG",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1016,6 +1080,7 @@
         {
           "type": "DLOG",
           "id": 1,
+          "symbol": "ORIGINAL_VISUAL_444C4F47_1",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1023,20 +1088,7 @@
         {
           "type": "FONT",
           "id": 393,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "FONT",
-          "id": 396,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "FONT",
-          "id": 521,
+          "symbol": "FONT_BUNDLE_FONT_393",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1044,6 +1096,7 @@
         {
           "type": "FREF",
           "id": 0,
+          "symbol": "ORIGINAL_VISUAL_46524546_0",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1051,6 +1104,7 @@
         {
           "type": "FREF",
           "id": 1,
+          "symbol": "ORIGINAL_VISUAL_46524546_1",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1058,6 +1112,7 @@
         {
           "type": "FREF",
           "id": 2,
+          "symbol": "ORIGINAL_VISUAL_46524546_2",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1065,6 +1120,7 @@
         {
           "type": "FREF",
           "id": 3,
+          "symbol": "ORIGINAL_VISUAL_46524546_3",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1072,6 +1128,7 @@
         {
           "type": "FREF",
           "id": 4,
+          "symbol": "ORIGINAL_VISUAL_46524546_4",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1079,6 +1136,7 @@
         {
           "type": "FREF",
           "id": 5,
+          "symbol": "ORIGINAL_VISUAL_46524546_5",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1086,6 +1144,7 @@
         {
           "type": "FREF",
           "id": 6,
+          "symbol": "ORIGINAL_VISUAL_46524546_6",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1093,6 +1152,7 @@
         {
           "type": "FREF",
           "id": 7,
+          "symbol": "ORIGINAL_VISUAL_46524546_7",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1100,6 +1160,7 @@
         {
           "type": "ICN#",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N32512",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1107,6 +1168,7 @@
         {
           "type": "ICN#",
           "id": -32511,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N32511",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1114,6 +1176,7 @@
         {
           "type": "ICN#",
           "id": -32509,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N32509",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -1121,6 +1184,7 @@
         {
           "type": "ICN#",
           "id": -32508,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N32508",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -1128,6 +1192,7 @@
         {
           "type": "ICN#",
           "id": -16565,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16565",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1135,6 +1200,7 @@
         {
           "type": "ICN#",
           "id": -16522,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16522",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1142,6 +1208,7 @@
         {
           "type": "ICN#",
           "id": -16509,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16509",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1149,6 +1216,7 @@
         {
           "type": "ICN#",
           "id": -16506,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16506",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1156,6 +1224,7 @@
         {
           "type": "ICN#",
           "id": -16494,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16494",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1163,6 +1232,7 @@
         {
           "type": "ICN#",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1170,6 +1240,7 @@
         {
           "type": "ICN#",
           "id": -16415,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16415",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1177,6 +1248,7 @@
         {
           "type": "ICN#",
           "id": -16411,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16411",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -1184,6 +1256,7 @@
         {
           "type": "ICN#",
           "id": -16396,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N16396",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1191,6 +1264,7 @@
         {
           "type": "ICN#",
           "id": -5696,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N5696",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1198,6 +1272,7 @@
         {
           "type": "ICN#",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1205,6 +1280,7 @@
         {
           "type": "ICN#",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1212,6 +1288,7 @@
         {
           "type": "ICN#",
           "id": -3998,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3998",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1219,6 +1296,7 @@
         {
           "type": "ICN#",
           "id": -3996,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3996",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1226,6 +1304,7 @@
         {
           "type": "ICN#",
           "id": -3994,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3994",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1233,6 +1312,7 @@
         {
           "type": "ICN#",
           "id": -3993,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3993",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1240,6 +1320,7 @@
         {
           "type": "ICN#",
           "id": -3991,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3991",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1247,6 +1328,7 @@
         {
           "type": "ICN#",
           "id": -3989,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3989",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1254,6 +1336,7 @@
         {
           "type": "ICN#",
           "id": -3985,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3985",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1261,6 +1344,7 @@
         {
           "type": "ICN#",
           "id": -3984,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3984",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1268,6 +1352,7 @@
         {
           "type": "ICN#",
           "id": -3983,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3983",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1275,6 +1360,7 @@
         {
           "type": "ICN#",
           "id": -3982,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3982",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1282,6 +1368,7 @@
         {
           "type": "ICN#",
           "id": -3981,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3981",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1289,6 +1376,7 @@
         {
           "type": "ICN#",
           "id": -3980,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3980",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1296,6 +1384,7 @@
         {
           "type": "ICN#",
           "id": -3979,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3979",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1303,6 +1392,7 @@
         {
           "type": "ICN#",
           "id": -3978,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3978",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1310,6 +1400,7 @@
         {
           "type": "ICN#",
           "id": -3977,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3977",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1317,6 +1408,7 @@
         {
           "type": "ICN#",
           "id": -3976,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3976",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1324,6 +1416,7 @@
         {
           "type": "ICN#",
           "id": -3975,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3975",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1331,6 +1424,7 @@
         {
           "type": "ICN#",
           "id": -3974,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3974",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1338,6 +1432,7 @@
         {
           "type": "ICN#",
           "id": -3973,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3973",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1345,6 +1440,7 @@
         {
           "type": "ICN#",
           "id": -3971,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3971",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1352,6 +1448,7 @@
         {
           "type": "ICN#",
           "id": -3968,
+          "symbol": "ORIGINAL_VISUAL_49434E23_N3968",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1359,6 +1456,7 @@
         {
           "type": "ICN#",
           "id": 3,
+          "symbol": "ORIGINAL_VISUAL_49434E23_3",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1366,6 +1464,7 @@
         {
           "type": "ICON",
           "id": -16570,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16570",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1373,6 +1472,7 @@
         {
           "type": "ICON",
           "id": -16563,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16563",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1380,6 +1480,7 @@
         {
           "type": "ICON",
           "id": -16561,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16561",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1387,6 +1488,7 @@
         {
           "type": "ICON",
           "id": -16560,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16560",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1394,6 +1496,7 @@
         {
           "type": "ICON",
           "id": -16557,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16557",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1401,6 +1504,7 @@
         {
           "type": "ICON",
           "id": -16527,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16527",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1408,6 +1512,7 @@
         {
           "type": "ICON",
           "id": -16526,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16526",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1415,6 +1520,7 @@
         {
           "type": "ICON",
           "id": -16525,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16525",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1422,6 +1528,7 @@
         {
           "type": "ICON",
           "id": -16524,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16524",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1429,6 +1536,7 @@
         {
           "type": "ICON",
           "id": -16523,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16523",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1436,6 +1544,7 @@
         {
           "type": "ICON",
           "id": -16522,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16522",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1443,6 +1552,7 @@
         {
           "type": "ICON",
           "id": -16500,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16500",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1450,6 +1560,7 @@
         {
           "type": "ICON",
           "id": -16492,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16492",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1457,6 +1568,7 @@
         {
           "type": "ICON",
           "id": -16491,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16491",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1464,6 +1576,7 @@
         {
           "type": "ICON",
           "id": -16490,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16490",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1471,6 +1584,7 @@
         {
           "type": "ICON",
           "id": -16489,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16489",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1478,6 +1592,7 @@
         {
           "type": "ICON",
           "id": -16488,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16488",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1485,6 +1600,7 @@
         {
           "type": "ICON",
           "id": -16487,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16487",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1492,6 +1608,7 @@
         {
           "type": "ICON",
           "id": -16480,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16480",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -1499,6 +1616,7 @@
         {
           "type": "ICON",
           "id": -16412,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N16412",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1506,6 +1624,7 @@
         {
           "type": "ICON",
           "id": -6079,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_N6079",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1513,6 +1632,7 @@
         {
           "type": "ICON",
           "id": 0,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_0",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1520,6 +1640,7 @@
         {
           "type": "ICON",
           "id": 1,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_1",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1527,6 +1648,7 @@
         {
           "type": "ICON",
           "id": 2,
+          "symbol": "ORIGINAL_VISUAL_49434F4E_2",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1534,6 +1656,7 @@
         {
           "type": "MENU",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_4D454E55_N32512",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -1541,6 +1664,7 @@
         {
           "type": "MENU",
           "id": -16490,
+          "symbol": "ORIGINAL_VISUAL_4D454E55_N16490",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -1548,6 +1672,7 @@
         {
           "type": "MENU",
           "id": -16489,
+          "symbol": "ORIGINAL_VISUAL_4D454E55_N16489",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -1555,6 +1680,7 @@
         {
           "type": "MENU",
           "id": -16473,
+          "symbol": "ORIGINAL_VISUAL_4D454E55_N16473",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1562,6 +1688,7 @@
         {
           "type": "MENU",
           "id": -16472,
+          "symbol": "ORIGINAL_VISUAL_4D454E55_N16472",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1569,6 +1696,7 @@
         {
           "type": "MENU",
           "id": -16471,
+          "symbol": "ORIGINAL_VISUAL_4D454E55_N16471",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1576,6 +1704,7 @@
         {
           "type": "MENU",
           "id": -6049,
+          "symbol": "ORIGINAL_VISUAL_4D454E55_N6049",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -1583,41 +1712,15 @@
         {
           "type": "MENU",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_4D454E55_N4000",
           "name": null,
           "attributes": 0,
           "form": "file"
         },
         {
-          "type": "PAT ",
-          "id": 16,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "PAT ",
-          "id": 17,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "PAT ",
-          "id": 19,
-          "name": null,
-          "attributes": 64,
-          "form": "file"
-        },
-        {
-          "type": "PAT#",
-          "id": 0,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
           "type": "PICT",
           "id": -32510,
+          "symbol": "ORIGINAL_VISUAL_50494354_N32510",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1625,6 +1728,7 @@
         {
           "type": "PICT",
           "id": -16600,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16600",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1632,6 +1736,7 @@
         {
           "type": "PICT",
           "id": -16525,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16525",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1639,6 +1744,7 @@
         {
           "type": "PICT",
           "id": -16485,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16485",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1646,6 +1752,7 @@
         {
           "type": "PICT",
           "id": -16484,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16484",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1653,6 +1760,7 @@
         {
           "type": "PICT",
           "id": -16483,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16483",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1660,6 +1768,7 @@
         {
           "type": "PICT",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1667,6 +1776,7 @@
         {
           "type": "PICT",
           "id": -16387,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16387",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1674,6 +1784,7 @@
         {
           "type": "PICT",
           "id": -16386,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16386",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1681,6 +1792,7 @@
         {
           "type": "PICT",
           "id": -16385,
+          "symbol": "ORIGINAL_VISUAL_50494354_N16385",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -1688,6 +1800,7 @@
         {
           "type": "PICT",
           "id": -8224,
+          "symbol": "ORIGINAL_VISUAL_50494354_N8224",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1695,6 +1808,7 @@
         {
           "type": "PICT",
           "id": -6046,
+          "symbol": "ORIGINAL_VISUAL_50494354_N6046",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1702,6 +1816,7 @@
         {
           "type": "PICT",
           "id": -5790,
+          "symbol": "ORIGINAL_VISUAL_50494354_N5790",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1709,6 +1824,7 @@
         {
           "type": "PICT",
           "id": -5789,
+          "symbol": "ORIGINAL_VISUAL_50494354_N5789",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1716,6 +1832,7 @@
         {
           "type": "PICT",
           "id": -5760,
+          "symbol": "ORIGINAL_VISUAL_50494354_N5760",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1723,6 +1840,7 @@
         {
           "type": "PICT",
           "id": -5696,
+          "symbol": "ORIGINAL_VISUAL_50494354_N5696",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1730,6 +1848,7 @@
         {
           "type": "PICT",
           "id": -5695,
+          "symbol": "ORIGINAL_VISUAL_50494354_N5695",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1737,6 +1856,7 @@
         {
           "type": "PICT",
           "id": -5694,
+          "symbol": "ORIGINAL_VISUAL_50494354_N5694",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1744,6 +1864,7 @@
         {
           "type": "PICT",
           "id": 11,
+          "symbol": "ORIGINAL_VISUAL_50494354_11",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1751,6 +1872,7 @@
         {
           "type": "SICN",
           "id": -16385,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N16385",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1758,6 +1880,7 @@
         {
           "type": "SICN",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1765,6 +1888,7 @@
         {
           "type": "SICN",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1772,6 +1896,7 @@
         {
           "type": "SICN",
           "id": -3998,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3998",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1779,6 +1904,7 @@
         {
           "type": "SICN",
           "id": -3997,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3997",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1786,6 +1912,7 @@
         {
           "type": "SICN",
           "id": -3996,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3996",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1793,6 +1920,7 @@
         {
           "type": "SICN",
           "id": -3995,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3995",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1800,6 +1928,7 @@
         {
           "type": "SICN",
           "id": -3994,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3994",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1807,6 +1936,7 @@
         {
           "type": "SICN",
           "id": -3993,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3993",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1814,6 +1944,7 @@
         {
           "type": "SICN",
           "id": -3992,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3992",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1821,6 +1952,7 @@
         {
           "type": "SICN",
           "id": -3991,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3991",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1828,6 +1960,7 @@
         {
           "type": "SICN",
           "id": -3990,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3990",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1835,6 +1968,7 @@
         {
           "type": "SICN",
           "id": -3989,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3989",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1842,6 +1976,7 @@
         {
           "type": "SICN",
           "id": -3988,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3988",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1849,6 +1984,7 @@
         {
           "type": "SICN",
           "id": -3987,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3987",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1856,6 +1992,7 @@
         {
           "type": "SICN",
           "id": -3986,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3986",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1863,6 +2000,7 @@
         {
           "type": "SICN",
           "id": -3985,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3985",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1870,6 +2008,7 @@
         {
           "type": "SICN",
           "id": -3979,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3979",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1877,6 +2016,7 @@
         {
           "type": "SICN",
           "id": -3972,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3972",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1884,6 +2024,7 @@
         {
           "type": "SICN",
           "id": -3970,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3970",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1891,6 +2032,7 @@
         {
           "type": "SICN",
           "id": -3969,
+          "symbol": "ORIGINAL_VISUAL_5349434E_N3969",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1898,6 +2040,7 @@
         {
           "type": "SICN",
           "id": 0,
+          "symbol": "ORIGINAL_VISUAL_5349434E_0",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -1905,6 +2048,7 @@
         {
           "type": "SICN",
           "id": 3,
+          "symbol": "ORIGINAL_VISUAL_5349434E_3",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1912,20 +2056,15 @@
         {
           "type": "acur",
           "id": -6078,
+          "symbol": "ORIGINAL_VISUAL_61637572_N6078",
           "name": null,
           "attributes": 84,
           "form": "file"
         },
         {
-          "type": "cctb",
-          "id": 0,
-          "name": null,
-          "attributes": 64,
-          "form": "file"
-        },
-        {
           "type": "cicn",
           "id": -16396,
+          "symbol": "ORIGINAL_VISUAL_6369636E_N16396",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -1933,118 +2072,15 @@
         {
           "type": "clut",
           "id": -10208,
+          "symbol": "ORIGINAL_VISUAL_636C7574_N10208",
           "name": null,
           "attributes": 64,
           "form": "file"
         },
         {
-          "type": "dctb",
-          "id": -32512,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -32510,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -16473,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -16409,
-          "name": null,
-          "attributes": 0,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -6046,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -6043,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -6042,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -5792,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -5791,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -5790,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -5789,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -5760,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "dctb",
-          "id": -5696,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "fmap",
-          "id": -16505,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "fmap",
-          "id": -6046,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
           "type": "icl4",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N32512",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2052,6 +2088,7 @@
         {
           "type": "icl4",
           "id": -32511,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N32511",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2059,6 +2096,7 @@
         {
           "type": "icl4",
           "id": -32509,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N32509",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2066,6 +2104,7 @@
         {
           "type": "icl4",
           "id": -32508,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N32508",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2073,6 +2112,7 @@
         {
           "type": "icl4",
           "id": -16509,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N16509",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2080,6 +2120,7 @@
         {
           "type": "icl4",
           "id": -16506,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N16506",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2087,6 +2128,7 @@
         {
           "type": "icl4",
           "id": -16494,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N16494",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2094,6 +2136,7 @@
         {
           "type": "icl4",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2101,6 +2144,7 @@
         {
           "type": "icl4",
           "id": -16415,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N16415",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2108,6 +2152,7 @@
         {
           "type": "icl4",
           "id": -16396,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N16396",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -2115,6 +2160,7 @@
         {
           "type": "icl4",
           "id": -5696,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N5696",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2122,6 +2168,7 @@
         {
           "type": "icl4",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2129,6 +2176,7 @@
         {
           "type": "icl4",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2136,6 +2184,7 @@
         {
           "type": "icl4",
           "id": -3998,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3998",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2143,6 +2192,7 @@
         {
           "type": "icl4",
           "id": -3996,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3996",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2150,6 +2200,7 @@
         {
           "type": "icl4",
           "id": -3994,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3994",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2157,6 +2208,7 @@
         {
           "type": "icl4",
           "id": -3993,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3993",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2164,6 +2216,7 @@
         {
           "type": "icl4",
           "id": -3991,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3991",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2171,6 +2224,7 @@
         {
           "type": "icl4",
           "id": -3989,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3989",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2178,6 +2232,7 @@
         {
           "type": "icl4",
           "id": -3985,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3985",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2185,6 +2240,7 @@
         {
           "type": "icl4",
           "id": -3984,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3984",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2192,6 +2248,7 @@
         {
           "type": "icl4",
           "id": -3983,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3983",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2199,6 +2256,7 @@
         {
           "type": "icl4",
           "id": -3982,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3982",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2206,6 +2264,7 @@
         {
           "type": "icl4",
           "id": -3981,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3981",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2213,6 +2272,7 @@
         {
           "type": "icl4",
           "id": -3980,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3980",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2220,6 +2280,7 @@
         {
           "type": "icl4",
           "id": -3979,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3979",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2227,6 +2288,7 @@
         {
           "type": "icl4",
           "id": -3978,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3978",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2234,6 +2296,7 @@
         {
           "type": "icl4",
           "id": -3977,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3977",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2241,6 +2304,7 @@
         {
           "type": "icl4",
           "id": -3976,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3976",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2248,6 +2312,7 @@
         {
           "type": "icl4",
           "id": -3975,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3975",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2255,6 +2320,7 @@
         {
           "type": "icl4",
           "id": -3974,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3974",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2262,6 +2328,7 @@
         {
           "type": "icl4",
           "id": -3973,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3973",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2269,6 +2336,7 @@
         {
           "type": "icl4",
           "id": -3971,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3971",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2276,6 +2344,7 @@
         {
           "type": "icl4",
           "id": -3968,
+          "symbol": "ORIGINAL_VISUAL_69636C34_N3968",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2283,6 +2352,7 @@
         {
           "type": "icl4",
           "id": 3,
+          "symbol": "ORIGINAL_VISUAL_69636C34_3",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2290,6 +2360,7 @@
         {
           "type": "icl8",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N32512",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2297,6 +2368,7 @@
         {
           "type": "icl8",
           "id": -32511,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N32511",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2304,6 +2376,7 @@
         {
           "type": "icl8",
           "id": -32509,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N32509",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2311,6 +2384,7 @@
         {
           "type": "icl8",
           "id": -32508,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N32508",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2318,6 +2392,7 @@
         {
           "type": "icl8",
           "id": -16509,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N16509",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2325,6 +2400,7 @@
         {
           "type": "icl8",
           "id": -16506,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N16506",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2332,6 +2408,7 @@
         {
           "type": "icl8",
           "id": -16494,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N16494",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2339,6 +2416,7 @@
         {
           "type": "icl8",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2346,6 +2424,7 @@
         {
           "type": "icl8",
           "id": -16415,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N16415",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2353,6 +2432,7 @@
         {
           "type": "icl8",
           "id": -16396,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N16396",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -2360,6 +2440,7 @@
         {
           "type": "icl8",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2367,6 +2448,7 @@
         {
           "type": "icl8",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2374,6 +2456,7 @@
         {
           "type": "icl8",
           "id": -3998,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3998",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2381,6 +2464,7 @@
         {
           "type": "icl8",
           "id": -3996,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3996",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2388,6 +2472,7 @@
         {
           "type": "icl8",
           "id": -3994,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3994",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2395,6 +2480,7 @@
         {
           "type": "icl8",
           "id": -3993,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3993",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2402,6 +2488,7 @@
         {
           "type": "icl8",
           "id": -3991,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3991",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2409,6 +2496,7 @@
         {
           "type": "icl8",
           "id": -3989,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3989",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2416,6 +2504,7 @@
         {
           "type": "icl8",
           "id": -3985,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3985",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2423,6 +2512,7 @@
         {
           "type": "icl8",
           "id": -3984,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3984",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2430,6 +2520,7 @@
         {
           "type": "icl8",
           "id": -3983,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3983",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2437,6 +2528,7 @@
         {
           "type": "icl8",
           "id": -3982,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3982",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2444,6 +2536,7 @@
         {
           "type": "icl8",
           "id": -3981,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3981",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2451,6 +2544,7 @@
         {
           "type": "icl8",
           "id": -3980,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3980",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2458,6 +2552,7 @@
         {
           "type": "icl8",
           "id": -3979,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3979",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2465,6 +2560,7 @@
         {
           "type": "icl8",
           "id": -3978,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3978",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2472,6 +2568,7 @@
         {
           "type": "icl8",
           "id": -3977,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3977",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2479,6 +2576,7 @@
         {
           "type": "icl8",
           "id": -3976,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3976",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2486,6 +2584,7 @@
         {
           "type": "icl8",
           "id": -3975,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3975",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2493,6 +2592,7 @@
         {
           "type": "icl8",
           "id": -3974,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3974",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2500,6 +2600,7 @@
         {
           "type": "icl8",
           "id": -3973,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3973",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2507,6 +2608,7 @@
         {
           "type": "icl8",
           "id": -3971,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3971",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2514,6 +2616,7 @@
         {
           "type": "icl8",
           "id": -3968,
+          "symbol": "ORIGINAL_VISUAL_69636C38_N3968",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2521,6 +2624,7 @@
         {
           "type": "icl8",
           "id": 3,
+          "symbol": "ORIGINAL_VISUAL_69636C38_3",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2528,6 +2632,7 @@
         {
           "type": "ics#",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_69637323_N32512",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2535,6 +2640,7 @@
         {
           "type": "ics#",
           "id": -32511,
+          "symbol": "ORIGINAL_VISUAL_69637323_N32511",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2542,6 +2648,7 @@
         {
           "type": "ics#",
           "id": -32509,
+          "symbol": "ORIGINAL_VISUAL_69637323_N32509",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2549,6 +2656,7 @@
         {
           "type": "ics#",
           "id": -32508,
+          "symbol": "ORIGINAL_VISUAL_69637323_N32508",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2556,6 +2664,7 @@
         {
           "type": "ics#",
           "id": -16583,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16583",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2563,6 +2672,7 @@
         {
           "type": "ics#",
           "id": -16582,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16582",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2570,6 +2680,7 @@
         {
           "type": "ics#",
           "id": -16581,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16581",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2577,6 +2688,7 @@
         {
           "type": "ics#",
           "id": -16580,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16580",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2584,6 +2696,7 @@
         {
           "type": "ics#",
           "id": -16575,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16575",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2591,6 +2704,7 @@
         {
           "type": "ics#",
           "id": -16574,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16574",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2598,6 +2712,7 @@
         {
           "type": "ics#",
           "id": -16573,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16573",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2605,6 +2720,7 @@
         {
           "type": "ics#",
           "id": -16572,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16572",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2612,6 +2728,7 @@
         {
           "type": "ics#",
           "id": -16571,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16571",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2619,6 +2736,7 @@
         {
           "type": "ics#",
           "id": -16570,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16570",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2626,6 +2744,7 @@
         {
           "type": "ics#",
           "id": -16569,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16569",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2633,6 +2752,7 @@
         {
           "type": "ics#",
           "id": -16541,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16541",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2640,6 +2760,7 @@
         {
           "type": "ics#",
           "id": -16509,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16509",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2647,6 +2768,7 @@
         {
           "type": "ics#",
           "id": -16506,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16506",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2654,6 +2776,7 @@
         {
           "type": "ics#",
           "id": -16494,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16494",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2661,6 +2784,7 @@
         {
           "type": "ics#",
           "id": -16490,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16490",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -2668,6 +2792,7 @@
         {
           "type": "ics#",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2675,6 +2800,7 @@
         {
           "type": "ics#",
           "id": -16415,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16415",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2682,6 +2808,7 @@
         {
           "type": "ics#",
           "id": -16396,
+          "symbol": "ORIGINAL_VISUAL_69637323_N16396",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -2689,6 +2816,7 @@
         {
           "type": "ics#",
           "id": -5696,
+          "symbol": "ORIGINAL_VISUAL_69637323_N5696",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2696,6 +2824,7 @@
         {
           "type": "ics#",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_69637323_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2703,6 +2832,7 @@
         {
           "type": "ics#",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2710,6 +2840,7 @@
         {
           "type": "ics#",
           "id": -3998,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3998",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2717,6 +2848,7 @@
         {
           "type": "ics#",
           "id": -3996,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3996",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2724,6 +2856,7 @@
         {
           "type": "ics#",
           "id": -3995,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3995",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2731,6 +2864,7 @@
         {
           "type": "ics#",
           "id": -3994,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3994",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2738,6 +2872,7 @@
         {
           "type": "ics#",
           "id": -3993,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3993",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2745,6 +2880,7 @@
         {
           "type": "ics#",
           "id": -3992,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3992",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2752,6 +2888,7 @@
         {
           "type": "ics#",
           "id": -3991,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3991",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2759,6 +2896,7 @@
         {
           "type": "ics#",
           "id": -3989,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3989",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2766,6 +2904,7 @@
         {
           "type": "ics#",
           "id": -3988,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3988",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2773,6 +2912,7 @@
         {
           "type": "ics#",
           "id": -3987,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3987",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2780,6 +2920,7 @@
         {
           "type": "ics#",
           "id": -3985,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3985",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2787,6 +2928,7 @@
         {
           "type": "ics#",
           "id": -3984,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3984",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2794,6 +2936,7 @@
         {
           "type": "ics#",
           "id": -3983,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3983",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2801,6 +2944,7 @@
         {
           "type": "ics#",
           "id": -3982,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3982",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2808,6 +2952,7 @@
         {
           "type": "ics#",
           "id": -3981,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3981",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2815,6 +2960,7 @@
         {
           "type": "ics#",
           "id": -3980,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3980",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2822,6 +2968,7 @@
         {
           "type": "ics#",
           "id": -3979,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3979",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2829,6 +2976,7 @@
         {
           "type": "ics#",
           "id": -3978,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3978",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2836,6 +2984,7 @@
         {
           "type": "ics#",
           "id": -3977,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3977",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2843,6 +2992,7 @@
         {
           "type": "ics#",
           "id": -3976,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3976",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2850,6 +3000,7 @@
         {
           "type": "ics#",
           "id": -3975,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3975",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2857,6 +3008,7 @@
         {
           "type": "ics#",
           "id": -3974,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3974",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2864,6 +3016,7 @@
         {
           "type": "ics#",
           "id": -3973,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3973",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2871,6 +3024,7 @@
         {
           "type": "ics#",
           "id": -3972,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3972",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2878,6 +3032,7 @@
         {
           "type": "ics#",
           "id": -3971,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3971",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2885,6 +3040,7 @@
         {
           "type": "ics#",
           "id": -3968,
+          "symbol": "ORIGINAL_VISUAL_69637323_N3968",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2892,6 +3048,7 @@
         {
           "type": "ics#",
           "id": 3,
+          "symbol": "ORIGINAL_VISUAL_69637323_3",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -2899,6 +3056,7 @@
         {
           "type": "ics4",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_69637334_N32512",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2906,6 +3064,7 @@
         {
           "type": "ics4",
           "id": -32511,
+          "symbol": "ORIGINAL_VISUAL_69637334_N32511",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2913,6 +3072,7 @@
         {
           "type": "ics4",
           "id": -32509,
+          "symbol": "ORIGINAL_VISUAL_69637334_N32509",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2920,6 +3080,7 @@
         {
           "type": "ics4",
           "id": -32508,
+          "symbol": "ORIGINAL_VISUAL_69637334_N32508",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -2927,6 +3088,7 @@
         {
           "type": "ics4",
           "id": -16583,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16583",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2934,6 +3096,7 @@
         {
           "type": "ics4",
           "id": -16582,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16582",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2941,6 +3104,7 @@
         {
           "type": "ics4",
           "id": -16581,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16581",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2948,6 +3112,7 @@
         {
           "type": "ics4",
           "id": -16580,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16580",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2955,6 +3120,7 @@
         {
           "type": "ics4",
           "id": -16575,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16575",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2962,6 +3128,7 @@
         {
           "type": "ics4",
           "id": -16574,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16574",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2969,6 +3136,7 @@
         {
           "type": "ics4",
           "id": -16573,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16573",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2976,6 +3144,7 @@
         {
           "type": "ics4",
           "id": -16572,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16572",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2983,6 +3152,7 @@
         {
           "type": "ics4",
           "id": -16571,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16571",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2990,6 +3160,7 @@
         {
           "type": "ics4",
           "id": -16570,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16570",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -2997,6 +3168,7 @@
         {
           "type": "ics4",
           "id": -16569,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16569",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3004,6 +3176,7 @@
         {
           "type": "ics4",
           "id": -16541,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16541",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -3011,6 +3184,7 @@
         {
           "type": "ics4",
           "id": -16509,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16509",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3018,6 +3192,7 @@
         {
           "type": "ics4",
           "id": -16506,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16506",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3025,6 +3200,7 @@
         {
           "type": "ics4",
           "id": -16494,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16494",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3032,6 +3208,7 @@
         {
           "type": "ics4",
           "id": -16490,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16490",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -3039,6 +3216,7 @@
         {
           "type": "ics4",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3046,6 +3224,7 @@
         {
           "type": "ics4",
           "id": -16415,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16415",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3053,6 +3232,7 @@
         {
           "type": "ics4",
           "id": -16396,
+          "symbol": "ORIGINAL_VISUAL_69637334_N16396",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -3060,6 +3240,7 @@
         {
           "type": "ics4",
           "id": -5696,
+          "symbol": "ORIGINAL_VISUAL_69637334_N5696",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3067,6 +3248,7 @@
         {
           "type": "ics4",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_69637334_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3074,6 +3256,7 @@
         {
           "type": "ics4",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3081,6 +3264,7 @@
         {
           "type": "ics4",
           "id": -3998,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3998",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3088,6 +3272,7 @@
         {
           "type": "ics4",
           "id": -3996,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3996",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3095,6 +3280,7 @@
         {
           "type": "ics4",
           "id": -3995,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3995",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3102,6 +3288,7 @@
         {
           "type": "ics4",
           "id": -3994,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3994",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3109,6 +3296,7 @@
         {
           "type": "ics4",
           "id": -3993,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3993",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3116,6 +3304,7 @@
         {
           "type": "ics4",
           "id": -3991,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3991",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3123,6 +3312,7 @@
         {
           "type": "ics4",
           "id": -3989,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3989",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3130,6 +3320,7 @@
         {
           "type": "ics4",
           "id": -3988,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3988",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3137,6 +3328,7 @@
         {
           "type": "ics4",
           "id": -3987,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3987",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3144,6 +3336,7 @@
         {
           "type": "ics4",
           "id": -3985,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3985",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3151,6 +3344,7 @@
         {
           "type": "ics4",
           "id": -3984,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3984",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3158,6 +3352,7 @@
         {
           "type": "ics4",
           "id": -3983,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3983",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3165,6 +3360,7 @@
         {
           "type": "ics4",
           "id": -3982,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3982",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3172,6 +3368,7 @@
         {
           "type": "ics4",
           "id": -3981,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3981",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3179,6 +3376,7 @@
         {
           "type": "ics4",
           "id": -3980,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3980",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3186,6 +3384,7 @@
         {
           "type": "ics4",
           "id": -3979,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3979",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3193,6 +3392,7 @@
         {
           "type": "ics4",
           "id": -3978,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3978",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3200,6 +3400,7 @@
         {
           "type": "ics4",
           "id": -3977,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3977",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3207,6 +3408,7 @@
         {
           "type": "ics4",
           "id": -3976,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3976",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3214,6 +3416,7 @@
         {
           "type": "ics4",
           "id": -3975,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3975",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3221,6 +3424,7 @@
         {
           "type": "ics4",
           "id": -3974,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3974",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3228,6 +3432,7 @@
         {
           "type": "ics4",
           "id": -3973,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3973",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3235,6 +3440,7 @@
         {
           "type": "ics4",
           "id": -3972,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3972",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3242,6 +3448,7 @@
         {
           "type": "ics4",
           "id": -3971,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3971",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3249,6 +3456,7 @@
         {
           "type": "ics4",
           "id": -3968,
+          "symbol": "ORIGINAL_VISUAL_69637334_N3968",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3256,6 +3464,7 @@
         {
           "type": "ics4",
           "id": 3,
+          "symbol": "ORIGINAL_VISUAL_69637334_3",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3263,6 +3472,7 @@
         {
           "type": "ics8",
           "id": -32512,
+          "symbol": "ORIGINAL_VISUAL_69637338_N32512",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -3270,6 +3480,7 @@
         {
           "type": "ics8",
           "id": -32511,
+          "symbol": "ORIGINAL_VISUAL_69637338_N32511",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -3277,6 +3488,7 @@
         {
           "type": "ics8",
           "id": -32509,
+          "symbol": "ORIGINAL_VISUAL_69637338_N32509",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -3284,6 +3496,7 @@
         {
           "type": "ics8",
           "id": -32508,
+          "symbol": "ORIGINAL_VISUAL_69637338_N32508",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -3291,6 +3504,7 @@
         {
           "type": "ics8",
           "id": -16583,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16583",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3298,6 +3512,7 @@
         {
           "type": "ics8",
           "id": -16582,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16582",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3305,6 +3520,7 @@
         {
           "type": "ics8",
           "id": -16581,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16581",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3312,6 +3528,7 @@
         {
           "type": "ics8",
           "id": -16580,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16580",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3319,6 +3536,7 @@
         {
           "type": "ics8",
           "id": -16575,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16575",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3326,6 +3544,7 @@
         {
           "type": "ics8",
           "id": -16574,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16574",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3333,6 +3552,7 @@
         {
           "type": "ics8",
           "id": -16573,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16573",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3340,6 +3560,7 @@
         {
           "type": "ics8",
           "id": -16572,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16572",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3347,6 +3568,7 @@
         {
           "type": "ics8",
           "id": -16571,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16571",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3354,6 +3576,7 @@
         {
           "type": "ics8",
           "id": -16570,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16570",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3361,6 +3584,7 @@
         {
           "type": "ics8",
           "id": -16569,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16569",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3368,6 +3592,7 @@
         {
           "type": "ics8",
           "id": -16541,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16541",
           "name": null,
           "attributes": 64,
           "form": "file"
@@ -3375,6 +3600,7 @@
         {
           "type": "ics8",
           "id": -16509,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16509",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3382,6 +3608,7 @@
         {
           "type": "ics8",
           "id": -16506,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16506",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3389,6 +3616,7 @@
         {
           "type": "ics8",
           "id": -16494,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16494",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3396,6 +3624,7 @@
         {
           "type": "ics8",
           "id": -16490,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16490",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -3403,6 +3632,7 @@
         {
           "type": "ics8",
           "id": -16482,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16482",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3410,6 +3640,7 @@
         {
           "type": "ics8",
           "id": -16415,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16415",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3417,6 +3648,7 @@
         {
           "type": "ics8",
           "id": -16396,
+          "symbol": "ORIGINAL_VISUAL_69637338_N16396",
           "name": null,
           "attributes": 0,
           "form": "file"
@@ -3424,6 +3656,7 @@
         {
           "type": "ics8",
           "id": -4000,
+          "symbol": "ORIGINAL_VISUAL_69637338_N4000",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3431,6 +3664,7 @@
         {
           "type": "ics8",
           "id": -3999,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3999",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3438,6 +3672,7 @@
         {
           "type": "ics8",
           "id": -3998,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3998",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3445,6 +3680,7 @@
         {
           "type": "ics8",
           "id": -3996,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3996",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3452,6 +3688,7 @@
         {
           "type": "ics8",
           "id": -3994,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3994",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3459,6 +3696,7 @@
         {
           "type": "ics8",
           "id": -3993,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3993",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3466,6 +3704,7 @@
         {
           "type": "ics8",
           "id": -3991,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3991",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3473,6 +3712,7 @@
         {
           "type": "ics8",
           "id": -3989,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3989",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3480,6 +3720,7 @@
         {
           "type": "ics8",
           "id": -3985,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3985",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3487,6 +3728,7 @@
         {
           "type": "ics8",
           "id": -3984,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3984",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3494,6 +3736,7 @@
         {
           "type": "ics8",
           "id": -3983,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3983",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3501,6 +3744,7 @@
         {
           "type": "ics8",
           "id": -3982,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3982",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3508,6 +3752,7 @@
         {
           "type": "ics8",
           "id": -3981,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3981",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3515,6 +3760,7 @@
         {
           "type": "ics8",
           "id": -3980,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3980",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3522,6 +3768,7 @@
         {
           "type": "ics8",
           "id": -3979,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3979",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3529,6 +3776,7 @@
         {
           "type": "ics8",
           "id": -3978,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3978",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3536,6 +3784,7 @@
         {
           "type": "ics8",
           "id": -3977,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3977",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3543,6 +3792,7 @@
         {
           "type": "ics8",
           "id": -3976,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3976",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3550,6 +3800,7 @@
         {
           "type": "ics8",
           "id": -3975,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3975",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3557,6 +3808,7 @@
         {
           "type": "ics8",
           "id": -3974,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3974",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3564,6 +3816,7 @@
         {
           "type": "ics8",
           "id": -3973,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3973",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3571,6 +3824,7 @@
         {
           "type": "ics8",
           "id": -3972,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3972",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3578,6 +3832,7 @@
         {
           "type": "ics8",
           "id": -3971,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3971",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3585,6 +3840,7 @@
         {
           "type": "ics8",
           "id": -3968,
+          "symbol": "ORIGINAL_VISUAL_69637338_N3968",
           "name": null,
           "attributes": 32,
           "form": "file"
@@ -3592,48 +3848,15 @@
         {
           "type": "ics8",
           "id": 3,
+          "symbol": "ORIGINAL_VISUAL_69637338_3",
           "name": null,
           "attributes": 32,
           "form": "file"
         },
         {
           "type": "kcs#",
-          "id": -16492,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "kcs#",
-          "id": -16491,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "kcs#",
           "id": 0,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "kcs#",
-          "id": 16383,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "kcs4",
-          "id": -16492,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
-        {
-          "type": "kcs4",
-          "id": -16491,
+          "symbol": "ORIGINAL_VISUAL_6B637323_0",
           "name": null,
           "attributes": 96,
           "form": "file"
@@ -3641,58 +3864,38 @@
         {
           "type": "kcs4",
           "id": 0,
+          "symbol": "ORIGINAL_VISUAL_6B637334_0",
           "name": null,
           "attributes": 96,
           "form": "file"
-        },
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Arial MT Cn Lt",
+      "resources": [
         {
-          "type": "kcs4",
-          "id": 16383,
-          "name": null,
-          "attributes": 96,
-          "form": "file"
-        },
+          "type": "sfnt",
+          "id": 10967,
+          "symbol": "EXTRACTED_SFNT_10967",
+          "name": "Arial MT Condensed Light",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Bodoni MT Ultra Bold",
+      "resources": [
         {
-          "type": "pixs",
-          "id": -14335,
+          "type": "sfnt",
+          "id": 10957,
+          "symbol": "EXTRACTED_SFNT_10957",
           "name": null,
-          "attributes": 64,
-          "form": "file"
-        },
-        {
-          "type": "pixs",
-          "id": -14334,
-          "name": null,
-          "attributes": 64,
-          "form": "file"
-        },
-        {
-          "type": "pmap",
-          "id": -14336,
-          "name": null,
-          "attributes": 68,
-          "form": "file"
-        },
-        {
-          "type": "pmap",
-          "id": -10208,
-          "name": null,
-          "attributes": 68,
-          "form": "file"
-        },
-        {
-          "type": "ppat",
-          "id": 42,
-          "name": null,
-          "attributes": 0,
-          "form": "file"
-        },
-        {
-          "type": "wctb",
-          "id": 0,
-          "name": null,
-          "attributes": 64,
-          "form": "file"
+          "attributes": 32,
+          "form": "file",
+          "taken": true
         }
       ]
     },
@@ -3700,15 +3903,9 @@
       "path": "Hard Disk Files/System Folder Files/Fonts/Chicago",
       "resources": [
         {
-          "type": "NFNT",
-          "id": 1025,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
           "type": "sfnt",
           "id": 9217,
+          "symbol": "FONT_BUNDLE_SFNT_9217",
           "name": "Chicago",
           "attributes": 32,
           "form": "file"
@@ -3716,46 +3913,35 @@
       ]
     },
     {
+      "path": "Hard Disk Files/System Folder Files/Fonts/ClosedCaption2",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 5130,
+          "symbol": "EXTRACTED_SFNT_5130",
+          "name": null,
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
       "path": "Hard Disk Files/System Folder Files/Fonts/Courier",
       "resources": [
         {
-          "type": "NFNT",
-          "id": 1026,
-          "name": null,
+          "type": "sfnt",
+          "id": 9217,
+          "symbol": "EXTRACTED_SFNT_9217",
+          "name": "Courier",
           "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "NFNT",
-          "id": 1027,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "NFNT",
-          "id": 1028,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "NFNT",
-          "id": 1029,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
-        },
-        {
-          "type": "NFNT",
-          "id": 1030,
-          "name": null,
-          "attributes": 32,
-          "form": "file"
+          "form": "file",
+          "taken": true
         },
         {
           "type": "sfnt",
           "id": 9218,
+          "symbol": "FONT_BUNDLE_SFNT_9218",
           "name": "Courier Bold",
           "attributes": 32,
           "form": "file"
@@ -3766,18 +3952,120 @@
       "path": "Hard Disk Files/System Folder Files/Fonts/Geneva",
       "resources": [
         {
-          "type": "NFNT",
-          "id": 1031,
-          "name": null,
+          "type": "sfnt",
+          "id": 9217,
+          "symbol": "EXTRACTED_SFNT_9217_2",
+          "name": "Geneva",
           "attributes": 32,
-          "form": "file"
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Gill Sans Condensed Bold",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 15011,
+          "symbol": "EXTRACTED_SFNT_15011",
+          "name": "Gill Sans Condensed Bold",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Helvetica",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 9217,
+          "symbol": "EXTRACTED_SFNT_9217_3",
+          "name": "Helvetica",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
         },
         {
-          "type": "NFNT",
-          "id": 1032,
-          "name": null,
+          "type": "sfnt",
+          "id": 9218,
+          "symbol": "EXTRACTED_SFNT_9218",
+          "name": "Helvetica Bold",
           "attributes": 32,
-          "form": "file"
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Klang MT",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 10840,
+          "symbol": "EXTRACTED_SFNT_10840",
+          "name": "Klang MT",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Monaco",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 9217,
+          "symbol": "EXTRACTED_SFNT_9217_4",
+          "name": "Monaco",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/New Berolina MT",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 10909,
+          "symbol": "EXTRACTED_SFNT_10909",
+          "name": "New Berolina MT",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/New York",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 9217,
+          "symbol": "EXTRACTED_SFNT_9217_5",
+          "name": "New York",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Old English Text MT",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 10897,
+          "symbol": "EXTRACTED_SFNT_10897",
+          "name": "Old English Text MT",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
         }
       ]
     },
@@ -3786,7 +4074,26 @@
       "resources": [
         {
           "type": "sfnt",
+          "id": 9217,
+          "symbol": "EXTRACTED_SFNT_9217_6",
+          "name": "Palatino",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        },
+        {
+          "type": "sfnt",
+          "id": 9218,
+          "symbol": "EXTRACTED_SFNT_9218_2",
+          "name": "Palatino Italic",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        },
+        {
+          "type": "sfnt",
           "id": 9219,
+          "symbol": "FONT_BUNDLE_SFNT_9219",
           "name": "Palatino Bold",
           "attributes": 32,
           "form": "file"
@@ -3794,9 +4101,79 @@
         {
           "type": "sfnt",
           "id": 9220,
+          "symbol": "FONT_BUNDLE_SFNT_9220",
           "name": "Palatino Bold Italic",
           "attributes": 32,
           "form": "file"
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Script MT Bold",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 10890,
+          "symbol": "EXTRACTED_SFNT_10890",
+          "name": "Script MT Bold",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Symbol",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 9217,
+          "symbol": "EXTRACTED_SFNT_9217_7",
+          "name": "Symbol",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        }
+      ]
+    },
+    {
+      "path": "Hard Disk Files/System Folder Files/Fonts/Times",
+      "resources": [
+        {
+          "type": "sfnt",
+          "id": 9217,
+          "symbol": "EXTRACTED_SFNT_9217_8",
+          "name": "Times",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        },
+        {
+          "type": "sfnt",
+          "id": 9218,
+          "symbol": "EXTRACTED_SFNT_9218_3",
+          "name": "Times Bold",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        },
+        {
+          "type": "sfnt",
+          "id": 9219,
+          "symbol": "EXTRACTED_SFNT_9219",
+          "name": "Times Italic",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
+        },
+        {
+          "type": "sfnt",
+          "id": 9220,
+          "symbol": "EXTRACTED_SFNT_9220",
+          "name": "Times Bold Italic",
+          "attributes": 32,
+          "form": "file",
+          "taken": true
         }
       ]
     }

@@ -87,6 +87,7 @@ usage — static scan of 1272 Rust source files
     cannot be ruled out (type looked up with a computed id) 110
     no reference found at all                 21
   of the referenced, 11 are named only by test code
+  excluded from the extract list on this basis: 21 (listed below; they stay in resources.json — the rip-out is separate)
   ambiguous 0 — referenced 0, no reference found 0
   how: a resources.json symbol, a (type, id) literal in the same expression (or, where the id is computed, an id literal in the same file), or a quoted resource name, anywhere in the repository's Rust sources. Tests are included and counted separately.
   not searchable this way: ids computed at runtime, ids read from data or from another resource, names built at runtime, classic software asking for a resource by number, and anything outside this repository. A type that is ever looked up with a computed id is therefore reported as 'cannot be ruled out', never as unused. 'No reference found' is not proof of disuse and must not be treated as one.

@@ -44,6 +44,7 @@ members = [
     "apps/finder",
     "apps/*",
     "tools/mac-build",
+    "tools/mac-extract",
     "tools/extract-list",
     "tools/hfs-b",
     "tools/risc-forks",
