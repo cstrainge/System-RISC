@@ -499,7 +499,18 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               // blessed System Folder was found at all.
                               &["System RISC Boot ROM v1 at 0x200",
                                 "blessed folder 'System Folder' CNID=",
-                                "System: native service table ready", "BOOT_SYSTEM_READY:"],
+                                "System: native service table ready", "BOOT_SYSTEM_READY:",
+                                // The pooled-resource arbiter's invariants, observed
+                                // in the guest: a grant, a refusal that names the
+                                // holder, a second resource granted concurrently, a
+                                // release that frees it, and an owner's lease
+                                // reclaimed as a whole.
+                                "SYSTEM_LEASE_PROBE: granted",
+                                "SYSTEM_LEASE_PROBE: refused resource=",
+                                "holder=",
+                                "SYSTEM_LEASE_PROBE: concurrent",
+                                "SYSTEM_LEASE_PROBE: released",
+                                "SYSTEM_LEASE_PROBE: ok"],
                               true)?];
     if converted.is_some()
     {

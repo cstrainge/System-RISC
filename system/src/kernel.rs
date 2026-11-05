@@ -1595,6 +1595,11 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
     {
         return ptr::null();
     }
+    // The pooled-resource arbiter is new resident machinery, so its invariants
+    // are exercised once here rather than discovered by the first driver that
+    // leases a channel. It prints what it observed, so the boot log carries the
+    // evidence.
+    crate::drivers::leases::self_check();
     serial!("System: native service table ready");
     if info.flags & mac_abi::BOOT_GRAPHICAL == 0
     {
