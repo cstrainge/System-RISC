@@ -31,7 +31,11 @@ const ERROR_ALL: u16 = 0xffff;
 
 const PRESENT_COMMAND_INHIBIT: u32 = 1 << 0;
 const PRESENT_DAT_INHIBIT: u32 = 1 << 1;
-const PRESENT_BUFFER_READ: u32 = 1 << 9;
+/// Present State bit 11, "Data Buffer Read Enable": there are bytes in the
+/// buffer to be read. Bit 9 looks like the same thing and is not -- it is
+/// "Data Transfer Active", set for the whole transfer -- so draining on it
+/// reads words before the card has sent them and yields an all-zero block.
+const PRESENT_BUFFER_READ: u32 = 1 << 11;
 
 const CLOCK_INTERNAL_ENABLE: u32 = 1 << 0;
 const CLOCK_INTERNAL_STABLE: u32 = 1 << 1;
@@ -396,12 +400,11 @@ impl Disk
                                      completed: false,
                                      resp:    0 });
             }
-            // Drain only once the controller says a block is in the buffer.
-            // Buffer Read Enable on its own is not that signal: a controller
-            // that raises it early hands out a whole block of words before the
-            // card has sent them, which reads as 512 zero bytes and is
-            // indistinguishable from a card returning an empty sector.
+            // Drain only once there is actually data to take. Either signal
+            // will do: the Buffer Read Ready interrupt, or the polled
+            // data-available bit in PRESENT_STATE.
             if status & INT_BUFFER_READ_READY != 0
+               || self.read32(PRESENT_STATE) & PRESENT_BUFFER_READ != 0
             {
                 saw_ready = true;
                 while words < SECTOR_BYTES / 4
