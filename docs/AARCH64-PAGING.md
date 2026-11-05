@@ -199,6 +199,73 @@ The current shared paging code still names `mac_riscv_pages::{Entry, Mapper,
 Tables}` directly. That is the remaining leak this section describes, and moving
 the aarch64 encoder in behind the same seam is what closes it.
 
+## Interface both encoders must provide
+
+The geometry is shared, so the two architectures must present one interface to the
+code above them. Shared paging builds and admits address spaces; it must not be
+able to tell which encoder it is talking to.
+
+The seam already exists in `mac-kernel-model::pages`:
+
+```rust
+pub trait PageLayout
+{
+    fn geometry() -> PageGeometry;
+    fn leaf_sizes() -> &'static [u64];
+    fn valid_virtual_range(range: AddressRange) -> bool;
+}
+
+pub trait Architecture: PageLayout
+{
+    type InvocationGate: InvocationGate;
+    type PageTable;
+    type TrapFrame;
+}
+```
+
+and in the table builder:
+
+```rust
+pub trait Tables
+{
+    type Error: core::fmt::Display;
+    fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, Self::Error>;
+    fn load(&self, table: PhysicalAddress, index: usize) -> Result<u64, Self::Error>;
+    fn store(&mut self, table: PhysicalAddress, index: usize, entry: Entry)
+             -> Result<(), Self::Error>;
+}
+```
+
+Both architectures must satisfy these with the same *meaning*, not merely the
+same signatures:
+
+| Operation | Sv39 | AArch64 |
+| --- | --- | --- |
+| `allocate_zeroed` | one 4 KiB frame, zeroed | identical |
+| `load` | the raw 64-bit entry | identical |
+| `store` | encode then publish | identical |
+| root selection | `satp` | `TTBR0_EL1` / `TTBR1_EL1` |
+| flush | `sfence.vma` | `tlbi` + barriers |
+
+Three consequences for the implementation:
+
+1. **`Entry` must not be RISC-V's.** Shared code currently names
+   `mac_riscv_pages::Entry`. The encoded-descriptor type has to move behind the
+   selection point — an associated type of the architecture, or a
+   `machine::page_layout::Entry` — so that shared code stores a descriptor it did
+   not encode and never names an ISA.
+2. **`Mapper` must be generic over the encoder, not over Sv39.** The level-index
+   arithmetic and leaf selection are geometry and stay shared; only the encoding
+   step is per-architecture.
+3. **`root()` and `activate()` stay per-architecture** and already are, in
+   `machine/mmu`. Admission asks `validate_root`/`admission_interrupts_clear`,
+   which are per-architecture and already exist.
+
+A peer crate for AArch64 mirroring `mac-riscv-pages` — same public shape, its own
+descriptor encoding — is the shape this implies. The alternative, a second
+paging implementation beside the shared one, is the duplication this document
+exists to prevent.
+
 ## Open items
 
 - The image window is currently mapped with 2 MiB blocks and the read-back check

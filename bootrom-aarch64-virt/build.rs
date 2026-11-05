@@ -48,6 +48,7 @@ fn main()
                        pub const L2_PHYSMAP: u64 = {};\n\
                        pub const L2_LOWDEV: u64 = {};\n\
                        pub const L2_IMAGE: u64 = {};\n\
+                       pub const L3_BASE: u64 = {};\n\
                        pub const VM_SYSTEM_IMAGE_BASE: u64 = {system_image_base};\n\
                        pub const IMAGE_BASE: u64 = {image_base};\n\
                        pub const IMAGE_BYTES: u64 = {image_bytes};\n",
@@ -56,7 +57,8 @@ fn main()
               format!("{ram_base}u64 + 0x3000"),
               format!("{ram_base}u64 + 0x4000"),
               format!("{ram_base}u64 + 0x5000"),
-              format!("{ram_base}u64 + 0x6000")))
+              format!("{ram_base}u64 + 0x6000"),
+              format!("{ram_base}u64 + 0x1_0000")))
         .expect("memory constants");
     let linker = format!("OUTPUT_ARCH(aarch64)\nENTRY(_start)\nMEMORY {{ ram (rwx) : ORIGIN = \
                           {boot_base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \
