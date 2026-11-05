@@ -14,6 +14,10 @@
 mod riscv64;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use riscv64::*;
+#[cfg(target_arch = "aarch64")]
+mod aarch64;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64::*;
 
 // Current hardware contract; resident lifecycle code does not choose an ISA.
 // Generated from the platform record so a second board states its own target.
