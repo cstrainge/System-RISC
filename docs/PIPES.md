@@ -405,92 +405,111 @@ not a placeholder for anonymous pipes, and the launch path that installs them is
 not converted to this facility. A future Terminal or command-runner profile will
 bind real session endpoints, and that work is separate from this contract.
 
-In v1 the facility's only caller is therefore an application that asks for a pipe
-explicitly. The intended first caller is the NeoPixel extension. No resident
-service and no launcher consumes pipes in v1; the facility is built ahead of that
-caller rather than in response to existing demand.
+In v1 the facility's first named consumer is the NeoPixel extension. Anonymous
+pipes are intended for the `CLAP` executor described in section 10.1; named-pipe
+creation and connection remain ordinary application operations because the
+folder and that extension need them.
 
 ### 10.1 The Terminal and `CLAP` command-line applications
 
-`CLAP` is the file type for command-line applications. A Terminal hosts a
-`CLAP` invocation in a session and connects to it with three anonymous pipes:
-one carrying the child's standard input, one its standard output, one its
-standard error. Three one-way byte transports is the whole requirement; there is
-no framing, no record boundary and no terminal-protocol object inside the pipe.
+`CLAP` is the file type for command-line applications. The Finder associates that
+type with Terminal, so double-clicking a command-line application launches
+Terminal. Terminal is the user interface; it is not the executor. A separate
+System extension registered as an execute handler knows how to execute a `CLAP`.
 
-The intended chain is:
+The layering, in one line: **the Finder binds `CLAP` to Terminal; Terminal asks
+the execute extension; the extension creates the pipes, spawns the application
+and attaches the streams; Terminal reads and writes the handles it is given.**
 
-1. The **Terminal**, an ordinary application, creates the three pipes and keeps
-   one end of each: the writer of the input pipe, the reader of the output pipe,
-   the reader of the error pipe.
-2. The Terminal asks the **process API** to execute the application, naming the
-   three other ends.
-3. An **extension that has registered as an execute handler** gets first pass on
-   executing a file. Seeing that the file's type is `CLAP`, it attaches the three
-   requested pipes and calls the **base exec handler** to take it from there.
-4. The **base exec handler** only knows how to start GUI applications and attach
-   stub pipes.
+A `CLAP` has three stream endpoints, each a one-way byte transport: standard
+input, standard output, standard error. There is no framing, no record boundary
+and no terminal-protocol object inside a pipe.
 
-So the pipes are created by the caller and travel through the process API into
-System, which installs them on the child. The extension does not create them; it
-receives them.
+**Who creates pipes.** The extension creates them, because it is the component
+that spawns the process and attaches its streams. It is System-internal and has
+the internal access path. Terminal receives three handles from the execute
+result and performs only `read`, `write`, `set_blocking` and `close` on them.
 
-This facility supports step 1 as an ordinary application: `create` is a normal
-application operation, not a System-only one. There is no privileged caller, no
-resident caller requirement and no handle kind reserved to System. Any process
-may create a pipe, hold one end and offer the other end to an execute request.
+This replaces an earlier statement of this design, which made the Terminal the
+creator and therefore required anonymous `create` to be available to ordinary
+applications. Under the execute-extension model that requirement is unnecessary:
+Terminal never creates an anonymous pipe. It is withdrawn rather than kept as
+unused freedom, because every unnecessary capability on the application surface
+is a permission question that would eventually have to be answered.
+
+Named-pipe creation is unaffected. `create_named` and `connect` remain ordinary
+application operations: the folder's purpose is that applications offer and reach
+named pipes, and the NeoPixel extension depends on it. Anonymous `create` remains
+an operation in the ABI, because the execute extension's execution context and
+caller identity are not defined yet and this facility has no authority model to
+gate it with; it is not, however, a requirement on ordinary applications, and
+when the execute machinery defines its caller, restricting anonymous creation to
+that caller is that work's decision, not an invented rule here.
 
 **What exists, and what does not.**
 
-- *Exists:* application-created pipes, one reader and one writer end, ordinary
-  ownership and last-close consequences.
+- *Exists:* pipes with one reader and one writer end, ordinary ownership and
+  last-close consequences; handle operations for a process that was handed them.
 - *Does not exist — the execute request carries no pipe handles.* The Process
   Manager's launch call identifies a target only by volume and catalog node ID.
-  It has no handle, endpoint or attachment field, so there is nowhere for a
-  caller to name the three ends it is offering.
-- *Does not exist — a handle cannot leave its process.* A handle is valid only
-  for the process it was issued to; another process's live handle is refused
+  It has no handle, endpoint or attachment field, so there is nowhere for the
+  extension to name the three ends it created.
+- *Does not exist — a handle cannot cross a process boundary.* A handle is valid
+  only for the process it was issued to; another process's live handle is refused
   with `AccessDenied`, and this facility has no transfer, adoption or duplication
-  operation. At the moment the Terminal hands a handle to the process API, the
-  handle still belongs to the Terminal and System may not use it on the child's
-  behalf. Without a transfer rule this architecture cannot work at all, and that
-  is the most important thing to know before anything is built on it.
+  operation. An extension that creates a pipe and installs one end on a child
+  needs a defined adoption, and none exists. Without it this architecture cannot
+  work at all.
 - *Does not exist — a child-side attachment record.* The services table an
   application receives at entry is a single System-wide immutable record holding
   a version, a size, a trap entry point and a capability bit set. There is no
   per-application attachment, and no per-application table to hang one on. The
   standard-library profile binds the null streams and knows nothing about pipes.
+- *Does not exist — a way for Terminal to receive handles.* The execute result
+  has no place to carry the endpoints the extension created, and the SDK has no
+  constructor that adopts a handle delivered by another component. Section 3
+  forbids a process from using another process's handle, so adoption must be an
+  explicit transfer, not a copied number.
 
-**What the execute path would need from this facility.** A complete chain needs
-four things, three of which are outside this facility:
+**What the execute path would need.** Four things, three outside this facility:
 
 1. An execute request that carries three pipe handles in addition to the target
-   identity. (Process API.)
-2. A defined ownership transfer: the handles stop belonging to the requesting
-   process when the execute request commits and belong to the child from then
-   on; on refusal or failure they remain the requester's. This facility's
-   ownership model supplies the rule for what a handle means after transfer, and
-   it is the reason a transfer must be explicit rather than a copied number.
+   identity, from the execute extension to the child. (Process API.)
+2. A defined ownership transfer: the handles stop belonging to the extension when
+   the request commits and belong to the child from then on; on refusal they
+   remain the extension's. This facility supplies what a handle means after
+   transfer, which is why the transfer must be explicit.
 3. A child-side way to read its three endpoints, so the standard-library profile
    can bind real `stdin`/`stdout`/`stderr` instead of the null streams.
    (Platform/runtime.)
-4. The ordinary last-close consequences that already follow from this contract:
-   when the child exits, its ends close, the Terminal's reads see end-of-stream
-   and its writes fail with broken pipe. (This facility.)
+4. The ordinary last-close consequences: when the child exits, its ends close,
+   Terminal's reads see end-of-stream and its writes fail with broken pipe.
+   (This facility.)
+
+**Gates on the Terminal/`CLAP` project, not on this facility.** Two behaviours
+must be closed before the execute path depends on pipes, because a blocked
+process that is never woken is a hang, not a wrong byte, and a hang in a terminal
+looks like a dead machine:
+
+- **No lost wake under load.** Blocking and waking must be exercised with
+  concurrent readers, writers and closes under sustained pressure, beyond the
+  single-writer scenario the transport probe covers.
+- **Cancellation of a blocked caller by process exit.** The cleanup path exists
+  and is exactly what a crashed child will exercise; it must be executed, not
+  merely written.
+
+These are recorded as gates on that dependent work so they cannot be forgotten as
+a footnote to this one.
 
 **Named dependency, not part of this facility.** The execute-handler chain —
-extensions registering for first pass on execution, the extension seeing `CLAP`,
-attaching the requested pipes, and falling through to the base handler — is a
-separate mechanism with its own design. This facility does not build it and
-nothing here implies it. In particular, adding pipes does not add an execute
-chain, and adding an execute chain would not by itself make pipes work.
+extensions registering for first pass on execution, the association of `CLAP`
+with Terminal, and the fallthrough to the base handler — is a separate mechanism
+with its own design. This facility does not build it and nothing here implies it.
 
 **Why the base handler's stub pipes are correct.** The base exec handler starts
 GUI applications and attaches stub pipes. For a GUI application the standard
 streams are placeholders by design, so the null standard-stream profile is the
-correct behaviour rather than a missing implementation. This is the same
-conclusion as section 10, arrived at from the execute side: the stubs belong to
-the GUI profile and stay.
+correct behaviour rather than a missing implementation.
 
 ## 11. Authority
 
@@ -726,9 +745,10 @@ Verified by execution in the guest, not only by compilation: a probe
 application replaces Finder on a cloned disk and runs five cases — echo,
 a 512-byte atomic write into a full pipe that must wait for a reader, would-block
 versus end-of-stream, broken pipe, and name removal. The probe is
-`crates/mac-toolbox/tests/fixtures/pipes-probe` and the transport is
-`scripts/capture_pipes_probe.py`; it records the QEMU command, the serial log and
-its hash.
+`crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
+it and runs it as the `pipes-probe` case, so the marker set is part of the gate
+(18 of 18). `scripts/capture_pipes_probe.py` boots the same artifact standalone
+and records the QEMU command and the serial hash.
 
 Not implemented:
 
@@ -740,5 +760,7 @@ Not implemented:
   the corresponding extension of the canonical icon-reservation allowlist.
 
 The probe covers the transport contract. It does not cover multiple concurrent
-writers, a wake lost under load, cancellation of a blocked caller by process
-exit, or stale and foreign handles. Those remain unverified.
+writers, or stale and foreign handle refusals, which are refinements. Lost wake
+under load and cancellation of a blocked caller by process exit are recorded in
+section 10.1 as gates on the Terminal/`CLAP` project, not as footnotes: a hang
+there is the failure that project cannot absorb.

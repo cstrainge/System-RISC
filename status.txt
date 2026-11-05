@@ -962,3 +962,60 @@ Remaining work
 File Manager merged enumeration + lookup + path + synthetic ids + mutation
 refusals; System Folder/Pipes creation and boot ensure; Finder open-as-connect;
 icon families -30002/-30003 with the deliberate allowlist extension.
+
+Pipe probe is now a boot-check case (18/18) and the Terminal model is corrected
+=============================================================================
+[Pipes / facilities agent] 2026-11-05
+
+Gate change
+-----------
+The transport evidence is no longer a hand run. `cargo xtask boot-check` now
+builds the probe through the public SDK and packages it into
+dist/qemu_riscv/pipes-probe, clones the built image, replaces
+/System Folder/Finder, boots it, and requires the marker
+"PIPES_PROBE_PASS cases=5". The new baseline is 18 ROM boot checks, not 17.
+
+Verified on the committed tip:
+  cargo xtask boot-check --platform qemu_riscv   exit 0, 18 of 18
+  ROM check pipes-probe: passed
+with the serial markers:
+  PIPES_PROBE_ECHO_OK bytes=5
+  PIPES_PROBE_WRITER_ARMED / WRITER_PARKED / MAKE_ROOM
+  PIPES_PROBE_WRITER_RESUMED transferred=512
+  PIPES_PROBE_BLOCK_OK parked=1 resumed=1 eof=1
+  PIPES_PROBE_WOULD_BLOCK_OK / EOF_OK / BROKEN_OK / NAME_OK
+  PIPES_PROBE_PASS cases=5
+
+One integration detail worth keeping: the boot loop stops reading at the
+platform's readiness line. The probe therefore logs DESKTOP_READY last, after the
+pass or fail marker; logging it first truncated the log at readiness and made the
+case look like a hang. That ordering is required by any future probe app.
+
+Terminal/CLAP model corrected
+-----------------------------
+Finder binds the CLAP type to Terminal; Terminal asks a System execute extension;
+the extension creates the pipes, spawns and attaches; Terminal only reads and
+writes handles it is given. The earlier requirement that ordinary applications
+create anonymous pipes is withdrawn: Terminal never creates one under this model,
+so the requirement is unnecessary and would have created a permission question
+for no benefit. Named create/connect stay application operations because the
+folder and NeoPixel need them. Anonymous create remains in the ABI only because
+the execute extension's context and identity do not exist yet and this facility
+has no authority model to gate it; restricting it later is the executor's
+decision.
+
+Still a gap, verified rather than assumed: the execute request carries no pipe
+handles, a handle cannot cross a process boundary, there is no child attachment
+record, and there is no way for Terminal to adopt handles delivered by the
+extension.
+
+Dependency gates recorded in docs/PIPES.md section 10.1, not just here:
+- no lost wake under load, exercised with concurrent readers/writers/closes;
+- cancellation of a blocked caller by process exit.
+Both must close before the Terminal/CLAP path depends on pipes.
+
+Remaining
+---------
+File Manager merged enumeration/lookup/path/synthetic ids/mutation refusals,
+System Folder/Pipes creation and boot ensure, Finder open-as-connect, icon
+families -30002/-30003 with the allowlist extension.

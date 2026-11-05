@@ -242,18 +242,21 @@ fn named(system: &System<'_>) -> Result<(), Line>
 
 fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
 {
-    system.log("DESKTOP_READY: pipes probe\n")?;
     match run(system)
     {
         Ok(()) =>
         {
             system.log("PIPES_PROBE_PASS cases=5\n")?;
+            // The boot check stops reading at the platform's readiness line, so
+            // it must follow every outcome marker, never precede them.
+            system.log("DESKTOP_READY: pipes probe pass\n")?;
             Ok(())
         }
         Err(line) =>
         {
             system.log(line.text())?;
             system.log("\n")?;
+            system.log("DESKTOP_READY: pipes probe failed\n")?;
             Err(Error::BadArgument)
         }
     }
