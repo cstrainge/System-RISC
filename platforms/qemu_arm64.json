@@ -1,6 +1,7 @@
 {
   "name": "qemu_arm64",
   "rust_target": "aarch64-unknown-none",
+  "std_target": "aarch64-unknown-systemrisc",
   "guest_linker": "platforms/linker/aarch64.ld",
   "toolchain": "rust/sdk.json",
   "llvm_profile": "neon",

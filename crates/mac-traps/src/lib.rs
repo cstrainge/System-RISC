@@ -9,9 +9,7 @@ pub mod application_heap;
 pub mod native_threads;
 pub mod native_exit;
 pub mod entropy;
-#[cfg(target_arch = "riscv64")]
 pub mod emergency;
-#[cfg(target_arch = "riscv64")]
 pub mod user_callbacks;
 pub mod address_wait;
 mod error;
