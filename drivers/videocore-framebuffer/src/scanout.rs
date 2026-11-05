@@ -1,14 +1,13 @@
 //! Scan-out geometry, the copy plan, and the two seams the engine needs from a
 //! machine: the firmware mailbox and the cache.
 //!
-//! The firmware owns the scan-out address. QEMU's `bcm2835_fb` proves it for the
-//! property channel: every reconfigure writes `newconf.base = vcram_base +
-//! BCM2835_FB_OFFSET` unconditionally, so a request cannot choose where the
-//! display fetches from. The surface System draws into is therefore module-owned
-//! Device DMA storage, and presenting means copying the damaged rows into the
-//! firmware buffer and cleaning them to the point of coherency. That copy is the
-//! honest cost of the property channel; a plane-based HVS path removes it, and
-//! that hardware is not modelled here.
+//! The firmware owns the scan-out address. The property channel reports the
+//! buffer's base and pitch, and offers no tag that sets either, so a request
+//! cannot choose where the display fetches from. The surface System draws into
+//! is therefore module-owned Device DMA storage, and presenting means copying
+//! the damaged rows into the firmware buffer and cleaning them to the point of
+//! coherency. That copy is the honest cost of the property channel; a
+//! plane-based HVS path is what removes it.
 use mac_video_interface::{Damage, Size};
 
 /// The drawing surface System hands this driver is XRGB32, so the mode's depth
@@ -156,8 +155,9 @@ pub trait Platform
     /// This is the cache capability: the machine adapter issues the
     /// architecture's maintenance, and a host build records the range instead.
     /// It is not optional. A linear framebuffer is exactly where a cached write
-    /// can sit unseen by the display engine, and a no-op here would only look
-    /// correct on an emulator that models no caches.
+    /// can sit unseen by the display engine, and a no-op here would appear
+    /// correct only where the cache never holds data, which is not this
+    /// hardware.
     fn clean(&mut self, frame: &Frame, offset: usize, bytes: usize);
 
     /// A monotonic microsecond reading from the system's clock service.
