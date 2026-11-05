@@ -1032,5 +1032,56 @@ stamping a fabricated date. A machine with no time source does not get to invent
 one. A settable epoch belongs there later, with the system timer supplying
 elapsed time.
 
+Machine HAL extraction progress - 2026-11-04
+--------------------------------------------
+The RISC-V machine tree has fallen from 25,029 lines to 9,796, and the aarch64
+build now fails on only two modules: traps (59 references) and monitor (41).
+
+Shared above the selection point, each with no assembly:
+  scheduler (7,189 lines)  paging (5,537)  emergency (365)  memory  io  dma
+  pages  smp  video  input  driver_devices
+
+Per-architecture primitives, written once each:
+  clock    wall-clock absence, with the reasoning
+  cpu      barrier, terminal_stack, timer deadline, timer mask, wait,
+           ticks, timer compare, trap vector install, vector length,
+           stack pointer, per-CPU control pointer, breakpoint,
+           software-interrupt clear and enable, interrupt enables
+  interrupts  mask, permanent disable, enabled
+  mmu      root, write_root, flush_translations, activate, status,
+           read/write/zero of words and bytes for user copies
+  power    terminal finisher using the record's address and values
+
+What made this possible: the assembly was never where it looked. scheduler's
+three blocks were timer and idle primitives, not context switching. paging's
+fifteen were root selection and user-copy load/store, not page-table logic.
+Extracting those left 12,500 lines of neutral logic that only needed lifting.
+
+Where the extraction stops, and why
+-----------------------------------
+traps cannot move as it stands. traps.rs embeds
+global_asm!(include_str!("traps.S")) parameterised by TrapFrame field offsets,
+so the trap entry assembly and the frame layout are one unit: the assembly writes
+the frame the Rust type describes. Sharing it needs TrapFrame and the entry split
+into the architecture module with dispatch above it, which is a design change
+rather than a file move. The twenty assembly sites in traps.rs and traps/hart.rs
+have already been routed through the cpu and mmu primitives, so that split is the
+only remaining work there.
+
+monitor is the CLINT-based inter-processor transport. AArch64 uses PSCI for
+secondary startup and the GIC for software interrupts, so this needs a designed
+abstraction rather than a translation. It is not on the single-hart boot path:
+the qemu_arm64 record declares maximum_active_harts = 1.
+
+Cost of sharing, stated honestly
+--------------------------------
+Each module that moved above the selection point widened whatever its new shared
+caller reaches for: emergency needed TerminalClaim, TerminalOwnership,
+TerminalWinner and stop_peers; paging needed its restricted visibilities widened
+and display's front-buffer entry points; scheduler needed with_system_maintenance,
+entry_lost and TrapFrame's cause and value fields. Each is a small encapsulation
+loss bought with reuse, and the alternative was duplicating thousands of lines per
+architecture.
+
 
 
