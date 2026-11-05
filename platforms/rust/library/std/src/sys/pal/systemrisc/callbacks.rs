@@ -38,7 +38,14 @@ unsafe extern "C" fn thread_return() -> !
         super::failure(mac_abi::BAD_ABI, b"native child completion refused");
     }
     // A canonical thread completion never returns to an unowned return PC.
+    // `unimp` is RISC-V's deliberate illegal instruction; AArch64's equivalent
+    // is a software breakpoint, which takes the same terminal path.
+    #[cfg(target_arch = "riscv64")]
     unsafe {
         core::arch::asm!("unimp", options(noreturn));
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(noreturn));
     }
 }
