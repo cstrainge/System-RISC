@@ -68,9 +68,9 @@ source confirms.
 | DMA controller | `0x3F007000` | `0xf00` | 16–28 (see note) | ARM | DMA + **timed output** (the feeder) | 15 channels, each with a control block in memory. **A channel is the feeder** that keeps a serialiser supplied without a CPU instruction between elements; it is not itself a serialiser. Channels 0–10 raise interrupts 16–26, channels 11–14 share 27, and 28 is shared across all of them. The board's description gives the ARM channels 0, 2, 4, 5 and 8–14; the firmware keeps the others, so a driver takes a channel from the available set rather than assuming all fifteen. Declared in the record. |
 | Mailbox | `0x3F00B000` | 4 KiB | 1 | ARM | resident firmware channel | Four FIFOs (one per ARM core to VideoCore, one VideoCore to all ARMs). The property channel runs inside FIFO 0 and is the only supported way to ask the firmware for clocks, power, framebuffer and memory. Declared in the record as `bcm2835-mbox`. |
 | VideoCore framebuffer | (no ARM-visible registers) | — | — | VideoCore | **VIDO** (VideoCore framebuffer driver) | The ARM configures and queries it entirely through mailbox property tags. The scan-out base is chosen by the firmware and cannot be selected by the ARM, which is why a driver must copy into the buffer the firmware reports. |
-| HVS (hardware video scaler) | `0x3F400000` | 4 KiB | 65 | VideoCore | — | Composes planes and selects the display composition. The address is not modelled by the emulator at all, and the firmware owns the display list. Should be marked VideoCore-owned in the record rather than merely absent. |
+| HVS (hardware video scaler) | `0x3F400000` | 4 KiB | 65 | VideoCore | — | Composes planes and selects the display composition. The emulator models no region here at all, so a write reaches nothing and returns zero; the firmware owns the display list. This is the one block in this table whose absence from the claimable inventory is a decision rather than an omission. |
 | Pixel valve, scaler, dither, HDMI | `0x3F902000` and the `0x3F800000`-based MMR block | — | 65 | VideoCore | — | The HDMI display pipeline. Only meaningful if the firmware is bypassed for the display, which is not supported here. |
-| V3D (3D engine) | `0x3FC00000` | 64 KiB | 66, 67 | VideoCore | — | Three interrupt lines (job done, MMU error, flo). The firmware runs the 3D stack; the ARM has no supported way to submit jobs. |
+| V3D (3D engine) | `0x3FC00000` | `0x1000` | 10 (bank 1, bit 10) | ARM-reachable | 3D submission (future) | **The ARM submits jobs to this block** — the reference driver for this silicon does exactly that, so it is not firmware-exclusive. The address derives from the bus view: `0x7EC00000 − 0x7E000000 + 0x3F000000 = 0x3FC00000`, using the same translation the RNG (`0x7E104000` → `0x3F104000`) and the HVS (`0x7E400000` → `0x3F400000`) confirm. The interrupt is `<1 10>` in the SoC interrupt controller's bank-and-bit form: bank 1, bit 10. |
 | TXP (texture pixel processor) | inside the MMR block | — | 65 | VideoCore | — | Legacy 2D path. Superseded by V3D, still owned by the firmware. |
 | SMI (secondary memory interface) | `0x3F600000` | 4 KiB | 43, 44 | ARM | SMI | A parallel bus for things like a camera/VGA interface. No consumer on a stock board; listed so nobody wires it by accident. Not in the record. |
 | Clock manager (CPRMAN) | `0x3F101000` | `0x2000` | **none** | ARM (read), VideoCore (rate policy) | resident | Divides the oscillators for every peripheral and for the ARM cores, and is therefore what a timed output's element rate is eventually derived from. A driver may set a peripheral's own divider through its control registers, and may query or ask for rates through the mailbox; it must not reprogram the ARM/AXI/display clocks the firmware is using. Two pages, so it is declared as two claimable ranges of one device; it raises no interrupt. |
@@ -155,10 +155,12 @@ broader than the validation was:
   two pages; it now claims one page-sized range per page, while the rule that one
   claimed page carries at most one device window is unchanged — that rule is
   about one claimant per page, which the AUX block still obeys.
-5. **HVS (`0x3F400000`) and V3D (`0x3FC00000`).** These should be recorded as
-   VideoCore-owned so that their absence is a stated decision rather than an
-   omission. The resident inventory should be able to express "exists, not
-   claimable by a module".
+5. **HVS (`0x3F400000`).** It should be recorded as VideoCore-owned so that its
+   absence from the claimable inventory is a stated decision rather than an
+   omission: the resident inventory needs to be able to say "exists, not
+   claimable by a module". **V3D (`0x3FC00000`) is not in that category** — the
+   ARM drives it — so it belongs in the claimable inventory like any other ARM
+   peripheral, and is declared there.
 6. **The `hardware.devices` list and `mmio_devices` list describe different
    things and disagree about naming.** `hardware.devices` is the board's physical
    inventory with functional kinds (`uart`, `storage`, `display`, `entropy`,

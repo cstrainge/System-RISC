@@ -620,6 +620,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-pool-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
 name = "mac-power-interface"
 version = "0.1.0"
 dependencies = [
@@ -797,6 +804,13 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-driver",
+]
+
+[[package]]
+name = "mac-wave-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
 ]
 
 [[package]]
@@ -1154,6 +1168,19 @@ dependencies = [
  "bytemuck",
  "core_maths",
  "read-fonts",
+]
+
+[[package]]
+name = "spi0-wave"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-pool-interface",
+ "mac-wave-interface",
+ "serde_json",
+ "spinning_top",
 ]
 
 [[package]]

@@ -1,0 +1,16 @@
+{
+  "identity": "7731a0000000000000000000000000c0",
+  "stack_bytes": 16384,
+  "interfaces": [
+    { "class": "WAVE", "version": 1, "request_schema": 1, "reply_schema": 1,
+      "max_request": 2060, "max_reply": 16, "exclusive": true, "serialized": true,
+      "capabilities": 63 }
+  ],
+  "dependencies": [
+    { "class": "POOL", "version": 1 }
+  ],
+  "services": [ { "class": "VDEV", "version": 1 } ],
+  "matches": [
+    { "bus": "MMIO", "value": "6272636d2c7370693000000000000000", "mask": "ffffffffffffffffffffffffffffffff" }
+  ]
+}
