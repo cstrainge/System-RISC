@@ -45,6 +45,7 @@ dependencies = [
  "mac-build",
  "mac-filesystem",
  "mac-hfs",
+ "mac-sdhci",
  "serde_json",
 ]
 
@@ -622,6 +623,13 @@ name = "mac-scrap-extension-interface"
 version = "0.1.0"
 dependencies = [
  "mac-module",
+]
+
+[[package]]
+name = "mac-sdhci"
+version = "0.1.0"
+dependencies = [
+ "mac-block",
 ]
 
 [[package]]
