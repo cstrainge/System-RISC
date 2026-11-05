@@ -9,22 +9,22 @@
   ],
   "memory": {
     "page_bytes": 4096,
-    "ram_base": "0x0",
+    "ram_base": "0x40000000",
     "minimum_ram_bytes": "0x3f000000",
     "boot": {
-      "base": "0x80000",
+      "base": "0x40080000",
       "bytes": "0xb0000"
     },
     "firmware_heap": {
-      "base": "0x130000",
+      "base": "0x40130000",
       "bytes": "0x800000"
     },
     "images": {
-      "base": "0x930000",
+      "base": "0x40930000",
       "bytes": "0x10000000"
     },
     "display_scratch": {
-      "base": "0x10930000",
+      "base": "0x50930000",
       "bytes": "0x1b00000"
     },
     "display": {
@@ -33,10 +33,10 @@
       "max_width": 1920,
       "max_height": 1200
     },
-    "application_relocation_base": "0x3100000",
-    "application_primary_base": "0x2000000",
+    "application_relocation_base": "0x43100000",
+    "application_primary_base": "0x42000000",
     "definitions": {
-      "base": "0x2100000",
+      "base": "0x42100000",
       "bytes": "0x1000000"
     },
     "fdt_tail_bytes": "0x200000",
@@ -100,86 +100,15 @@
       "start": "0xffffffd010000000",
       "end": "0xffffffd020000000"
     },
-    "physmap_physical_base": "0x0"
+    "physmap_physical_base": "0x40000000"
   },
   "scheduling": {
     "maximum_active_harts": 1,
     "quantum_microseconds": 250,
     "callback_budget_microseconds": 1000
   },
-  "fatal_shutdown": {
-    "device": "bcm2835-pm",
-    "offset": 28,
-    "failure_value": 1509949472,
-    "restart_value": 1509949488
-  },
-  "mmio_devices": [
-    {
-      "id": "bcm2835-pm",
-      "bus": "MMIO",
-      "key": "6272636d2c62636d323833352d706d00",
-      "address": "0x3f100000",
-      "bytes": 4096,
-      "interrupt": 0,
-      "flags": 2
-    },
-    {
-      "id": "pl011",
-      "bus": "MMIO",
-      "key": "61726d2c706c30313100000000000000",
-      "address": "0x3f201000",
-      "bytes": 4096,
-      "interrupt": 57,
-      "flags": 2
-    },
-    {
-      "id": "sdhci",
-      "bus": "MMIO",
-      "key": "6272636d2c7364686369000000000000",
-      "address": "0x3f300000",
-      "bytes": 4096,
-      "interrupt": 62,
-      "flags": 2
-    },
-    {
-      "id": "bcm2835-mbox",
-      "bus": "MMIO",
-      "key": "6272636d2c6d626f7800000000000000",
-      "address": "0x3f00b000",
-      "bytes": 4096,
-      "interrupt": 1,
-      "flags": 2
-    },
-    {
-      "id": "bcm2835-rng",
-      "bus": "MMIO",
-      "key": "6272636d2c62636d323833352d726e67",
-      "address": "0x3f104000",
-      "bytes": 4096,
-      "interrupt": 61,
-      "flags": 2
-    },
-    {
-      "id": "bcm2835-systimer",
-      "bus": "MMIO",
-      "key": "6272636d2c73797374696d6572000000",
-      "address": "0x3f003000",
-      "bytes": 4096,
-      "interrupt": 0,
-      "flags": 2
-    },
-    {
-      "id": "bcm2836-l1-intc",
-      "bus": "MMIO",
-      "key": "6272636d2c6c312d696e746300000000",
-      "address": "0x40000000",
-      "bytes": 4096,
-      "interrupt": 0,
-      "flags": 2
-    }
-  ],
   "emulation": {
-    "description": "QEMU virt board, 4x Cortex-A72, 2 GiB RAM, virtio-MMIO devices with a virtio GPU and ramfb display",
+    "description": "QEMU virt board, 4x Cortex-A72, 2 GiB RAM at 0x40000000, virtio-MMIO devices with a virtio GPU and ramfb display",
     "family": "qemu",
     "binary": "qemu-system-aarch64",
     "machine": "virt",
@@ -286,6 +215,6 @@
   "install": {
     "description": "No aarch64 guest set is produced yet; this record describes the virtual machine the aarch64 System is being brought up on",
     "set": "none",
-    "reason": "No aarch64 guest set is produced yet; the System kernel and its applications are still being ported to this architecture."
+    "reason": "The definitions and applications are std programs, and no aarch64 std target exists: the only std_target in the tree is riscv64-unknown-systemrisc. The aarch64 std platform layer has to land before this set can be packaged."
   }
 }
