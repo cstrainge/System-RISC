@@ -1522,6 +1522,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "videocore-framebuffer"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-video-interface",
+ "mac-videocore-fb",
+ "spinning_top",
+]
+
+[[package]]
 name = "virtio-gpu"
 version = "0.1.0"
 dependencies = [
