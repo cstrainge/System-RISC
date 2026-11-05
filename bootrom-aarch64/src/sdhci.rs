@@ -391,5 +391,12 @@ fn capacity_sectors(csd: [u32; 4]) -> Result<u64>
         let bytes = (u64::from(c_size) + 1) * multiplier * block;
         return Ok(bytes / SECTOR_BYTES as u64);
     }
-    Err(Error::Malformed("sdhci card reports an unsupported CSD structure"))
+    Err(Error::Malformed(if structure == 2
+    {
+        "sdhci card reports CSD structure 2, which this reader does not decode"
+    }
+    else
+    {
+        "sdhci card reports CSD structure 3, which this reader does not decode"
+    }))
 }
