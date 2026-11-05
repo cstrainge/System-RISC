@@ -425,6 +425,11 @@ fn pipes_probe_image(workspace: &Workspace, destination: &Path) -> Result<()>
         let old = volume.lookup(folder, "Finder")?;
         volume.remove(old.id, hfs_b::now()?)?;
         hfs_b::import_macbinary(volume, folder, &probe)?;
+        // The boot-check medium is attached read-only, so the folder the probe
+        // enumerates has to exist already. It is the same directory the guest
+        // would create, and the probe still creates it when a writable volume
+        // lacks one.
+        volume.create(folder, "Pipes", true, hfs_b::now()?)?;
         Ok(())
     })
 }
@@ -527,7 +532,21 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &directory,
                     "pipes-probe",
                     &[probe_image.clone()],
-                    &["PIPES_PROBE_PASS cases=5"],
+                    // The pipe transport and the Pipes folder are one guest
+                    // case: the folder markers are the added coverage, not a
+                    // separate boot-check case.
+                    &["PIPES_PROBE_ECHO_OK",
+                      "PIPES_PROBE_BLOCK_OK",
+                      "PIPES_PROBE_WOULD_BLOCK_OK",
+                      "PIPES_PROBE_EOF_OK",
+                      "PIPES_PROBE_BROKEN_OK",
+                      "PIPES_PROBE_NAME_OK",
+                      "PIPES_FOLDER_LIST_OK items=1",
+                      "PIPES_FOLDER_LOOKUP_OK",
+                      "PIPES_FOLDER_STABLE_OK",
+                      "PIPES_FOLDER_ANON_ABSENT_OK",
+                      "PIPES_FOLDER_REFUSED_OK refusals=11",
+                      "PIPES_PROBE_PASS cases=5"],
                     true)?);
     if converted.is_some()
     {

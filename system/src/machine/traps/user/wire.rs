@@ -532,7 +532,8 @@ wire_struct!(mac_abi::files::DirectoryScanCursor { revision:  u64,
                                                    index:     u32,
                                                    traversed: u32,
                                                    state:     u32,
-                                                   reserved:  u32 });
+                                                   reserved:  u32,
+                                                   registry:  u32 });
 
 wire_struct!(mac_abi::files::DesktopScanCursor { volume:    u32,
                                                  state:     u32,
