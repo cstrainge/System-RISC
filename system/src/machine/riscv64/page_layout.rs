@@ -16,6 +16,7 @@ pub(crate) use mac_riscv_pages::Sv39;
 /// this module so it never names a format.
 pub(crate) use mac_riscv_pages::{Decoded, Entry, LeafSize};
 pub(crate) use mac_riscv_pages::mapping;
+pub(crate) use mac_riscv_pages::walk;
 
 /// The encoder's failure type, exposed through the selection point so shared
 /// paging reports a refusal without naming a format.
@@ -50,6 +51,16 @@ pub(crate) fn leaf_sizes() -> &'static [u64]
 pub(crate) fn valid_virtual_range(range: AddressRange) -> bool
 {
     Sv39::valid_virtual_range(range)
+}
+
+pub(crate) fn lower_half_end() -> u64
+{
+    1 << 38
+}
+
+pub(crate) fn upper_half_start() -> u64
+{
+    u64::MAX << 38
 }
 
 /// The name the admission diagnostic reports, so a refused root says which
