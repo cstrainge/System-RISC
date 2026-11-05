@@ -50,8 +50,27 @@ once without. Photograph screen 1.
 
 The checks are: mailbox board revision, firmware revision, core clock, ARM
 memory size, framebuffer acquire, framebuffer write/read-back, SDHCI sector 0
-and its MBR, the system timer, the MMU/caches, the cleaned read-back, and the
-uncleaned read-back.
+and its MBR, the system timer, the MMU/caches, the cleaned read-back, the
+uncleaned read-back, SPI0 claim and divider, byte length and shift width,
+non-power-of-two divider, DMA-fed pacing, SPI completion, DMA channel lease,
+a second acquisition of the same channel, and the clean-before-DMA omission.
+
+## Hardware the checks need
+
+The eleven original checks need the board and, for `sdhci`, a card in the slot.
+The SPI0 and DMA checks need the SoC's SPI0 and DMA blocks and nothing external:
+
+- `spi-claim`, `spi-len`, `spi-div`, `spi-pace`, `spi-done`, `dma-lease`,
+  `dma-2nd` and `dma-clean` use the SPI0 FIFO, the DMA engine and RAM. No jumper,
+  strip or analyser is required.
+- The byte-length check counts words from the receive FIFO, so it works with
+  MISO floating. It does **not** compare transmitted and received data; that
+  would need a jumper from GPIO10 (MOSI, pin 19) to GPIO9 (MISO, pin 21). The
+  test does not configure the GPIO alternate functions, so an attached strip or
+  analyser sees nothing on the header even though the block is shifting.
+- An LED strip is not required. If one is attached, the test emits arbitrary
+  bytes to it; that is harmless and not part of the result.
+- A check whose block does not answer is reported as `skip`, not omitted.
 
 ## Reading the result
 
@@ -107,11 +126,18 @@ Use forward slashes in `file:` paths. `file:C:\path` is accepted and silently
 writes nothing. Keep the ELF path free of spaces: `Start-Process` drops their
 quoting and leaves an empty log.
 
-QEMU cannot answer two things, and the run says so:
+QEMU cannot answer these, and the run says so:
 
 - **Cache coherence.** TCG does not model the data caches, so `cache-dirty`
   reports `fail: no-drift` and the demo's uncleaned QR is visible. On real
   silicon the uncleaned QR stays in the cache and the screen keeps the previous
-  frame; that is the point of the demonstration.
+  frame; that is the point of the demonstration. `dma-clean` similarly reports
+  `clean not observable` there.
 - **Real firmware facts.** Board revision, clock rates and the ARM memory size
   are QEMU's model of the board, not the board's firmware.
+- **SPI0 timing.** QEMU models the registers but not the divider or the FIFO
+  pacing. `spi-len` reports the model's 8-bit shift, `spi-div` cannot show the
+  non-power-of-two ratio, and `spi-pace` compares a paced transfer against an
+  unpaced one. `dma-2nd` reports `too-fast` because the model completes a
+  memory copy before the CPU can observe the channel active. These are the
+  checks the board run exists to answer.

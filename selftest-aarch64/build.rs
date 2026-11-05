@@ -57,35 +57,40 @@ fn main()
                       & !0x1f_ffff;
     let display = &record["memory"]["display"];
     let boot = &record["memory"]["boot"];
-    let dma_pool = record["mmio_devices"].as_array()
-                                         .expect("mmio_devices")
-                                         .iter()
-                                         .find(|device| device["id"] == "bcm2835-dma")
-                                         .and_then(|device| device["pool"].as_u64())
-                                         .expect("the DMA window must declare the ARM channel pool")
-        as u32;
+    // The aarch64 platform record is the OS's inventory and is owned by the
+    // kernel lane; it does not declare the SPI0, DMA or power-management
+    // windows. This temporary self-test needs them, so it states them here
+    // instead of extending a shared record. They are BCM2837 board facts, and
+    // the record remains the authority for everything the OS consumes.
+    const SPI0_BASE: u64 = 0x3f20_4000;
+    const DMA_BASE: u64 = 0x3f00_7000;
+    const PM_BASE: u64 = 0x3f10_0000;
+    /// Channels 0, 2, 4, 5 and 8 through 14: the set the firmware leaves the
+    /// ARM. A channel outside this set accepts a control block and delivers it
+    /// somewhere else, which is why it is never considered.
+    const DMA_POOL: u32 = 0x7f35;
     let out = Path::new(&env::var("OUT_DIR").expect("Cargo supplies OUT_DIR")).to_path_buf();
-    let facts = format!("pub const PLATFORM_NAME: &str = \"{name}\";\npub const MAILBOX_BASE: \
-                         usize = {mailbox:#x};\npub const PL011_BASE: usize = {pl011:#x};\npub \
-                         const SDHCI_BASE: usize = {sdhci:#x};\npub const SYSTIMER_BASE: usize = \
-                         {timer:#x};\npub const SPI0_BASE: usize = {spi0:#x};\npub const DMA_BASE: \
-                         usize = {dma:#x};\npub const DMA_POOL: u32 = {dma_pool:#x};\npub const \
-                         PM_BASE: usize = {pm:#x};\npub const DECLARED_RAM_BASE: u64 = \
-                         {ram_base:#x};\npub \
-                         const DECLARED_RAM_BYTES: u64 = {ram_bytes:#x};\npub const DEVICE_BASE: \
-                         u64 = {device_base:#x};\npub const DISPLAY_WIDTH: u32 = {width};\npub \
-                         const DISPLAY_HEIGHT: u32 = {height};\n",
-                        mailbox = device("gpio-mailbox"),
-                        pl011 = device("uart"),
-                        sdhci = device("storage"),
-                        timer = mmio("bcm2835-systimer"),
-                        spi0 = mmio("bcm2835-spi0"),
-                        dma = mmio("bcm2835-dma"),
-                        pm = mmio("bcm2835-pm"),
-                        ram_base = number(&hardware["ram"]["base"]),
-                        ram_bytes = number(&hardware["ram"]["bytes"]),
-                        width = display["width"].as_u64().expect("memory.display.width"),
-                        height = display["height"].as_u64().expect("memory.display.height"));
+    let facts =
+        format!("pub const PLATFORM_NAME: &str = \"{name}\";\npub const MAILBOX_BASE: usize = \
+                 {mailbox:#x};\npub const PL011_BASE: usize = {pl011:#x};\npub const SDHCI_BASE: \
+                 usize = {sdhci:#x};\npub const SYSTIMER_BASE: usize = {timer:#x};\npub const \
+                 SPI0_BASE: usize = {spi0:#x};\npub const DMA_BASE: usize = {dma:#x};\npub const \
+                 DMA_POOL: u32 = {dma_pool:#x};\npub const PM_BASE: usize = {pm:#x};\npub const \
+                 DECLARED_RAM_BASE: u64 = {ram_base:#x};\npub const DECLARED_RAM_BYTES: u64 = \
+                 {ram_bytes:#x};\npub const DEVICE_BASE: u64 = {device_base:#x};\npub const \
+                 DISPLAY_WIDTH: u32 = {width};\npub const DISPLAY_HEIGHT: u32 = {height};\n",
+                mailbox = device("gpio-mailbox"),
+                pl011 = device("uart"),
+                sdhci = device("storage"),
+                timer = mmio("bcm2835-systimer"),
+                spi0 = SPI0_BASE,
+                dma = DMA_BASE,
+                dma_pool = DMA_POOL,
+                pm = PM_BASE,
+                ram_base = number(&hardware["ram"]["base"]),
+                ram_bytes = number(&hardware["ram"]["bytes"]),
+                width = display["width"].as_u64().expect("memory.display.width"),
+                height = display["height"].as_u64().expect("memory.display.height"));
     fs::write(out.join("platform-facts.rs"), facts).expect("platform facts");
     fs::write(out.join("platform-hardware.inc"),
               format!(".equ PL011_BASE, {:#x}\n", device("uart"))).expect("hardware include");

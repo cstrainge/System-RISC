@@ -49,12 +49,12 @@ impl ControlBlock
     pub fn memory_copy(source: usize, destination: usize, bytes: usize) -> Self
     {
         Self { transfer_information: TI_SRC_INC | TI_DEST_INC | TI_WAIT_RESP,
-               source: bus(source),
-               destination: bus(destination),
-               length: bytes as u32,
-               stride: 0,
-               next: 0,
-               reserved: [0; 2] }
+               source:               bus(source),
+               destination:          bus(destination),
+               length:               bytes as u32,
+               stride:               0,
+               next:                 0,
+               reserved:             [0; 2] }
     }
 
     pub fn spi_write(source: usize, fifo_bus: u32, bytes: usize) -> Self
@@ -63,12 +63,12 @@ impl ControlBlock
                                      | TI_SRC_INC
                                      | TI_DEST_DREQ
                                      | TI_WAIT_RESP,
-               source: bus(source),
-               destination: fifo_bus,
-               length: bytes as u32,
-               stride: 0,
-               next: 0,
-               reserved: [0; 2] }
+               source:               bus(source),
+               destination:          fifo_bus,
+               length:               bytes as u32,
+               stride:               0,
+               next:                 0,
+               reserved:             [0; 2] }
     }
 }
 

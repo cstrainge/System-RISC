@@ -44,7 +44,7 @@ impl Spi0
 {
     pub fn new() -> Self
     {
-        Self { base: platform::SPI0_BASE,
+        Self { base:       platform::SPI0_BASE,
                shift_bits: 0 }
     }
 
@@ -93,42 +93,37 @@ impl Spi0
         Ok(())
     }
 
-    /// Sends 32 bytes and counts what came back. The count reveals whether the
-    /// block shifts 8 bits or 32 bits per FIFO entry, which is the fact the
-    /// "n words is 4n bytes" rule depends on.
+    /// Sends eight bytes and counts what came back. The count reveals whether
+    /// the block shifts 8 bits or 32 bits per FIFO entry, which is the fact the
+    /// "n words is 4n bytes" rule depends on. Eight entries cannot overflow the
+    /// transmit FIFO, so both widths complete without a stall.
     pub fn probe_shift(&mut self) -> Result<usize, &'static str>
     {
         self.clear_fifos();
         self.write32(CLK, 1000);
-        self.write32(DLEN, 32);
+        self.write32(DLEN, 8);
         self.write_cs(CS_REN);
         self.write_cs(CS_REN | CS_TA);
         let mut received = 0usize;
-        for index in 0..32
+        for index in 0..8
         {
-            // A 32-bit shift consumes eight entries for a 32-byte length and
-            // reports done while entries remain; stop feeding then.
-            if self.read_cs() & CS_DONE != 0
-            {
-                break;
-            }
             self.wait_txd()?;
             self.write32(FIFO, 0xa5a5_0000 | index);
             // Drain as the block fills the receive FIFO. Waiting until the end
             // would let a 16-word receive FIFO stall the shift register.
-            while received < 64 && self.read_cs() & CS_RXD != 0
+            while received < 16 && self.read_cs() & CS_RXD != 0
             {
                 self.read32(FIFO);
                 received += 1;
             }
         }
         self.wait_done()?;
-        received += self.drain_rx(64);
+        received += self.drain_rx(16);
         self.finish();
         self.shift_bits = match received
         {
-            32 => 8,
-            8 => 32,
+            8 => 8,
+            2 => 32,
             _ => 0
         };
         Ok(received)
@@ -136,8 +131,7 @@ impl Spi0
 
     /// A CPU-fed transfer of `bytes` at `divider`. Returns the received word
     /// count and the measured duration in timer ticks.
-    pub fn transfer(&mut self, bytes: usize, divider: u16)
-                    -> Result<(usize, u64), &'static str>
+    pub fn transfer(&mut self, bytes: usize, divider: u16) -> Result<(usize, u64), &'static str>
     {
         if self.shift_bits == 0
         {
@@ -147,19 +141,25 @@ impl Spi0
         self.clear_fifos();
         self.write32(CLK, u32::from(divider));
         self.write32(DLEN, bytes as u32);
-        // Receive is off: this transfer is a rate measurement, and a receive
-        // FIFO nobody drains would stall the shift register.
-        self.write_cs(0);
+        self.write_cs(CS_REN);
         let start = crate::timer();
-        self.write_cs(CS_TA);
+        self.write_cs(CS_REN | CS_TA);
+        let mut received = 0usize;
         for index in 0..entries
         {
             self.wait_txd()?;
             self.write32(FIFO, 0xa5a5_0000 | index as u32);
+            // Keep the receive FIFO moving: a full one stalls the shift
+            // register and looks exactly like a transfer that never started.
+            while self.read_cs() & CS_RXD != 0
+            {
+                self.read32(FIFO);
+                received += 1;
+            }
         }
         self.wait_done()?;
         let end = crate::timer();
-        let received = self.drain_rx(entries);
+        received += self.drain_rx(entries);
         self.finish();
         Ok((received, end.wrapping_sub(start)))
     }
@@ -208,8 +208,9 @@ impl Spi0
     fn clear_fifos(&self)
     {
         // No chip select is asserted here: the FIFO clear must not happen with
-        // one selected.
-        self.write_cs(CS_CLEAR_TX | CS_CLEAR_RX);
+        // one selected. Done is write-one-to-clear, so the same write retires a
+        // previous transfer's completion flag before the next one starts.
+        self.write_cs(CS_CLEAR_TX | CS_CLEAR_RX | CS_DONE);
     }
 
     fn wait_txd(&self) -> Result<(), &'static str>
