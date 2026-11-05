@@ -1,0 +1,1124 @@
+{
+  "description": "System 7.5.1 Performa 5200 series restore CD",
+  "iso": "System-7.5.1-Performa-5200-Restore-CD.iso",
+  "sources": [
+    {
+      "path": "Hard Disk Files/System Folder Files/Finder",
+      "resources": [
+        {
+          "type": "ALRT",
+          "id": 6010,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ALRT",
+          "id": 6011,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ALRT",
+          "id": 6012,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ALRT",
+          "id": 6013,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ALRT",
+          "id": 6014,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ALRT",
+          "id": 6015,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ALRT",
+          "id": 12801,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "CURS",
+          "id": 6500,
+          "name": null,
+          "attributes": 20,
+          "form": "file"
+        },
+        {
+          "type": "CURS",
+          "id": 6501,
+          "name": null,
+          "attributes": 20,
+          "form": "file"
+        },
+        {
+          "type": "CURS",
+          "id": 6502,
+          "name": null,
+          "attributes": 20,
+          "form": "file"
+        },
+        {
+          "type": "CURS",
+          "id": 6503,
+          "name": null,
+          "attributes": 20,
+          "form": "file"
+        },
+        {
+          "type": "CURS",
+          "id": 6504,
+          "name": null,
+          "attributes": 20,
+          "form": "file"
+        },
+        {
+          "type": "CURS",
+          "id": 6505,
+          "name": null,
+          "attributes": 20,
+          "form": "file"
+        },
+        {
+          "type": "CURS",
+          "id": 6506,
+          "name": null,
+          "attributes": 20,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": -16603,
+          "name": null,
+          "attributes": 64,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": -16602,
+          "name": null,
+          "attributes": 64,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 1260,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 5066,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 6010,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 6011,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 6012,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 6013,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 6014,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 6015,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DITL",
+          "id": 12801,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DLOG",
+          "id": 1260,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DLOG",
+          "id": 5066,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "DLOG",
+          "id": 12250,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ICN#",
+          "id": 12500,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ICN#",
+          "id": 13500,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ICN#",
+          "id": 14000,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ICN#",
+          "id": 14501,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ICN#",
+          "id": 14750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ICN#",
+          "id": 15750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ICN#",
+          "id": 19566,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ICN#",
+          "id": 19567,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 128,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 129,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 130,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2760,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2761,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2762,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2763,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2764,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2769,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2770,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2771,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2772,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2773,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2778,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2779,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2780,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2781,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 2782,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 5066,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 11000,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 11001,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 11002,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "PICT",
+          "id": 11003,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "SICN",
+          "id": 3060,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "SICN",
+          "id": 11330,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "SICN",
+          "id": 11332,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "SICN",
+          "id": 11333,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "SICN",
+          "id": 11334,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "SICN",
+          "id": 11335,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "SICN",
+          "id": 20806,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "STR ",
+          "id": 3091,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "STR ",
+          "id": 11252,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "STR ",
+          "id": 12752,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "STR ",
+          "id": 17252,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "STR#",
+          "id": 11750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "acur",
+          "id": 6500,
+          "name": null,
+          "attributes": 20,
+          "form": "file"
+        },
+        {
+          "type": "cicn",
+          "id": 301,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        },
+        {
+          "type": "cicn",
+          "id": 302,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        },
+        {
+          "type": "cicn",
+          "id": 303,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        },
+        {
+          "type": "cicn",
+          "id": 304,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        },
+        {
+          "type": "cicn",
+          "id": 305,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        },
+        {
+          "type": "cicn",
+          "id": 306,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        },
+        {
+          "type": "cicn",
+          "id": 307,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        },
+        {
+          "type": "dctb",
+          "id": 12250,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        },
+        {
+          "type": "fdmn",
+          "id": 5000,
+          "name": null,
+          "attributes": 36,
+          "form": "file"
+        },
+        {
+          "type": "fdmn",
+          "id": 5001,
+          "name": null,
+          "attributes": 36,
+          "form": "file"
+        },
+        {
+          "type": "fdmn",
+          "id": 5003,
+          "name": null,
+          "attributes": 36,
+          "form": "file"
+        },
+        {
+          "type": "fdmn",
+          "id": 5004,
+          "name": null,
+          "attributes": 36,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 128,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 129,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 151,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 152,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 5010,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 5011,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 7010,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 10517,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 11331,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 12761,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 14510,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmap",
+          "id": 17010,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 1251,
+          "name": null,
+          "attributes": 4,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 1252,
+          "name": null,
+          "attributes": 4,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 1253,
+          "name": null,
+          "attributes": 4,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 1254,
+          "name": null,
+          "attributes": 4,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 1255,
+          "name": null,
+          "attributes": 4,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 1256,
+          "name": null,
+          "attributes": 4,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 1276,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11030,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11031,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11032,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11034,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11035,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11036,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11037,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11038,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11039,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11052,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11056,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11301,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 11302,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 19550,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fmnu",
+          "id": 19568,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fvew",
+          "id": 11261,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fvew",
+          "id": 12761,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "fvew",
+          "id": 17011,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl4",
+          "id": 12500,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl4",
+          "id": 14000,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl4",
+          "id": 14501,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl4",
+          "id": 14750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl4",
+          "id": 15750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl8",
+          "id": 12500,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl8",
+          "id": 14000,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl8",
+          "id": 14501,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl8",
+          "id": 14750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "icl8",
+          "id": 15750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 3060,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 3061,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 12500,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 14000,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 14501,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 14750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 15750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 20806,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics#",
+          "id": 20807,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 3060,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 3061,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 12500,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 14000,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 14501,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 14750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 15750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 20806,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics4",
+          "id": 20807,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 3060,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 3061,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 12500,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 14000,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 14501,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 14750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 15750,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 20806,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "ics8",
+          "id": 20807,
+          "name": null,
+          "attributes": 32,
+          "form": "file"
+        },
+        {
+          "type": "pltt",
+          "id": 128,
+          "name": null,
+          "attributes": 0,
+          "form": "file"
+        }
+      ]
+    }
+  ]
+}

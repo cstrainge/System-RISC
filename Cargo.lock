@@ -184,6 +184,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "extract-list"
+version = "0.1.0"
+dependencies = [
+ "hfs-b",
+ "mac-build",
+ "mac-formats",
+ "mac-hfs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
