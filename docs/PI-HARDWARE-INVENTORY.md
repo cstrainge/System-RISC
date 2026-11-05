@@ -40,23 +40,32 @@ state, and that is a supported interface rather than a bypass.
 
 ## Peripherals
 
+Interrupt numbers here come from the board family's own hardware description —
+the machine-readable one the reference kernel ships — cross-checked against the
+SoC document's interrupt table where the two overlap. That source corrected three
+numbers this document previously carried from memory: SPI0 is 54, not 56; all
+three I2C controllers share 53, not 55; and PWM and I2S/PCM raise no ARM
+interrupt at all. A number written from memory is exactly the kind of fact that
+should not reach a record, which is why the record only states the ones this
+source confirms.
+
 | Device | Base | Size | Interrupt | Category | Driver class | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | GPIO | `0x3F200000` | 4 KiB | 49, 50, 51, 52 | ARM | **GPIO** (new) | 54 pins in three banks: 0–27, 28–45, 46–53. Bank 0/1/2 have their own interrupt and the fourth line is the "up to 4 pins" acknowledge path. Not in the record. |
 | PL011 UART0 | `0x3F201000` | 4 KiB | 57 | ARM | **SERIAL** (PL011) | The console. Declared in the record as `pl011`/`uart`. |
 | Mini UART (AUX) | `0x3F215040` | — | 29 | ARM | SERIAL (auxiliary) | Part of the AUX block; shares AUX's enable register and IRQ 29 with SPI1/SPI2. |
-| AUX block | `0x3F215000` | 4 KiB | 29 | ARM | — (container) | Enables mini UART, SPI1 and SPI2 individually. One interrupt line covers all three, so each driver must share and acknowledge. Not in the record. |
-| SPI0 | `0x3F204000` | 4 KiB | 56 | ARM | SPI0 + **timed output** | Master SPI with two chip selects. **Deterministic timed output**: the shift register emits at a divided core clock, so a precomputed buffer becomes edge positions with no CPU in the loop. Not in the record. |
-| SPI1 / SPI2 (AUX) | `0x3F215080` / `0x3F2150C0` | — | 29 | ARM | SPI (auxiliary) + timed output | Inside the AUX block; a different programming model from SPI0. Same serialising property. |
-| I2C0 (BSC0) | `0x3F205000` | 4 KiB | 53 | ARM | **I2C** (new) | The camera/EEPROM bus. Reserved for the camera connector and the HAT ID EEPROM on some models; the record must state whether it is available here. Not in the record. |
-| I2C1 (BSC1) | `0x3F804000` | 4 KiB | 55 | ARM | I2C | The user/GPIO-header bus. Not in the record. |
-| I2C2 (BSC2) | `0x3F805000` | 4 KiB | 55 | ARM | I2C | Wired to the HDMI DDC lines. Shared interrupt source with I2C1 on this SoC. Not in the record. |
-| I2S / PCM | `0x3F203000` | 4 KiB | 23 | ARM | **timed output** (audio encodings) | A serialiser with its own clock dividers and FIFOs, so it fills the waveform role for audio. **Deterministic timed output.** Not in the record. |
-| PWM | `0x3F20C000` | 4 KiB | 22 | ARM | **timed output** + PWM | Two independent channels, each emitting a duty value per period at a divided clock. **Deterministic timed output** — this is the serialiser the LED-strip case uses. The audio output is wired to these channels on the header models, so channel ownership matters as much as controller ownership. Not in the record. |
+| AUX block | `0x3F215000` | 4 KiB | 29 | ARM | auxiliary (container) | Enables mini UART, SPI1 and SPI2 individually. One interrupt line covers all three, so each driver must share and acknowledge. Declared in the record as one 4 KiB window, because all three functions sit in the same page and a claim is per page. |
+| SPI0 | `0x3F204000` | `0x200` | 54 | ARM | SPI0 + **timed output** | Master SPI with two chip selects. **Deterministic timed output**: the shift register emits at a divided core clock, so a precomputed buffer becomes edge positions with no CPU in the loop. Declared in the record. |
+| SPI1 / SPI2 (AUX) | `0x3F215080` / `0x3F2150C0` | `0x40` each | 29 | ARM | SPI (auxiliary) + timed output | Inside the AUX block, which is declared in the record as one window; a different programming model from SPI0, and they share its interrupt. |
+| I2C0 (BSC0) | `0x3F205000` | `0x200` | 53 | ARM | **I2C** (new) | The camera/EEPROM bus. Reserved for the camera connector and the HAT ID EEPROM on some models; the record must state whether it is available here. Not in the record. |
+| I2C1 (BSC1) | `0x3F804000` | 4 KiB | 53 | ARM | I2C | The user/GPIO-header bus. All three controllers share one interrupt source on this SoC, so a driver must identify its controller before acknowledging. Not in the record. |
+| I2C2 (BSC2) | `0x3F805000` | 4 KiB | 53 | ARM | I2C | Wired to the HDMI DDC lines. Same shared interrupt source. Not in the record. |
+| I2S / PCM | `0x3F203000` | `0x24` | **none on the ARM side** | ARM | **timed output** (audio encodings) | A serialiser with its own clock dividers and FIFOs, so it fills the waveform role for audio. **Deterministic timed output.** The board's hardware description gives this block no ARM interrupt, and its reference driver uses none. Not in the record: see the gap note below. |
+| PWM | `0x3F20C000` | `0x28` | **none on the ARM side** | ARM | **timed output** + PWM | Two independent channels, each emitting a duty value per period at a divided clock. **Deterministic timed output** — this is the serialiser the LED-strip case uses. The block raises no ARM interrupt at all; completion is a DMA event. The audio output is wired to these channels on the header models, so channel ownership matters as much as controller ownership. Not in the record: see the gap note below. |
 | System timer | `0x3F003000` | 4 KiB | 0 | ARM | resident timing | Free-running 1 MHz counter plus four compare channels. Channel 3 is conventionally the ARM's; channels 0–1 are used by the VideoCore firmware's own timers. Declared in the record as `bcm2835-systimer`. |
 | ARM timer | `0x3F00B400` | 4 KiB | 64 | ARM | resident timing | A second timer inside the ARM-peripheral area, with its own prescaler and free-running counter. Not in the record. |
 | ARM-local block (intc + local timers) | `0x40000000` | 4 KiB | — | ARM | resident interrupt controller | Outside the `0x3F` peripheral aperture. Four cores: per-core control/IRQ-source/FIQ-source registers, per-core mailbox, and the generic timer path. Declared in the record as `bcm2836-l1-intc`. |
-| DMA controller | `0x3F007000` | 4 KiB | 16 | ARM | DMA + **timed output** (the feeder) | 15 channels, each with a control block in memory. **A channel is the feeder** that keeps a serialiser supplied without a CPU instruction between elements; it is not itself a serialiser. The firmware keeps control blocks alive for its own channels after boot, so a driver must take its channels from the firmware's report rather than assume all 15 are free. Not in the record. |
+| DMA controller | `0x3F007000` | `0xf00` | 16–28 (see note) | ARM | DMA + **timed output** (the feeder) | 15 channels, each with a control block in memory. **A channel is the feeder** that keeps a serialiser supplied without a CPU instruction between elements; it is not itself a serialiser. Channels 0–10 raise interrupts 16–26, channels 11–14 share 27, and 28 is shared across all of them. The board's description gives the ARM channels 0, 2, 4, 5 and 8–14; the firmware keeps the others, so a driver takes a channel from the available set rather than assuming all fifteen. Declared in the record. |
 | Mailbox | `0x3F00B000` | 4 KiB | 1 | ARM | resident firmware channel | Four FIFOs (one per ARM core to VideoCore, one VideoCore to all ARMs). The property channel runs inside FIFO 0 and is the only supported way to ask the firmware for clocks, power, framebuffer and memory. Declared in the record as `bcm2835-mbox`. |
 | VideoCore framebuffer | (no ARM-visible registers) | — | — | VideoCore | **VIDO** (VideoCore framebuffer driver) | The ARM configures and queries it entirely through mailbox property tags. The scan-out base is chosen by the firmware and cannot be selected by the ARM, which is why a driver must copy into the buffer the firmware reports. |
 | HVS (hardware video scaler) | `0x3F400000` | 4 KiB | 65 | VideoCore | — | Composes planes and selects the display composition. The address is not modelled by the emulator at all, and the firmware owns the display list. Should be marked VideoCore-owned in the record rather than merely absent. |
@@ -122,12 +131,28 @@ driver may touch: the resident MMIO inventory is what grants a module its claim.
    same change: a window granted to no module is a claim nobody can use, and a
    driver with no window cannot map its registers.
 4. **USB (`0x3F980000`).** Needed only when a USB stack exists.
-   **The timed-output set** — PWM (`0x3F20C000`), SPI0 (`0x3F204000`), the AUX
-   block for SPI1/SPI2 and the mini UART (`0x3F215000`), I2S/PCM (`0x3F203000`)
-   and the DMA controller (`0x3F007000`). All are absent from the record, so no
-   module can claim any of them and no waveform can be emitted at all. This is
-   the largest functional gap after the clock manager, because it is the group
-   that turns "the board can drive a pin" into "the board can drive a device".
+5. **PWM (`0x3F20C000`) and I2S/PCM (`0x3F203000`) — the windows the record
+   cannot state yet.** Both are in this inventory with a verified base and size,
+   and neither can be declared as a claimable window: the record's MMIO inventory
+   requires an interrupt number per window, and these two blocks raise no ARM
+   interrupt at all. Stating a number would be inventing one, and using zero
+   would claim the system timer's interrupt, so both stay out until the schema can
+   express "no interrupt" rather than the inventory silently gaining a false fact.
+   A waveform over **SPI0** is not blocked by this; a waveform over **PWM**, which
+   is the LED-strip case, is.
+6. **Clock manager (`0x3F101000`).** Its documented extent is `0x2000` — two
+   pages — while a claimable window is one page, so it cannot be declared as a
+   single device window under the current rule. It needs either a two-page
+   device window or a rule that lets one device own two adjacent pages.
+
+### What the record gained
+
+`SPI0` (`0x3F204000` + `0x200`, interrupt 54), the `AUX` block
+(`0x3F215000` + 4 KiB, interrupt 29, covering mini UART, SPI1 and SPI2) and the
+`DMA` controller (`0x3F007000` + `0xf00`, channels' interrupts 16–28). The
+generated device tree carries a node for each, with the window the record
+states, so a probe on this platform finds them and a probe for a driver that does
+not exist loads nothing.
 5. **HVS (`0x3F400000`) and V3D (`0x3FC00000`).** These should be recorded as
    VideoCore-owned so that their absence is a stated decision rather than an
    omission. The resident inventory should be able to express "exists, not
