@@ -169,7 +169,17 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
     {
         Firmware::None =>
         {}
-        Firmware::Disabled => push(args, "-bios", "none"),
+        // `-bios none` is RISC-V's spelling for "start the kernel directly". An
+        // aarch64 machine rejects it outright ("Could not find ROM image
+        // 'none'"), and there the same meaning is expressed by omitting -bios
+        // entirely, which is what this renderer already does for Firmware::None.
+        Firmware::Disabled =>
+        {
+            if platform.rust_target.starts_with("riscv")
+            {
+                push(args, "-bios", "none");
+            }
+        }
         Firmware::Image { path } => push(args, "-bios", root.join(path).display().to_string())
     }
     // The four fields of `boot_medium.flash` are the four parts of QEMU's

@@ -22,6 +22,10 @@ fn main()
     let ram_bytes = memory["minimum_ram_bytes"].as_str().expect("memory.minimum_ram_bytes");
     let physmap_base = record["virtual_memory"]["physmap"]["start"].as_str()
                              .expect("virtual_memory.physmap.start");
+    let system_image_base = record["virtual_memory"]["system_image_base"].as_str()
+                                  .expect("virtual_memory.system_image_base");
+    let image_base = memory["images"]["base"].as_str().expect("memory.images.base");
+    let image_bytes = memory["images"]["bytes"].as_str().expect("memory.images.bytes");
     let out = Path::new(&env::var("OUT_DIR").expect("Cargo supplies OUT_DIR")).to_path_buf();
     // The console and the boot MMU are the only generated constants. Every
     // peripheral address comes from the device tree the emulator generates, so
@@ -42,12 +46,17 @@ fn main()
                        pub const L2_LOW: u64 = {};\n\
                        pub const L1_HIGH: u64 = {};\n\
                        pub const L2_PHYSMAP: u64 = {};\n\
-                       pub const L2_LOWDEV: u64 = {};\n",
+                       pub const L2_LOWDEV: u64 = {};\n\
+                       pub const L2_IMAGE: u64 = {};\n\
+                       pub const VM_SYSTEM_IMAGE_BASE: u64 = {system_image_base};\n\
+                       pub const IMAGE_BASE: u64 = {image_base};\n\
+                       pub const IMAGE_BYTES: u64 = {image_bytes};\n",
               format!("{ram_base}u64 + 0x1000"),
               format!("{ram_base}u64 + 0x2000"),
               format!("{ram_base}u64 + 0x3000"),
               format!("{ram_base}u64 + 0x4000"),
-              format!("{ram_base}u64 + 0x5000")))
+              format!("{ram_base}u64 + 0x5000"),
+              format!("{ram_base}u64 + 0x6000")))
         .expect("memory constants");
     let linker = format!("OUTPUT_ARCH(aarch64)\nENTRY(_start)\nMEMORY {{ ram (rwx) : ORIGIN = \
                           {boot_base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \

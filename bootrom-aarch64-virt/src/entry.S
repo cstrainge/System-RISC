@@ -64,6 +64,15 @@ physmap_bad:
     adr x0, physmap_bad_marker
     bl uart_puts
 physmap_done:
+    bl kernel_map_check
+    cbz x0, kmap_bad
+    adr x0, kmap_marker
+    bl uart_puts
+    b kmap_done
+kmap_bad:
+    adr x0, kmap_bad_marker
+    bl uart_puts
+kmap_done:
     bl virt_probe
     adr x0, ready_marker
     bl uart_puts
@@ -164,6 +173,10 @@ mmu_marker:
     .asciz "BOOT_AARCH64_MMU_READY: 39-bit three-level translation active\n"
 physmap_marker:
     .asciz "BOOT_AARCH64_PHYSMAP_READY: physmap aliases physical RAM\n"
+kmap_marker:
+    .asciz "BOOT_AARCH64_KERNELMAP_READY: the image window resolves to physical image memory\n"
+kmap_bad_marker:
+    .asciz "BOOT_AARCH64_KERNELMAP_BAD: the image window does not resolve to physical image memory\n"
 physmap_bad_marker:
     .asciz "BOOT_AARCH64_PHYSMAP_BAD: physmap does not alias physical RAM\n"
 ready_marker:
