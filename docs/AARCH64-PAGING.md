@@ -164,6 +164,41 @@ Each is a sentinel write followed by a read-back comparison, reported on the
 console as its own marker. A failing check reports the failure; it does not
 continue as though the mapping were sound.
 
+## Relationship to the RISC-V paging path
+
+The two architectures this project supports are structurally the *same* shape:
+
+| | Sv39 | AArch64, 39-bit |
+| --- | --- | --- |
+| Virtual address width | 39 | 39 |
+| Walk | 3 levels | 3 levels |
+| Leaves | 1 GiB, 2 MiB, 4 KiB | 1 GiB, 2 MiB, 4 KiB |
+| Canonical halves | yes | yes |
+
+What differs is only the *encoding*, never the geometry:
+
+| | Sv39 | AArch64 |
+| --- | --- | --- |
+| Root selection | one `satp` | `TTBR0_EL1` + `TTBR1_EL1`, split by half |
+| Descriptor bits | PTE `V/R/W/X/U/G/A/D` | valid, table/block/page, `AF`, `AP`, `AttrIndx`, `SH`, `PXN`/`UXN` |
+| Attributes | inline in the PTE | indexed through `MAIR_EL1` |
+| Accessed/dirty | `A`/`D` bits, may fault | `AF`; dirty handled in software |
+
+So the level-index arithmetic, the leaf selection, the valid-range rule and the
+congruence constraint are **geometry**, and belong in shared code driven by the
+platform record. The descriptor encoding is **ISA**, and belongs behind the
+selection point.
+
+This is the same boundary `machine/page_layout` already draws, and it is why the
+aarch64 encoder should be a peer of `mac-riscv-pages` implementing the existing
+`Tables`/`Mapper` seam rather than a standalone table builder. The shared part is
+index computation; the per-architecture part is turning an index, a physical
+address and a set of permissions into 64 bits.
+
+The current shared paging code still names `mac_riscv_pages::{Entry, Mapper,
+Tables}` directly. That is the remaining leak this section describes, and moving
+the aarch64 encoder in behind the same seam is what closes it.
+
 ## Open items
 
 - The image window is currently mapped with 2 MiB blocks and the read-back check
