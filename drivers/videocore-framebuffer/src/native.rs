@@ -200,9 +200,10 @@ impl Machine
             {
                 (Completion::Complete(_), Some(buffer)) =>
                 {
-                    return Ok(Allocation { handle:  buffer.handle,
-                                           address: buffer.cpu_address,
-                                           length:  buffer.length });
+                    return Ok(Allocation { handle:         buffer.handle,
+                                           address:        buffer.cpu_address,
+                                           device_address: buffer.device_address,
+                                           length:         buffer.length });
                 }
                 (Completion::Pending, _) if self.now()? < deadline => (),
                 _ =>
@@ -244,9 +245,12 @@ impl Platform for Machine
 
     fn free(&mut self, allocation: Allocation) -> Result<(), Refusal>
     {
+        // Hand the service back the allocation it issued. Reconstructing the
+        // record with a substituted address would describe a different
+        // allocation from the one that was made.
         let mut allocation = interface::Allocation { handle:         allocation.handle,
                                                      cpu_address:    allocation.address,
-                                                     device_address: 0,
+                                                     device_address: allocation.device_address,
                                                      length:         allocation.length };
         // SAFETY: the firmware scans out its own buffer, never this storage; the
         // Device service refuses while System holds a CPU pin, so a successful
