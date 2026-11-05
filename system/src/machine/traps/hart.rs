@@ -2,7 +2,7 @@
 //! have separate phases; prepared peers gain no dispatch authority.
 //! Raw Control storage is authenticated before dereference and never borrowed
 //! as &Control or a slice after assembly publication.
-use core::{arch::{asm, global_asm},
+use core::{arch::global_asm,
            fmt,
            mem::MaybeUninit,
            ptr,

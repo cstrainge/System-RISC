@@ -499,26 +499,29 @@ impl Checked
         {
             values.extend(bootstrap_io.constants());
         }
-        else
-        {
-            // A board with no bootstrap IO declares no virtio windows at all.
-            // Emitting the names with zero values keeps the device inventory
-            // code free of an architecture or board test: it simply finds no
-            // virtio slots to probe, which is the truth for such a board.
-            values.extend([("VIRTIO_MMIO_SLOTS", 0),
-                           ("VIRTIO_MMIO_BASE", 0),
-                           ("VIRTIO_MMIO_STRIDE", 0),
-                           ("VIRTIO_INTERRUPT_BASE", 0),
-                           ("UART_BASE", 0),
-                           ("RTC_BASE", 0),
-                           ("CLINT_BASE", 0),
-                           ("CLINT_BYTES", 0)]);
-        }
         for (name, value) in values
         {
             writeln!(out, "__platform_{name} = {value:#x};").unwrap();
         }
         out
+    }
+
+    /// The constants a board with no bootstrap IO still has to compile against.
+    ///
+    /// A board without those windows declares none of them, so the names are
+    /// emitted as zero. Zero means "no such window", which is what makes shared
+    /// device and memory code find nothing to act on - the truth for such a
+    /// board - instead of needing a board or architecture test.
+    fn absent_bootstrap_io() -> [(&'static str, u64); 8]
+    {
+        [("UART_BASE", 0),
+         ("RTC_BASE", 0),
+         ("CLINT_BASE", 0),
+         ("CLINT_BYTES", 0),
+         ("VIRTIO_MMIO_BASE", 0),
+         ("VIRTIO_MMIO_STRIDE", 0),
+         ("VIRTIO_MMIO_SLOTS", 0),
+         ("VIRTIO_INTERRUPT_BASE", 0)]
     }
 
     pub(super) fn system_constants(&self) -> String
@@ -561,9 +564,10 @@ impl Checked
         values.extend(self.tls.constants());
         values.extend(self.process_accounts.constants());
         values.extend(self.module_accounts.constants());
-        if let Some(bootstrap_io) = &self.bootstrap_io
+        match &self.bootstrap_io
         {
-            values.extend(bootstrap_io.constants());
+            Some(bootstrap_io) => values.extend(bootstrap_io.constants()),
+            None => values.extend(Self::absent_bootstrap_io())
         }
         for (name, value) in values
         {

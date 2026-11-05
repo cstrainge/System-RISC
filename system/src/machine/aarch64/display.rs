@@ -51,15 +51,44 @@ pub(crate) enum TerminalError
     Unavailable
 }
 
+impl core::fmt::Display for TerminalError
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Unavailable =>
+            {
+                f.write_str("no framebuffer is available on this platform")
+            }
+        }
+    }
+}
+
 /// No terminal surface can be prepared, because there is no framebuffer.
 ///
 /// # Safety
 /// Provided for signature parity with the other architecture; it touches nothing.
-pub(crate) unsafe fn prepare_terminal(_firmware_base: usize, _physical: u64, _width: u16,
-                                      _height: u16, _translate: impl Fn(u64, u64) -> Option<u64>)
+pub(crate) unsafe fn prepare_terminal(_registers: usize, _framebuffer: u64, _width: usize,
+                                      _height: usize,
+                                      _translate: impl FnMut(*const u8, usize) -> Option<u64>)
                                       -> Result<PreparedTerminal, TerminalError>
 {
     Err(TerminalError::Unavailable)
+}
+
+impl PreparedTerminal
+{
+    /// Adopts the prepared surface. Nothing was prepared, so there is nothing to
+    /// adopt; the caller takes its no-display path.
+    ///
+    /// # Safety
+    /// The other architecture requires exclusive ownership of the scanout while
+    /// this runs. This implementation touches nothing, so it holds trivially.
+    pub(crate) unsafe fn activate(&self) -> Result<(), TerminalError>
+    {
+        Err(TerminalError::Unavailable)
+    }
 }
 
 /// Monotonic time in platform ticks. The scheduler and the file-watch paths

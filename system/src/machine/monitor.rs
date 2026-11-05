@@ -2,8 +2,7 @@
 //! Membership is frozen at boot; sealed core claims alone may release prepared peers.
 //! Shared control is raw assembly storage: only individual atomic cells are
 //! borrowed, never a Control reference or an interrupted frame reference.
-use core::{arch::asm,
-           fmt, ptr,
+use core::{           fmt, ptr,
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use mac_abi::{BootInfo, BootMemoryRange,
