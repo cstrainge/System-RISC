@@ -176,6 +176,40 @@ it either way. There is deliberately no timed-output service for applications
 here, because an application that held a contract with the serialiser directly
 would be back to owning the timing.
 
+## What the claim mechanism has to provide
+
+Found by starting the first instance rather than by reasoning about the class, and
+recorded because it changes the design rather than the driver.
+
+A device claim in this system is **exclusive per device page**: one owner holds
+one declared page, and a second claim of that page is refused. That is right for a
+serialiser — one PWM channel block, one SPI block — but it is wrong for the DMA
+controller, which is a **single page holding fifteen independently usable
+channels**. A timed-output driver must claim one channel; the mechanism offers it
+the whole controller or nothing.
+
+Two consequences, both unacceptable:
+
+* If a driver claims the DMA page to get a channel, no second serialiser driver
+  can exist — the LED strip would permanently prevent audio, and the class's own
+  claim that several serialisers can be used at once would be false.
+* If several drivers were allowed to claim the page, they would share the
+  controller's registers without arbitration, which is worse: two channels'
+  control blocks would be built by two owners who each think they own the write
+  pointer.
+
+So the class needs **channel-level ownership of a multi-channel controller**,
+which the device-claim model does not express. The smallest shape that does: a
+resident owner of the DMA controller — a channel arbiter — that owns the page and
+leases channels, with a lease carrying an owner, a channel number and a release
+path, and with the board's available set as the pool. A timed-output claim then
+names a serialiser page *and* a channel lease, which is what the class already
+says: serialiser plus feeder, both exclusive.
+
+This is the same "one claimant per page" rule doing its job on a block where the
+page is not the unit of use, and it is the reason a driver cannot simply be
+written against the existing claim operation.
+
 ## Arbitration
 
 * A claim names the serialiser and the feeder. Both are exclusive and both are

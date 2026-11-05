@@ -24,16 +24,19 @@ this block, so the observed facts are inherited, not ours.
 | Fact | Value | Source |
 | --- | --- | --- |
 | Register base | `0x7E104000` (`0x3F104000` in the ARM view) | hardware description |
-| Window size | `0x10` — four 32-bit registers | hardware description |
+| Window size, as the description states it | `0x10` — four 32-bit registers | hardware description |
 | Interrupt | 61 (bank 2, bit 29) | hardware description |
 | Driver-facing identity | compatible `brcm,bcm2835-rng` | hardware description |
+| Window this platform declares | `0x14` — one word wider | **derived by this project** |
 
-The window size matters for a reason worth stating: it covers only the first four
-registers. The interrupt-mask register described below is the fifth, at offset
-`0x10`, which lies **outside** the documented window. A driver that needs it is
-reaching past its declared extent, so this platform's device-tree window is one
-register short of what a mask-aware driver would use — a fact recorded here rather
-than quietly worked around.
+The widening is the one fact here that belongs to neither column above, and it is
+worth spelling out because the reasoning is ours. The interrupt-mask register
+described below is the fifth register, at offset `0x10`, which lies immediately
+past the `0x10`-byte extent the hardware description states. A driver that masked
+the block's interrupt would therefore write outside the window it was granted.
+This platform's record declares `0x14` for that reason, and the reason is written
+into the record beside the value rather than left in a driver where the next
+reader would have to rediscover it.
 
 ## What is observed
 
