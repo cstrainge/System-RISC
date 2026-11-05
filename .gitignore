@@ -25,6 +25,9 @@
 # Disc images the extraction reads. They are inputs supplied by the developer,
 # never repo content: a committed ISO is in history forever.
 /iso/
+# Local status scratch. The project keeps this file on disk; it is not tracked,
+# and nothing in it is evidence about any build.
+/status.txt
 # Editor, Python and OS caches.
 .vscode/
 __pycache__/
