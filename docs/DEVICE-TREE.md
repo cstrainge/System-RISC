@@ -1,5 +1,66 @@
 # Device tree
 
+## Each machine supplies its own tree — the governing rule
+
+A device tree is a claim about the machine in front of you, so the machine must be
+the one that makes it.
+
+* On the physical board, the firmware's tree describes the board: correct for the
+  variant, with the configuration's overlays already applied, because that is the
+  machine that exists.
+* Under an emulator, the tree the machine passes describes exactly what that
+  emulator models — no more. An emulated board is not the silicon: it lacks blocks
+  the board has, models some as placeholders that swallow writes, and paces DMA
+  differently or not at all.
+
+Those are two different machines, and a single fixed description can only be right
+for one of them. Handing an emulated machine the board's tree tells the kernel
+about hardware that is not there; the kernel then probes, hangs or reads garbage,
+and a check that runs there stops predicting the board. Handing the board the
+emulator's tree loses peripherals that do exist. Supplying each from its own
+machine is right by construction.
+
+**The record's `devices` list is therefore a declaration, not the runtime
+contract.** It is used for validation — including the cross-check below — and for
+module selection and the claimable inventory. The tree the machine passes is what
+the kernel walks. A difference between them is a record-accuracy question to be
+resolved, not a discrepancy to be "fixed" by editing the record to match whichever
+machine was looked at last.
+
+**The generated path remains, and remains legitimate**, for a machine that passes
+no tree and for checks that deliberately want a fixed description.
+
+**This record describes two machines.** `platforms/raspi3b.json` serves both the
+physical board and the emulator's model of it — one record, two machines. That is
+coherent only because the tree comes from the machine; where the record itself
+states a fact the two disagree about, the record is stating the board's fact and
+the emulated run is the one that has to be read with that in mind.
+
+## Cross-checking the record against the machine
+
+When the machine's own tree is available at build time — the board's tree is
+copied into the image's boot partition, so it is — the record is compared against
+it, node by node, by `compatible`: address, length, and whether an interrupt is
+declared.
+
+It is a **warning, not a refusal**: it is a new check against a source this
+project has not yet validated, and a hard failure on first contact would block
+work on a false positive. It reports both values so a difference can be resolved.
+
+It compares the machine's tree **post-overlay**, because that is also what the
+kernel sees, so a peripheral an overlay disables appears as an expected finding.
+
+The check exists because the record has been wrong three times in one day — an
+SPI interrupt, three I2C controllers sharing one, a DMA channel set — and every
+one was found by a person re-reading a datasheet. Arithmetic would have found all
+three.
+
+**It already found a fourth:** the tree this build writes carries `compatible` and
+`reg` and no `interrupts` property, so a kernel walking our own generated tree
+cannot learn a device's interrupt.
+
+## Flow (the generated path)
+
 The device tree is the contract between the bootloader and the kernel. It is a
 protocol, on the same footing as `platforms/*.json` for the build system and
 `module.json` for module contracts: it is declared, not inferred, and both

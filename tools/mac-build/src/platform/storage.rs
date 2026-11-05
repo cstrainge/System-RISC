@@ -234,7 +234,16 @@ pub enum Source
     BoardConfig
     {
         lines: Vec<Setting>
-    }
+    },
+    /// The board device tree the firmware distribution ships for this board
+    /// variant, whose name the record states.
+    ///
+    /// This is a source of its own rather than a `file` with a path, because the
+    /// name is a record fact and the location is a convention: the build must not
+    /// be the place that decides which `.dtb` a 3B needs. The bytes are copied
+    /// unchanged — a regenerated tree would no longer be the machine's own
+    /// description, and its hash would no longer identify what a board run used.
+    BoardDeviceTree
 }
 
 /// One `key=value` line in a generated board configuration file.
@@ -536,6 +545,8 @@ fn source(platform: &str, image: &str, field: &str, source: &Source) -> Result<(
                                            inside the repository")));
             }
         }
+        Source::BoardDeviceTree =>
+        {}
         Source::BoardConfig { lines } =>
         {
             if lines.is_empty()

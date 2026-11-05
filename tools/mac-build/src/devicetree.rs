@@ -253,6 +253,324 @@ fn find_name(strings: &[u8], name: &str) -> Option<u32>
     None
 }
 
+/// One node of a tree this build did not produce, reduced to the facts the
+/// record also states.
+pub struct Observed
+{
+    pub path:       String,
+    pub compatible: Option<String>,
+    pub base:       Option<u64>,
+    pub bytes:      Option<u64>,
+    /// The controller's bank-and-bit pair, as the tree spells it.
+    pub interrupt:  Option<(u32, u32)>
+}
+
+/// Where the record and a machine's own tree disagree about one device.
+pub struct Divergence
+{
+    pub model:  String,
+    pub detail: String
+}
+
+struct Cursor<'a>
+{
+    bytes:    &'a [u8],
+    position: usize
+}
+impl<'a> Cursor<'a>
+{
+    fn u32(&mut self) -> Result<u32>
+    {
+        let chunk = self.bytes
+                        .get(self.position..self.position + 4)
+                        .ok_or_else(|| crate::error("device tree ends inside a token"))?;
+        self.position += 4;
+        Ok(u32::from_be_bytes(chunk.try_into().unwrap()))
+    }
+
+    fn skip(&mut self, bytes: usize) -> Result<()>
+    {
+        if self.position.checked_add(bytes).is_none_or(|end| end > self.bytes.len())
+        {
+            return Err(crate::error("device tree ends inside a node"));
+        }
+        self.position += bytes;
+        Ok(())
+    }
+
+    fn name(&mut self) -> Result<String>
+    {
+        let rest = self.bytes
+                       .get(self.position..)
+                       .ok_or_else(|| crate::error("device tree ends inside a node name"))?;
+        let length = rest.iter().position(|byte| *byte == 0)
+                         .ok_or_else(|| crate::error("device tree node name is unterminated"))?;
+        self.position += length + 1;
+        // Names are padded to a four-byte boundary.
+        while self.position % 4 != 0
+        {
+            self.position += 1;
+        }
+        Ok(String::from_utf8_lossy(&rest[..length]).into_owned())
+    }
+}
+
+/// Read a device tree this build did not produce.
+///
+/// This is a reader, not a validator of our own format: it accepts the
+/// two-cell and one-cell `reg` encodings a foreign tree may use, and it refuses
+/// only what it cannot interpret. It exists so the record can be checked against
+/// a machine's own description instead of against a re-reading of a datasheet.
+pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
+{
+    if blob.len() < HEADER_BYTES
+    {
+        return Err(crate::error("device tree is shorter than its header"));
+    }
+    let word = |at: usize| {
+        u32::from_be_bytes(blob[at..at + 4].try_into().unwrap())
+    };
+    if word(0) != MAGIC
+    {
+        return Err(crate::error("device tree has no valid header"));
+    }
+    let total = word(4) as usize;
+    if total > blob.len()
+    {
+        return Err(crate::error("device tree states a size larger than the file"));
+    }
+    let structure_at = word(8) as usize;
+    let strings_at = word(12) as usize;
+    let strings_len = word(32) as usize;
+    let strings = blob.get(strings_at..strings_at + strings_len)
+                      .ok_or_else(|| crate::error("device tree strings block is out of bounds"))?;
+    let mut cursor = Cursor { bytes:    &blob[..total],
+                              position: structure_at };
+    let property_name = |offset: usize| -> Result<String> {
+        let rest = strings.get(offset..)
+                          .ok_or_else(|| crate::error("device tree property name is out of \
+                                                       bounds"))?;
+        let length = rest.iter()
+                         .position(|byte| *byte == 0)
+                         .ok_or_else(|| crate::error("device tree property name is \
+                                                      unterminated"))?;
+        Ok(String::from_utf8_lossy(&rest[..length]).into_owned())
+    };
+    let mut path: Vec<String> = Vec::new();
+    let mut nodes: Vec<Observed> = Vec::new();
+    // The root's cell counts decide how `reg` is spelled in this tree.
+    let mut address_cells = 2usize;
+    let mut size_cells = 2usize;
+    loop
+    {
+        let token = cursor.u32()?;
+        match token
+        {
+            BEGIN_NODE =>
+            {
+                let name = cursor.name()?;
+                path.push(name);
+            }
+            END_NODE =>
+            {
+                path.pop();
+            }
+            PROP =>
+            {
+                let length = cursor.u32()? as usize;
+                let name = property_name(cursor.u32()? as usize)?;
+                let data = cursor.bytes
+                                 .get(cursor.position..cursor.position + length)
+                                 .ok_or_else(|| crate::error("device tree property is out of \
+                                                              bounds"))?
+                                 .to_vec();
+                cursor.skip(length)?;
+                while cursor.position % 4 != 0
+                {
+                    cursor.position += 1;
+                }
+                let cells = || -> Vec<u32> {
+                    data.chunks(4)
+                        .filter(|chunk| chunk.len() == 4)
+                        .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap()))
+                        .collect::<Vec<_>>()
+                };
+                match name.as_str()
+                {
+                    "compatible" =>
+                    {
+                        let end = data.iter().position(|byte| *byte == 0).unwrap_or(data.len());
+                        nodes.push(Observed { path: path.iter()
+                                                       .filter(|segment| !segment.is_empty())
+                                                       .cloned()
+                                                       .collect::<Vec<_>>()
+                                                       .join("/"),
+                                              compatible: Some(String::from_utf8_lossy(&data[..end])
+                                                                   .into_owned()),
+                                              base: None,
+                                              bytes: None,
+                                              interrupt: None });
+                    }
+                    "reg" =>
+                    {
+                        let numbers = cells();
+                        if let Some(node) = nodes.last_mut()
+                        {
+                            if numbers.len() >= address_cells + size_cells
+                            {
+                                let base = numbers[..address_cells].iter().fold(0u64, |acc, cell| {
+                                                                        (acc << 32) | u64::from(*cell)
+                                                                    });
+                                let bytes = numbers[address_cells..address_cells + size_cells]
+                                    .iter()
+                                    .fold(0u64, |acc, cell| (acc << 32) | u64::from(*cell));
+                                node.base = Some(base);
+                                node.bytes = Some(bytes);
+                            }
+                        }
+                    }
+                    "interrupts" =>
+                    {
+                        let numbers = cells();
+                        if let (Some(node), Some(first)) = (nodes.last_mut(), numbers.first())
+                        {
+                            node.interrupt = Some((*first, numbers.get(1).copied().unwrap_or(0)));
+                        }
+                    }
+                    "#address-cells" =>
+                    {
+                        address_cells = cells().first().copied().unwrap_or(2) as usize;
+                    }
+                    "#size-cells" =>
+                    {
+                        size_cells = cells().first().copied().unwrap_or(2) as usize;
+                    }
+                    _ =>
+                    {}
+                }
+            }
+            END =>
+            {
+                break;
+            }
+            other =>
+            {
+                return Err(crate::error(format!("device tree has an unknown token {other:#x}")));
+            }
+        }
+    }
+    Ok(nodes)
+}
+
+/// Compare every peripheral the record declares against a machine's own tree.
+///
+/// This validates the *record*, not the machine: the tree is what is actually in
+/// front of the kernel, and the record is a declaration used for module
+/// selection. A divergence is reported with both values so it can be resolved
+/// rather than silently preferred.
+///
+/// The tree is compared **post-overlay** — whatever the machine actually has —
+/// because that is also what the kernel will walk. An overlay that disables a
+/// peripheral therefore shows up as an expected finding rather than an error,
+/// and is labelled as such.
+pub fn compare(platform: &Platform, blob: &[u8]) -> Result<Vec<Divergence>>
+{
+    let observed = read(blob)?;
+    let mut divergences = Vec::new();
+    let mut without_interrupt: Vec<String> = Vec::new();
+    for device in platform.declared_devices()?
+    {
+        let node = observed.iter().find(|node| {
+                                       node.compatible
+                                           .as_deref()
+                                           .is_some_and(|value| value == device.compatible)
+                                   });
+        let Some(node) = node
+        else
+        {
+            divergences.push(Divergence { model:  device.compatible.clone(),
+                                          detail: "the machine's tree has no node with this \
+                                                   compatible, so the record declares a device \
+                                                   this machine does not describe"
+                                                  .into() });
+            continue;
+        };
+        if node.base != Some(device.base) || node.bytes != Some(device.bytes)
+        {
+            divergences.push(Divergence { model:  device.compatible.clone(),
+                                          detail: format!("record says {:#x}+{:#x}, the tree \
+                                                           says {}",
+                                                          device.base,
+                                                          device.bytes,
+                                                          match (node.base, node.bytes)
+                                                          {
+                                                              (Some(base), Some(bytes)) =>
+                                                              {
+                                                                  format!("{base:#x}+{bytes:#x}")
+                                                              }
+                                                              _ => "no reg property".into()
+                                                          }) });
+        }
+        if node.interrupt.is_none()
+        {
+            without_interrupt.push(device.compatible.clone());
+        }
+    }
+    // Reported once rather than per device, because it is one finding about the
+    // tree rather than N findings about N devices. The tree this build writes
+    // carries `compatible` and `reg` only, so a kernel walking it cannot learn a
+    // device's interrupt — which matters now that the machine's own tree is what
+    // the kernel reads.
+    if !without_interrupt.is_empty()
+    {
+        divergences.push(Divergence { model:  "interrupt properties".into(),
+                                      detail: format!("{} declared device(s) have no `interrupts` \
+                                                       node property: {}",
+                                                      without_interrupt.len(),
+                                                      without_interrupt.join(", ")) });
+    }
+    Ok(divergences)
+}
+
+#[cfg(test)]
+mod cross_check_tests
+{
+    use super::{compare, generate_for, read};
+
+    /// The reader and the comparator, exercised on real bytes: a tree this build
+    /// produced is walked back with the foreign-tree reader and must agree with
+    /// the record that produced it on every window.
+    ///
+    /// Exactly one finding is expected and it is a real one: the tree this build
+    /// writes carries `compatible` and `reg` and no `interrupts`, so a kernel
+    /// walking it cannot learn a device's interrupt. Asserting the finding keeps
+    /// it visible instead of letting it pass as "no divergences".
+    #[test]
+    fn the_record_and_its_own_generated_tree_agree_on_windows()
+    {
+        // A record that declares no board section describes no peripherals, so
+        // the check needs the hardware section this comparison exists for.
+        let platform = super::super::platform::load("raspi3b").expect("record loads");
+        let blob = generate_for(&platform).expect("tree generates");
+        let nodes = read(&blob).expect("the foreign-tree reader parses our own tree");
+        assert!(!nodes.is_empty(), "the reader found no nodes");
+        let divergences = compare(&platform, &blob).expect("comparison runs");
+        let windows: Vec<&crate::devicetree::Divergence> =
+            divergences.iter().filter(|d| d.model != "interrupt properties").collect();
+        assert!(windows.is_empty(),
+                "{}",
+                windows.iter().map(|d| format!("{}: {}", d.model, d.detail))
+                      .collect::<Vec<_>>()
+                      .join("; "));
+        let interrupts: Vec<&crate::devicetree::Divergence> =
+            divergences.iter().filter(|d| d.model == "interrupt properties").collect();
+        assert_eq!(interrupts.len(), 1, "the missing-interrupt finding is reported once");
+        assert!(interrupts[0].detail.contains("no `interrupts` node property"),
+                "{}",
+                interrupts[0].detail);
+    }
+}
+
 #[cfg(test)]
 mod tests
 {

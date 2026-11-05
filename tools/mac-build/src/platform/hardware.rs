@@ -37,6 +37,15 @@ pub struct Definition
     pub console:     Option<Console>,
     #[serde(default)]
     pub device_tree: Option<DeviceTree>,
+    /// The board device tree the board's own firmware loads during bring-up,
+    /// named by the file the firmware distribution ships for this board variant.
+    ///
+    /// The record states it rather than the build inferring it: the correct file
+    /// differs between a 3B and a 3B+, and a builder that guessed would produce an
+    /// image that boots to a firmware complaining about a mismatch. The file
+    /// itself is developer-supplied and never committed; only its name is here.
+    #[serde(default)]
+    pub board_device_tree: Option<String>,
     /// The RAM window the SoC maps, as a board fact. This is not the platform
     /// level `memory` section: that describes the paging, linker and ROM ranges
     /// this workspace's kernel runs in, while this states where the board puts
@@ -204,7 +213,12 @@ pub enum PeripheralKind
     Auxiliary,
     /// The clock generator: it divides the oscillators, so it is the rate every
     /// other peripheral and any timed output is derived from.
-    Clock
+    Clock,
+    /// A 3D engine. It is ARM-reachable — the compute queues and control lists
+    /// are written by the CPU — so it is a peripheral like any other for
+    /// inventory purposes, whatever runs on it.
+    #[serde(rename = "3d")]
+    ThreeDimensional
 }
 
 impl Definition
@@ -244,6 +258,19 @@ impl Definition
                               "a board booted by vendor firmware must say where its device \
                                tree comes from"
                                                .into()));
+        }
+        if let Some(tree) = &self.board_device_tree
+        {
+            let tree = tree.trim();
+            if tree.is_empty()
+               || !tree.ends_with(".dtb")
+               || tree.contains(['/', '\\'])
+               || tree.contains("..")
+            {
+                return Err(reject("board_device_tree",
+                                  format!("'{tree}' must be a bare .dtb file name as the \
+                                           firmware distribution ships it")));
+            }
         }
         for tool in &self.tooling
         {

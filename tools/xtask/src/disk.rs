@@ -168,6 +168,12 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                               size,
                               partitions } =>
         {
+            // Before anything is written: an image whose boot partition lacks the
+            // firmware is intact, verifiable and unbootable.
+            require_firmware(workspace, partitions)?;
+            // And, now that the machine's own description is here, use it to
+            // check the record rather than trusting the record to describe it.
+            cross_check_tree(workspace)?;
             let total = size.bytes()?.ok_or_else(|| {
                                           error(format!("platform '{platform}' \
                                                          storage.images.{name}: layout.size must \
@@ -197,6 +203,141 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     write_json(&dist.join("disk.json"), &report)?;
     println!("{summary}");
     Ok(report)
+}
+
+/// Refuse a build whose boot partition would be unbootable.
+///
+/// The firmware binaries are Broadcom's: redistributable unmodified and only for
+/// their own hardware, with the licence travelling alongside. They are therefore
+/// developer-supplied input, never repository content, and a build that silently
+/// omitted them would produce an image whose MBR, boot sector and kernel all
+/// verify and which cannot start. Refusing by name, with the exact list, is the
+/// difference between a documented prerequisite and a broken deliverable.
+fn require_firmware(workspace: &Workspace, partitions: &[mac_build::platform::storage::Partition])
+                    -> Result<()>
+{
+    use mac_build::platform::storage::{Partition, Source};
+    let mut missing: Vec<String> = Vec::new();
+    let mut wanted: Vec<String> = Vec::new();
+    for partition in partitions
+    {
+        let Partition::Fat32 { files, .. } = partition
+        else
+        {
+            continue;
+        };
+        for entry in files
+        {
+            let path = match &entry.source
+            {
+                Source::File { file } if file.starts_with("firmware/") =>
+                {
+                    Some(workspace.root().join(file))
+                }
+                // The board tree is the firmware distribution's own file for this
+                // variant, which the record names.
+                Source::BoardDeviceTree =>
+                {
+                    match workspace.platform
+                                   .hardware
+                                   .as_ref()
+                                   .and_then(|hardware| hardware.board_device_tree.clone())
+                    {
+                        Some(name) =>
+                        {
+                            Some(workspace.root().join(partition::FIRMWARE_DIR).join(&name))
+                        }
+                        None => None
+                    }
+                }
+                _ => continue
+            };
+            let Some(path) = path
+            else
+            {
+                return Err(error(format!("platform '{}' stores the board device tree in its boot \
+                                          partition but declares no hardware.board_device_tree",
+                                         workspace.platform.name)));
+            };
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            wanted.push(name.clone());
+            if !path.is_file()
+            {
+                missing.push(format!("  {}  (expected at {})", name, path.display()));
+            }
+        }
+    }
+    if missing.is_empty()
+    {
+        return Ok(());
+    }
+    Err(error(format!("the boot partition needs {count} file(s) this checkout does not have:\n\
+                       {missing}\n\
+                       They are the board's own firmware, redistributable only unmodified and \
+                       only with their licence, so they are developer-supplied and never \
+                       committed. Copy {wanted} from the firmware distribution's boot/ directory \
+                       into {dir}/ at the repository root, keeping the names as published. The \
+                       board device tree is the file for this board variant; the record names \
+                       which.",
+                      count = missing.len(),
+                      missing = missing.join("\n"),
+                      wanted = wanted.join(", "),
+                      dir = partition::FIRMWARE_DIR)))
+}
+
+/// Check the record against the machine's own description.
+///
+/// The record is a declaration used for module selection and validation; the
+/// machine's tree is what the kernel actually walks. Comparing them is how a
+/// wrong interrupt or a transposed address is caught by arithmetic instead of by
+/// somebody re-reading a datasheet — the record has been wrong three times in one
+/// day, each time found by hand.
+///
+/// A warning, not a refusal: this is a check against a source the project has not
+/// yet validated, and a hard failure on first contact would block work on a false
+/// positive. The comparison is **post-overlay** — the tree as the machine
+/// actually has it, overlays applied — because that is also what the kernel sees.
+/// A peripheral an overlay disables is therefore an expected finding.
+fn cross_check_tree(workspace: &Workspace) -> Result<()>
+{
+    let Some(name) = workspace.platform
+                              .hardware
+                              .as_ref()
+                              .and_then(|hardware| hardware.board_device_tree.clone())
+    else
+    {
+        return Ok(());
+    };
+    let path = workspace.root().join(partition::FIRMWARE_DIR).join(&name);
+    if !path.is_file()
+    {
+        // The missing-file refusal has already spoken; nothing to compare yet.
+        return Ok(());
+    }
+    let blob = fs::read(&path)?;
+    let divergences = match mac_build::devicetree::compare(&workspace.platform, &blob)
+    {
+        Ok(divergences) => divergences,
+        Err(why) =>
+        {
+            println!("warning: cannot read the machine's device tree {name}: {why}");
+            return Ok(());
+        }
+    };
+    if divergences.is_empty()
+    {
+        println!("device tree cross-check: the record agrees with {name} on every device it \
+                  declares");
+        return Ok(());
+    }
+    println!("warning: the record and the machine's tree {name} disagree (post-overlay):");
+    for divergence in &divergences
+    {
+        println!("warning:   {}: {}", divergence.model, divergence.detail);
+    }
+    println!("warning: the machine's tree is the runtime contract; the record is a declaration. \
+              Resolve the difference rather than adjusting one to match the other.");
+    Ok(())
 }
 
 /// Refuse an image that no longer matches the artifacts it claims to contain.
@@ -242,12 +383,30 @@ pub fn verify(workspace: &Workspace) -> Result<()>
                     {
                         continue;
                     };
-                    let Some(artifact) = source.strip_prefix("artifact:")
+                    // A file the image copied from the checkout is re-read where
+                    // it came from, so a swapped or regenerated firmware blob or
+                    // board tree is caught by the same gate as a rebuilt payload.
+                    let path = if let Some(artifact) = source.strip_prefix("artifact:")
+                    {
+                        workspace.dist().join(format!("{artifact}.bin"))
+                    }
+                    else if let Some(file) = source.strip_prefix("file:")
+                    {
+                        if !file.starts_with(partition::FIRMWARE_DIR)
+                        {
+                            checked += 1;
+                            continue;
+                        }
+                        workspace.root().join(file)
+                    }
+                    else if let Some(name) = source.strip_prefix("firmware:")
+                    {
+                        workspace.root().join(partition::FIRMWARE_DIR).join(name)
+                    }
                     else
                     {
                         continue;
                     };
-                    let path = workspace.dist().join(format!("{artifact}.bin"));
                     checked += 1;
                     let current = fs::read(&path)
                         .map(|bytes| package::sha256(&bytes))
