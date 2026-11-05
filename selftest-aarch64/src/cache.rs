@@ -31,22 +31,6 @@ pub fn clean(start: usize, bytes: usize)
     dsb();
 }
 
-/// Clean and invalidate each line, which is also the barrier a DMA write
-/// followed by a CPU read needs.
-pub fn clean_invalidate(start: usize, bytes: usize)
-{
-    let line = line_bytes();
-    let mut address = start & !(line - 1);
-    let end = start + bytes;
-    while address < end
-    {
-        // SAFETY: as `clean`.
-        unsafe { asm!("dc civac, {}", in(reg) address, options(nostack, preserves_flags)) };
-        address += line;
-    }
-    dsb();
-}
-
 /// Discard each line without writing it back. Dirty data is lost; that is the
 /// point of the experiment's second half.
 pub fn invalidate(start: usize, bytes: usize)

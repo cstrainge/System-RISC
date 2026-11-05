@@ -11,7 +11,13 @@ use crate::platform::{DECLARED_RAM_BASE, DEVICE_BASE};
 const BLOCK: u64 = 0x20_0000;
 const TABLE: u64 = 0x3;
 /// Valid block, AttrIndx 0 (normal write-back), inner shareable, AF.
-const NORMAL: u64 = 0x705;
+///
+/// The attribute index is bits[4:2], so AttrIndx 0 means those three bits are
+/// clear: 0x400 gives AF, 0x300 gives inner shareable, 0x1 gives a level-2
+/// block. `0x705` looks similar but sets bit 2, which is AttrIndx 1 -- the
+/// Device-nGnRnE slot in MAIR -- and that maps RAM uncached, so every store
+/// goes straight to DRAM and no cache experiment can observe anything.
+const NORMAL: u64 = 0x701;
 /// Valid block, AttrIndx 1 (Device-nGnRnE), AF, never executable.
 const DEVICE: u64 = 0x405 | (1 << 54) | (1 << 53);
 /// 39-bit VA at TTBR0, 4 KiB granule, write-back walks, EPD1 set, 40-bit PA.
