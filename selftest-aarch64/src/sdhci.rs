@@ -276,8 +276,11 @@ impl Disk
         let mut transfer = 0u16;
         if data
         {
-            // Read direction, one block, block count enabled.
-            transfer = (1 << 4) | (1 << 1) | (1 << 5);
+            // Read direction only. CMD17 is a single-block command, so the
+            // multi-block bit stays clear: setting it tells the controller to
+            // expect further blocks and, with Auto CMD12 disabled, leaves the
+            // card mid-transfer once the one block has gone.
+            transfer = 1 << 4;
             self.write16(BLOCK_SIZE, SECTOR_BYTES as u16);
             self.write16(BLOCK_COUNT, 1);
         }
