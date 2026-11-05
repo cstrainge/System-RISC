@@ -459,6 +459,15 @@ impl Checked
         self.flash.clone()
     }
 
+    /// The window the machine loads its first stage into. A machine that
+    /// fetches its firmware from flash declares that medium as well; a machine
+    /// the emulator loads a bootable image into declares only this one, and
+    /// this is where its payload is placed.
+    pub fn boot_window(&self) -> Range<u64>
+    {
+        self.boot.clone()
+    }
+
     pub(super) fn linker_symbols(&self) -> String
     {
         let mut out = String::from("\n/* Generated from the checked platform memory record. */\n");

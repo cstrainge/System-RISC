@@ -108,6 +108,39 @@
     "quantum_microseconds": 250,
     "callback_budget_microseconds": 1000
   },
+  "bootloader": {
+    "description": "EL1 bootloader: installs the 39-bit translation regime, finds the boot volume over virtio-MMIO, loads the resident System, and drops to EL1",
+    "package": "bootrom-aarch64-virt",
+    "artifact": "bootrom-aarch64-virt",
+    "entry": "bootrom-aarch64-virt/src/entry.S"
+  },
+  "hardware": {
+    "description": "QEMU virt machine, 4x Cortex-A72, 2 GiB RAM at 0x40000000. It generates its device tree from this record rather than taking the one the emulator passes, so the bootloader and the kernel read the same declared hardware - the PL011 console and the virtio-MMIO bank - instead of fixed addresses written into the loader.",
+    "generate_device_tree": true,
+    "boot": {
+      "medium": {
+        "kind": "none"
+      },
+      "first_stage": "none"
+    },
+    "devices": [
+      {
+        "kind": "uart",
+        "model": "pl011",
+        "base": "0x9000000",
+        "bytes": "0x1000",
+        "interrupt": 33
+      },
+      {
+        "kind": "storage",
+        "model": "virtio,mmio",
+        "base": "0xa000000",
+        "bytes": "0x4000",
+        "interrupt": 48
+      }
+    ],
+    "board": "qemu-virt"
+  },
   "emulation": {
     "description": "QEMU virt board, 4x Cortex-A72, 2 GiB RAM at 0x40000000, virtio-MMIO devices with a virtio GPU and ramfb display",
     "family": "qemu",
@@ -118,10 +151,7 @@
     "harts": 4,
     "firmware": "disabled",
     "boot_medium": {
-      "kind": "flash",
-      "unit": 0,
-      "format": "raw",
-      "readonly": true
+      "kind": "direct"
     },
     "disks": {
       "transport": "virtio-mmio",

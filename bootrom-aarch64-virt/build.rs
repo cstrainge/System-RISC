@@ -31,14 +31,28 @@ fn main()
     // peripheral address comes from the device tree the emulator generates, so
     // this bootloader stays a consumer of the machine rather than a second
     // description of it. The console is the PL011 the virt machine provides.
+    // The console base is a build-time constant because the earliest output
+    // happens before any tree can be read, and a malformed tree has to be
+    // reportable somewhere. Everything else comes from the tree.
+    let devices = record["hardware"]["devices"].as_array().expect("hardware.devices");
+    let console_base = devices.iter()
+                              .find(|device| device["kind"] == "uart")
+                              .and_then(|device| device["base"].as_str())
+                              .expect("the record must declare a UART peripheral")
+                              .to_string();
     fs::write(out.join("platform-hardware.inc"),
-              ".equ PL011_BASE, 0x09000000\n")
+              format!(".equ PL011_BASE, {console_base}\n"))
         .expect("hardware include");
+    // The record is the author of the machine description. The bootloader and
+    // the kernel consume this blob, so it is emitted once at build time and
+    // linked in rather than assembled at runtime.
+    let tree = mac_build::devicetree::generate().expect("device tree generation");
+    fs::write(out.join("devicetree.dtb"), &tree).expect("device tree blob");
     fs::write(out.join("platform-memory.rs"),
               format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
                        pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
                        pub const PHYSMAP_BASE: u64 = {physmap_base};\n\
-                       pub const PL011_BASE: u64 = 0x0900_0000;\n\
+                       pub const PL011_BASE: u64 = {console_base};\n\
                        // The boot page tables live in RAM below the loaded image. They are\
                        // derived from the record rather than fixed, because a machine whose\
                        // RAM does not start at zero has no usable low addresses at all.\n\

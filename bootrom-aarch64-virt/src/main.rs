@@ -11,6 +11,7 @@ use core::panic::PanicInfo;
 
 use linked_list_allocator::LockedHeap;
 
+mod devicetree;
 
 /// The filesystem code above the block device needs storage for its own
 /// bookkeeping. This is a bounded firmware heap in the image's own BSS, not a
@@ -44,10 +45,7 @@ include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
 /// The machine description, generated from the platform record at build time and
 /// linked in read-only. The bootloader is a consumer of this tree, not its
 /// author, so nothing here hardcodes a peripheral address.
-// The virt machine fixes its own peripheral windows: the PL011 console at
-// 0x09000000 and the virtio-MMIO bank at 0x0a000000. Reading them from the
-// device tree the emulator passes in x0 is the next step; until then they are
-// stated once here rather than scattered through the probe.
+static DEVICE_TREE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devicetree.dtb"));
 
 // Translation tables live inside the declared boot window, clear of the loaded
 // image and its stack. A 39-bit regime with a 4 KiB granule starts its walk at
@@ -270,19 +268,63 @@ pub extern "C" fn virt_probe() -> u64
     init_heap();
     // Peripheral addresses come from the generated tree, not from constants, so
     // the record remains the only place this board's hardware is written down.
-    if PL011_BASE != 0x0900_0000
+    // Early output had to use the record's constant before any tree could be
+    // read, so the first thing the tree is asked is whether it agrees with the
+    // console actually in use. A divergence is reported by name rather than
+    // discovered later as garbled output.
+    let tree = match devicetree::Tree::new(DEVICE_TREE)
     {
-        puts("BOOT_AARCH64_CONSOLE_MISMATCH\n");
+        Some(tree) => tree,
+        None =>
+        {
+            puts("BOOT_AARCH64_DT_REFUSED: the generated tree has no valid header\n");
+            return 0;
+        }
+    };
+    let (pl011, _) = match tree.window("pl011")
+    {
+        Some(window) => window,
+        None =>
+        {
+            puts("BOOT_AARCH64_DT_REFUSED: no pl011 window in the tree\n");
+            return 0;
+        }
+    };
+    puts("BOOT_AARCH64_DT_PL011: base=");
+    puthex(pl011);
+    puts("\n");
+    if pl011 != PL011_BASE
+    {
+        puts("BOOT_AARCH64_CONSOLE_MISMATCH: the tree's pl011 is not the console in use\n");
         return 0;
     }
+    // Every peripheral address now comes from the tree. The loader holds no
+    // address of its own, so the record is the only place this machine's
+    // hardware is written down.
+    let (virtio, virtio_bytes) = match tree.window("virtio,mmio")
+    {
+        Some(window) => window,
+        None =>
+        {
+            puts("BOOT_AARCH64_DT_REFUSED: no virtio-mmio window in the tree\n");
+            return 0;
+        }
+    };
+    puts("BOOT_AARCH64_DT_VIRTIO: base=");
+    puthex(virtio);
+    puts("\n");
     // The disk is whatever the machine presents on the virtio-MMIO bank. The
     // transport is shared with the other bootloader; only the bus differs, so
     // this scans the bank the way the machine lays it out.
     let mut disks: alloc::vec::Vec<mac_bootloader::virtio_blk::Disk<BootMachine>> =
         alloc::vec::Vec::new();
-    for slot in 0..32usize
+    // The number of slots is the bank's declared length divided by the
+    // transport's register stride, so a machine that lays out a different
+    // number of slots needs no change here.
+    let slots = (virtio_bytes / 0x200) as usize;
+    for slot in 0..slots
     {
-        let base = 0x0a00_0000usize + slot * 0x200;
+        let base = virtio as usize + slot * 0x200;
         if !mac_bootloader::virtio_blk::is_block(base)
         {
             continue;
