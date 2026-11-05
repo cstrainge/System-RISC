@@ -1,0 +1,13 @@
+{
+  "identity": "7731a0000000000000000000000000b0",
+  "stack_bytes": 16384,
+  "interfaces": [
+    { "class": "VIDO", "version": 1, "request_schema": 1, "reply_schema": 1,
+      "max_request": 24, "max_reply": 48, "exclusive": true, "serialized": true,
+      "capabilities": 0 }
+  ],
+  "services": [ { "class": "VDEV", "version": 1 } ],
+  "matches": [
+    { "bus": "MMIO", "value": "6272636d2c6d626f7800000000000000", "mask": "ffffffffffffffffffffffffffffffff" }
+  ]
+}
