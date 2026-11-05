@@ -214,13 +214,16 @@
     }
   },
   "install": {
-    "description": "The aarch64 System set under construction: the resident kernel plus the applications that build for this architecture",
+    "description": "The aarch64 System set: the resident kernel and video driver, the startup Finder, and the applications that build for this architecture",
     "set": "packages",
     "applications": [
+      "mac-finder",
+      "reactor",
       "control-suite"
     ],
     "modules": [
-      "mac-system"
+      "mac-system",
+      "virtio-gpu"
     ],
     "folders": {
       "applications": "Applications",
@@ -228,6 +231,8 @@
       "drivers": "System Folder/Drivers",
       "extensions": "System Folder/Extensions"
     },
-    "exceptions": {}
+    "exceptions": {
+      "mac-finder": "System Folder"
+    }
   }
 }

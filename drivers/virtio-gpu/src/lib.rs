@@ -373,9 +373,9 @@ fn bytes(size: Size) -> Option<u64>
     u64::from(size.width).checked_mul(u64::from(size.height))?.checked_mul(4)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod machine;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod native
 {
     use mac_driver::{Client, Completion, Driver, Error, Request, Result};
@@ -420,5 +420,5 @@ mod native
         }
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub use native::DRIVER;
