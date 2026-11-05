@@ -6,7 +6,7 @@ pub(crate) mod process;
 pub(crate) mod user;
 mod alias;
 mod heap_partition;
-use core::{alloc::Layout, arch::asm, fmt, marker::PhantomData, ptr};
+use core::{alloc::Layout, fmt, marker::PhantomData, ptr};
 
 use heap_partition::HeapPartition;
 pub(crate) use heap_partition::{ProtectedHeapStatistics, ProtectedRange};
@@ -277,11 +277,7 @@ impl fmt::Display for Error
 }
 fn root_register() -> usize
 {
-    let value;
-    unsafe {
-        asm!("csrr {},satp",out(reg)value,options(nostack));
-    }
-    value
+    super::mmu::root()
 }
 /// # Safety
 /// Native entry supplies pinned physical wire arrays through the already active
@@ -318,10 +314,7 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
                                      length: FLASH_BYTES })
           .map_err(Error::Execution)?;
     let root = root_register();
-    let status: usize;
-    unsafe {
-        asm!("csrr {},sstatus",out(reg)status,options(nostack));
-    }
+    let status = super::mmu::status();
     if root >> 60 != 8
        || root & PPN != record.root_physical as usize >> 12
        || (root >> 44) & 0xffff != 0
@@ -680,7 +673,7 @@ pub(crate) fn system_stacks() -> Option<&'static [Foundation<Stack>]>
 /// Actual permanent roots and one canonical service-stack slot. Construction
 /// borrows the owning Spaces, never caller-supplied SATP values. The proof
 /// neither selects a hart nor grants execution; the native row binding does.
-pub(in crate::machine::riscv64) struct PreparedRoots
+pub(crate) struct PreparedRoots
 {
     spaces: &'static Spaces,
     boot:   &'static Bootstrap,
@@ -688,17 +681,17 @@ pub(in crate::machine::riscv64) struct PreparedRoots
 }
 impl PreparedRoots
 {
-    pub(in crate::machine::riscv64) fn firmware_register(&self) -> usize
+    pub(crate) fn firmware_register(&self) -> usize
     {
         self.spaces.firmware.register
     }
 
-    pub(in crate::machine::riscv64) fn hardware_tag_mask(&self) -> u16
+    pub(crate) fn hardware_tag_mask(&self) -> u16
     {
         self.boot.tag_mask
     }
 
-    pub(in crate::machine::riscv64) fn service_stack(&self) -> &'static Stack
+    pub(crate) fn service_stack(&self) -> &'static Stack
     {
         self.stack
     }
@@ -708,16 +701,17 @@ impl PreparedRoots
     /// it in the permanent firmware root, and has installed the poisoned local
     /// System vector. Both roots map this same stack and all live Rust views.
     /// This is a permanent local transition: no guard restores firmware root.
-    pub(in crate::machine::riscv64) unsafe fn activate_kernel(&self) -> Result<(), Error>
+    pub(crate) unsafe fn activate_kernel(&self) -> Result<(), Error>
     {
         if root_register() != self.spaces.firmware.register
         {
             return Err(Error::StartingRoot { expected: self.spaces.firmware.register,
                                              observed: root_register() });
         }
+        // SAFETY: the kernel root was captured from a live address space and is
+        // verified by the register read that follows.
         unsafe {
-            asm!("csrw satp,{}", "sfence.vma zero,zero",
-                 in(reg)self.spaces.kernel.register, options(nostack));
+            super::mmu::activate(self.spaces.kernel.register);
         }
         if root_register() != self.spaces.kernel.register
         {
@@ -727,7 +721,7 @@ impl PreparedRoots
         Ok(())
     }
 }
-pub(in crate::machine::riscv64) fn prepared_roots(ordinal: usize) -> Option<PreparedRoots>
+pub(crate) fn prepared_roots(ordinal: usize) -> Option<PreparedRoots>
 {
     let spaces = SPACES.get()?;
     let stack: &'static Stack = spaces.stacks.as_slice().get(ordinal)?;
@@ -893,10 +887,10 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
                                changed:  true,
                                fence:    !spaces.distinct_tags,
                                _hart:    PhantomData };
-    // Publish real owners before installing their actual root. One full fence
+    // Publish real owners before installing their actual root. One full flush
     // retires the boot-owned ASID0/global translations; no old tree is freed here.
     unsafe {
-        asm!("csrw satp,{root}","sfence.vma zero,zero",root=in(reg)spaces.kernel.register,options(nostack));
+        super::mmu::activate(spaces.kernel.register);
     }
     serial!("MMU_READY mode=sv39 actual={:#x} kernel_root={:#x} firmware_root={:#x} tables={} \
              leaves={} stack={:#x}+{} guards=2 service_stacks={} stack_table={:#x}+{}",
@@ -965,12 +959,14 @@ impl RootScope
         let changed = previous != register;
         if changed
         {
+            // SAFETY: `register` was captured from a live root that this scope
+            // restores before it ends.
             unsafe {
-                asm!("csrw satp,{}",in(reg)register,options(nostack));
-                if fence
-                {
-                    asm!("sfence.vma zero,zero", options(nostack));
-                }
+                super::mmu::write_root(register);
+            }
+            if fence
+            {
+                super::mmu::flush_translations();
             }
         }
         Self { previous,
@@ -985,12 +981,13 @@ impl Drop for RootScope
     {
         if self.changed
         {
+            // SAFETY: restores the root this scope captured on entry.
             unsafe {
-                asm!("csrw satp,{}",in(reg)self.previous,options(nostack));
-                if self.fence
-                {
-                    asm!("sfence.vma zero,zero", options(nostack));
-                }
+                super::mmu::write_root(self.previous);
+            }
+            if self.fence
+            {
+                super::mmu::flush_translations();
             }
         }
     }
@@ -1085,7 +1082,9 @@ pub(crate) unsafe fn activate_scheduled_root()
     let selected = super::traps::execution::return_root(spaces.kernel.register);
     if root_register() != selected
     {
-        unsafe { asm!("csrw satp,{}","sfence.vma zero,zero",in(reg)selected,options(nostack)) }
+        // SAFETY: `selected` is the root this path just chose from the live
+        // scheduler directory.
+        unsafe { super::mmu::activate(selected) }
     }
 }
 

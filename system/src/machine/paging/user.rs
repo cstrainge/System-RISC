@@ -3,8 +3,7 @@
 #![allow(unsafe_code)]
 use alloc::{sync::{Arc, Weak},
             vec::Vec};
-use core::{arch::asm,
-           fmt,
+use core::{fmt,
            sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 
 use mac_abi::{ACCESS_DENIED, BAD_ABI, BAD_ARGUMENT, NO_MEMORY, SERVICE_BUSY, Status};
@@ -1302,23 +1301,21 @@ pub(crate) unsafe fn copy_aliases(source: usize, destination: usize, bytes: usiz
     let mut offset = 0;
     while offset < bytes
     {
-        let value: usize;
         if (source + offset).is_multiple_of(8)
            && (destination + offset).is_multiple_of(8)
            && bytes - offset >= 8
         {
-            unsafe {
-                asm!("ld {value}, 0({source})",value=out(reg)value,source=in(reg)(source+offset),options(nostack,readonly));
-                asm!("sd {value}, 0({destination})",value=in(reg)value,destination=in(reg)(destination+offset),options(nostack));
-            }
+            // SAFETY: the caller owns both spans; the alignment test above
+            // selects the word path only where a word access is valid.
+            let value = unsafe { super::super::mmu::read_word(source + offset) };
+            unsafe { super::super::mmu::write_word(destination + offset, value) };
             offset += 8;
         }
         else
         {
-            unsafe {
-                asm!("lbu {value}, 0({source})",value=out(reg)value,source=in(reg)(source+offset),options(nostack,readonly));
-                asm!("sb {value}, 0({destination})",value=in(reg)value,destination=in(reg)(destination+offset),options(nostack));
-            }
+            // SAFETY: as above; the byte path is valid at any alignment.
+            let value = unsafe { super::super::mmu::read_byte(source + offset) };
+            unsafe { super::super::mmu::write_byte(destination + offset, value) };
             offset += 1;
         }
     }
@@ -1333,16 +1330,14 @@ pub(crate) unsafe fn zero_alias(destination: usize, bytes: usize)
     {
         if (destination + offset).is_multiple_of(8) && bytes - offset >= 8
         {
-            unsafe {
-                asm!("sd zero, 0({destination})",destination=in(reg)(destination+offset),options(nostack));
-            }
+            // SAFETY: the caller owns the span; alignment is checked above.
+            unsafe { super::super::mmu::zero_word(destination + offset) };
             offset += 8;
         }
         else
         {
-            unsafe {
-                asm!("sb zero, 0({destination})",destination=in(reg)(destination+offset),options(nostack));
-            }
+            // SAFETY: as above; a byte store is valid at any alignment.
+            unsafe { super::super::mmu::zero_byte(destination + offset) };
             offset += 1;
         }
     }

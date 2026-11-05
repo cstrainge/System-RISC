@@ -17,7 +17,7 @@ pub(super) struct StackBacking
 }
 struct UserSlot
 {
-    mapping: Option<super::super::paging::user::Mapping>,
+    mapping: Option<crate::machine::paging::user::Mapping>,
     busy:    bool,
     waiting: bool
 }
@@ -45,15 +45,15 @@ impl StackBacking
 
     pub(super) fn prepare_user(owner: &OwnerRef,
                                stack: accounting::Charged<crate::machine::pages::Stack>,
-                               space: &super::super::paging::process::Pin)
+                               space: &crate::machine::paging::process::Pin)
                                -> Result<Arc<Self>, mac_abi::Status>
     {
         Self::prepay(owner)?.finish(stack, Some(space))
     }
 
     fn mapping_turn(&self,
-                    operation: impl FnOnce(&mut super::super::paging::user::Mapping)
-                           -> Result<(), super::super::paging::user::Error>)
+                    operation: impl FnOnce(&mut crate::machine::paging::user::Mapping)
+                           -> Result<(), crate::machine::paging::user::Error>)
                     -> Result<(), super::user::retirement::Failure>
     {
         let mapping = {
@@ -165,10 +165,10 @@ pub(super) struct PrepaidStack
 impl PrepaidStack
 {
     pub(super) fn finish(self, stack: accounting::Charged<crate::machine::pages::Stack>,
-                         space: Option<&super::super::paging::process::Pin>)
+                         space: Option<&crate::machine::paging::process::Pin>)
                          -> Result<Arc<StackBacking>, mac_abi::Status>
     {
-        use super::super::paging::user::{Access, Kind, Mapping};
+        use crate::machine::paging::user::{Access, Kind, Mapping};
         if (self.backing.owner.owner().kind() == mac_object_table::domain::DomainKind::Process)
            != space.is_some()
         {

@@ -352,11 +352,11 @@ pub(super) fn initialize() -> Result<(), Error>
     // idles exist and before the scheduler/first application handoff. This key
     // is authenticated from actual sscratch, not reconstructed from topology.
     let current = traps::execution::selected_hart();
-    if super::paging::firmware_owner_hart() != Some(current.number())
+    if crate::machine::paging::firmware_owner_hart() != Some(current.number())
     {
         return Err(Error::ForeignPrimary);
     }
-    let topology = super::paging::enabled_cpus().ok_or(Error::MissingTopology)?;
+    let topology = crate::machine::paging::enabled_cpus().ok_or(Error::MissingTopology)?;
     let primary = current.ordinal();
     if topology.is_empty()
        || topology.get(primary).is_none_or(|cpu| cpu.hart != current.number() as u64)

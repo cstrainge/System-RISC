@@ -40,7 +40,7 @@ static CLAIMED: TerminalOwnership = TerminalOwnership::new();
 #[derive(Debug)]
 pub(crate) enum Error
 {
-    Reserve(super::paging::Error),
+    Reserve(crate::machine::paging::Error),
     Display(mac_boot_screen::ramfb::Error),
     Input(input::Error),
     Geometry(crate::emergency::GeometryError),
@@ -76,7 +76,7 @@ pub(crate) fn prepare() -> Result<(), Error>
             .map_err(Error::Geometry)?;
         let bytes = crate::display::width().checked_mul(crate::display::height())
             .and_then(|pixels| pixels.checked_mul(size_of::<u32>())).ok_or(Error::Size)?;
-        let (frame, stack) = super::paging::reserve_terminal_storage(
+        let (frame, stack) = crate::machine::paging::reserve_terminal_storage(
             bytes, crate::machine::memory::SYSTEM_STACK_BYTES as usize).map_err(Error::Reserve)?;
         let input = input::prepare_terminal().map_err(Error::Input)?;
         // SAFETY: exclusive single-hart bootstrap, permanent independent scanout
@@ -85,7 +85,7 @@ pub(crate) fn prepare() -> Result<(), Error>
         let display = unsafe {
             mac_boot_screen::ramfb::prepare_terminal(crate::machine::memory::FW_CFG_BASE as usize,
                 frame.physical().0, crate::display::width(), crate::display::height(),
-                |pointer, length| super::paging::bus_address(pointer as u64, length as u64))
+                |pointer, length| crate::machine::paging::bus_address(pointer as u64, length as u64))
         }.map_err(Error::Display)?;
         // These dedicated statics live in System's pinned image, outside the
         // fixed heap. Screen/Cursor/decoders are already embedded in Kit;
@@ -110,7 +110,7 @@ pub(crate) fn prepare() -> Result<(), Error>
         };
         let requirements = [requirement];
         let manifest = EmergencyManifest::new(&requirements).map_err(Error::Manifest)?;
-        let reserve = super::paging::protected_heap_statistics().ok_or(Error::Size)?;
+        let reserve = crate::machine::paging::protected_heap_statistics().ok_or(Error::Size)?;
         serial(format_args!("EMERGENCY_KIT_READY services=terminal frame_bytes={} \
             frame_backing={} stack_backing={} input_bytes={} input_alignment={} devices={} \
             state_bytes={} dma_bytes={} record_bytes={} screen_bytes={} cursor_bytes={} pinned_bytes={} \

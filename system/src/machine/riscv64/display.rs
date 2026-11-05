@@ -159,7 +159,7 @@ pub fn setup_framebuffer() -> bool
                                           width(),
                                           height(),
                                           |pointer, bytes| {
-                                              super::paging::bus_address(pointer as u64,
+                                              crate::machine::paging::bus_address(pointer as u64,
                                                                          bytes as u64)
                                           })
     };
