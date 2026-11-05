@@ -49,6 +49,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootrom-aarch64-virt"
+version = "0.1.0"
+dependencies = [
+ "linked_list_allocator",
+ "mac-block",
+ "mac-bootloader",
+ "mac-build",
+ "mac-filesystem",
+ "mac-hfs",
+ "serde_json",
+]
+
+[[package]]
 name = "bootrom-riscv"
 version = "0.1.0"
 dependencies = [

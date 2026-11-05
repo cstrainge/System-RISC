@@ -51,6 +51,7 @@ members = [
     "tools/xtask",
     "bootrom-riscv",
     "bootrom-aarch64",
+    "bootrom-aarch64-virt",
     "definitions/*",
     "drivers/*",
     "extensions/*",
