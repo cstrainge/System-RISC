@@ -38,9 +38,27 @@ struct Pipe
 /// enumeration cannot reveal them, not even through a count.
 struct Named
 {
-    name: Name,
-    pipe: u64,
-    cnid: u32
+    name:    Name,
+    pipe:    u64,
+    cnid:    u32,
+    /// Registration instant in Mac-epoch microseconds, so the item's dates are
+    /// stable across enumerations instead of reading the clock per row.
+    created: u64
+}
+/// One registry row as the File Manager sees it. Copied out under the manager
+/// lock so a catalog step never holds two locks or borrows registry storage.
+pub(crate) struct Row
+{
+    pub cnid:    u32,
+    pub created: u64,
+    name:        Name
+}
+impl Row
+{
+    pub(crate) fn name(&self) -> &[u8]
+    {
+        &self.name.1[..self.name.0 as usize]
+    }
 }
 #[derive(Clone, Copy)]
 struct Endpoint
@@ -54,7 +72,20 @@ struct Manager
     pipes:     Store<Pipe>,
     endpoints: Store<Endpoint>,
     named:     Vec<Named>,
-    revision:  u64
+    revision:  u32
+}
+impl Manager
+{
+    /// Advance the registry revision. Zero is skipped so an open enumeration
+    /// can never mistake a wrapped counter for "no registry".
+    fn bump(&mut self)
+    {
+        self.revision = self.revision.wrapping_add(1);
+        if self.revision == 0
+        {
+            self.revision = 1;
+        }
+    }
 }
 
 static MANAGER: spin::Once<Spinlock<Manager>> = spin::Once::new();
@@ -134,12 +165,16 @@ fn decode_name(text: &[u8]) -> Result<Name, Status>
     {
         return Err(INVALID_NAME);
     }
-    let mut bytes = [0u8; wire::NAME_BYTES];
-    bytes[..text.len()].copy_from_slice(text);
-    if bytes[..text.len()].iter().any(|byte| byte.is_ascii_control() || *byte == b':')
+    // A named pipe is a Finder item, so its name must be representable in the
+    // folder listing. Control characters, the path separator and non-ASCII
+    // bytes have no item form here and are refused at creation instead of
+    // being sanitised on every enumeration.
+    if text.iter().any(|byte| !(b' '..=b'~').contains(byte) || *byte == b':')
     {
         return Err(INVALID_NAME);
     }
+    let mut bytes = [0u8; wire::NAME_BYTES];
+    bytes[..text.len()].copy_from_slice(text);
     Ok((text.len() as u8, bytes))
 }
 
@@ -153,10 +188,83 @@ fn named(entry: &Named) -> &[u8]
     &entry.name.1[..entry.name.0 as usize]
 }
 
-fn free_cnid() -> u32
+/// Synthetic catalog identity range. HFS-B allocates real CNIDs densely from
+/// 16, and classic HFS composes them from catalog node numbers, so this band is
+/// reserved for registry entries that are not catalog records.
+const VIRTUAL_FIRST: u32 = 0x8000_0000;
+const VIRTUAL_END: u32 = 0x9000_0000;
+
+/// A pipe's synthetic identity is never reused, so a stale reference cannot
+/// resolve to a different live pipe. Exhaustion is an ordinary refusal.
+fn free_cnid() -> Option<u32>
 {
-    // 0x8000_0000.. is reserved for entries that are not HFS catalog records.
-    (0x8000_0000u64 | NEXT_CNID.fetch_add(1, Ordering::Relaxed)) as u32
+    let counter = NEXT_CNID.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                             value.checked_add(1)
+                         })
+                           .ok()?;
+    let cnid = VIRTUAL_FIRST.checked_add(u32::try_from(counter).ok()?)?;
+    (cnid < VIRTUAL_END).then_some(cnid)
+}
+
+/// Whether `cnid` belongs to the synthetic band. Mutations use this to fail
+/// closed on a reserved identity; catalog resolution additionally requires the
+/// registry to actually hold the row.
+pub(crate) fn virtual_cnid(cnid: u32) -> bool
+{
+    (VIRTUAL_FIRST..VIRTUAL_END).contains(&cnid)
+}
+
+/// Registration instant for a new item, or zero when the clock is unavailable.
+/// The date is informational; it never gates registration.
+fn registration_time() -> u64
+{
+    crate::machine::clock::now().ok().and_then(|now| now.mac_microseconds()).unwrap_or(0)
+}
+
+/// Registry revision, or zero before the manager exists. An open enumeration
+/// carries this value and is stale as soon as it differs.
+pub(crate) fn revision() -> u32
+{
+    let Ok(manager) = manager()
+    else
+    {
+        return 0;
+    };
+    manager.lock().revision
+}
+
+/// Registry row by offset in registration order. The end of the registry is
+/// reported as absence, so a caller never needs a separate count.
+pub(crate) fn row(index: usize) -> Option<Row>
+{
+    let manager = manager().ok()?;
+    let manager = manager.lock();
+    let entry = manager.named.get(index)?;
+    Some(Row { cnid: entry.cnid,
+               created: entry.created,
+               name: entry.name })
+}
+
+/// Registry row by item name, using the same comparison as `CONNECT`.
+pub(crate) fn find(text: &[u8]) -> Option<Row>
+{
+    let manager = manager().ok()?;
+    let manager = manager.lock();
+    let entry = manager.named.iter().find(|entry| same_name(named(entry), text))?;
+    Some(Row { cnid: entry.cnid,
+               created: entry.created,
+               name: entry.name })
+}
+
+/// Registry row by synthetic identity.
+pub(crate) fn row_of(cnid: u32) -> Option<Row>
+{
+    let manager = manager().ok()?;
+    let manager = manager.lock();
+    let entry = manager.named.iter().find(|entry| entry.cnid == cnid)?;
+    Some(Row { cnid: entry.cnid,
+               created: entry.created,
+               name: entry.name })
 }
 
 /// Validate a delivered request, perform it, and park only when the contract
@@ -285,6 +393,7 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
     let system = crate::toolbox::handles::system_owner()?;
     let manager = manager()?;
     let mut manager = manager.lock();
+    let mut cnid = None;
     if let Some(name) = &name
     {
         for entry in &manager.named
@@ -295,8 +404,11 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
             }
         }
         // Preflight the registry slot before any pipe or endpoint exists, so a
-        // refused insertion cannot leave a half-registered name.
+        // refused insertion cannot leave a half-registered name. The identity
+        // is taken before the objects so exhaustion is refused before them
+        // too; a failed creation burns an identity rather than reusing one.
         Gate::with_system_allocation(|| manager.named.try_reserve(1)).map_err(|_| NO_MEMORY)?;
+        cnid = Some(free_cnid().ok_or(NO_MEMORY)?);
     }
     let pipe = manager.pipes
                       .insert(&system,
@@ -329,12 +441,13 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
             return Err(status(error));
         }
     };
-    if let Some(name) = name
+    if let (Some(name), Some(cnid)) = (name, cnid)
     {
         manager.named.push(Named { name,
                                    pipe,
-                                   cnid: free_cnid() });
-        manager.revision = manager.revision.wrapping_add(1);
+                                   cnid,
+                                   created: registration_time() });
+        manager.bump();
     }
     call.reader = reader;
     call.writer = writer;
@@ -539,7 +652,7 @@ fn retire_endpoint(manager: &mut Manager, endpoint: Endpoint)
         manager.named.retain(|entry| entry.pipe != endpoint.pipe);
         if manager.named.len() != before
         {
-            manager.revision = manager.revision.wrapping_add(1);
+            manager.bump();
         }
     }
 }

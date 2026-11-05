@@ -6,11 +6,13 @@
 use core::{fmt::{self, Write},
            sync::atomic::{AtomicBool, Ordering}};
 
-use mac_toolbox::{Error, System, abi::pipes as wire};
+use mac_toolbox::{Error, System, abi::pipes as wire, files};
 
 static ARMED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
 const NAME: &str = "ProbePipe";
+const PIPE: &str = "FolderPipe";
+const PIPE2: &str = "FolderPipe2";
 const PAYLOAD: [u8; 512] = [0xab; 512];
 
 struct Line
@@ -66,6 +68,7 @@ fn run(system: &System<'_>) -> Result<(), Line>
     eof(system)?;
     broken(system)?;
     named(system)?;
+    folder(system)?;
     Ok(())
 }
 
@@ -126,6 +129,26 @@ fn failed(stage: &'static str, error: Error) -> Line
     let mut line = Line::new();
     let _ = writeln!(line, "PIPES_PROBE_FAIL {stage} {error:?}");
     line
+}
+
+fn fault(text: &'static str) -> Line
+{
+    let mut line = Line::new();
+    let _ = write!(line, "PIPES_PROBE_FAIL {text}");
+    line
+}
+
+/// A File Manager mutation inside the Pipes folder, or on a virtual item, must
+/// be refused with a named status rather than reaching a volume or the
+/// registry. Anything else is a failure of the merge, including success.
+fn refusal<T>(stage: &'static str, result: core::result::Result<T, Error>) -> Result<(), Line>
+{
+    match result
+    {
+        Err(Error::NotSupported) => Ok(()),
+        Err(error) => Err(failed(stage, error)),
+        Ok(_) => Err(fault(stage))
+    }
 }
 
 fn block(system: &System<'_>) -> Result<(), Line>
@@ -236,6 +259,156 @@ fn named(system: &System<'_>) -> Result<(), Line>
     check(matches!(system.pipes().connect(NAME), Err(Error::NotFound)),
           "a name survived its last handle")?;
     note(system, "PIPES_PROBE_NAME_OK\n");
+    Ok(())
+}
+
+struct Listing
+{
+    items: u32,
+    found: Option<files::Cnid>
+}
+
+/// Enumerate the folder through the same resident scan the Finder uses. One
+/// step is one item, so the count is exactly what a folder window would show.
+fn listing(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid,
+           name: &str) -> Result<Listing, Line>
+{
+    let mut cursor = files::DirectoryCursor::default();
+    let mut items = 0;
+    let mut found = None;
+    // Bounded so a scan that never reaches Done fails the probe instead of
+    // hanging the guest before its readiness line.
+    for _ in 0..1024
+    {
+        match files.scan_directory(volume, folder, &mut cursor)
+        {
+            Ok(files::ScanStep::Entry { catalog, .. }) =>
+            {
+                items += 1;
+                if catalog.name() == name
+                {
+                    found = Some(catalog.id);
+                }
+            }
+            Ok(files::ScanStep::Pending) => (),
+            Ok(files::ScanStep::Done) => return Ok(Listing { items, found }),
+            Err(error) => return Err(failed("folder scan", error))
+        }
+    }
+    Err(fault("the folder scan never finished"))
+}
+
+fn folder(system: &System<'_>) -> Result<(), Line>
+{
+    let files = system.files();
+    let mut startup = None;
+    for index in 0..files.volume_count().map_err(|error| failed("volume count", error))?
+    {
+        let volume = files.volume_at(index).map_err(|error| failed("volume", error))?;
+        if volume.startup
+        {
+            startup = Some(volume);
+            break;
+        }
+    }
+    let Some(volume) = startup
+    else
+    {
+        return Err(fault("no startup volume"));
+    };
+    let blessed = volume.blessed_folder;
+    check(blessed.0 >= files::ROOT_ID.0, "the startup volume has no blessed folder")?;
+    // This probe replaces Finder, so it may be the run that creates the folder.
+    let folder = match files.lookup(volume.id, blessed, "Pipes")
+    {
+        Ok(entry) => entry,
+        Err(Error::NotFound) =>
+        {
+            files.new_folder(volume.id, blessed, "Pipes")
+                 .map_err(|error| failed("create Pipes", error))?
+        }
+        Err(error) => return Err(failed("lookup Pipes", error))
+    };
+    check(folder.is_directory(), "Pipes is not a folder")?;
+
+    let (reader, writer) = system.pipes()
+                                  .create_named(PIPE, wire::MIN_CAPACITY)
+                                  .map_err(|error| failed("create folder pipe", error))?;
+    let first = listing(files, volume.id, folder.id, PIPE)?;
+    check(first.items == 1, "the folder does not hold exactly one named pipe")?;
+    let Some(cnid) = first.found
+    else
+    {
+        return Err(fault("the named pipe is absent from the folder"));
+    };
+    note(system, "PIPES_FOLDER_LIST_OK items=1\n");
+
+    // The same item by name and by identity, parented by the folder.
+    let by_name =
+        files.lookup(volume.id, folder.id, PIPE).map_err(|error| failed("lookup item", error))?;
+    let by_cnid = files.catalog(volume.id, cnid).map_err(|error| failed("catalog item", error))?;
+    check(by_name.id == cnid, "lookup by name returned another identity")?;
+    check(by_cnid.id == cnid, "catalog by CNID returned another identity")?;
+    check(by_cnid.parent == folder.id, "the item is not parented by the folder")?;
+    check(matches!(files.lookup(volume.id, folder.id, "NoSuchPipe"), Err(Error::NotFound)),
+          "an unknown name resolved")?;
+    note(system, "PIPES_FOLDER_LOOKUP_OK\n");
+
+    // Stable identity, and a destroyed identity is never handed out again.
+    let again = listing(files, volume.id, folder.id, PIPE)?;
+    check(again.found == Some(cnid), "the identity changed across two enumerations")?;
+    drop(writer);
+    drop(reader);
+    let gone = listing(files, volume.id, folder.id, PIPE)?;
+    check(gone.items == 0 && gone.found.is_none(), "a destroyed pipe is still listed")?;
+    let (reader2, writer2) = system.pipes()
+                                   .create_named(PIPE2, wire::MIN_CAPACITY)
+                                   .map_err(|error| failed("create second pipe", error))?;
+    let fresh = listing(files, volume.id, folder.id, PIPE2)?;
+    let Some(fresh_cnid) = fresh.found
+    else
+    {
+        return Err(fault("the second named pipe is absent from the folder"));
+    };
+    check(fresh_cnid != cnid, "a destroyed identity was handed to another pipe")?;
+    note(system, "PIPES_FOLDER_STABLE_OK\n");
+
+    // Anonymous pipes have no registry row, so a folder listing cannot see one.
+    let (anon_reader, anon_writer) = system.pipes()
+                                           .create(wire::MIN_CAPACITY)
+                                           .map_err(|error| failed("create anonymous", error))?;
+    let with_anon = listing(files, volume.id, folder.id, PIPE2)?;
+    check(with_anon.items == fresh.items, "an anonymous pipe entered the folder")?;
+    check(with_anon.found == Some(fresh_cnid), "the named item moved when an anonymous pipe existed")?;
+    drop(anon_writer);
+    drop(anon_reader);
+    note(system, "PIPES_FOLDER_ANON_ABSENT_OK\n");
+
+    // No File Manager mutation may reach the registry or a volume.
+    refusal("rename", files.rename(volume.id, fresh_cnid, "Other"))?;
+    refusal("set_locked", files.set_locked(volume.id, fresh_cnid, true))?;
+    refusal("set_stationery", files.set_stationery(volume.id, fresh_cnid, true))?;
+    refusal("set_comment", files.set_comment(volume.id, fresh_cnid, "x"))?;
+    refusal("set_icon_location",
+            files.set_icon_location(volume.id, fresh_cnid, Some(mac_toolbox::abi::geometry::Point {
+                v: 10,
+                h: 10
+            })))?;
+    refusal("set_properties",
+            files.set_properties(volume.id,
+                                 fresh_cnid,
+                                 files::ForkMetadata::from_catalog(&by_cnid, "")))?;
+    refusal("move_to_trash", files.move_to_trash(volume.id, fresh_cnid))?;
+    refusal("put_away", files.put_away(volume.id, fresh_cnid))?;
+    refusal("remove", files.remove(volume.id, fresh_cnid))?;
+    refusal("move_into", files.move_into(volume.id, fresh_cnid, blessed))?;
+    refusal("new_folder", files.new_folder(volume.id, folder.id, "Nested"))?;
+    let survived = listing(files, volume.id, folder.id, PIPE2)?;
+    check(survived.found == Some(fresh_cnid), "a refused mutation changed the folder")?;
+    note(system, "PIPES_FOLDER_REFUSED_OK refusals=11\n");
+
+    drop(writer2);
+    drop(reader2);
     Ok(())
 }
 

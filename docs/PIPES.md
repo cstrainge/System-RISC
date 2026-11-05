@@ -1,12 +1,13 @@
 # Pipes
 
-Status: core implemented; folder presentation not.
+Status: core and the merged `Pipes` folder listing implemented; folder
+creation-at-boot, Finder open-as-connect and the icon families not.
 Baseline: `2f6d8e93`, 2026-11-05.
 
-The resident byte-transport facility, its blocking wait and the public SDK are
-implemented and the guest builds and boots. The merged `Pipes` folder listing,
-the folder's creation, Finder open-as-connect and the two icon families are not
-implemented; section 15 records the exact state.
+The resident byte-transport facility, its blocking wait, the public SDK and the
+File Manager's merged listing of the `Pipes` folder are implemented and the guest
+builds and boots. Boot-time folder ensure, Finder open-as-connect and the two
+icon families are not implemented; section 15 records the exact state.
 
 This document is the contract for anonymous and named pipes in System RISC. It
 states what a pipe is, what each operation means, which refusals are distinct,
@@ -254,11 +255,13 @@ one:
 ## 8. Name registry and lifetime
 
 - A name is registered by `create_named` and resolves through `connect`.
-- A name is 1 to 31 bytes of UTF-8 that converts losslessly to Mac Roman, because
-  a named pipe is also a Finder item and HFS item names have that limit. Colon,
-  slash and control characters are not legal. Name comparison uses the File
-  Manager's existing HFS name-equality rules, so two names that the File Manager
-  considers equal are the same pipe name.
+- A name is 1 to 31 bytes of printable ASCII. A named pipe is also a Finder item,
+  so its name is also an HFS item name, and the item listing carries the name as
+  UTF-8 without a Mac Roman conversion step; a name that has no printable-ASCII
+  form is refused at creation rather than sanitised on every enumeration. Space
+  through `~` is legal. Control characters and the colon are not. Name comparison
+  uses the File Manager's existing HFS name-equality rules, so two names that the
+  File Manager considers equal are the same pipe name.
 - **The name is removed when the last handle closes.** A registered name is never
   persistent: there is no on-disk record, no survival across application exit
   beyond live handles, and no survival across boot.
@@ -289,14 +292,19 @@ one:
   introduced for it.
 - The folder is ordinary storage. It can be opened, moved, renamed, trashed and
   recreated by ordinary File Manager operations, subject to the ordinary
-  protections. The facility records its catalog node ID at boot; the merged
-  listing follows the folder while that node ID is live.
+  protections. The facility records its catalog node ID when the volume is
+  mounted and again whenever a `Pipes` folder is created directly under the
+  blessed folder; the merged listing follows the folder while that node ID is
+  live. A mutation that removes, renames or moves the folder re-resolves the
+  identity, so a stale node ID is never followed.
+- Boot-time ensure is not implemented yet. Today the folder exists only once
+  something creates it — a boot that finds it, or an application that creates it
+  — and the listing is present from that moment.
 - If the startup volume is read-only, no folder is created or expected. Named
   pipes still register and still connect by name; they have no Finder
   presentation. The folder is presentation, not authority.
 - If the folder is deleted while pipes are registered, the pipes are unaffected
-  and remain reachable by name until their handles close. The next boot recreates
-  the folder when the volume is writable.
+  and remain reachable by name until their handles close.
 
 ### 9.2 The merged listing
 
@@ -311,7 +319,10 @@ to report. A request for an anonymous pipe's item therefore does not exist as a
 refusal case — it is not an entry in that namespace at all.
 
 - Real children are listed first, in ordinary HFS catalog order.
-- Named pipes follow, in HFS name order.
+- Named pipes follow, in registration order. Registration order is the registry's
+  own order and is stable for the life of an enumeration; sorting by name would
+  cost an allocation per scan step for a display nicety the Finder's own layout
+  decides anyway.
 - An item's fields never reveal its source: a named pipe is a file-kind entry
   with the type and creator of section 9.3, the folder's volume and catalog node
   ID as its parent, and the pipe's name as its name.
@@ -329,8 +340,9 @@ refusal case — it is not an entry in that namespace at all.
 - Mutations that would change a named pipe's item — rename, move, trash, delete,
   lock, stationery, comment, icon location — are refused with `NotSupported`.
   A named pipe is not storage and its name is its registry key.
-- `Get Info` on a named pipe reports the item's kind, name and zero lengths. It
-  does not report dates or allocation, because a named pipe has none.
+- `Get Info` on a named pipe reports the item's kind, name, zero fork lengths and
+  the instant the name was registered as its created and modified date. It
+  reports no allocation and no child count, because a named pipe has none.
 
 ### 9.3 Item kind
 
@@ -730,7 +742,7 @@ against the shipping artifacts rather than a host substitute:
 - Double-clicking a named pipe connects and does not launch an application.
 - The folder shows its own icon and a named pipe shows the `PIPE`/`PIPE` icon.
 - The GUI standard streams still behave exactly as section 10 describes.
-- The boot check remains 17 of 17 and the canonical public-SDK suite still
+- The boot check remains 18 of 18 and the canonical public-SDK suite still
   passes.
 
 Section 15 records which of these have actually been executed.
@@ -744,24 +756,33 @@ Implemented and built into the guest, with the guest booting:
 - Per-process endpoint handles from the shared handle facility, cleanup on
   process exit, and blocking that parks the calling thread.
 - The public SDK (`Pipes`, `PipeReader`, `PipeWriter`) behind `System::pipes()`.
+- The File Manager's merged enumeration of the `Pipes` folder: named pipes are
+  items with synthetic identities, lookup by parent and name and by identity
+  resolve the same item, an unknown name is `NotFound`, and every mutation inside
+  the folder or on an item is refused with `NotSupported`. The folder identity is
+  recorded at mount and again when a `Pipes` folder is created under the blessed
+  folder.
 
 Verified by execution in the guest, not only by compilation: a probe
 application replaces Finder on a cloned disk and runs five cases — echo,
 a 512-byte atomic write into a full pipe that must wait for a reader, would-block
-versus end-of-stream, broken pipe, and name removal. The probe is
-`crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
-it and runs it as the `pipes-probe` case, so the marker set is part of the gate
-(18 of 18). `scripts/capture_pipes_probe.py` boots the same artifact standalone
+versus end-of-stream, broken pipe, and name removal — followed by the folder
+markers. The probe is `crates/mac-toolbox/tests/fixtures/pipes-probe`;
+`cargo xtask boot-check` builds it and runs it as the single `pipes-probe` case,
+so the marker set is part of the gate (18 of 18). The folder markers assert one
+item per named pipe, identical identity by name and by CNID, `NotFound` for an
+unknown name, identity stability across two enumerations and non-reuse after
+destruction, that an anonymous pipe does not appear, and eleven refused
+mutations. `scripts/capture_pipes_probe.py` boots the same artifact standalone
 and records the QEMU command and the serial hash.
 
 Not implemented:
 
-- The File Manager's merged enumeration of the folder, the folder's creation and
-  boot-time ensure, and the refusal of mutations on pipe items. Named pipes are
-  therefore reachable by name but have no visible item.
+- Boot-time creation of the folder. It exists once something creates it.
 - Finder open-as-connect.
 - The folder icon family, the `PIPE`/`PIPE` document family and its bundle, and
-  the corresponding extension of the canonical icon-reservation allowlist.
+  the corresponding extension of the canonical icon-reservation allowlist. The
+  type pair is reported today; the icons that would use it are not.
 
 The probe covers the transport contract. It does not cover multiple concurrent
 writers, or stale and foreign handle refusals, which are refinements. Lost wake
