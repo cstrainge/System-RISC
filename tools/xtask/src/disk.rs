@@ -125,6 +125,17 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     let dist = workspace.dist();
     let scratch = Scratch::create(&workspace.build)?;
     let output = workspace.disk_image()?;
+    // Say so when the image being replaced no longer matches the artifacts it
+    // embeds. The rebuild below fixes it, but a silent fix is how a stale image
+    // stays in someone's notes as "verified".
+    if output.is_file()
+    {
+        if let Err(why) = verify(workspace)
+        {
+            println!("warning: {why}");
+            println!("warning: rebuilding the image from the current artifacts");
+        }
+    }
     let (report, summary) = match &image.layout
     {
         Layout::Filesystem { filesystem,
@@ -186,6 +197,113 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     write_json(&dist.join("disk.json"), &report)?;
     println!("{summary}");
     Ok(report)
+}
+
+/// Refuse an image that no longer matches the artifacts it claims to contain.
+///
+/// The image records, in its own provenance, the hash of every artifact it
+/// embedded and of every packaged file it installed. A payload rebuilt after the
+/// image was written leaves the image claiming contents it does not have — which
+/// reads exactly like a good image, because the file exists and its own bytes are
+/// intact. This is the check that makes that difference visible, and it is called
+/// by everything that hands an existing image to something: a card, an emulated
+/// machine, or a check.
+pub fn verify(workspace: &Workspace) -> Result<()>
+{
+    let image = workspace.disk_image()?;
+    if !image.is_file()
+    {
+        return Err(error(format!("no storage image at {}; build it first", image.display())));
+    }
+    let provenance = workspace.dist().join("disk.json");
+    let report: Value = serde_json::from_slice(&fs::read(&provenance).map_err(|why| {
+        error(format!("cannot read {}: {why}; the image has no recorded provenance, so its \
+                       contents cannot be checked against the artifacts", provenance.display()))
+    })?)?;
+    let mut checked = 0;
+    let mut stale: Vec<String> = Vec::new();
+    if let Some(partitions) = report["partitions"].as_array()
+    {
+        for partition in partitions
+        {
+            // A FAT partition names each file's source, so the artifact is
+            // re-read and compared.
+            if let Some(files) = partition["files"].as_array()
+            {
+                for file in files
+                {
+                    let Some(source) = file["source"].as_str()
+                    else
+                    {
+                        continue;
+                    };
+                    let Some(recorded) = file["sha256"].as_str()
+                    else
+                    {
+                        continue;
+                    };
+                    let Some(artifact) = source.strip_prefix("artifact:")
+                    else
+                    {
+                        continue;
+                    };
+                    let path = workspace.dist().join(format!("{artifact}.bin"));
+                    checked += 1;
+                    let current = fs::read(&path)
+                        .map(|bytes| package::sha256(&bytes))
+                        .unwrap_or_else(|_| "<missing>".into());
+                    if current != recorded
+                    {
+                        stale.push(format!("{} holds {} (recorded {}), current {} is {}",
+                                           image.file_name().unwrap_or_default().to_string_lossy(),
+                                           file["path"].as_str().unwrap_or_default(),
+                                           recorded,
+                                           path.file_name().unwrap_or_default().to_string_lossy(),
+                                           current));
+                    }
+                }
+            }
+            // A System7 partition records the packaged artifact each installed
+            // file came from.
+            if let Some(files) = partition["system7"]["files"].as_array()
+            {
+                for file in files
+                {
+                    let (Some(artifact), Some(recorded)) =
+                        (file["artifact"].as_str(), file["artifact_sha256"].as_str())
+                    else
+                    {
+                        continue;
+                    };
+                    let path = workspace.dist().join(artifact);
+                    checked += 1;
+                    let current = fs::read(&path)
+                        .map(|bytes| package::sha256(&bytes))
+                        .unwrap_or_else(|_| "<missing>".into());
+                    if current != recorded
+                    {
+                        stale.push(format!("the System volume holds {} built from {}, which has \
+                                            changed since the image was written",
+                                           file["path"].as_str().unwrap_or_default(), artifact));
+                    }
+                }
+            }
+        }
+    }
+    if checked == 0
+    {
+        return Err(error(format!("{} records no artifact provenance, so an image that predates \
+                                  the payload cannot be told from a current one; rebuild it",
+                                 provenance.display())));
+    }
+    if !stale.is_empty()
+    {
+        return Err(error(format!("the storage image {} is stale against the artifacts it \
+                                  embeds:\n  {}",
+                                 image.display(),
+                                 stale.join("\n  "))));
+    }
+    Ok(())
 }
 
 /// Build a whole System7 volume at `path`. Both the unpartitioned layout and a
@@ -297,7 +415,9 @@ fn build_system7(workspace: &Workspace, path: &Path, size: u64, installed: &[Ins
             return Err(error(format!("HFS-B fork or metadata roundtrip failed for {}",
                                      entry.name)));
         }
+        let artifact = format!("{}.bin", entry.name);
         verified.push(json!({"path":entry.path(),"package":entry.package,"cnid":created.id,
+            "artifact":artifact,"artifact_sha256":package::sha256(&bytes),
             "file_type":text::decode(&original.file_type),
             "creator":text::decode(&original.creator),"data_length":data.len(),
             "resource_length":resources.len(),

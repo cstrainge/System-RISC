@@ -167,7 +167,7 @@ physmap_marker:
 physmap_bad_marker:
     .asciz "BOOT_AARCH64_PHYSMAP_BAD: physmap does not alias physical RAM\n"
 ready_marker:
-    .asciz "BOOT_AARCH64_READY: raspi3b bootrom reached its idle loop\n"
+    .asciz "BOOT_AARCH64_READY: BCM2837 boot ROM reached its idle loop\n"
 trap_marker:
     .asciz "BOOT_TRAP_EL1: exception taken\n"
 esr_label:
