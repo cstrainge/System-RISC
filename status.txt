@@ -745,3 +745,55 @@ no guest acceptance is claimed. Boot check remains at its last recorded state
 Review of (i) the merge shape in section 9.5 and (ii) the API surface, before
 any code. Implementation order after that: pipe core and handles, blocking
 integration, File Manager merge, folder creation, Finder open, icons.
+
+Pipes: Terminal/CLAP requirement, launch gap, and review decisions
+===================================================================
+[Pipes / facilities agent] 2026-11-05
+
+Scope update from Chloe. CLAP is the file type for command-line applications and
+a Terminal connects to one with three anonymous pipes. Recorded in
+docs/PIPES.md section 10.1.
+
+Findings:
+
+- CLAP appears in the tree only as prose (docs/TERMINAL.md, RUST-STD.md,
+  CORE-TOOLBOX-ROADMAP.md, EXTENSION-TRAITS-DESIGN.md). No code, resource or
+  FinderInfo use. The type is unused and is not allocated by this facility.
+- create is already an ordinary application operation in the specified surface.
+  There is no System-only creation path and no privileged caller, so a Terminal
+  can create the three pipes and hold one end of each as specified.
+- The launch interface cannot carry pre-made handles. ProcessCall identifies a
+  target only by volume and CNID and has no attachment, endpoint or handle
+  field. The services table an application receives at entry is one System-wide
+  immutable 16-byte record (version, size, trap gate, capability bits) with no
+  per-application attachment record. Standard streams come from the
+  application's own standard-library profile. A Terminal would additionally
+  need: a launch call accepting three pipe handles; a defined ownership
+  transfer of those handles to the child at commit, with the parent's copies
+  invalidated (and no transfer on refusal); and a child-side way to read its
+  endpoints so the std profile can bind real streams. This facility supplies
+  the pipes and the last-close consequences only. The gap is recorded in the
+  spec rather than designed around; no launch ABI was changed.
+
+Review decisions applied:
+
+- Merge shape (b) confirmed: the File Manager enumerates the Pipes folder from
+  the resident name registry. Section 9.5 now states the correctness argument
+  first: a provider exists because a volume's contents come from somewhere
+  else, and a pipe registry's contents do not, so a provider boundary would
+  exist for nobody. The estimate stands, but is presented as supporting rather
+  than deciding.
+- The icon reservation allowlist in
+  crates/mac-toolbox/tests/file_icons.rs will be extended for -30002/-30003 as
+  a deliberate policy change, with the reason in the commit.
+- Process exit with a named pipe open is stated explicitly in section 8: every
+  handle closes, last close destroys the pipe and removes the name, and a
+  concurrent connect gets NOT_FOUND.
+
+Documentation defect corrected in passing: docs/RUST-STD.md said full pipe
+functionality would replace "kernel stubs"/"resident kernel placeholders", but
+no such stub exists. Both places now point at docs/PIPES.md and say the null
+standard-stream profile is the only stub and stays.
+
+Validation: documentation only. No build run; boot check unchanged until an
+implementation tip exists.
