@@ -181,7 +181,7 @@
   "emulation": {
     "description": "QEMU virt board, 4x Cortex-A72, 2 GiB RAM, virtio-MMIO devices with a virtio GPU and ramfb display",
     "family": "qemu",
-    "binary": "qemu-system-riscv64",
+    "binary": "qemu-system-aarch64",
     "machine": "virt",
     "cpu": "cortex-a72",
     "ram": "2G",
