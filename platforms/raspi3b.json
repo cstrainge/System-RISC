@@ -9,7 +9,7 @@
     "neon"
   ],
   "install": {
-    "description": "The aarch64 System set for the board: the resident kernel and the startup Finder, with the applications that build for this architecture. The board has no virtio bus and no display driver of its own yet, so no external driver is installed: the resident kernel boots and the desktop is drawn only once a VideoCore mailbox display driver exists.",
+    "description": "The aarch64 System set for the board: the resident kernel, the VideoCore mailbox framebuffer driver that owns the display, the startup Finder, and the applications that build for this architecture. The board has no virtio bus, so nothing that expects one is installed.",
     "set": "packages",
     "applications": [
       "mac-finder",
@@ -22,7 +22,8 @@
       "control-suite"
     ],
     "modules": [
-      "mac-system"
+      "mac-system",
+      "videocore-framebuffer"
     ],
     "folders": {
       "applications": "Applications",
