@@ -165,6 +165,85 @@ shape now:
 * Serial, storage and networking have no class in this tree yet; the PL011 is
   the first one that will need a serial class rather than a private interface.
 
+## Where the published document is wrong
+
+The family's register document covers the BCM2835 and applies to the BCM2837
+with the address change above, but it is known to contain errors, and several of
+them sit on the path this platform drives. These entries are the hardware's
+actual behaviour; the published document disagrees with each.
+
+**Clock.** The document states a nominal core clock of 150 MHz for peripheral
+rate calculations. On this board the core clock is 250 MHz. Any rate computed
+from the document's figure is wrong by a factor of 1.67, which is the difference
+between a UART that prints and one that prints nothing legible.
+
+**Interrupt numbers.** The document's interrupt table is the authority used here,
+and it agrees with this record: system timer interrupts are 0 to 3, and 62 is the
+Arasan EMMC/SDHCI controller's interrupt. That controller is the one the record
+calls `sdhci`, which is why the record's 62 is right even though the controller
+is not the board's card slot.
+
+**Addresses.**
+* The UART section prints the PL011's base address with a missing zero. The
+  correct base is `0x7E201000`, which is `0x3F201000` in the ARM view.
+* The PWM section lists no base address for its register block. It is
+  `0x7E20C000`.
+* The auxiliary-peripheral register table is wrong for the two SPI blocks: the
+  documented offsets do not match the same document's own later pages. The
+  correct offsets place the first auxiliary SPI's data port at
+  `0x7E2150A0`–`0x7E2150AC` and the second at `0x7E2150E0`–`0x7E2150EC`.
+* The same section names those two blocks SPI0 and SPI1. They are **SPI1 and
+  SPI2**: SPI0 is a different, separately documented controller.
+
+**GPIO.**
+* The alternate-function tables and the pin-function diagrams disagree about
+  which selector value selects the SD interface. The register tables say one
+  value and the diagrams say another for the same function, and the silicon
+  follows neither table uniformly. A pin's function must therefore be taken from
+  what the platform record declares, not from either table.
+* The pull-up/pull-down registers cannot be read back: a value written to the
+  control register is not what a read returns, so a driver cannot verify the
+  state it set. Writing one, waiting a bounded number of cycles, clocking the
+  selection into the pin and then clearing it is the whole procedure, and the
+  required delay is not documented anywhere official.
+* The output-clear register is described as setting pins, and the level registers
+  are described as writable; both are errors. The clear register clears, and the
+  level registers are read-only.
+* One register table refers to a third pull clock register that does not exist.
+  There are two.
+
+**DMA.** The interrupt-enable field does not behave as described: a channel only
+raises its interrupt when the control block that requests it is the last in its
+chain. A chain that asks for an interrupt part way through does not get one, so
+completion must either be signalled from the final control block or carried by a
+second channel.
+
+**I2C.** Clock stretching is not supported at arbitrary points. The controller
+tolerates it only directly after the acknowledge phase of a read, and only when
+the stretch lasts at least half a clock period. A device that stretches elsewhere
+corrupts the transfer, which is a bus-level constraint no class design can paper
+over.
+
+**SPI.** The clock divider is documented as needing to be a power of two. It does
+not; any value divides. Separately, setting the transmit-FIFO-clear bit while a
+chip select is asserted can de-assert that select for a fraction of a clock
+period, so a driver must clear FIFOs with no device selected.
+
+**Mini UART.** The interrupt-enable register's two low bits are documented in the
+opposite order, and two bits documented as unused are required before the block
+raises any interrupt at all. The line-control register needs its second bit set
+for eight-bit operation, which the document does not say. The modem status
+register's clear-to-send bit is at a different position than documented.
+
+**Random number generator.** The block is absent from the register document
+entirely. There is no official register description: the address, the enable bit
+and the readiness bit are established by use, not by documentation, so a driver
+for it is written against observed behaviour and cannot cite a primary source.
+
+**PL011 interrupt clear register.** The document's table repeats the masked-status
+description for two of the clear register's fields where it should describe
+clearing. The register clears: writing a one to a field clears that source.
+
 ## Not verifiable from this document
 
 The board is the only oracle for anything that is a silicon behaviour rather

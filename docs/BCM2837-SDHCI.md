@@ -19,6 +19,20 @@ use is. This document specifies the controller because the platform's emulated
 machine offers no other one, and because the block is a legitimate device to
 drive for its real function. The inventory records the gap.
 
+## Where this contract comes from
+
+The SoC's own register document does not describe this block. Its only mention is
+in the interrupt table, where it names the controller and assigns it interrupt 62
+— a fact this platform's record repeats, and the only part of the block the SoC
+document corroborates. Every register, bit and ordering rule below comes from the
+SD Host Controller interface specification the block implements, which is why
+the block is described here as an implementation of that interface rather than as
+a Broadcom invention.
+
+One consequence: a discrepancy between the two would be resolved in the
+interface specification's favour for anything that interface defines, and in the
+SoC document's favour for which interrupt the block raises.
+
 ## Register map
 
 All access is little-endian. Registers narrower than 32 bits are accessed at
