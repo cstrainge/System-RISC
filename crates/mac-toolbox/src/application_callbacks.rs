@@ -46,7 +46,14 @@ unsafe extern "C" fn thread_return() -> !
     {
         crate::panic::fail(format_args!("Native child completion refused: {cause}"));
     }
+    #[cfg(target_arch = "riscv64")]
     unsafe {
         core::arch::asm!("unimp", options(noreturn));
+    }
+    // `unimp` is RISC-V's deliberate illegal instruction; AArch64's equivalent
+    // is a software breakpoint, which takes the same terminal path.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(noreturn));
     }
 }
