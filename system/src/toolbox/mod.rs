@@ -27,6 +27,7 @@ pub(crate) mod strings;
 #[cfg(target_arch = "riscv64")]
 pub mod processes;
 
+pub(crate) mod pipes;
 pub mod standard_file;
 
 #[cfg(all(test, feature = "test-support", not(target_arch = "riscv64")))]

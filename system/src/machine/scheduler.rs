@@ -27,6 +27,7 @@ pub(crate) use user::{Fault as UserFault, FaultSnapshot, capture_definition_pani
 mod worker;
 pub(crate) mod service;
 pub(crate) mod wake;
+pub(crate) mod pipe;
 pub(crate) mod policy;
 include!(concat!(env!("OUT_DIR"), "/platform-scheduling.rs"));
 pub(crate) mod recovery;
@@ -461,6 +462,12 @@ enum Wait
     Io
     {
         job: crate::context::DeferredIo
+    },
+    /// Parked on a pipe read or write; the pipe manager wakes this thread after
+    /// changing the ring or an endpoint count.
+    Pipe
+    {
+        pipe: u64
     }
 }
 struct Scheduler
@@ -584,7 +591,8 @@ struct ThreadCore
     callback_queue:     Option<Arc<crate::toolbox::resources::definitions::callbacks::Queue>>,
     name:               Mutex<Option<ThreadName>>,
     application:        Option<Arc<application::Completion>>,
-    pending_join:       Mutex<Option<application::PendingJoin>>
+    pending_join:       Mutex<Option<application::PendingJoin>>,
+    pending_pipe:       Mutex<Option<pipe::Pending>>
 }
 impl ThreadCore
 {
@@ -705,7 +713,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              callback_queue: None,
                                              name: Mutex::new(None),
                                              application: None,
-                                             pending_join: Mutex::new(None) }).map_err(|_| {
+                                             pending_join: Mutex::new(None), pending_pipe: Mutex::new(None) }).map_err(|_| {
                                                                                   mac_abi::NO_MEMORY
                                                                               })?;
         Ok((core, allocation))
@@ -809,7 +817,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     callback_queue: None,
                                     name: Mutex::new(None),
                                     application: None,
-                                    pending_join: Mutex::new(None) };
+                                    pending_join: Mutex::new(None), pending_pipe: Mutex::new(None) };
             let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
             Ok::<_, mac_abi::Status>((core, stack_preparation))
         })
@@ -1469,6 +1477,7 @@ fn retire(thread: &Thread)
 pub(crate) fn retire_owner(owner: u64)
 {
     address::cancel_owner(owner);
+    pipe::cancel_owner(owner);
     application::cancel_owner(owner);
     let mut after = 0;
     loop

@@ -154,6 +154,13 @@ impl<'a> Client<'a>
         status(self.invoke(mac_abi::traps::STANDARD_FILE, call))
     }
 
+    /// A pipe request is one synchronous call in the caller's own thread; a
+    /// blocking read or write may park and resume through the same gate.
+    pub fn pipes(self, call: &mut mac_abi::pipes::Call) -> Result<()>
+    {
+        status(self.invoke(PIPES, call))
+    }
+
     pub fn dialog(self, call: &mut mac_abi::dialogs::DialogCall) -> Result<()>
     {
         status(self.invoke(DIALOG, call))

@@ -96,7 +96,7 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
     let core=Arc::try_new(ThreadCore{
         address:Mutex::new(None),backing:Mutex::new(Some(ThreadBacking{cpu,stack,image:Some(ApplicationImageUse::Child { _execution: code })})),
         launch:Mutex::new(None),context,release:Mutex::new(None),binding:executor.image(),space:Some(space),top,cleanup_refusal:Mutex::new(None),service_quarantine:spin::Once::new(),user_fault:Mutex::new(None),runtime:Some(runtime),callback_queue:None,name:Mutex::new(None),
-        application:Some(completion),pending_join:Mutex::new(None)
+        application:Some(completion),pending_join:Mutex::new(None),pending_pipe:Mutex::new(None)
     }).map_err(|_|Error::Metadata("child Core"))?;
     Ok(PreparedThread { owner: executor.owner().clone(),
                         core: mac_object_table::retained::Read::new(core, context_released),
