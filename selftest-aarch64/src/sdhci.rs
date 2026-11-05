@@ -111,7 +111,12 @@ pub struct Disk
 {
     base:          usize,
     relative:      u16,
-    high_capacity: bool
+    high_capacity: bool,
+    /// Controller state captured when a sector read finished, so a read that
+    /// returns zeros can be told from a read that never really completed.
+    state_after:   u32,
+    normal_after:  u16,
+    error_after:   u16
 }
 
 impl Disk
@@ -122,8 +127,11 @@ impl Disk
     pub fn probe(base: usize) -> Result<Self, Failure>
     {
         let mut disk = Self { base,
-                              relative: 0,
-                              high_capacity: false };
+                              relative:      0,
+                              high_capacity: false,
+                              state_after:   0,
+                              normal_after:  0,
+                              error_after:   0 };
         disk.reset()?;
         disk.set_clock(INITIAL_HZ)?;
         disk.write8(POWER_CONTROL, POWER_3V3);
@@ -395,6 +403,9 @@ impl Disk
             }
             if words == SECTOR_BYTES / 4
             {
+                self.state_after = self.read32(PRESENT_STATE);
+                self.normal_after = self.read16(NORMAL_INT_STATUS);
+                self.error_after = self.read16(ERROR_INT_STATUS);
                 return Ok(bytes);
             }
             if status & INT_TRANSFER_COMPLETE != 0 && words < SECTOR_BYTES / 4
@@ -417,6 +428,14 @@ impl Disk
                       before:  0,
                       completed: false,
                       resp:    0 })
+    }
+
+    /// Controller state captured when the last sector read finished. A read
+    /// that returned zeros is only meaningful next to these three registers:
+    /// they say whether the transfer completed or simply produced nothing.
+    pub fn after_read(&self) -> (u32, u16, u16)
+    {
+        (self.state_after, self.normal_after, self.error_after)
     }
 }
 

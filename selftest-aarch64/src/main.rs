@@ -741,13 +741,20 @@ pub extern "C" fn rust_entry() -> !
                         }
                         let head =
                             u32::from_be_bytes([sector[0], sector[1], sector[2], sector[3]]);
+                        let (present, normal, error) = disk.after_read();
                         report.push("sdhci", false, "no-mbr")
                               .push_str("signature ")
                               .push_hex(u64::from(signature[0]) << 8 | u64::from(signature[1]))
                               .push_str(" nz ")
                               .push_dec(u64::from(nonzero))
                               .push_str(" head ")
-                              .push_hex(u64::from(head));
+                              .push_hex(u64::from(head))
+                              .push_str(" ps ")
+                              .push_hex(u64::from(present))
+                              .push_str(" int ")
+                              .push_hex(u64::from(normal))
+                              .push_str(" err ")
+                              .push_hex(u64::from(error));
                     }
                 }
                 Err(failure) =>
