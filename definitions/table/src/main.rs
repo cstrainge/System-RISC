@@ -1,6 +1,6 @@
 //! Table owns grid allocation policy; System owns child lifetimes and publication.
-#![cfg_attr(target_arch = "riscv64", no_std)]
-#![cfg_attr(target_arch = "riscv64", no_main)]
+#![cfg_attr(systemrisc, no_std)]
+#![cfg_attr(systemrisc, no_main)]
 #![deny(unsafe_code)]
 
 mod layout;

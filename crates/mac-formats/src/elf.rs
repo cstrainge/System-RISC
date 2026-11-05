@@ -46,15 +46,38 @@ pub fn decode(bytes: &[u8], load_base: u64, load_limit: u64) -> Result<Image>
     {
         return Err(Error::Malformed("expected ELF64 little-endian static System V/GNU image"));
     }
-    if u16le(bytes, 16)? != 2 || u16le(bytes, 18)? != 243 || u32le(bytes, 20)? != 1
+    // e_machine and e_flags are the architecture's own ELF identity, and this
+    // decoder is shared by every loader. It accepts the machines this
+    // repository produces and validates each one's flags against that machine's
+    // contract, rather than assuming one architecture's values.
+    let machine = u16le(bytes, 18)?;
+    if u16le(bytes, 16)? != 2 || u32le(bytes, 20)? != 1
     {
-        return Err(Error::Malformed("expected fixed-address RISC-V executable"));
+        return Err(Error::Malformed("expected a fixed-address executable"));
     }
     let flags = u32le(bytes, 48)?;
-    if flags & !1 != 0
+    match machine
     {
-        return Err(Error::Malformed("unsupported RISC-V ABI flags (requires the LP64 calling \
-                                     convention; rebuild with the System RISC guest profile)"));
+        // RV64: only the RVC compressed-instruction flag is meaningful.
+        243 =>
+        {
+            if flags & !1 != 0
+            {
+                return Err(Error::Malformed("unsupported RISC-V ABI flags (requires the LP64 \
+                                             calling convention; rebuild with the System RISC \
+                                             guest profile)"));
+            }
+        }
+        // AArch64: e_flags carries no ABI variation this loader accepts.
+        183 =>
+        {
+            if flags != 0
+            {
+                return Err(Error::Malformed("unsupported AArch64 ABI flags (rebuild with the \
+                                             System RISC guest profile)"));
+            }
+        }
+        _ => return Err(Error::Malformed("expected an executable for a supported machine"))
     }
     if u16le(bytes, 52)? != 64 || u16le(bytes, 54)? != 56
     {

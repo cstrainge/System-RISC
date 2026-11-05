@@ -1,7 +1,7 @@
 //! Native color scrollbar CDEF1. Geometry, drawing and classic hit parts are
 //! owned entirely by this resource; clients retain only scalar control state.
-#![cfg_attr(target_arch = "riscv64", no_std)]
-#![cfg_attr(target_arch = "riscv64", no_main)]
+#![cfg_attr(systemrisc, no_std)]
+#![cfg_attr(systemrisc, no_main)]
 #![deny(unsafe_code)]
 use mac_definition::{Error, Message, Part, Point, Rect, Reply, Result, Scrollbar, Services};
 use toolbox_quickdraw::SurfacePort;
