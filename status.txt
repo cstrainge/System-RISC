@@ -571,3 +571,177 @@ Verified on the merged tree:
 
 Pushed as c5ebbea9 (the merge) and cdfc3f85 (the fallout fixes). Main has not
 been fast-forwarded; that is the coordinator's call.
+
+Pipes facility: collision audit, feasibility report and specification
+=====================================================================
+[Pipes / facilities agent] 2026-11-05
+
+State: audit and specification only. No implementation and no source change
+outside docs/PIPES.md and this entry. Nothing was pushed.
+
+1. Gate zero: the Toolbox surface the facility must not step on
+----------------------------------------------------------------
+Trap allocation. Native service numbers are hand-allocated in
+crates/mac-abi/src/traps.rs and dispatched by one match in
+system/src/machine/traps.rs (dispatch), after size and pointer validation in
+system/src/machine/traps/user.rs plus the wire table in user/wire.rs. The
+block 0x10000..0x1002e is fully occupied with no gaps:
+
+  10000 LOG        1000f MAPPING          1001f CRASH
+  10001 WINDOW     10010 RESOURCE         10020 STANDARD_FILE
+  10002 DRAW       10011 ICON             10021 SCROLL_BOX
+  10003 NEXT_EVENT 10012 FILE             10022 DRAG
+  10004 DEFINITION 10013 CONTROL          10023 POSITIONED_EVENT
+  10005 CLASSIC    10014 MEMORY           10024 INSPECTION
+  10006 GEOMETRY   10015 IMAGE            10025 THEME
+  10007 SURFACE    10016 MENU             10026 DEFINITION_PANIC
+  10008 QUICKDRAW  10017 DIALOG           10027 POWER
+  10009 FONT       10018 CLOCK            10028 APPLICATION_HEAP
+  1000a REGION     10019 SCRAP            10029 CPU_INFO
+  1000b COPY_BITS  1001a EVENTS           1002a NATIVE_THREAD
+  1000c WORLD      1001b TEXTEDIT         1002b TLS
+  1000d PICTURE    1001c PROCESS          1002c ADDRESS_WAIT
+  1000e CURSOR     1001d WAIT_EVENT       1002d ENTROPY
+                   1001e MONOTONIC_CLOCK  1002e USER_CALLBACK
+
+Bit 0x20000 is a modifier (Pascal/Mac Roman text variant), not an allocation,
+so it consumes no number. The supervisor scheduler's MSRV entry is a separate
+custom instruction encoding (0x4d535256 in a different encoding space).
+Allocated: 0x1002f = PIPES. Operation selectors 0..6 live inside the pipes call
+and share no namespace with any other service.
+
+Status values 0..-20 are taken (OK through INVALID_NAME). Allocated: -21
+WOULD_BLOCK, -22 BROKEN_PIPE.
+
+Module/interface class ids are open four-byte values owned by the interface
+crate and compared by value; there is no central assignment. In use: VBYT,
+VDEV, ENTR, FORK, FSYS, HDIR, MLIF, MPRE, POWR, SCHD, SCTL, SCEX, VIDO; buses
+BUS!, VIRT, PCI!, VMMI; fixtures TEST/PCTL/TIME/NETW. Allocated: PIPE; it
+appears in no class position.
+
+Object/lifetime namespaces are registered centrally (mac-object-table registry
+through system/src/toolbox/handles.rs). The older fixed Kind table is closed;
+new managers use KindCode pools. Allocated: PIPE (endpoints) and PPST
+(runtime state), following the endpoint/state pair shape. Neither code appears
+anywhere in the tree.
+
+File type and creator: PIPE/PIPE appear in no FinderInfo position, no resource
+and not in crates/mac-file-types/default.json. Resource type PIPE: unused, and
+the facility allocates no resource type at all. The repeated four bytes are
+deliberate across three identifier spaces that are never compared with each
+other.
+
+Operation names. read/write/open/close already exist as inherent methods on
+distinct handle types in distinct modules (toolbox-files OpenFile, toolbox-
+memory, toolbox-resources, toolbox-crashes, ...). The classic File Manager's
+Open/Read/Write/Close are not implemented in this build: the classic
+dispatcher serves drag, rect/point geometry, text/fonts, cursors, events and
+TickCount only. So no classic number or selector is shadowed, and pipe methods
+are disambiguated by module and receiver type rather than renamed.
+
+One real coupling found: crates/mac-toolbox/tests/file_icons.rs
+(native_system_icon_reservation_preserves_classic_ids_and_rejects_import_
+collisions) treats -30031..=-30000 as a reserved native icon block and allows
+only DRIVERS_FOLDER (-30000) and DRIVER (-30001) inside it. New folder and
+document icon families at -30002/-30003 must extend that allowlist, or the
+canonical suite fails. That is a policy-allowlist update, not a harness
+accommodation.
+
+2. Sub-volume provider mounts and merged listings: neither exists
+-------------------------------------------------------------------
+system/src/toolbox/files/provider/ models a provider as a whole volume.
+reserve_provider_mount returns a volume id; Mounted holds provider, source and
+an optional VolumeInfo; volume_info is built from the fs::Mount root descriptor
+(name, dates, FinderInfo, capacity, filesystem code). There is no mount point
+below a volume root. Enumeration and lookup are either/or, not merged:
+provider/runtime.rs gates on read_provider(volume) and then dispatches to
+either the resident HFS scanner or the provider job. A directory read returns
+one source's children only.
+
+Two implementation shapes, with the provider finding stated first:
+
+  (a) True sub-volume provider mount. Add a mount point to Mounted, project
+      provider entries into the real directory's catalogue, allocate a shared
+      synthetic CNID space both sources agree on, merge the cursor across two
+      revisions, and route lookup/path/open by node. Plus a pipes provider
+      module and its admission/acknowledgement path. Rough estimate 1,800-2,500
+      lines resident, excluding the pipes facility itself.
+
+  (b) File Manager enumeration directly from the resident name registry.
+      Named pipes are resident System state, not an independently owned storage
+      format, so the File Manager merges its own catalog children with the
+      registry's entries for the one registered folder CNID: merged cursor with
+      one revision, lookup fallback, synthetic ids never reused within a boot,
+      mutations refused. Rough estimate 600-1,000 lines resident.
+
+The specification (docs/PIPES.md, section 9.5) requires (b) and records why:
+(b) adds no driver boundary around state that never leaves the System, and a
+general sub-volume mount is a separate, larger change that nothing in the pipe
+contract depends on. This is the one design point that departs from the
+settled wording ("a virtual provider mounts at that path") and is the item for
+review.
+
+3. Where the stubbed pipes actually are
+----------------------------------------
+There are no pipe stubs in system/, crates/, toolbox/, apps/, drivers/ or
+extensions/. A case-insensitive search for "pipe" over those trees matches
+nothing in Rust sources; the only implementation-shaped code in the repository
+is the platform standard-library null stream profile:
+
+  platforms/rust/library/std/src/sys/stdio/systemrisc.rs
+
+stdin returns 0 forever (permanent end of stream); stdout and stderr accept
+every byte and report a successful flush. It states in its own header that it
+is not a Terminal/session endpoint or a pipe implementation. Stderr is a type
+alias of the discarding stdout. There is no sys/pipe module in the vendored
+std, no PAL pipe call, and no resident stdio endpoint table: the loader
+attaches the SystemServices table, which carries no stream endpoints.
+
+So docs/RUST-STD.md:239 ("replacing kernel stubs through the service
+boundary") and 434-437 ("replaces resident stubs", "a parallel full kernel
+pipe implementation") describe stubs that do not exist on this tree. The
+honest statement is: the GUI profile has intentionally null standard streams,
+and no anonymous-pipe stub exists anywhere.
+
+Consequence for acceptance: GUI launch keeps the null streams unchanged, as
+directed. The launch path installs no endpoints, so there is nothing to convert
+and nothing to break. In v1 the facility's only caller is an application that
+asks for pipes explicitly; the named first caller is the NeoPixel extension.
+
+4. Proposed API surface
+------------------------
+Trap PIPES = 0x1002f. One call struct with operation, endpoint handle, capacity,
+blocking flag, buffer pointer and length, transferred count, two out handles and
+a bounded inline name. Operations: create, create_named, connect, read, write,
+set_blocking, close. New SDK crate toolbox-pipes behind System::pipes(), with
+PipeReader and PipeWriter handle types (Drop closes), read/write/set_blocking/
+close as methods.
+
+Blocking uses the existing suspended-request path (RequestResult/RequestAction,
+per-thread pending storage, a new Wait variant, wake::request), so a blocked
+caller parks and is woken by ring state change or peer close. Non-preemptible
+frames are refused with WRONG_THREAD rather than spinning.
+
+Semantics fixed in the spec: 512-byte all-or-nothing writes and no implied
+record size; partial transfers for larger writes and for reads; capacity fixed
+at creation (512..65536, at most 64 pipes); distinct end-of-stream,
+would-block and broken-pipe outcomes; name removed when the last handle closes;
+no authority in v1.
+
+5. What was produced
+---------------------
+docs/PIPES.md: code-free contract, 14 sections, including the numbering and
+register tables above, the folder merge and item identity, opening as connect,
+the icon plan (-30002 folder placeholder copied from the standard folder
+family, -30003 document family plus a PIPE-signature bundle), the launch-path
+table that keeps the stubs, and the deferred list.
+
+Validation: documentation only. No build or check was run for this entry, and
+no guest acceptance is claimed. Boot check remains at its last recorded state
+(17/17 on the merged tree) until an implementation tip is built.
+
+6. Next
+-------
+Review of (i) the merge shape in section 9.5 and (ii) the API surface, before
+any code. Implementation order after that: pipe core and handles, blocking
+integration, File Manager merge, folder creation, Finder open, icons.
