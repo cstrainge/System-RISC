@@ -10,9 +10,9 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 use linked_list_allocator::LockedHeap;
+use mac_sdhci::Disk;
 
 mod devicetree;
-mod sdhci;
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -48,15 +48,21 @@ include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
 /// author, so nothing here hardcodes a peripheral address.
 static DEVICE_TREE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devicetree.dtb"));
 
-// Translation tables live inside the declared boot window, clear of the loaded
-// image and its stack. A 39-bit regime with a 4 KiB granule starts its walk at
-// level 1, so TTBR0/TTBR1 name the level-1 tables directly. Every descriptor we
-// touch sets AF; a table walker that reaches a descriptor without AF faults on
-// first access even when the rest of the entry looks right.
-const L1_LOW: u64 = 0x10_1000;
-const L2_LOW: u64 = 0x10_2000;
-const L1_HIGH: u64 = 0x10_3000;
-const L2_PHYSMAP: u64 = 0x10_4000;
+// Translation tables live inside the declared boot window, above the stack and
+// below the firmware heap. The stack grows down from `__stack_top`, so tables
+// placed just above the payload are rewritten by the first stack pushes; that
+// overwrote the level-1 entries for the code and stack and only showed up once
+// a caller's frame grew deep enough to force a table walk. In the current image
+// `__stack_top` is 0xf1040 and its 256 KiB window starts at 0xb1040, so these
+// four tables at 0x110000 clear it, and the heap begins at 0x130000. A
+// 39-bit regime with a 4 KiB granule starts its walk at level 1, so TTBR0/TTBR1
+// name the level-1 tables directly. Every descriptor we touch sets AF; a table
+// walker that reaches a descriptor without AF faults on first access even when
+// the rest of the entry looks right.
+const L1_LOW: u64 = 0x11_0000;
+const L2_LOW: u64 = 0x11_1000;
+const L1_HIGH: u64 = 0x11_2000;
+const L2_PHYSMAP: u64 = 0x11_3000;
 const BLOCK: u64 = 0x20_0000;
 const TABLE: u64 = 0x3;
 // Valid block, AttrIndx 0 (normal write-back), inner shareable, AF.
@@ -233,13 +239,21 @@ pub extern "C" fn sdhci_probe() -> u64
         }
     }
     let mut stage = 0u8;
-    let mut disk = match sdhci::Disk::probe(sdhci, &mut stage)
+    let mut disk = match Disk::probe(sdhci, &mut stage)
     {
         Ok(disk) => disk,
-        Err(_) =>
+        Err(failure) =>
         {
             puts("BOOT_AARCH64_SD_REFUSED: stage=");
             puthex(u64::from(stage));
+            puts(" what=");
+            puts(failure.what);
+            puts(" cmd=");
+            puthex(u64::from(failure.command));
+            puts(" int=");
+            puthex(u64::from(failure.normal));
+            puts(" err=");
+            puthex(u64::from(failure.error));
             puts("\n");
             return 0;
         }
@@ -270,7 +284,7 @@ pub extern "C" fn sdhci_probe() -> u64
 /// this exercises the same code the kernel uses rather than a bootloader-only
 /// reader. The kernel gains no FAT32 or SD knowledge from it: the bootloader
 /// hands on a loaded image.
-fn find_system(disk: &mut sdhci::Disk)
+fn find_system(disk: &mut Disk)
 {
     use mac_block::BlockDevice;
     use mac_filesystem::{Format, Partition, Volume};
