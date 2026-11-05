@@ -16,6 +16,7 @@ test = false
 bench = false
 
 [dependencies]
+mac-sdhci = { path = "../crates/mac-sdhci", default-features = false }
 mac-videocore-fb = { path = "../crates/mac-videocore-fb" }
 
 [build-dependencies]

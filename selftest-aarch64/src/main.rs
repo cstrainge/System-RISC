@@ -18,16 +18,17 @@ use core::{fmt::Write,
            panic::PanicInfo,
            ptr::{read_volatile, write_volatile}};
 
+use mac_sdhci::Disk;
 use mac_videocore_fb::{Error, Framebuffer, Mode, PixelOrder, acquire};
 
 mod cache;
 mod font;
 mod mailbox;
+mod mbr;
 mod mmu;
 mod platform;
 mod qr;
 mod screen;
-mod sdhci;
 mod uart;
 
 core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardware.inc")),
@@ -457,7 +458,7 @@ fn draw_cache_demo(screen: &screen::Screen, report: &Report, qr: Option<&qr::Qr>
 
 /// Append a controller failure's command index and interrupt state, so a
 /// refusal on real hardware says where it stopped rather than only that it did.
-fn describe_failure(text: &mut Text, failure: &sdhci::Failure)
+fn describe_failure(text: &mut Text, failure: &mac_sdhci::Failure)
 {
     if failure.command == u8::MAX
     {
@@ -702,20 +703,21 @@ pub extern "C" fn rust_entry() -> !
     }
 
     // 7. SDHCI, read-only: sector zero's MBR signature and partition entries.
-    match sdhci::Disk::probe(platform::SDHCI_BASE)
+    let mut stage = 0u8;
+    match Disk::probe(platform::SDHCI_BASE, &mut stage)
     {
         Ok(mut disk) =>
         {
-            match disk.read_sector_zero()
+            match disk.read_block(0)
             {
                 Ok(sector) =>
                 {
-                    let (signature, entries) = sdhci::partitions(&sector);
+                    let signature = [sector[510], sector[511]];
                     if signature == [0x55, 0xaa]
                     {
                         let mut detail = Text::new();
                         detail.push_str("mbr 0x55aa");
-                        for entry in entries.iter().flatten()
+                        for entry in mbr::entries(&sector).iter().flatten()
                         {
                             detail.push_str(" p")
                                   .push_dec(entry.index as u64)
@@ -739,8 +741,7 @@ pub extern "C" fn rust_entry() -> !
                                 nonzero += 1;
                             }
                         }
-                        let head =
-                            u32::from_be_bytes([sector[0], sector[1], sector[2], sector[3]]);
+                        let head = u32::from_be_bytes([sector[0], sector[1], sector[2], sector[3]]);
                         let (present, normal, error) = disk.after_read();
                         report.push("sdhci", false, "no-mbr")
                               .push_str("signature ")
@@ -769,7 +770,7 @@ pub extern "C" fn rust_entry() -> !
         Err(failure) =>
         {
             let mut detail = Text::new();
-            detail.push_str("bring-up: ");
+            detail.push_str("bring-up stage ").push_dec(u64::from(stage)).push_str(": ");
             describe_failure(&mut detail, &failure);
             report.push("sdhci", false, failure.what).push_str(detail.as_str());
         }
