@@ -508,7 +508,11 @@ impl Checked
             values.extend([("VIRTIO_MMIO_SLOTS", 0),
                            ("VIRTIO_MMIO_BASE", 0),
                            ("VIRTIO_MMIO_STRIDE", 0),
-                           ("VIRTIO_INTERRUPT_BASE", 0)]);
+                           ("VIRTIO_INTERRUPT_BASE", 0),
+                           ("UART_BASE", 0),
+                           ("RTC_BASE", 0),
+                           ("CLINT_BASE", 0),
+                           ("CLINT_BYTES", 0)]);
         }
         for (name, value) in values
         {
@@ -521,15 +525,24 @@ impl Checked
     {
         let mut out = String::from("// Generated from the checked platform memory record.\n");
         let mut values = vec![("PAGE_BYTES", self.page_bytes)];
-        if let Some(flash) = &self.flash
+        // A board without flash or fw_cfg still has to compile against the same
+        // shared memory code. Zero means "no such window", so a consumer that
+        // iterates or excludes these regions finds nothing to act on, which is
+        // the truth for such a board, without a board test in shared code.
+        match &self.flash
         {
-            values.push(("FLASH_BASE", flash.start));
-            values.push(("FLASH_BYTES", flash.end - flash.start));
+            Some(flash) =>
+            {
+                values.push(("FLASH_BASE", flash.start));
+                values.push(("FLASH_BYTES", flash.end - flash.start));
+            }
+            None =>
+            {
+                values.push(("FLASH_BASE", 0));
+                values.push(("FLASH_BYTES", 0));
+            }
         }
-        if let Some(fw_cfg) = &self.fw_cfg
-        {
-            values.push(("FW_CFG_BASE", fw_cfg.start));
-        }
+        values.push(("FW_CFG_BASE", self.fw_cfg.as_ref().map(|fw| fw.start).unwrap_or(0)));
         values.extend([("IMAGE_BASE", self.images.start),
                        ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
                        ("DISPLAY_SCRATCH_BYTES",
@@ -560,6 +573,13 @@ impl Checked
         if let Some(bootstrap_io) = &self.bootstrap_io
         {
             out.push_str(&bootstrap_io.ranges_source(self.fw_cfg.as_ref()));
+        }
+        else
+        {
+            // No bootstrap IO means no MMIO windows to exclude. The empty array
+            // is what lets the shared memory checks iterate over nothing rather
+            // than needing to know which board they are on.
+            out.push_str("pub const BOOT_MMIO_REGIONS: &[(u64,u64)] = &[];\n");
         }
         writeln!(out, "pub const SYSTEM_HEAP_BYTES: usize = {:#x};",self.system_heap_bytes).unwrap();
         writeln!(out,
