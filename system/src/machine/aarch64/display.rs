@@ -117,4 +117,39 @@ pub(crate) fn present_rects(_back: &[u32],
 {
 }
 
+/// Records damage for the next present. There is no front buffer to update, so
+/// nothing accumulates: the compositor's own bookkeeping is the only consumer.
+pub(crate) fn mark_dirty(_rect: mac_abi::geometry::Rect)
+{
+}
+
+pub(crate) fn peek_dirty() -> bool
+{
+    false
+}
+
+pub(crate) fn take_dirty() -> Option<mac_abi::geometry::Rect>
+{
+    None
+}
+
+/// Adopts a driver-owned framebuffer. There is none until the mailbox driver
+/// exists, so this reports that nothing changed rather than claiming adoption.
+pub(crate) fn use_driver_front(_address: usize)
+{
+}
+
+pub(crate) fn copy_front_to(_address: usize)
+{
+}
+
+pub(crate) fn use_boot_front()
+{
+}
+
+pub(crate) fn clear_mode_buffers()
+{
+}
+
+
 
