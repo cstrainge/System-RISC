@@ -150,6 +150,21 @@ that would take a pin a peripheral class holds. It also means a peripheral
 driver's own claim failure is a first-class error at start-up: the peripheral must
 report "the pin I need is taken", not fail silently.
 
+## What this class is not for
+
+A pin handle carries a level and reports events. It does not carry a *waveform*:
+anything with a sub-microsecond deadline — an addressable LED strip, DMA-fed
+audio, a fixed-rate bus — cannot be produced by an application thread toggling a
+pin on a preemptive operating system, however fast the toggle operation is,
+because the thread that is preempted is the one that was supplying the timing.
+
+Those go through the timed-output class (`docs/TIMED-OUTPUT-CLASS.md`), which
+hands a buffer and a rate to a serialiser fed by a DMA channel and returns a
+completion. The two classes still meet here: the serialiser's output pin is
+claimed through this class, in the peripheral function the record declares, so
+there is one arbitration point for pins and a timed-output claim cannot take a pin
+an application holds.
+
 ## Events
 
 A pin claimed as an input may ask for events on an edge, a level, or both. Events

@@ -46,17 +46,17 @@ state, and that is a supported interface rather than a bypass.
 | PL011 UART0 | `0x3F201000` | 4 KiB | 57 | ARM | **SERIAL** (PL011) | The console. Declared in the record as `pl011`/`uart`. |
 | Mini UART (AUX) | `0x3F215040` | — | 29 | ARM | SERIAL (auxiliary) | Part of the AUX block; shares AUX's enable register and IRQ 29 with SPI1/SPI2. |
 | AUX block | `0x3F215000` | 4 KiB | 29 | ARM | — (container) | Enables mini UART, SPI1 and SPI2 individually. One interrupt line covers all three, so each driver must share and acknowledge. Not in the record. |
-| SPI0 | `0x3F204000` | 4 KiB | 56 | ARM | SPI0 | Master SPI with two chip selects. Not in the record. |
-| SPI1 / SPI2 (AUX) | `0x3F215080` / `0x3F2150C0` | — | 29 | ARM | SPI (auxiliary) | Inside the AUX block; a different programming model from SPI0. |
+| SPI0 | `0x3F204000` | 4 KiB | 56 | ARM | SPI0 + **timed output** | Master SPI with two chip selects. **Deterministic timed output**: the shift register emits at a divided core clock, so a precomputed buffer becomes edge positions with no CPU in the loop. Not in the record. |
+| SPI1 / SPI2 (AUX) | `0x3F215080` / `0x3F2150C0` | — | 29 | ARM | SPI (auxiliary) + timed output | Inside the AUX block; a different programming model from SPI0. Same serialising property. |
 | I2C0 (BSC0) | `0x3F205000` | 4 KiB | 53 | ARM | **I2C** (new) | The camera/EEPROM bus. Reserved for the camera connector and the HAT ID EEPROM on some models; the record must state whether it is available here. Not in the record. |
 | I2C1 (BSC1) | `0x3F804000` | 4 KiB | 55 | ARM | I2C | The user/GPIO-header bus. Not in the record. |
 | I2C2 (BSC2) | `0x3F805000` | 4 KiB | 55 | ARM | I2C | Wired to the HDMI DDC lines. Shared interrupt source with I2C1 on this SoC. Not in the record. |
-| I2S / PCM | `0x3F203000` | 4 KiB | 23 | ARM | AUDIO (future) | No audio device class exists yet. Not in the record. |
-| PWM | `0x3F20C000` | 4 KiB | 22 | ARM | **PWM** (new) | Two independent channels; the audio output is wired to them on the header models, so channel ownership matters as much as controller ownership. Not in the record. |
+| I2S / PCM | `0x3F203000` | 4 KiB | 23 | ARM | **timed output** (audio encodings) | A serialiser with its own clock dividers and FIFOs, so it fills the waveform role for audio. **Deterministic timed output.** Not in the record. |
+| PWM | `0x3F20C000` | 4 KiB | 22 | ARM | **timed output** + PWM | Two independent channels, each emitting a duty value per period at a divided clock. **Deterministic timed output** — this is the serialiser the LED-strip case uses. The audio output is wired to these channels on the header models, so channel ownership matters as much as controller ownership. Not in the record. |
 | System timer | `0x3F003000` | 4 KiB | 0 | ARM | resident timing | Free-running 1 MHz counter plus four compare channels. Channel 3 is conventionally the ARM's; channels 0–1 are used by the VideoCore firmware's own timers. Declared in the record as `bcm2835-systimer`. |
 | ARM timer | `0x3F00B400` | 4 KiB | 64 | ARM | resident timing | A second timer inside the ARM-peripheral area, with its own prescaler and free-running counter. Not in the record. |
 | ARM-local block (intc + local timers) | `0x40000000` | 4 KiB | — | ARM | resident interrupt controller | Outside the `0x3F` peripheral aperture. Four cores: per-core control/IRQ-source/FIQ-source registers, per-core mailbox, and the generic timer path. Declared in the record as `bcm2836-l1-intc`. |
-| DMA controller | `0x3F007000` | 4 KiB | 16 | ARM | DMA (resident) | 15 channels, each with a control block in memory. The firmware keeps control blocks alive for its own channels after boot, so a driver must take its channels from the firmware's report rather than assume all 15 are free. Not in the record. |
+| DMA controller | `0x3F007000` | 4 KiB | 16 | ARM | DMA + **timed output** (the feeder) | 15 channels, each with a control block in memory. **A channel is the feeder** that keeps a serialiser supplied without a CPU instruction between elements; it is not itself a serialiser. The firmware keeps control blocks alive for its own channels after boot, so a driver must take its channels from the firmware's report rather than assume all 15 are free. Not in the record. |
 | Mailbox | `0x3F00B000` | 4 KiB | 1 | ARM | resident firmware channel | Four FIFOs (one per ARM core to VideoCore, one VideoCore to all ARMs). The property channel runs inside FIFO 0 and is the only supported way to ask the firmware for clocks, power, framebuffer and memory. Declared in the record as `bcm2835-mbox`. |
 | VideoCore framebuffer | (no ARM-visible registers) | — | — | VideoCore | **VIDO** (VideoCore framebuffer driver) | The ARM configures and queries it entirely through mailbox property tags. The scan-out base is chosen by the firmware and cannot be selected by the ARM, which is why a driver must copy into the buffer the firmware reports. |
 | HVS (hardware video scaler) | `0x3F400000` | 4 KiB | 65 | VideoCore | — | Composes planes and selects the display composition. The address is not modelled by the emulator at all, and the firmware owns the display list. Should be marked VideoCore-owned in the record rather than merely absent. |
@@ -64,7 +64,7 @@ state, and that is a supported interface rather than a bypass.
 | V3D (3D engine) | `0x3FC00000` | 64 KiB | 66, 67 | VideoCore | — | Three interrupt lines (job done, MMU error, flo). The firmware runs the 3D stack; the ARM has no supported way to submit jobs. |
 | TXP (texture pixel processor) | inside the MMR block | — | 65 | VideoCore | — | Legacy 2D path. Superseded by V3D, still owned by the firmware. |
 | SMI (secondary memory interface) | `0x3F600000` | 4 KiB | 43, 44 | ARM | SMI | A parallel bus for things like a camera/VGA interface. No consumer on a stock board; listed so nobody wires it by accident. Not in the record. |
-| Clock manager (CPRMAN) | `0x3F101000` | 4 KiB | — | ARM (read), VideoCore (rate policy) | resident | Divides the oscillators for every peripheral and for the ARM cores. A driver may set a peripheral's own divider through its control registers, and may query or ask for rates through the mailbox; it must not reprogram the ARM/AXI/display clocks the firmware is using. **Not covered by any declared window.** The record's `bcm2835-pm` window ends exactly where this block starts. |
+| Clock manager (CPRMAN) | `0x3F101000` | 4 KiB | — | ARM (read), VideoCore (rate policy) | resident | Divides the oscillators for every peripheral and for the ARM cores, and is therefore what a timed output's element rate is eventually derived from. A driver may set a peripheral's own divider through its control registers, and may query or ask for rates through the mailbox; it must not reprogram the ARM/AXI/display clocks the firmware is using. **Not covered by any declared window.** The record's `bcm2835-pm` window ends exactly where this block starts. |
 | Power management (PM) | `0x3F100000` | 4 KiB | — | ARM | resident | Reset controller (offset `0x1C`), watchdog (offset `0x24`), reset-strap status (offset `0x20`). Declared in the record as `bcm2835-pm` and used for the fatal-shutdown path. |
 | RNG | `0x3F104000` | 4 KiB | 61 | ARM | **ENTR** (existing class) | A ring-oscillator entropy source. Declared in the record as `bcm2835-rng`; the existing entropy interface has no BCM2837 driver. |
 | sdhci (Arasan EMMC) | `0x3F300000` | 4 KiB | 62 | ARM | storage controller | The SD Host Controller Standard Interface, and **the controller this board's card answers on** — see `docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md`. Declared in the record as `sdhci`; the boot payload and the shared reader read the card through it. |
@@ -87,6 +87,25 @@ state, and that is a supported interface rather than a bypass.
   mini UART in the AUX block, and the difference matters for FIFO depth,
   fractional baud divisors and interrupt behaviour.
 
+## Deterministic timed output
+
+The peripherals that can be given a buffer and emit it at a rate the driver sets,
+without a CPU instruction per element. These are the ones a waveform can be
+built on, and they are the resource set the timed-output class claims.
+
+| Peripheral | Role in a waveform | What it emits | Usable as |
+| --- | --- | --- | --- |
+| PWM | serialiser | a duty value per period, at a divided clock | a symbol's high and low run lengths, by writing one duty value per slot |
+| SPI0 | serialiser | a bit stream at a divided clock | a bit's high/low pattern, by choosing a bit rate and a bit pattern per symbol |
+| SPI1 / SPI2 (AUX) | serialiser | the same, a separate block | the same |
+| I2S / PCM | serialiser | framed audio words at a divided clock | audio, and any framed fixed-rate stream |
+| DMA channel | feeder | nothing — it moves a buffer into a serialiser's port | keeping a serialiser supplied between elements |
+| Clock manager | rate source | the divided clocks all of the above run from | the origin of the element rate, and thus of the jitter figure |
+
+Not in this list, and not able to do the job: a GPIO pin driven by application
+code. The pin can be *the line* the waveform appears on, but the pin's own
+control is a level, and a level plus a scheduler deadline is not a waveform.
+
 ## What the record is missing
 
 Each of these is a gap in `platforms/raspi3b.json` found by this inventory. They
@@ -103,6 +122,12 @@ driver may touch: the resident MMIO inventory is what grants a module its claim.
    same change: a window granted to no module is a claim nobody can use, and a
    driver with no window cannot map its registers.
 4. **USB (`0x3F980000`).** Needed only when a USB stack exists.
+   **The timed-output set** — PWM (`0x3F20C000`), SPI0 (`0x3F204000`), the AUX
+   block for SPI1/SPI2 and the mini UART (`0x3F215000`), I2S/PCM (`0x3F203000`)
+   and the DMA controller (`0x3F007000`). All are absent from the record, so no
+   module can claim any of them and no waveform can be emitted at all. This is
+   the largest functional gap after the clock manager, because it is the group
+   that turns "the board can drive a pin" into "the board can drive a device".
 5. **HVS (`0x3F400000`) and V3D (`0x3FC00000`).** These should be recorded as
    VideoCore-owned so that their absence is a stated decision rather than an
    omission. The resident inventory should be able to express "exists, not
@@ -145,6 +170,22 @@ shape now:
   its prior configuration, because a crashed application must not strand the
   header.
 
+### Timed output — new class, for anything with a deadline
+
+Some peripherals do not just accept a level; they emit a buffer at a rate the
+driver sets, which is what makes a waveform possible without the CPU. On this
+SoC those are **PWM**, **SPI** (both blocks) and **I2S/PCM**, with a **DMA
+channel** as the feeder that keeps a serialiser supplied between elements. The
+class over them is described in `docs/TIMED-OUTPUT-CLASS.md`; the reason it is
+not the GPIO class is that no application thread can hold a sub-microsecond
+deadline on a preemptive system.
+
+A claim is over a serialiser *and* a DMA channel together, because neither
+sustains a waveform alone and both are exclusive. A submission is a buffer plus
+its element rate and idle level, and completion comes from the hardware. The
+addressable-LED strip in that document is the worked case; DMA-fed audio and any
+other fixed-rate signalling share the same shape.
+
 ### I2C, SPI, PWM — new classes, same granularity rule
 
 * **I2C** claims a *bus and an address*, not the controller: a second application
@@ -152,9 +193,11 @@ shape now:
   changing it requires exclusive bus ownership.
 * **SPI** claims a *bus and a chip select*. Two drivers on the same bus with
   different chip selects are legitimate; the bus's clock mode is a negotiated
-  property.
+  property. An SPI block used for timed output is claimed through the timed-output
+  class instead, because a waveform occupies the whole shift register.
 * **PWM** claims a *channel*, because the two channels are independent and one
-  of them may drive audio.
+  of them may drive audio. A channel emitting a waveform is claimed through the
+  timed-output class, which owns it for the duration of a job.
 
 ### Existing classes that apply unchanged
 
