@@ -453,6 +453,24 @@ fn draw_cache_demo(screen: &screen::Screen, report: &Report, qr: Option<&qr::Qr>
     }
 }
 
+/// Append a controller failure's command index and interrupt state, so a
+/// refusal on real hardware says where it stopped rather than only that it did.
+fn describe_failure(text: &mut Text, failure: &sdhci::Failure)
+{
+    if failure.command == u8::MAX
+    {
+        text.push_str("no command");
+    }
+    else
+    {
+        text.push_str("cmd ").push_dec(u64::from(failure.command));
+    }
+    text.push_str(" int ")
+        .push_hex(u64::from(failure.normal))
+        .push_str(" err ")
+        .push_hex(u64::from(failure.error));
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_entry() -> !
 {
@@ -699,17 +717,21 @@ pub extern "C" fn rust_entry() -> !
                               .push_hex(u64::from(signature[0]) << 8 | u64::from(signature[1]));
                     }
                 }
-                Err(reason) =>
+                Err(failure) =>
                 {
-                    report.push("sdhci", false, reason)
-                          .push_str("sector 0 read: ")
-                          .push_str(reason);
+                    let mut detail = Text::new();
+                    detail.push_str("sector 0 read: ");
+                    describe_failure(&mut detail, &failure);
+                    report.push("sdhci", false, failure.what).push_str(detail.as_str());
                 }
             }
         }
-        Err(reason) =>
+        Err(failure) =>
         {
-            report.push("sdhci", false, reason).push_str("card: ").push_str(reason);
+            let mut detail = Text::new();
+            detail.push_str("bring-up: ");
+            describe_failure(&mut detail, &failure);
+            report.push("sdhci", false, failure.what).push_str(detail.as_str());
         }
     }
 
