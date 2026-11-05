@@ -3,6 +3,7 @@ resolver = "3"
 exclude = ["vendor/skrifa", "vendor/ab_glyph_rasterizer"]
 members = [
     "crates/mac-abi",
+    "crates/mac-bootloader",
     "crates/mac-definition",
     "crates/sr-control-reflow-handling",
     "crates/mac-definition-macros",
@@ -62,6 +63,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+mac-bootloader = { path = "crates/mac-bootloader" }
 mac-host-clipboard = { path = "crates/mac-host-clipboard" }
 mac-vdagent-protocol = { path = "crates/mac-vdagent-protocol" }
 mac-virtio-console = { path = "crates/mac-virtio-console" }

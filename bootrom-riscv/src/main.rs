@@ -3,7 +3,7 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 extern crate alloc;
-mod virtio_blk;
+use mac_bootloader::virtio_blk;
 mod screen;
 mod virtio_gpu;
 mod supervisor;
