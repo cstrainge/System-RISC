@@ -11,6 +11,7 @@ test = false
 bench = false
 
 [dependencies]
+mac-bootloader.workspace = true
 mac-abi.workspace = true
 mac-kernel-model.workspace = true
 mac-riscv-pages.workspace = true

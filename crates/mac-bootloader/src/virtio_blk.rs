@@ -1,10 +1,12 @@
 //! Modern virtio-mmio, split queue, one outstanding read/write/flush request.
 use alloc::boxed::Box;
-use core::{arch::asm,
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+use core::arch::asm;
+use core::{
            fmt::Write,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
-use mac_hfs::{BlockDevice, Error, Result, WritableBlockDevice};
+use mac_filesystem::{BlockDevice, Error, Result, WritableBlockDevice};
 
 const N: usize = 8;
 #[repr(C)]
@@ -95,18 +97,46 @@ pub struct Disk
 
 fn fence()
 {
+    // SAFETY: a full fence has no memory operands. It is the device/CPU
+    // publication ordering virtio requires, not diagnostic instrumentation.
+    #[cfg(target_arch = "riscv64")]
     unsafe {
         asm!("fence iorw, iorw", options(nostack));
+    }
+    // SAFETY: as above. AArch64's full barrier is a system-wide data
+    // synchronization barrier.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb sy", options(nostack));
     }
 }
 fn now() -> u64
 {
     // The architectural time counter shares the board timebase without an
-    // MMIO/BQL round trip on every outstanding-request poll.
-    let ticks;
-    unsafe {
-        asm!("rdtime {value}", value = out(reg) ticks, options(nomem, nostack));
-    }
+    // MMIO round trip on every outstanding-request poll.
+    #[cfg(target_arch = "riscv64")]
+    let ticks = {
+        let value;
+        // SAFETY: reading the time counter has no side effects.
+        unsafe {
+            asm!("rdtime {value}", value = out(reg) value, options(nomem, nostack));
+        }
+        value
+    };
+    // The virtual counter is the architectural equivalent on AArch64.
+    #[cfg(target_arch = "aarch64")]
+    let ticks = {
+        let value: u64;
+        // SAFETY: reading the virtual counter has no side effects.
+        unsafe {
+            asm!("mrs {value}, cntvct_el0", value = out(reg) value, options(nomem, nostack));
+        }
+        value
+    };
+    // A host build only type-checks the crate; there is no device to poll and
+    // no counter to read, so the deadline is never reached.
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    let ticks = 0u64;
     ticks
 }
 pub fn is_block(base: usize) -> bool
@@ -260,7 +290,7 @@ impl Disk
         let status = unsafe { read_volatile(addr_of_mut!(q.status)) };
         // Record the original failure, before later rollback/read requests report
         // only a poisoned queue. Never reuse DMA storage after uncertain completion.
-        let _ = writeln!(crate::Serial,
+        let _ = writeln!(&mut crate::Log,
                          "DISK_REQUEST_FAILED kind={} sector={} submitted={} used={} head={} \
                           length={} status={} device_status={:#x} elapsed_us={} poisoned={} \
                           reason={}",
@@ -308,7 +338,7 @@ impl Disk
         let mut next_status_check = 10_000; // At most once per pending millisecond.
         loop
         {
-            let result = bootrom_riscv::completion::poll(self.index,
+            let result = crate::completion::poll(self.index,
                                                    || unsafe {
                                                        u16::from_le(read_volatile(core::ptr::addr_of!(self.queue.used.index)))
                                                    },
@@ -335,9 +365,9 @@ impl Disk
                                                    });
             match result
             {
-                bootrom_riscv::completion::Poll::Ready => break,
-                bootrom_riscv::completion::Poll::Pending => core::hint::spin_loop(),
-                bootrom_riscv::completion::Poll::Failed(reason) =>
+                crate::completion::Poll::Ready => break,
+                crate::completion::Poll::Pending => core::hint::spin_loop(),
+                crate::completion::Poll::Failed(reason) =>
                 {
                     // Only an actually incomplete request poisons the queue.
                     // Do not reuse DMA storage before acknowledged completion.
