@@ -413,43 +413,36 @@ ambiguous — kept as ours, not extracted
   FOND        4  Monaco                       FONT_BUNDLE_FOND_4
   reason: more than one disc file carries this (type, id) and none is byte-identical, so the tool cannot say which file the resource came from. They stay ours until a ruling; the usage section below says whether anything names them.
 
-fonts — one entry per family: the outline when the disc has one, its bitmaps when it has not
-  taken: 39 font resources from 20 families
-    family                      kind     ids
-    Arial MT Cn Lt             outline  sfnt 13000   [Arial MT Condensed Light]
-    Bodoni MT Ultra Bold       outline  sfnt 13001   ()
-    ClosedCaption2             outline  sfnt 13002   ()
-    Courier                    outline  sfnt 13003   [Courier]
-    Geneva                     outline  sfnt 13004   [Geneva]
-    Gill Sans Condensed Bold   outline  sfnt 13005   [Gill Sans Condensed Bold]
-    Helvetica                  outline  sfnt 13006, 13007   [Helvetica, Helvetica Bold]
-    Klang MT                   outline  sfnt 13008   [Klang MT]
-    Monaco                     outline  sfnt 13009   [Monaco]
-    New Berolina MT            outline  sfnt 13010   [New Berolina MT]
-    New York                   outline  sfnt 13011   [New York]
-    Old English Text MT        outline  sfnt 13012   [Old English Text MT]
-    Palatino                   outline  sfnt 13013, 13014   [Palatino, Palatino Italic]
-    Script MT Bold             outline  sfnt 13015   [Script MT Bold]
-    Symbol                     outline  sfnt 13016   [Symbol]
-    Times                      outline  sfnt 13017, 13018, 13019, 13020   [Times, Times Bold, Times Italic, Times Bold Italic]
-    American Heritage Font     bitmap   NFNT 13021, 13022, 13023, 13024, 13025   (5 strike(s))
-    eWorld Fonts               bitmap   NFNT 13026, 13027, 13028, 13029, 13030, 13031, 13032   (7 strike(s))
-    TTYFont                    bitmap   NFNT 13033, 13034   (2 strike(s))
-    VT102Font                  bitmap   NFNT 13035, 13036, 13037, 13038   (4 strike(s))
+fonts — one record per family: the outline when the disc has one, its bitmaps when it has not
+  taken: 26 imported faces in 14 families, each with a FOND we author
+    family                      kind     FOND    faces
+    Arial MT Cn Lt             outline  13000   13000
+    Bodoni MT Ultra Bold       outline  13001   13001
+    ClosedCaption2             outline  13002   13002
+    Gill Sans Condensed Bold   outline  13005   13005
+    Klang MT                   outline  13008   13008
+    New Berolina MT            outline  13010   13010
+    Old English Text MT        outline  13012   13012
+    Script MT Bold             outline  13015   13015
+    American Heritage          bitmap   13021   13021, 13022, 13023, 13024, 13025
+    Espy Sans                  bitmap   13026   13026, 13027, 13028
+    Espy Sans Bold             bitmap   13029   13029, 13030, 13031
+    eWorld Tight               bitmap   13032   13032
+    TTYFont                    bitmap   13033   13033, 13034
+    VT100                      bitmap   13035   13035, 13036, 13037, 13038
+  13 further faces the disc offers were not taken: Courier, Geneva, Monaco, New York,
+  Palatino (regular and italic), Times (four styles), Helvetica (regular and bold) and Symbol;
+  each duplicates a family and style we already carry, so taking it would add a second family
+  answering to one name and a second copy of the same face. They stay ours.
   why: a 7.5.1 outline renders at any size; a bitmap strike is fixed to the sizes it was cut at.
        Where a family has both, the outline is taken and the bitmap is not — so what looks like
        "we dropped 46 bitmaps" is really "fixed-size strikes were replaced by scalable outlines".
-  numbering: the disc reuses sfnt IDs across families — 9217 (9 families), 9218 (4), 9219 (2),
-             9220 (2) — so its numbering is per file and cannot be imported as-is. Every imported
-             face is assigned a unique ID from 13000 upward (the 12000 block is ours; 13000-13099
-             is the range). A face we already carry byte-identically keeps its ID; the disc's ID
-             stays beside it as source_id, so the mapping is auditable and reproducible.
-  our bitmaps: 39 NFNT and 7 FONT have no disc counterpart by ID — bitmap absent, outline present
-               where the family is imported. They stay ours; nothing was dropped from the manifest.
-  FOND: all 9 are ours and were not extracted. They still reference the IDs we install, so they stay
-        valid; the newly imported families have no FOND entry yet, so they are present but not yet
-        selectable through the font manager. Source: system/assets/fonts/FOND-*.bin (symbols
-        FONT_BUNDLE_FOND_*).
+  numbering: every imported face takes a unique ID from 13000 upward, and its family record
+             sits beside it at the family's lowest face ID; the disc's own ID is kept as
+             source_id. The nine bundled FONDs are untouched.
+  verification: at boot the System logs the admitted catalog and four selections by name and
+                style (Klang MT, Espy Sans, VT100 bold, American Heritage), each returning real
+                metrics; the boot check asserts those markers.
 
 usage — static scan of 1273 Rust source files
   extracted 560

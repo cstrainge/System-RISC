@@ -1133,6 +1133,38 @@ fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Er
     }
 }
 
+/// Boot-time proof that an imported family is reachable the way an application
+/// reaches a font: by name, at a size and style. Each line is a boot-check
+/// marker; a failure is reported here rather than aborting the boot, because a
+/// missing family is a font problem, not a System failure.
+fn check_imported_font_families(fonts: &crate::toolbox::quickdraw::fonts::FontManager)
+{
+    use crate::toolbox::quickdraw::fonts::FontSelection;
+    for (name, size, face) in [("Klang MT", 12i16, 0u16),
+                               ("Espy Sans", 12, 0),
+                               ("VT100", 12, 1),
+                               ("American Heritage", 12, 0)]
+    {
+        let Some(family) = fonts.family_id(name)
+        else
+        {
+            serial!("FONT_SELECT_FAILED name=\"{name}\" reason=no-family");
+            continue;
+        };
+        match fonts.metrics(FontSelection { family, size, face })
+        {
+            Ok(metrics) =>
+            {
+                serial!("FONT_SELECT name=\"{name}\" family={family} size={size} style={face}                          ascent={} descent={}", metrics.ascent, metrics.descent);
+            }
+            Err(status) =>
+            {
+                serial!("FONT_SELECT_FAILED name=\"{name}\" family={family} size={size}                          style={face} status={status}");
+            }
+        }
+    }
+}
+
 fn initialize_desktop(
     mut system: alloc::vec::Vec<mac_formats::resource::Resource>,
     processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage,
@@ -1170,6 +1202,7 @@ fn initialize_desktop(
               }
           })?;
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
+    check_imported_font_families(&fonts);
     // Progress uses the real loaded CDEF before any application loop exists.
     let fonts = alloc::sync::Arc::try_new(fonts).map_err(|_| {
                                                     recovery_boot_error("System font snapshot \

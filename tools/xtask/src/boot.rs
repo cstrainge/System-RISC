@@ -202,6 +202,17 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
         boots: bool)
         -> Result<Value>
 {
+    case_within(workspace, directory, name, media, expected, boots, None)
+}
+
+/// `timeout` overrides the platform's startup budget for a case whose own
+/// image is deliberately abnormal — a rewritten multi-megabyte fork reads more
+/// slowly than an ordinary boot, and that slowness is the fixture's, not the
+/// System's.
+fn case_within(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf],
+               expected: &[&str], boots: bool, timeout: Option<std::time::Duration>)
+               -> Result<Value>
+{
     let serial = directory.join(format!("{name}.serial.log"));
     let stderr = directory.join(format!("{name}.qemu.log"));
     // Each case states the disks it is about; the record's own medium is not
@@ -218,6 +229,11 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
                                           emulator::Media::Given(media),
                                           emulator::Mode::Headless,
                                           &[])?;
+    let mut invocation = invocation;
+    if let Some(timeout) = timeout
+    {
+        invocation.timeout = timeout;
+    }
     let mut command = invocation.command();
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(File::create(&stderr)?);
     let launch = emulator::render(&invocation);
@@ -465,23 +481,30 @@ pub fn check(workspace: &Workspace) -> Result<Value>
             None
         }
     };
-    let mut cases = vec![case(workspace,
-                              &directory,
-                              "no-disk",
-                              &[],
-                              &["BOOT_NO_SYSTEM: searched 0 disk(s)"],
-                              false)?,
-                         case(workspace,
-                              &directory,
-                              "raw-hfs-b",
-                              &[raw.clone()],
-                              // The catalog number is not asserted: it shifts whenever
-                              // the volume's contents change, and what matters is that a
-                              // blessed System Folder was found at all.
-                              &["System RISC Boot ROM v1 at 0x200",
-                                "blessed folder 'System Folder' CNID=",
-                                "System: native service table ready", "BOOT_SYSTEM_READY:"],
-                              true)?];
+    let mut cases =
+        vec![case(workspace,
+                  &directory,
+                  "no-disk",
+                  &[],
+                  &["BOOT_NO_SYSTEM: searched 0 disk(s)"],
+                  false)?,
+             case(workspace,
+                  &directory,
+                  "raw-hfs-b",
+                  &[raw.clone()],
+                  // The catalog number is not asserted: it shifts whenever
+                  // the volume's contents change, and what matters is that a
+                  // blessed System Folder was found at all.
+                  &["System RISC Boot ROM v1 at 0x200", "blessed folder 'System Folder' CNID=",
+                    "System: native service table ready", "BOOT_SYSTEM_READY:",
+                    // The imported families must be reachable by name, not
+                    // merely admitted: each line is a real selection that
+                    // resolved to a face.
+                    "FONT_SELECT name=\"Klang MT\" family=13008 size=12 style=0",
+                    "FONT_SELECT name=\"Espy Sans\" family=13026 size=12 style=0",
+                    "FONT_SELECT name=\"VT100\" family=13035 size=12 style=1",
+                    "FONT_SELECT name=\"American Heritage\" family=13021 size=12 style=0"],
+                  true)?];
     if converted.is_some()
     {
         cases.push(case(workspace,
@@ -494,12 +517,13 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     let large = directory.join("large-system-fork.hfsb");
     clone_raw(&raw, &large)?;
     altered_system(workspace, &large, "large-fork")?;
-    cases.push(case(workspace,
-                    &directory,
-                    "system-resource-fork-over-4mib",
-                    &[large.clone()],
-                    &["BOOT_SYSTEM_READY:", "DESKTOP_READY:"],
-                    true)?);
+    cases.push(case_within(workspace,
+                           &directory,
+                           "system-resource-fork-over-4mib",
+                           &[large.clone()],
+                           &["BOOT_SYSTEM_READY:", "DESKTOP_READY:"],
+                           true,
+                           Some(std::time::Duration::from_secs(180)))?);
     let classic = workspace.root.join("crates/mac-toolbox/tests/data/files/dates-2026.hfs");
     cases.push(case(workspace,
                     &directory,

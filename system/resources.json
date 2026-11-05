@@ -4108,28 +4108,6 @@
     },
     {
       "type": "FOND",
-      "id": 13003,
-      "symbol": "FOND_COURIER_13003",
-      "name": "Courier",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13003.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13004,
-      "symbol": "FOND_GENEVA_13004",
-      "name": "Geneva",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13004.bin"
-      }
-    },
-    {
-      "type": "FOND",
       "id": 13005,
       "symbol": "FOND_GILL_SANS_CONDENSED_BOLD_13005",
       "name": "Gill Sans Condensed Bold",
@@ -4137,17 +4115,6 @@
       "payload": {
         "format": "file",
         "path": "assets/fonts/FOND-13005.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13006,
-      "symbol": "FOND_HELVETICA_13006",
-      "name": "Helvetica",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13006.bin"
       }
     },
     {
@@ -4163,17 +4130,6 @@
     },
     {
       "type": "FOND",
-      "id": 13009,
-      "symbol": "FOND_MONACO_13009",
-      "name": "Monaco",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13009.bin"
-      }
-    },
-    {
-      "type": "FOND",
       "id": 13010,
       "symbol": "FOND_NEW_BEROLINA_MT_13010",
       "name": "New Berolina MT",
@@ -4181,17 +4137,6 @@
       "payload": {
         "format": "file",
         "path": "assets/fonts/FOND-13010.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13011,
-      "symbol": "FOND_NEW_YORK_13011",
-      "name": "New York",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13011.bin"
       }
     },
     {
@@ -4207,17 +4152,6 @@
     },
     {
       "type": "FOND",
-      "id": 13013,
-      "symbol": "FOND_PALATINO_13013",
-      "name": "Palatino",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13013.bin"
-      }
-    },
-    {
-      "type": "FOND",
       "id": 13015,
       "symbol": "FOND_SCRIPT_MT_BOLD_13015",
       "name": "Script MT Bold",
@@ -4225,28 +4159,6 @@
       "payload": {
         "format": "file",
         "path": "assets/fonts/FOND-13015.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13016,
-      "symbol": "FOND_SYMBOL_13016",
-      "name": "Symbol",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13016.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13017,
-      "symbol": "FOND_TIMES_13017",
-      "name": "Times",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13017.bin"
       }
     },
     {
