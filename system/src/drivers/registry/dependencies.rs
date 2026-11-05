@@ -55,11 +55,11 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseDependencies
         {
             return registry.release_dependency(ticket, self.0);
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         {
             crate::drivers::release_dependency(ticket, self.0)
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         {
             Err(Failure::context_unavailable(ticket, "driver dependency registry"))
         }
@@ -86,7 +86,7 @@ impl Registry
                 }
             }
             drop(self.dependencies.release(ticket).map_err(Failure::from)?);
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             crate::drivers::recovery_changed();
             Ok(())
         }
@@ -275,14 +275,14 @@ impl Registry
                            catalog.dispatch(key.kind())
                        });
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         {
             self.drain_module_with(module, &owner, |_, key| {
                 crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
                     .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry))
             })
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         {
             // The host transport's Session owns its actual typed catalog and
             // drives that same walk outside this narrower Registry borrow.
@@ -309,10 +309,10 @@ impl Registry
         };
         let mut failed = |key: ResourceKey, failure: &mac_object_table::walk::Failure<E,
             crate::toolbox::handles::cleanup::Cause>| {
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             serial!("MODULE_CLEANUP_QUARANTINED owner={} kind={} slot={} generation={} {failure}",
                 key.owner(), key.kind(), key.slot(), key.generation());
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(not(systemrisc))]
             let _ = (key, failure);
         };
         checkpoint.run(owner, || {
@@ -326,7 +326,7 @@ impl Registry
                   })
                   .map_err(Error::Cleanup)?;
         checkpoint.ensure_settled().map_err(Error::Cleanup)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         crate::kernel::finish_module_images();
         Self::module_drained(owner)
     }

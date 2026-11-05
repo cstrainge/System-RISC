@@ -3,16 +3,16 @@ pub mod devices;
 pub mod file_sources;
 pub mod jobs;
 pub(crate) mod registry;
-#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+#[cfg(any(systemrisc, feature = "test-support"))]
 pub(crate) mod synchronous;
 pub use registry::*;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod runtime;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use runtime::scheduler;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use runtime::*;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub use runtime::{OwnedJob, submit_job};
 
 pub(crate) fn status(error: Error) -> mac_abi::Status

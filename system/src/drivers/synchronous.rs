@@ -16,7 +16,7 @@ pub(crate) fn authorize(registry: &Registry, subject: &Subject, caller: u64, pro
     let ordinary = registry.authorize_synchronous(subject, caller, provider,
                                                   call.input_len as usize,
                                                   call.output_capacity as usize);
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     let ordinary =
         ordinary.or_else(|original| {
                     if call.class == mac_scheduler_interface::CONTROL_CLASS.0

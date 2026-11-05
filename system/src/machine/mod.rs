@@ -18,6 +18,7 @@ pub(crate) mod emergency;
 pub(crate) mod input;
 pub(crate) mod io;
 pub(crate) mod memory;
+pub(crate) mod monitor;
 pub(crate) mod pages;
 pub(crate) mod paging;
 pub(crate) mod scheduler;

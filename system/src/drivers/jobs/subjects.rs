@@ -90,11 +90,11 @@ impl Operations
                     Ok(Subject { scope: scope.clone(),
                                  _retention: None,
                                  request: None,
-                                 #[cfg(target_arch = "riscv64")]
+                                 #[cfg(systemrisc)]
                                  recovery_activity: None,
-                                 #[cfg(target_arch = "riscv64")]
+                                 #[cfg(systemrisc)]
                                  runtime_activity: None,
-                                 #[cfg(target_arch = "riscv64")]
+                                 #[cfg(systemrisc)]
                                  protected_publication: false,
                                  allocation })
                 }
@@ -119,11 +119,11 @@ impl Operations
                     Ok(Subject { scope,
                                  _retention: Some(retention),
                                  request: None,
-                                 #[cfg(target_arch = "riscv64")]
+                                 #[cfg(systemrisc)]
                                  recovery_activity: None,
-                                 #[cfg(target_arch = "riscv64")]
+                                 #[cfg(systemrisc)]
                                  runtime_activity: None,
-                                 #[cfg(target_arch = "riscv64")]
+                                 #[cfg(systemrisc)]
                                  protected_publication: false,
                                  allocation })
                 }
@@ -139,7 +139,7 @@ impl Operations
     {
         let allocation = crate::allocation::capture_target()?;
         let subject = self.admit(authority, allocation)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         {
             let mut subject = subject;
             if let Some(parent) = crate::context::io_subject()
@@ -151,7 +151,7 @@ impl Operations
             }
             Ok(subject)
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         {
             Ok(subject)
         }
@@ -202,11 +202,11 @@ pub(crate) struct Subject
     scope:                 Lease,
     _retention:            Option<Arc<Retention>>,
     request:               Option<mac_object_table::store::CompletionKey>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     recovery_activity:     Option<crate::recovery::Activity>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     runtime_activity:      Option<crate::toolbox::native_threads::RuntimeActivity>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     protected_publication: bool,
     // Last: the account-use pin outlives scope/Retention destruction and the
     // operation's actual cleanup acknowledgement, including delayed callbacks.
@@ -217,7 +217,7 @@ impl Subject
     /// Own a genuine I/O root for this prospective Process, independently of
     /// its launcher's delivery thread. No caller-selected subject/account pair
     /// is accepted. Queue and DREQ copies retain the runtime through real ACK.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn for_runtime(runtime: &crate::toolbox::native_threads::RuntimeAdmission)
                               -> Result<Self, Status>
     {
@@ -228,13 +228,13 @@ impl Subject
         Ok(subject)
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn recovery_activity(&self) -> Option<&crate::recovery::Activity>
     {
         self.recovery_activity.as_ref()
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn uses_protected_publication(&self) -> bool
     {
         self.protected_publication && self.recovery_activity.is_some()
@@ -243,7 +243,7 @@ impl Subject
     /// The trusted registry selects ordinary admission for provider graphs not
     /// covered by its reserved endpoints. The lifetime/root pin is preserved;
     /// callbacks and child allocations gain no protected storage by this flag.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn with_ordinary_publication(&self) -> Self
     {
         let mut subject = self.clone();
@@ -254,7 +254,7 @@ impl Subject
     /// Only the resident modal coordinator annotates its own boot-held root.
     /// Metadata retains this pin across nested calls even though foreign module
     /// code receives no protected allocation/activity selection.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn for_recovery(activity: crate::recovery::Activity) -> Self
     {
         // The constructor derives its root from the genuine Activity; callers
@@ -313,7 +313,7 @@ fn pool_status(error: mac_object_table::domain::PoolError) -> Status
     crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn resident() -> Result<&'static Arc<Operations>, Status>
 {
     static OPERATIONS: spin::Once<Arc<Operations>> = spin::Once::new();
@@ -330,9 +330,9 @@ pub(crate) fn resident() -> Result<&'static Arc<Operations>, Status>
               })
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) struct ReleaseOperations(pub bool);
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl
     mac_object_table::registry::Release<dyn crate::toolbox::handles::cleanup::context::Context,
                                         Failure> for ReleaseOperations

@@ -1,6 +1,6 @@
 //! Bounded resident ownership primitives. No API spins waiting for a scheduled
 //! thread. Blocking/wakeup policy belongs to the future OS scheduler.
-#![cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
+#![cfg_attr(not(systemrisc), allow(dead_code))]
 use spinning_top::Spinlock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

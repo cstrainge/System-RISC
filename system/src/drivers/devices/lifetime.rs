@@ -2,10 +2,10 @@
 //! inspectable through the same catalog and invalidate-first cleanup walk.
 #![forbid(unsafe_code)]
 use mac_object_table::registry::{Source, Specification};
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 use mac_object_table::{domain::ReleasedResource, registry::Release};
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 use crate::toolbox::handles::cleanup::{Failure, context::Context};
 use crate::toolbox::handles::{CapacityPolicy, KindCode};
 
@@ -46,7 +46,7 @@ impl Registration
                         source: Source::Resident }
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl Release<dyn Context, Failure> for Registration
 {
     fn release(&self, _: &mut (dyn Context + 'static), ticket: ReleasedResource)

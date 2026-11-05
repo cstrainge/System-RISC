@@ -134,7 +134,7 @@ impl ThreadTrapState
     pub(crate) fn check_defer(&self) -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         if !crate::machine::traps::can_defer_io()
         {
             return Err(mac_abi::WRONG_THREAD);
@@ -212,7 +212,7 @@ impl Drop for TrapScope<'_>
         self.state.depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 enum ThreadOwner
 {
     System
@@ -234,7 +234,7 @@ enum ThreadOwner
         resources: crate::kernel::ResourceSelection
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl ThreadOwner
 {
     fn owner(&self) -> &crate::toolbox::handles::OwnerRef
@@ -262,13 +262,13 @@ impl ThreadOwner
         }
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 enum DefaultAllocation
 {
     Account(crate::machine::scheduler::accounting::AllocationAuthority),
     System(crate::allocator::SystemClass)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub struct ThreadContext
 {
     app:               core::sync::atomic::AtomicU64,
@@ -293,7 +293,7 @@ pub struct ThreadContext
     pub traps:         ThreadTrapState,
     pub definitions:   DefinitionInvocations
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl ThreadContext
 {
     pub const fn new() -> Self
@@ -779,7 +779,7 @@ impl ThreadContext
 }
 /// Why this actual executor cannot supply native Process authority. These
 /// are diagnostic identities, not a way to select another account or process.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ApplicationExecutorError
 {
@@ -794,7 +794,7 @@ pub(crate) enum ApplicationExecutorError
     },
     BaselineMismatch
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl ApplicationExecutorError
 {
     pub(crate) fn status(&self) -> mac_abi::Status
@@ -810,7 +810,7 @@ impl ApplicationExecutorError
         }
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl core::fmt::Display for ApplicationExecutorError
 {
     fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -854,7 +854,7 @@ impl core::fmt::Display for ApplicationExecutorError
 /// Fields are private, non-Clone and CPU-affine; neither caller IDs nor ambient
 /// allocator/I/O/resource selections can construct this value. The original
 /// context pin outlives every owned clone and the complete request closure.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) struct ApplicationExecutor<'a>
 {
     owner:      crate::toolbox::handles::OwnerRef,
@@ -864,7 +864,7 @@ pub(crate) struct ApplicationExecutor<'a>
     _context:   &'a ContextRef,
     _affine:    core::marker::PhantomData<*mut ()>
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl ApplicationExecutor<'_>
 {
     pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
@@ -925,7 +925,7 @@ impl ApplicationExecutor<'_>
 /// Use for an actual synchronous Process request (heap, TLS or current thread). No author
 /// callback, yield or bootstrap-stack handoff belongs inside this closure.
 /// The higher-ranked boundary prevents its borrowed executor from escaping.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_application_executor<R>(operation: impl for<'a> FnOnce(&ApplicationExecutor<'a>)
                                                           -> R)
                                            -> Result<R, ApplicationExecutorError>
@@ -989,18 +989,18 @@ pub(crate) fn with_application_executor<R>(operation: impl for<'a> FnOnce(&Appli
 
 /// An owned pin, never a static reference to reclaimable scheduler storage.
 /// The static variant is reserved for the actual boot/firmware context.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub enum ContextRef
 {
     Bootstrap,
     Thread(ThreadPin)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub struct ThreadPin
 {
     context: mac_object_table::retained::Read<ThreadContext>
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl ContextRef
 {
     pub(crate) fn thread(context: alloc::sync::Arc<ThreadContext>) -> Self
@@ -1013,7 +1013,7 @@ impl ContextRef
         matches!(self, Self::Bootstrap)
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl core::ops::Deref for ContextRef
 {
     type Target = ThreadContext;
@@ -1028,40 +1028,40 @@ impl core::ops::Deref for ContextRef
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 static BOOTSTRAP_CONTEXT: ThreadContext = ThreadContext::new();
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 static BOOT_RESOURCES: selection::PermanentSelection<crate::kernel::ResourceSelection> =
     selection::PermanentSelection::new(BOOT_THREAD);
 
 // An I/O subject is admitted authority, independent of the executor's app/module
 // label. Retain it only for the synchronous callback; Pending work owns its own
 // cloned capability in the job/request record, never a stack guard.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 static BOOT_IO_SUBJECT: selection::PermanentSelection<crate::drivers::jobs::subjects::Subject> =
     selection::PermanentSelection::new(BOOT_THREAD);
 
 /// An I/O handoff preserves absence as refusal, never as System authority.
 /// Capturing this clones genuine authority once per handoff, not per allocation.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[derive(Clone)]
 pub(crate) enum AllocationSelection
 {
     Selected(crate::allocator::Target),
     Unavailable
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 static BOOT_ALLOCATION: selection::PermanentSelection<AllocationSelection> =
     selection::PermanentSelection::new(BOOT_THREAD);
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 static BOOT_RECOVERY: selection::PermanentSelection<Option<crate::allocator::recovery::Permit>> =
     selection::PermanentSelection::new(BOOT_THREAD);
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 static BOOT_RECOVERY_ACTIVITY: selection::PermanentSelection<Option<crate::recovery::Activity>> =
     selection::PermanentSelection::new(BOOT_THREAD);
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_recovery_allocation<R>(permit: crate::allocator::recovery::Permit,
                                           operation: impl FnOnce() -> R)
                                           -> R
@@ -1078,7 +1078,7 @@ pub(crate) fn with_recovery_allocation<R>(permit: crate::allocator::recovery::Pe
 }
 /// Foreign code and ordinary child launch cannot borrow the recovery pool or
 /// keep a modal session alive. Suppression overrides even a Finder baseline.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn without_recovery<R>(operation: impl FnOnce() -> R) -> R
 {
     let context = current_thread_context();
@@ -1092,7 +1092,7 @@ pub(crate) fn without_recovery<R>(operation: impl FnOnce() -> R) -> R
                .with_pinned(None, || context.recovery_activity.with_pinned(None, operation))
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn recovery_allocation() -> Option<crate::allocator::recovery::Permit>
 {
     let context = current_thread_context();
@@ -1105,14 +1105,14 @@ pub(crate) fn recovery_allocation() -> Option<crate::allocator::recovery::Permit
         context.selected_recovery()
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_bootstrap_recovery_allocation<R>(permit:Option<crate::allocator::recovery::Permit>,
                                                     operation: impl FnOnce() -> R)
                                                     -> R
 {
     BOOT_RECOVERY.with(Some(permit), operation)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_recovery_activity<R>(activity: crate::recovery::Activity,
                                         operation: impl FnOnce() -> R)
                                         -> R
@@ -1127,7 +1127,7 @@ pub(crate) fn with_recovery_activity<R>(activity: crate::recovery::Activity,
         context.recovery_activity.with_pinned(Some(activity), operation)
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn recovery_activity() -> Option<crate::recovery::Activity>
 {
     let context = current_thread_context();
@@ -1140,7 +1140,7 @@ pub(crate) fn recovery_activity() -> Option<crate::recovery::Activity>
         context.recovery_activity.current().flatten()
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_bootstrap_recovery_activity<R>(activity: Option<crate::recovery::Activity>,
                                                   operation: impl FnOnce() -> R)
                                                   -> R
@@ -1148,7 +1148,7 @@ pub(crate) fn with_bootstrap_recovery_activity<R>(activity: Option<crate::recove
     BOOT_RECOVERY_ACTIVITY.with(Some(activity), operation)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn reserve_allocation(
     bytes: u64)
     -> Result<crate::allocator::Reservation, crate::allocator::Error>
@@ -1156,7 +1156,7 @@ pub(crate) fn reserve_allocation(
     crate::machine::scheduler::reserve_allocation(bytes)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn reserve_replacement(
     receipt: &crate::allocator::Receipt, bytes: u64)
     -> Result<crate::allocator::Reservation, crate::allocator::Error>
@@ -1164,7 +1164,7 @@ pub(crate) fn reserve_replacement(
     crate::machine::scheduler::reserve_replacement(receipt, bytes)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn reserve_bootstrap_allocation(
     bytes: u64)
     -> Result<crate::allocator::Reservation, crate::allocator::Error>
@@ -1176,7 +1176,7 @@ pub(crate) fn reserve_bootstrap_allocation(
                  })
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn reserve_bootstrap_replacement(
     receipt: &crate::allocator::Receipt, bytes: u64)
     -> Result<crate::allocator::Reservation, crate::allocator::Error>
@@ -1184,7 +1184,7 @@ pub(crate) fn reserve_bootstrap_replacement(
     with_bootstrap_allocation_selection(|selection| receipt.reserve_replacement(selection, bytes))
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 fn with_bootstrap_allocation_selection<R>(operation: impl FnOnce(crate::allocator::Selection<'_>)
                                                  -> Result<R, crate::allocator::Error>)
                                           -> Result<R, crate::allocator::Error>
@@ -1199,7 +1199,7 @@ fn with_bootstrap_allocation_selection<R>(operation: impl FnOnce(crate::allocato
     })
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn selected_allocation() -> AllocationSelection
 {
     let context = current_thread_context();
@@ -1245,7 +1245,7 @@ pub(crate) fn with_allocation<R>(target: crate::allocator::Target, operation: im
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_system_allocation<R>(class: crate::allocator::SystemClass,
                                         operation: impl FnOnce() -> R)
                                         -> R
@@ -1253,7 +1253,7 @@ pub(crate) fn with_system_allocation<R>(class: crate::allocator::SystemClass,
     with_allocation(crate::allocator::Target::System(class), operation)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_bootstrap_allocation<R>(selection: AllocationSelection,
                                            operation: impl FnOnce() -> R)
                                            -> R
@@ -1262,41 +1262,41 @@ pub(crate) fn with_bootstrap_allocation<R>(selection: AllocationSelection,
 }
 
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 static BOOT_MODULE: selection::PermanentSelection<crate::images::ModuleFrame> =
     selection::PermanentSelection::new(BOOT_THREAD);
 
 /// Authenticate the installed executor without deriving authority from its label.
 /// Stopping admission does not invalidate an already admitted cleanup invocation.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn authenticate_module(module: u64) -> Result<(), mac_abi::Status>
 {
     crate::machine::scheduler::authenticate_module(module)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn module_owner(module: u64)
                            -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
 {
     crate::machine::scheduler::module_owner(module)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn bootstrap_module_owner(
     module: u64)
     -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
 {
     BOOT_MODULE.borrow(|frame| frame.ok_or(mac_abi::ACCESS_DENIED)?.owner(module))
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(), mac_abi::Status>
 {
     crate::machine::scheduler::module_callback_allowed(module, address)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn authenticate_bootstrap_module(module: u64) -> Result<(), mac_abi::Status>
 {
     BOOT_MODULE.borrow(|frame| frame.ok_or(mac_abi::ACCESS_DENIED)?.authenticate(module))
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn bootstrap_module_callback_allowed(module: u64, address: usize)
                                                 -> Result<(), mac_abi::Status>
 {
@@ -1304,7 +1304,7 @@ pub(crate) fn bootstrap_module_callback_allowed(module: u64, address: usize)
                    frame.ok_or(mac_abi::ACCESS_DENIED)?.callback_allowed(module, address)
                })
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_module_execution<R>(execution: &crate::images::ModuleExecution,
                                        call: impl FnOnce() -> R)
                                        -> Result<R, mac_abi::Status>
@@ -1322,17 +1322,17 @@ pub(crate) fn with_module_execution<R>(execution: &crate::images::ModuleExecutio
     })
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn critical_active() -> bool
 {
     crate::machine::scheduler::critical_active()
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn bootstrap_critical_active() -> bool
 {
     BOOTSTRAP_CONTEXT.critical_active()
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_critical_section<R>(operation: impl FnOnce() -> R)
                                        -> Result<R, mac_abi::Status>
 {
@@ -1356,7 +1356,7 @@ pub(crate) fn with_critical_section<R>(operation: impl FnOnce() -> R)
     })
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn io_subject() -> Option<crate::drivers::jobs::subjects::Subject>
 {
     let context = current_thread_context();
@@ -1370,7 +1370,7 @@ pub(crate) fn io_subject() -> Option<crate::drivers::jobs::subjects::Subject>
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_io_subject<R>(subject: crate::drivers::jobs::subjects::Subject,
                                  call: impl FnOnce() -> R)
                                  -> Result<R, mac_abi::Status>
@@ -1389,7 +1389,7 @@ pub(crate) fn with_io_subject<R>(subject: crate::drivers::jobs::subjects::Subjec
     })
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_bootstrap_io_subject<R>(subject: Option<crate::drivers::jobs::subjects::Subject>,
                                            call: impl FnOnce() -> R)
                                            -> R
@@ -1397,7 +1397,7 @@ pub(crate) fn with_bootstrap_io_subject<R>(subject: Option<crate::drivers::jobs:
     BOOT_IO_SUBJECT.with(subject, call)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn selected_resources() -> Option<crate::kernel::ResourceSelection>
 {
     let context = current_thread_context();
@@ -1410,7 +1410,7 @@ pub(crate) fn selected_resources() -> Option<crate::kernel::ResourceSelection>
         context.resources.current().or_else(|| context.default_resources())
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_selected_resources<R>(selection: crate::kernel::ResourceSelection,
                                          call: impl FnOnce() -> R)
                                          -> Result<R, selection::Reclaimed>
@@ -1427,7 +1427,7 @@ pub(crate) fn with_selected_resources<R>(selection: crate::kernel::ResourceSelec
 }
 /// The native I/O wrapper has entered the permanent bootstrap execution
 /// context. Transport selection metadata without changing executor identity.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn with_bootstrap_resources<R>(selection: Option<crate::kernel::ResourceSelection>,
                                           call: impl FnOnce() -> R)
                                           -> R
@@ -1435,18 +1435,18 @@ pub(crate) fn with_bootstrap_resources<R>(selection: Option<crate::kernel::Resou
     BOOT_RESOURCES.with(selection, call)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub fn current_thread_context() -> ContextRef
 {
     crate::machine::scheduler::current_context()
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub fn current_thread() -> ThreadId
 {
     current_thread_context().identity().thread
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn current_owner() -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
 {
     let context = current_thread_context();
@@ -1524,7 +1524,7 @@ impl DefinitionInvocations
     }
 
     /// Some(null) is a live nondrawing invocation; None means no definition.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub fn borrowed_surface(&self) -> Option<*mut mac_abi::Surface>
     {
         self.current().map(|_| self.surface.load(core::sync::atomic::Ordering::Relaxed))

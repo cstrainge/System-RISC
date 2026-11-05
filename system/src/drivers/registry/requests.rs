@@ -130,7 +130,7 @@ impl Requests
                   cancel_ready: VecDeque::new() })
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     fn reserve_recovery(
         &mut self, owner: &crate::toolbox::handles::OwnerRef)
         -> Result<[mac_object_table::store::PublicationReservation<InvocationGate>; 2]>
@@ -175,7 +175,7 @@ impl Requests
                          preparation: &mut dispatch::Preparation)
                          -> Result<u64>
     {
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         if let Some(activity) = subject.recovery_activity()
         {
             if subject.uses_protected_publication()
@@ -197,11 +197,11 @@ impl Requests
     {
         let parent = self.validate_parent(subject, value.caller, value.origin)?;
         let reserved = self.store.reserved_capacity();
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let activity = subject.recovery_activity();
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let recovery = subject.uses_protected_publication();
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let recovery = false;
         if recovery
         {
@@ -263,9 +263,9 @@ impl Requests
         {
             None
         };
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let pin = activity.map(crate::recovery::Activity::acknowledgement_pin);
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let pin = None;
         let dispatch = preparation.storage().map_err(Error::AllocationScope)?.clone();
         let make = |id| {
@@ -275,7 +275,7 @@ impl Requests
                      parent,
                      dispatch }
         };
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let publication = if let Some(activity) = activity.filter(|_| recovery)
         {
             activity.publication().with_request(subject, |reservation| {
@@ -292,7 +292,7 @@ impl Requests
                 .insert_in_scope_with_acknowledgement(subject.scope(), pin, make)
                 .map_err(Error::Owner)?
         };
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let publication = self.store
                               .insert_in_scope_with_acknowledgement(subject.scope(), pin, make)
                               .map_err(Error::Owner)?;
@@ -701,7 +701,7 @@ impl Requests
                 Err(error) =>
                 {
                     let cause = error.cause();
-                    #[cfg(target_arch = "riscv64")]
+                    #[cfg(systemrisc)]
                     if self.slots[at].failure != Some(cause)
                     {
                         serial!("DRIVER_REQUEST_CLEANUP_REFUSED ticket={} cause={}", id, cause);
@@ -719,7 +719,7 @@ impl Requests
         if let Some(mark) = mark
         {
             self.slots[at].retired = Some(mark);
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             crate::drivers::request_retirement_changed();
         }
     }
@@ -848,11 +848,11 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseRequests
         {
             return registry.requests.release(ticket, self.0);
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         {
             crate::drivers::release_request(ticket, self.0)
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         {
             Err(Failure::context_unavailable(ticket, "driver request registry"))
         }
@@ -862,7 +862,7 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseRequests
 #[cfg(test)]
 mod tests;
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl super::Registry
 {
     pub(crate) fn reserve_recovery_requests(

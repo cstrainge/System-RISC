@@ -261,3 +261,8 @@ pub(crate) fn present_rects(back: &[u32],
         asm!("fence iorw, iorw", options(nostack));
     }
 }
+
+/// The terminal display backend. This is the one place the shared emergency path
+/// reaches a display, so a second architecture supplies its own rather than the
+/// shared code naming a framebuffer it may not have.
+pub(crate) use mac_boot_screen::ramfb::{Error as TerminalError, PreparedTerminal, prepare_terminal};
