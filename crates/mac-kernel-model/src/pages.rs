@@ -1,4 +1,5 @@
 //! Page geometry, ownership and mapping plans; no PTE bits or CPU instructions.
+pub mod mapping;
 pub mod physical;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -78,6 +79,55 @@ pub struct Permissions
 }
 /// Pure geometry/address checks shared by build tooling and firmware; no fake
 /// CPU frame or invocation gate is needed just to validate a layout.
+/// One encoded page-table entry, as the mapping machinery needs it.
+///
+/// This is the neutral view: what an entry *means*, expressed in bytes and
+/// permissions rather than in one format's enumerations. Each architecture
+/// implements it over its own descriptor type, so the walk and the mapping plan
+/// are written once and neither names an ISA.
+pub trait Descriptor: Copy + core::fmt::Debug + PartialEq + Eq
+{
+    type Error: core::fmt::Display;
+
+    /// An entry that maps nothing.
+    fn invalid() -> Self;
+
+    /// The raw bits, as stored in a table slot.
+    fn bits(self) -> u64;
+
+    /// A pointer to the next table level.
+    fn table(address: PhysicalAddress, global: bool, ownership: PageOwnership)
+             -> Result<Self, Self::Error>;
+
+    /// A leaf mapping `size_bytes`, which must be one of the format's leaves.
+    fn leaf(address: PhysicalAddress, size_bytes: u64, permissions: Permissions,
+            ownership: PageOwnership)
+            -> Result<Self, Self::Error>;
+
+    /// What `bits` means at `level`, counted from the finest leaf.
+    fn decode(bits: u64, level: u8) -> Result<EntryKind, Self::Error>;
+}
+
+/// The neutral meaning of an encoded entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind
+{
+    Invalid,
+    Table
+    {
+        physical:  PhysicalAddress,
+        global:    bool,
+        ownership: PageOwnership
+    },
+    Leaf
+    {
+        physical:    PhysicalAddress,
+        size_bytes:  u64,
+        permissions: Permissions,
+        ownership:   PageOwnership
+    }
+}
+
 pub trait PageLayout
 {
     fn geometry() -> PageGeometry;
@@ -114,9 +164,20 @@ pub trait PageLayout
     }
 
     /// The leaf size used at `level`, counting from the finest leaf.
+    ///
+    /// Derived from the page geometry and the nine address bits each level
+    /// consumes, not from the order a format happens to list its leaves in:
+    /// `leaf_sizes` is written largest-first by some formats and this
+    /// convention is finest-first, so indexing it directly would silently pick
+    /// the wrong leaf.
     fn leaf_at(level: usize) -> Option<u64>
     {
-        Self::leaf_sizes().get(level).copied()
+        if level >= Self::levels()
+        {
+            return None;
+        }
+        let base = Self::geometry().bytes();
+        Some(base << (9 * level as u32))
     }
 }
 /// CPU context and its actual invocation gate belong to the resident binding.

@@ -236,6 +236,8 @@ mod tests
     impl Tables for Memory
     {
         type Error = &'static str;
+        type Descriptor = crate::Entry;
+        type Layout = crate::Sv39;
 
         fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, Self::Error>
         {
@@ -310,7 +312,7 @@ mod tests
         map.map_range(0, PhysicalAddress(0), 1 << 30, p(), PageOwnership::Manual).unwrap();
         map.map(u64::MAX - 4095,
                 PhysicalAddress(4096),
-                LeafSize::from_level(0).unwrap(),
+                LeafSize::from_level(0).unwrap().bytes(),
                 p(),
                 PageOwnership::Manual)
            .unwrap();

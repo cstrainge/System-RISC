@@ -15,6 +15,7 @@ pub(crate) use mac_riscv_pages::Sv39;
 /// The encoder types shared paging stores and decodes. It reaches them through
 /// this module so it never names a format.
 pub(crate) use mac_riscv_pages::{Decoded, Entry, LeafSize};
+pub(crate) use mac_riscv_pages::mapping;
 
 /// The encoder's failure type, exposed through the selection point so shared
 /// paging reports a refusal without naming a format.

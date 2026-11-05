@@ -571,3 +571,65 @@ mod tests
         }
     }
 }
+
+impl mac_kernel_model::pages::Descriptor for Entry
+{
+    type Error = Error;
+
+    fn invalid() -> Self
+    {
+        Self::invalid()
+    }
+
+    fn bits(self) -> u64
+    {
+        self.bits()
+    }
+
+    fn table(address: PhysicalAddress, global: bool, ownership: PageOwnership)
+             -> Result<Self, Error>
+    {
+        Entry::table(address, global, ownership)
+    }
+
+    fn leaf(address: PhysicalAddress, size_bytes: u64, permissions: Permissions,
+            ownership: PageOwnership)
+            -> Result<Self, Error>
+    {
+        let size = match size_bytes
+        {
+            n if n == LeafSize::Page.bytes() => LeafSize::Page,
+            n if n == LeafSize::Large.bytes() => LeafSize::Large,
+            n if n == LeafSize::Huge.bytes() => LeafSize::Huge,
+            _ => return Err(Error::VirtualAlignment { address:   address.0,
+                                                      alignment: size_bytes })
+        };
+        Entry::leaf(address, size, permissions, ownership)
+    }
+
+    fn decode(bits: u64, level: u8) -> Result<mac_kernel_model::pages::EntryKind, Error>
+    {
+        Ok(match Entry::decode_raw(bits, level)?
+        {
+            Decoded::Invalid => mac_kernel_model::pages::EntryKind::Invalid,
+            Decoded::Table { physical,
+                             global,
+                             ownership } =>
+            {
+                mac_kernel_model::pages::EntryKind::Table { physical,
+                                                            global,
+                                                            ownership }
+            }
+            Decoded::Leaf { physical,
+                            size,
+                            permissions,
+                            ownership } =>
+            {
+                mac_kernel_model::pages::EntryKind::Leaf { physical,
+                                                           size_bytes: size.bytes(),
+                                                           permissions,
+                                                           ownership }
+            }
+        })
+    }
+}
