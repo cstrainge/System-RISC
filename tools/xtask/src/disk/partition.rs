@@ -13,6 +13,9 @@ use super::build_system7;
 use crate::{Workspace, crates::Installed};
 
 const SECTOR: u64 = 512;
+/// The volume's name, in the eleven bytes both the boot sector and the root
+/// directory's label entry use. One constant, so the two cannot disagree.
+const VOLUME_LABEL: [u8; 11] = *b"BOOT       ";
 const ALIGN: u64 = 2048 * SECTOR; // 1 MiB
 const CLUSTER_SECTORS: u64 = 1; // 512-byte clusters: a 256 MiB FAT32 partition needs >65525 clusters
 const RESERVED_SECTORS: u64 = 32;
@@ -610,7 +613,7 @@ fn directory_slots(dir: &Dir, root: bool) -> Result<u64>
     // The same assignment the writer performs, so the count and the write cannot
     // disagree about how many slots a name consumes.
     let mut used: Vec<[u8; 11]> = Vec::new();
-    let mut slots = if root { 0 } else { 2 };
+    let mut slots = if root { 1 } else { 2 };
     for entry in &dir.entries
     {
         let short = name83(&entry.name, &used)?;
@@ -649,6 +652,21 @@ fn write_dir(file: &mut File, base: u64, dir: &Dir, first_data: u64, cluster_byt
         slots.push(slot);
     }
     let mut used: Vec<[u8; 11]> = Vec::new();
+    // A volume label lives in the boot sector *and* as a directory entry; a
+    // filesystem with one and not the other is what `fsck.fat` reports as a
+    // mismatch it wants to "fix" by deleting the label. The device name is
+    // derived from the boot sector's own field so the two cannot drift.
+    if root
+    {
+        let mut slot = [0u8; 32];
+        slot[..11].copy_from_slice(&VOLUME_LABEL);
+        slot[11] = 0x08;
+        let date: u16 = ((2026 - 1980) << 9) | (11 << 5) | 4;
+        slot[16..18].copy_from_slice(&date.to_le_bytes());
+        slot[18..20].copy_from_slice(&date.to_le_bytes());
+        slot[24..26].copy_from_slice(&date.to_le_bytes());
+        slots.push(slot);
+    }
     for entry in &dir.entries
     {
         let short = name83(&entry.name, &used)?;
@@ -928,7 +946,7 @@ fn boot_sector(fat_size: u32, total_sectors: u32, hidden: u32) -> [u8; 512]
     sector[64] = 0x80;
     sector[66] = 0x29;
     sector[67..71].copy_from_slice(&0x53525344u32.to_le_bytes());
-    sector[71..82].copy_from_slice(b"BOOT       ");
+    sector[71..82].copy_from_slice(&VOLUME_LABEL);
     sector[82..90].copy_from_slice(b"FAT32   ");
     sector[510] = 0x55;
     sector[511] = 0xaa;
