@@ -58,7 +58,9 @@ const CMD_APP_COMMAND: u32 = 55;
 const CMD_APP_SEND_OP_COND: u32 = 41;
 
 pub const SECTOR_BYTES: usize = 512;
-const INITIALISE_POLLS: usize = 20_000;
+/// A real card may take close to a second to leave idle in ACMD41, and each
+/// poll here is a pair of commands, so this is not a tight spin count.
+const INITIALISE_POLLS: usize = 1_000_000;
 const TRANSFER_POLLS: usize = 1_000_000;
 
 /// Why a step refused, with enough state to tell the possibilities apart on
@@ -216,7 +218,18 @@ impl Disk
         Err(Failure::plain("controller stayed inhibited"))
     }
 
-    fn command(&mut self, index: u32, argument: u32, response: u16, data: bool)
+    /// Issues one command. `crc` and `index_check` are per response type, not
+    /// per command: R3 carries no CRC field, and R2 carries no command index,
+    /// so enabling either check on those responses makes the controller report
+    /// an error the card never made. QEMU validates neither, so only real
+    /// hardware shows the difference.
+    fn command(&mut self,
+               index: u32,
+               argument: u32,
+               response: u16,
+               crc: bool,
+               index_check: bool,
+               data: bool)
                -> Result<[u32; 4], Failure>
     {
         self.wait_inhibit()?;
@@ -232,9 +245,13 @@ impl Disk
         }
         self.write32(ARGUMENT, argument);
         let mut flags = (index << 8) | u32::from(response);
-        if response != RESPONSE_NONE
+        if crc
         {
-            flags |= (1 << 3) | (1 << 4);
+            flags |= 1 << 3;
+        }
+        if index_check
+        {
+            flags |= 1 << 4;
         }
         if data
         {
@@ -267,13 +284,15 @@ impl Disk
 
     fn identify(&mut self) -> Result<(), Failure>
     {
-        self.command(CMD_GO_IDLE, 0, RESPONSE_NONE, false)?;
-        self.command(CMD_SEND_IF_COND, 0x1aa, RESPONSE_48, false)?;
+        self.command(CMD_GO_IDLE, 0, RESPONSE_NONE, false, false, false)?;
+        self.command(CMD_SEND_IF_COND, 0x1aa, RESPONSE_48, true, true, false)?;
         let mut ready = false;
         for _ in 0..INITIALISE_POLLS
         {
-            self.command(CMD_APP_COMMAND, 0, RESPONSE_48, false)?;
-            let response = self.command(CMD_APP_SEND_OP_COND, 0x40ff_8000, RESPONSE_48, false)?;
+            self.command(CMD_APP_COMMAND, 0, RESPONSE_48, true, true, false)?;
+            // R3: the OCR reply carries neither a CRC nor a command index.
+            let response =
+                self.command(CMD_APP_SEND_OP_COND, 0x40ff_8000, RESPONSE_48, false, false, false)?;
             if response[0] & 0x8000_0000 != 0
             {
                 self.high_capacity = response[0] & 0x4000_0000 != 0;
@@ -285,18 +304,20 @@ impl Disk
         {
             return Err(Failure::plain("card never finished initialising"));
         }
-        self.command(CMD_ALL_SEND_CID, 0, RESPONSE_136, false)?;
-        let relative = self.command(CMD_SEND_RELATIVE_ADDRESS, 0, RESPONSE_48, false)?;
+        // R2: 136-bit CID, CRC present, no command index in the reply.
+        self.command(CMD_ALL_SEND_CID, 0, RESPONSE_136, true, false, false)?;
+        let relative = self.command(CMD_SEND_RELATIVE_ADDRESS, 0, RESPONSE_48, true, true, false)?;
         self.relative = (relative[0] >> 16) as u16;
-        self.command(CMD_SELECT_CARD, u32::from(self.relative) << 16, RESPONSE_48_BUSY, false)?;
-        self.command(CMD_SET_BLOCK_LENGTH, SECTOR_BYTES as u32, RESPONSE_48, false)?;
+        self.command(CMD_SELECT_CARD, u32::from(self.relative) << 16, RESPONSE_48_BUSY, true, true,
+                     false)?;
+        self.command(CMD_SET_BLOCK_LENGTH, SECTOR_BYTES as u32, RESPONSE_48, true, true, false)?;
         Ok(())
     }
 
     /// Reads sector zero through the controller's buffer port.
     pub fn read_sector_zero(&mut self) -> Result<[u8; SECTOR_BYTES], Failure>
     {
-        self.command(CMD_READ_SINGLE_BLOCK, 0, RESPONSE_48, true)?;
+        self.command(CMD_READ_SINGLE_BLOCK, 0, RESPONSE_48, true, true, true)?;
         let mut bytes = [0u8; SECTOR_BYTES];
         let mut words = 0usize;
         for _ in 0..TRANSFER_POLLS
