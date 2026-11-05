@@ -214,6 +214,28 @@ pub extern "C" fn kernel_map_check() -> u64
     }
 }
 
+/// The capabilities the shared virtio transport asks for, supplied by this
+/// machine. The transport never guesses them.
+struct BootMachine;
+
+impl mac_bootloader::virtio_blk::Machine for BootMachine
+{
+    fn fence()
+    {
+        // SAFETY: a full barrier has no memory operands; it is the device/CPU
+        // publication ordering virtio requires.
+        unsafe { core::arch::asm!("dsb sy", options(nostack)) };
+    }
+
+    fn counter() -> u64
+    {
+        let value: u64;
+        // SAFETY: reading the virtual counter has no side effects.
+        unsafe { core::arch::asm!("mrs {value}, cntvct_el0", value = out(reg) value, options(nomem, nostack)) };
+        value
+    }
+}
+
 fn putc(byte: u8)
 {
     while unsafe { core::ptr::read_volatile((PL011_BASE + 0x18) as *const u32) } & 0x20 != 0
@@ -256,7 +278,8 @@ pub extern "C" fn virt_probe() -> u64
     // The disk is whatever the machine presents on the virtio-MMIO bank. The
     // transport is shared with the other bootloader; only the bus differs, so
     // this scans the bank the way the machine lays it out.
-    let mut disks: alloc::vec::Vec<mac_bootloader::virtio_blk::Disk> = alloc::vec::Vec::new();
+    let mut disks: alloc::vec::Vec<mac_bootloader::virtio_blk::Disk<BootMachine>> =
+        alloc::vec::Vec::new();
     for slot in 0..32usize
     {
         let base = 0x0a00_0000usize + slot * 0x200;
@@ -264,7 +287,7 @@ pub extern "C" fn virt_probe() -> u64
         {
             continue;
         }
-        match mac_bootloader::virtio_blk::Disk::open(base)
+        match mac_bootloader::virtio_blk::Disk::<BootMachine>::open(base)
         {
             Ok(disk) =>
             {
