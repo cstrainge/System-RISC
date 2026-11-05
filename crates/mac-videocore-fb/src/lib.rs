@@ -530,6 +530,25 @@ impl<'a> Message<'a>
         self.push_tag(TAG_GET_PITCH, &[0])
     }
 
+    /// Append a tag this crate does not model itself, such as the board
+    /// revision, the firmware revision, a clock rate or the ARM memory size.
+    /// `value` is the request's value buffer; its length is the reply's
+    /// capacity, so a caller states up front how many words it will read with
+    /// [`Self::reply`].
+    pub fn request(&mut self, id: u32, value: &[u32]) -> Result<(), Error>
+    {
+        self.push_tag(id, value)
+    }
+
+    /// The value words of `id` in a reply that passed [`Self::check`]. The
+    /// caller states how many words it needs, so a short reply is a named error
+    /// rather than a partial value.
+    pub fn reply(&self, id: u32, words: usize) -> Result<&[u32], Error>
+    {
+        let needed = u32::try_from(words * 4).map_err(|_| Error::TooLong { tag: id })?;
+        Ok(&self.value(id, needed)?.value[..words])
+    }
+
     /// Scroll inside the virtual buffer.
     pub fn offset(&mut self, x: u32, y: u32) -> Result<(), Error>
     {
