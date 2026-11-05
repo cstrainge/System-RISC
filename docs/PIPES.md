@@ -1,7 +1,12 @@
 # Pipes
 
-Status: specification. Nothing in this document is implemented yet.
+Status: core implemented; folder presentation not.
 Baseline: `2f6d8e93`, 2026-11-05.
+
+The resident byte-transport facility, its blocking wait and the public SDK are
+implemented and the guest builds and boots. The merged `Pipes` folder listing,
+the folder's creation, Finder open-as-connect and the two icon families are not
+implemented; section 15 records the exact state.
 
 This document is the contract for anonymous and named pipes in System RISC. It
 states what a pipe is, what each operation means, which refusals are distinct,
@@ -695,3 +700,28 @@ against the shipping artifacts rather than a host substitute:
 - The GUI standard streams still behave exactly as section 10 describes.
 - The boot check remains 17 of 17 and the canonical public-SDK suite still
   passes.
+
+## 15. Implementation status
+
+Implemented and built into the guest, with the guest booting:
+
+- The seven operations, the three outcomes, the fixed ring, the 512-byte
+  atomicity rule, capacity bounds, the name registry and last-close removal.
+- Per-process endpoint handles from the shared handle facility, cleanup on
+  process exit, and blocking that parks the calling thread.
+- The public SDK (`Pipes`, `PipeReader`, `PipeWriter`) behind `System::pipes()`.
+
+Not implemented:
+
+- The File Manager's merged enumeration of the folder, the folder's creation and
+  boot-time ensure, and the refusal of mutations on pipe items. Named pipes are
+  therefore reachable by name but have no visible item.
+- Finder open-as-connect.
+- The folder icon family, the `PIPE`/`PIPE` document family and its bundle, and
+  the corresponding extension of the canonical icon-reservation allowlist.
+
+No pipe operation has been exercised in the guest. The boot check proves only
+that the facility compiles and does not disturb boot; it is not evidence that
+transfers, blocking, end-of-stream, would-block or broken pipe behave correctly
+at runtime. A native application caller is required before any of the acceptance
+items in section 14 can be claimed.
