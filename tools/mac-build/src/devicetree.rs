@@ -17,6 +17,9 @@ const VERSION: u32 = 17;
 const LAST_COMPATIBLE_VERSION: u32 = 16;
 const HEADER_BYTES: usize = 40;
 
+// Devicetree Specification token values. These are written as literals in the
+// test parser below rather than referenced, so a wrong constant here cannot hide
+// behind the parser agreeing with it.
 const BEGIN_NODE: u32 = 1;
 const END_NODE: u32 = 2;
 const PROP: u32 = 3;
@@ -323,6 +326,13 @@ mod tests
         /// test can ask what a consumer would find rather than checking offsets.
         fn nodes(&mut self) -> Vec<(String, Option<String>, Vec<u32>)>
         {
+            // Token values are literals from the Devicetree Specification rather
+            // than the emitter's constants, so an emitter that wrote the wrong
+            // token would not be confirmed by a parser repeating the mistake.
+            const FDT_BEGIN_NODE: u32 = 1;
+            const FDT_END_NODE: u32 = 2;
+            const FDT_PROP: u32 = 3;
+            const FDT_END: u32 = 9;
             let mut stack: Vec<String> = Vec::new();
             let mut found = Vec::new();
             loop
@@ -330,16 +340,16 @@ mod tests
                 let token = self.u32();
                 match token
                 {
-                    BEGIN_NODE =>
+                    FDT_BEGIN_NODE =>
                     {
                         let name = self.name();
                         stack.push(name);
                     }
-                    END_NODE =>
+                    FDT_END_NODE =>
                     {
                         stack.pop();
                     }
-                    PROP =>
+                    FDT_PROP =>
                     {
                         let length = self.u32() as usize;
                         let name_offset = self.u32() as usize;
@@ -404,7 +414,7 @@ mod tests
                         }
                         self.skip(length);
                     }
-                    END => break,
+                    FDT_END => break,
                     other => panic!("unexpected token {other}"),
                 }
             }
