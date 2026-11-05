@@ -8,6 +8,10 @@
 .section .text.entry
 .global _start
 _start:
+    // The machine's device tree arrives in x0. It is captured before anything
+    // else runs, because the very next instruction reuses x0, and x19 is
+    // callee-saved so it survives every call below.
+    mov x19, x0
     mrs x0, mpidr_el1
     and x0, x0, #0xff
     cbnz x0, parked
@@ -47,6 +51,14 @@ el1_entry:
     msr cpacr_el1, x0
     isb
     bl uart_init
+    // Reported before anything can depend on it: a machine that supplies no
+    // tree is a named fact at entry, not a mystery later.
+    adr x0, x0_label
+    bl uart_puts
+    mov x0, x19
+    bl uart_puthex
+    adr x0, newline
+    bl uart_puts
     mrs x0, currentel
     cmp x0, #0x4
     b.ne el_bad
@@ -156,6 +168,8 @@ trap:
 5:  b 5b
 
 .section .rodata
+x0_label:
+    .asciz "BOOT_AARCH64_X0: "
 el1_marker:
     .asciz "BOOT_AARCH64_EL1_READY: running at EL1\n"
 el_bad_marker:
@@ -167,7 +181,7 @@ physmap_marker:
 physmap_bad_marker:
     .asciz "BOOT_AARCH64_PHYSMAP_BAD: physmap does not alias physical RAM\n"
 ready_marker:
-    .asciz "BOOT_AARCH64_READY: raspi3b bootrom reached its idle loop\n"
+    .asciz "BOOT_AARCH64_READY: BCM2837 bootrom reached its idle loop\n"
 trap_marker:
     .asciz "BOOT_TRAP_EL1: exception taken\n"
 esr_label:
