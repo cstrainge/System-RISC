@@ -2,6 +2,7 @@ System 7.5.1 Performa 5200 series restore CD
 disc:    System-7.5.1-Performa-5200-Restore-CD.iso
 source:  Hard Disk Files/System Folder Files/Finder
 package: finder (apps/finder/resources.json)
+rip-out shape: whole-package and atomic. The generated include covers every extracted resource of the package, so the include's granularity is the rip-out's granularity; a per-family check is verification over that set, not a gating step.
 ours: 195 resources — extract 159, keep ours 4 customised, 32 ours-only, 0 ambiguous, 0 held, 0 native-code
 disc: 693 resources, 530 whose (type, id) we do not name
 
@@ -87,7 +88,7 @@ usage — static scan of 1272 Rust source files
     cannot be ruled out (type looked up with a computed id) 110
     no reference found at all                 21
   of the referenced, 11 are named only by test code
-  excluded from the extract list on this basis: 21 (listed below; they stay in resources.json — the rip-out is separate)
+  excluded from the extract list on this basis: 21 (listed below; they are not extracted at all and stay in resources.json)
   ambiguous 0 — referenced 0, no reference found 0
   how: a resources.json symbol, a (type, id) literal in the same expression (or, where the id is computed, an id literal in the same file), or a quoted resource name, anywhere in the repository's Rust sources. Tests are included and counted separately.
   not searchable this way: ids computed at runtime, ids read from data or from another resource, names built at runtime, classic software asking for a resource by number, and anything outside this repository. A type that is ever looked up with a computed id is therefore reported as 'cannot be ruled out', never as unused. 'No reference found' is not proof of disuse and must not be treated as one.

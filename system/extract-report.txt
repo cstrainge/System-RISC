@@ -23,6 +23,7 @@ source:  Hard Disk Files/System Folder Files/Fonts/Times
 source:  Hard Disk Files/System Folder Files/Fonts/TTYFont
 source:  Hard Disk Files/System Folder Files/Fonts/VT102Font
 package: system (system/resources.json)
+rip-out shape: whole-package and atomic. The generated include covers every extracted resource of the package, so the include's granularity is the rip-out's granularity; a per-family check is verification over that set, not a gating step.
 ours: 879 resources — extract 560, keep ours 44 customised, 266 ours-only, 3 ambiguous, 19 held, 8 native-code
 disc: 1513 resources, 802 whose (type, id) we do not name
 
@@ -457,7 +458,7 @@ usage — static scan of 1273 Rust source files
     cannot be ruled out (type looked up with a computed id) 375
     no reference found at all                 52
   of the referenced, 20 are named only by test code
-  excluded from the extract list on this basis: 52 (listed below; they stay in resources.json — the rip-out is separate)
+  excluded from the extract list on this basis: 52 (listed below; they are not extracted at all and stay in resources.json)
   ambiguous 3 — referenced 3, no reference found 0
   how: a resources.json symbol, a (type, id) literal in the same expression (or, where the id is computed, an id literal in the same file), or a quoted resource name, anywhere in the repository's Rust sources. Tests are included and counted separately.
   not searchable this way: ids computed at runtime, ids read from data or from another resource, names built at runtime, classic software asking for a resource by number, and anything outside this repository. A type that is ever looked up with a computed id is therefore reported as 'cannot be ruled out', never as unused. 'No reference found' is not proof of disuse and must not be treated as one.
