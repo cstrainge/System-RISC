@@ -199,8 +199,12 @@ fn write_mbr(file: &mut File, placements: &[Placement<'_>], boot: Option<usize>)
 
 struct FatFile
 {
-    path:  String,
-    bytes: Vec<u8>
+    path:   String,
+    /// Where the bytes came from, in a form a later run can re-check. A file the
+    /// image embeds has to be identifiable after the fact, or nothing can tell a
+    /// current image from one built before the payload was rebuilt.
+    source: String,
+    bytes:  Vec<u8>
 }
 
 fn resolve_files(workspace: &Workspace, files: &[Entry]) -> Result<Vec<FatFile>>
@@ -208,7 +212,14 @@ fn resolve_files(workspace: &Workspace, files: &[Entry]) -> Result<Vec<FatFile>>
     let mut resolved = Vec::new();
     for entry in files
     {
-        resolved.push(FatFile { path:  entry.path.clone(),
+        let source = match &entry.source
+        {
+            Source::Artifact { artifact } => format!("artifact:{artifact}"),
+            Source::File { file } => format!("file:{file}"),
+            Source::BoardConfig { .. } => "generated:board-config".to_string()
+        };
+        resolved.push(FatFile { path: entry.path.clone(),
+                                source,
                                 bytes: resolve_source(workspace, &entry.source)? });
     }
     Ok(resolved)
@@ -415,10 +426,20 @@ fn write_fat32(file: &mut File, base: u64, size: u64, hidden: u64, files: &[FatF
     {
         write_file(file, base, geo.first_data, entry, &fat)?;
     }
+    // The provenance line: which file each entry came from, so a later run can
+    // re-read that source and tell a current image from a stale one. A nested
+    // entry has no source of its own and says so rather than borrowing one.
+    let source_of = |path: &str| {
+        files.iter()
+             .find(|file| file.path == path)
+             .map(|file| file.source.clone())
+             .unwrap_or_else(|| "generated:nested".to_string())
+    };
     Ok(json!(written.iter()
                     .map(|entry| {
                         json!({
                             "path": entry.path,
+                            "source": source_of(&entry.path),
                             "bytes": entry.bytes.len(),
                             "first_cluster": entry.first_cluster,
                             "sha256": package::sha256(&entry.bytes)
