@@ -2,6 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 extern crate alloc;
+use alloc::boxed::Box;
 mod partitions;
 pub use mac_formats::{Error, Result};
 pub use partitions::{ApplePartition, MbrPartition, apple_partitions, mbr_partitions};
@@ -19,6 +20,41 @@ pub trait WritableBlockDevice: BlockDevice
     fn is_read_only(&self) -> bool;
     fn write_sector(&mut self, sector: u64, input: &[u8; SECTOR_SIZE]) -> Result<()>;
     fn flush(&mut self) -> Result<()>;
+}
+
+// A boxed device is a device. Bootloaders hold their storage behind a trait
+// object so the disk backend can be chosen from the platform record without the
+// loader naming a concrete driver, and the layers above it still take ordinary
+// `impl BlockDevice` arguments.
+impl<T: BlockDevice + ?Sized> BlockDevice for Box<T>
+{
+    fn sector_count(&self) -> u64
+    {
+        (**self).sector_count()
+    }
+
+    fn read_sector(&mut self, sector: u64, output: &mut [u8; SECTOR_SIZE]) -> Result<()>
+    {
+        (**self).read_sector(sector, output)
+    }
+}
+
+impl<T: WritableBlockDevice + ?Sized> WritableBlockDevice for Box<T>
+{
+    fn is_read_only(&self) -> bool
+    {
+        (**self).is_read_only()
+    }
+
+    fn write_sector(&mut self, sector: u64, input: &[u8; SECTOR_SIZE]) -> Result<()>
+    {
+        (**self).write_sector(sector, input)
+    }
+
+    fn flush(&mut self) -> Result<()>
+    {
+        (**self).flush()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

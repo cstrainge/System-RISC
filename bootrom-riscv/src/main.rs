@@ -27,6 +27,7 @@ use bootrom_riscv::memory;
 use linked_list_allocator::LockedHeap;
 use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NOT_FOUND, NOT_SUPPORTED, OK, Status};
 use mac_filesystem::{BlockDevice, Error, Partition, Result, Volume, WritableBlockDevice};
+use alloc::boxed::Box;
 use mac_formats::{native::{Descriptor, Role, image},
                   resource};
 
@@ -248,7 +249,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
 
 struct BootVolume
 {
-    disks:      *mut virtio_blk::Disk,
+    disks:      *mut Box<dyn WritableBlockDevice>,
     disk_count: usize
 }
 
@@ -266,7 +267,7 @@ unsafe extern "C" fn disk_info(context: *mut (), index: u32, output: *mut mac_ab
     {
         return NOT_FOUND;
     }
-    let disk = unsafe { &*context.disks.add(index as usize) };
+    let disk = unsafe { &**context.disks.add(index as usize) };
     unsafe {
         *output = mac_abi::DiskInfo { sector_count: disk.sector_count(),
                                       read_only:    u32::from(disk.is_read_only()),
@@ -289,7 +290,7 @@ unsafe extern "C" fn read_sector(context: *mut (), index: u32, sector: u64, outp
     {
         return NOT_FOUND;
     }
-    let disk = unsafe { &mut *context.disks.add(index as usize) };
+    let disk = unsafe { &mut **context.disks.add(index as usize) };
     if sector >= disk.sector_count()
     {
         return BAD_ARGUMENT;
@@ -317,7 +318,7 @@ unsafe extern "C" fn write_sector(context: *mut (), index: u32, sector: u64, inp
     {
         return NOT_FOUND;
     }
-    let disk = unsafe { &mut *context.disks.add(index as usize) };
+    let disk = unsafe { &mut **context.disks.add(index as usize) };
     if disk.is_read_only()
     {
         return mac_abi::READ_ONLY;
@@ -348,7 +349,7 @@ unsafe extern "C" fn flush_disk(context: *mut (), index: u32) -> Status
     {
         return NOT_FOUND;
     }
-    let disk = unsafe { &mut *context.disks.add(index as usize) };
+    let disk = unsafe { &mut **context.disks.add(index as usize) };
     if disk.is_read_only()
     {
         return mac_abi::READ_ONLY;
@@ -405,7 +406,7 @@ entry_from!(Translation, bootrom_riscv::translation::Error);
 entry_from!(Physical, mac_kernel_model::pages::physical::Error);
 entry_from!(Supervisor, supervisor::Error);
 
-fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
+fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_index: usize,
          partition: Partition, memory: &mut memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
          monitor: &monitor::Published)
          -> core::result::Result<(), EntryError>
@@ -711,7 +712,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
         fatal_shutdown();
     }
     serial!("Searching virtio disks for a blessed HFS-B System Folder...");
-    let mut disks = Vec::new();
+    let mut disks: Vec<Box<dyn WritableBlockDevice>> = Vec::new();
     for slot in 0..memory::VIRTIO_MMIO_SLOTS
     {
         let base = (memory::VIRTIO_MMIO_BASE + slot * memory::VIRTIO_MMIO_STRIDE) as usize;
@@ -729,7 +730,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
             }
         };
         serial!("DISK 0x{:x}: {} sectors", base, disk.sector_count());
-        disks.push(disk);
+        disks.push(Box::new(disk));
     }
     for disk_index in 0..disks.len()
     {
