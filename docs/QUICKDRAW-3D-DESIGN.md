@@ -532,6 +532,11 @@ not the display.
 8. A shader that violates each restriction in `docs/QPU-RESEARCH.md` §9, to
    confirm the check matches silicon.
 
+Under QEMU the block answers zero, so the 3D path's **refusals** are exercisable
+and its **draws** are not: context creation must fail with a named cause, the
+caller must be able to continue without 3D, and nothing may hang.
+`docs/QPU-RESEARCH.md` §3.5 states the general split.
+
 ---
 
 ## 10. Decisions a reviewer must make

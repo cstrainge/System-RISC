@@ -618,6 +618,14 @@ split beyond the hardware limits.
    and the quarantine.
 8. A memory-budget exhaustion, to prove the refusal and its naming.
 
+`docs/QPU-RESEARCH.md` §3.5 splits this list. Under QEMU the V3D is an
+unimplemented placeholder that returns zero, so the **refusal and degradation
+path is verifiable there** — `V3D_IDENT0` does not match, the driver must refuse
+to attach, the capability must be reported absent, and the display must stay on
+the compositing driver — as are the object, handle, admission, accounting and
+queue disciplines. Every register interaction, control list, interrupt and reset
+above needs the board.
+
 ---
 
 ## 13. Decisions a reviewer must make
