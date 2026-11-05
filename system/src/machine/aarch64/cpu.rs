@@ -140,8 +140,8 @@ pub(crate) fn interrupt_enables() -> usize
 }
 
 core::arch::global_asm!(".section .text", ".balign 4", ".global __system_terminal_stack",
-                        "__system_terminal_stack:", "mov sp, x0", "and sp, sp, #-16", "mov x9, \
-                        x1", "mov x0, x2", "mov x30, xzr", "br x9");
+                        "__system_terminal_stack:", "mov x9, #15", "bic x9, x0, x9", "mov sp, \
+                        x9", "mov x9, x1", "mov x0, x2", "mov x30, xzr", "br x9");
 
 unsafe extern "C" {
     fn __system_terminal_stack(top: usize, entry: unsafe extern "C" fn(*const ()) -> !,

@@ -26,11 +26,14 @@ unsafe fn invoke<T>(number: u32, request: &mut T) -> i64
     let mut result = core::ptr::from_mut(request).addr();
     // SAFETY: exact synchronous native request storage stays live through the
     // trap. System authenticates the actual executor; no AppId is supplied.
-    // The trap number travels in x8 and the argument pair in x0/x1.
+    // The trap number travels in x8 and the argument pair in x0/x1. The number
+    // is moved through a scratch register because a wide constant is not a
+    // single AArch64 immediate.
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("svc #0", in("x8") number, inlateout("x0") result,
-                         in("x1") core::mem::size_of::<T>(), clobber_abi("C"));
+        core::arch::asm!("mov x8, {number}", "svc #0", number = in(reg) u64::from(number),
+                         inlateout("x0") result, in("x1") core::mem::size_of::<T>(),
+                         clobber_abi("C"));
     }
     // The trap number travels in a7 and the argument pair in a0/a1.
     #[cfg(target_arch = "riscv64")]

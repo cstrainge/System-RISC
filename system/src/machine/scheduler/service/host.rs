@@ -42,14 +42,16 @@ global_asm!(
     ".global __system_primary_service_acquire",
     ".type __system_primary_service_acquire,%function",
     "__system_primary_service_acquire:",
-    "mov x8, {trap}",
+    "movz x8, #{low}",
+    "movk x8, #{high}, lsl #16",
     ".global __system_primary_service_acquire_ecall",
     "__system_primary_service_acquire_ecall:",
     "svc #0",
     "ret",
     ".size __system_primary_service_acquire, .-__system_primary_service_acquire",
     ".popsection",
-    trap = const TRAP
+    low = const TRAP & 0xffff,
+    high = const (TRAP >> 16) & 0xffff
 );
 unsafe extern "C" {
     fn __system_primary_service_acquire(output: *mut (), bytes: usize) -> isize;
