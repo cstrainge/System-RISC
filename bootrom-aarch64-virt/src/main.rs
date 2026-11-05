@@ -58,10 +58,15 @@ const BLOCK: u64 = 0x20_0000;
 const TABLE: u64 = 0x3;
 // Valid block, AttrIndx 0 (normal write-back), inner shareable, AF.
 const NORMAL: u64 = 0x701;
+// A level-3 leaf is a page, so bit 1 is set where a block leaves it clear.
+const PAGE_NORMAL: u64 = 0x703;
 // Valid block, AttrIndx 1 (Device-nGnRnE), AF, never executable.
 const DEVICE: u64 = 0x405 | (1 << 54) | (1 << 53);
 // 39-bit VA at both halves, 4 KiB granule at both halves, 32-bit physical.
-const TCR: u64 = 0x8019_0019;
+// T0SZ/T1SZ 25 (39-bit halves), IRGN0/ORGN0 write-back, SH0 inner shareable,
+// TG0 0b00 and TG1 0b10 for a 4 KiB granule, IPS 0b010 for 40-bit physical
+// addresses. Cacheable walks are what the resident kernel expects.
+const TCR: u64 = 0x2_8019_3519;
 // MAIR[0] normal write-back, MAIR[1] Device-nGnRnE.
 const MAIR: u64 = 0xFF;
 const KERNEL_HALF: u64 = 0xffff_ff80_0000_0000;
@@ -130,14 +135,25 @@ pub extern "C" fn mmu_init()
         // below it.
         let image_l1 = ((VM_SYSTEM_IMAGE_BASE - KERNEL_HALF) / (1 << 30)) as usize;
         let image_first = ((VM_SYSTEM_IMAGE_BASE & 0x3fff_ffff) / BLOCK) as usize;
-        let image_blocks = (IMAGE_BYTES / BLOCK) as usize;
+        // 4 KiB pages, not 2 MiB blocks. The window's virtual and physical bases
+        // are not congruent modulo a block, so no block descriptor can express
+        // this translation; a page descriptor can, because the offset between
+        // the two windows is constant.
+        let image_tables = 16usize; // 32 MiB of window, covering the System image
         assert!(image_l1 < 512, "the image window must sit inside the kernel half");
-        assert!(image_first + image_blocks <= 512,
+        assert!(image_first + image_tables <= 512,
                 "the image window must fit one level-2 table");
         entry(L1_HIGH, image_l1, L2_IMAGE | TABLE);
-        for index in 0..image_blocks
+        for k in 0..image_tables
         {
-            entry(L2_IMAGE, image_first + index, IMAGE_BASE + index as u64 * BLOCK | NORMAL);
+            let table = L3_BASE + (k as u64) * 0x1000;
+            clear(table);
+            entry(L2_IMAGE, image_first + k, table | TABLE);
+            for j in 0..512u64
+            {
+                let offset = (k as u64) * BLOCK + j * 0x1000;
+                entry(table, j as usize, IMAGE_BASE + offset | PAGE_NORMAL);
+            }
         }
         core::arch::asm!(
             "dsb sy",
