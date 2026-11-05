@@ -1,0 +1,29 @@
+[package]
+name = "selftest-aarch64"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Temporary scaffolding for proving the VideoCore and SDHCI hardware paths on
+# real silicon. It is deliberately its own workspace so deleting this directory
+# removes it completely: no OS build manifest names it.
+[workspace]
+
+[[bin]]
+name = "selftest-aarch64"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+mac-videocore-fb = { path = "../crates/mac-videocore-fb" }
+
+[build-dependencies]
+serde_json = "1"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
