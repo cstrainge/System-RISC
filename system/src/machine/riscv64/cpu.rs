@@ -16,7 +16,6 @@ pub(crate) fn barrier()
 /// preserved rather than overwritten.
 pub(crate) fn set_timer_deadline(deadline: u64)
 {
-    const STIMECMP: usize = 0x14d;
     const TIMER_INTERRUPT: usize = 32;
     // SAFETY: STIMECMP and sie are supervisor CSRs this path owns; the sequence
     // writes one deadline and enables one interrupt bit.

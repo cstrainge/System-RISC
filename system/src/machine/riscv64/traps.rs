@@ -176,7 +176,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
     // SAFETY: traps.S saved the complete frame on owned storage and hardware
     // cleared SIE before entering this sole native trap boundary.
     match unsafe {
-              super::paging::with_kernel((*frame).prior_depth == 0, || {
+              crate::machine::paging::with_kernel((*frame).prior_depth == 0, || {
                   // SAFETY: assembly saved the complete live frame. This borrow ends,
                   // including service/context readers, before any ownership handoff.
                   let (action, outer) = {
@@ -272,7 +272,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
         Ok(frame) => frame,
         Err(error) =>
         {
-            super::paging::report_refusal(&error);
+            crate::machine::paging::report_refusal(&error);
             unsafe {
                 asm!("ebreak", options(noreturn));
             }

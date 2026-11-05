@@ -1,9 +1,8 @@
-//! RV64 one-hart timer scheduler. Only this adapter owns saved CPU frames.
+//! One-hart timer scheduler. Only the trap entry owns saved CPU frames.
 //! Timer interrupts preempt application code; synchronous kernel traps run with
 //! interrupts masked, so no allocator/manager guard can be preempted by an app.
 use alloc::{sync::Arc, vec::Vec};
-use core::{arch::asm,
-           cell::Cell,
+use core::{cell::Cell,
            ops::{Deref, DerefMut},
            sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 
@@ -573,7 +572,7 @@ struct ThreadCore
     context:            Arc<ThreadContext>,
     release:            Mutex<Option<ReleasedResource>>,
     binding:            crate::images::Binding,
-    space:              Option<super::paging::process::Pin>,
+    space:              Option<crate::machine::paging::process::Pin>,
     top:                usize,
     cleanup_refusal:    Mutex<Option<ReapState>>,
     // Only impossible service binding uncertainty fills this prepaid slot.
@@ -646,7 +645,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                       loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges,
                       heap: crate::toolbox::application_heap::RootBinding,
                       tls: crate::toolbox::native_threads::RootBinding,
-                      space: super::paging::process::Pin)
+                      space: crate::machine::paging::process::Pin)
                       -> Result<PreparedThread, PrepareFailure>
 {
     let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
@@ -774,7 +773,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
             {
                 return Err(mac_abi::ACCESS_DENIED);
             }
-            let space = super::paging::process::admit_recovery(&owner,
+            let space = crate::machine::paging::process::admit_recovery(&owner,
                                                                charges.allocation(),
                                                                &loaded,
                                                                permit.clone()).map_err(|cause| {
@@ -1013,7 +1012,7 @@ pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                     charges: accounting::ThreadCharges,
                     heap: crate::toolbox::application_heap::RootBinding,
                     tls: crate::toolbox::native_threads::RootBinding,
-                    space: super::paging::process::Pin)
+                    space: crate::machine::paging::process::Pin)
                     -> Result<u64, mac_abi::Status>
 {
     let prepared = prepare(owner, loaded, charges, heap, tls, space).map_err(|failure| {
@@ -1194,7 +1193,7 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
         wake::admitted(wake_receiver);
         hart.resume_activity(true);
         unsafe {
-            super::paging::activate_scheduled_root();
+            crate::machine::paging::activate_scheduled_root();
             __system_start_frame(frame)
         }
     }
@@ -1239,7 +1238,7 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
     hart.resume_activity(false);
     // The genuine selected claim pins its SPCE throughout restoration.
     unsafe {
-        super::paging::activate_scheduled_root();
+        crate::machine::paging::activate_scheduled_root();
         __system_start_frame(frame)
     }
 }
@@ -1619,7 +1618,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     // Maintenance may enter real owner-affine FILES/ROM/code-publication
     // services. The complete capture carries the authenticated hardware key;
     // allocation or logical app identities cannot impersonate this service hart.
-    if super::paging::firmware_owner_hart() == Some(hart.number())
+    if crate::machine::paging::firmware_owner_hart() == Some(hart.number())
     {
         with_system_maintenance(&capture, || {
             wake::report_failure();
@@ -1665,7 +1664,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     {
         drop(scheduler);
         let attempt = policy::select(&capture);
-        if attempt.is_err() && super::paging::firmware_owner_hart() == Some(hart.number())
+        if attempt.is_err() && crate::machine::paging::firmware_owner_hart() == Some(hart.number())
         {
             // A late result is discarded before any frame/claim change. Input
             // may have arrived during that elapsed interval; service it now.
@@ -1889,7 +1888,7 @@ fn select_space(core: &ThreadCore)
 }
 
 fn application_space(executor: &crate::context::ApplicationExecutor<'_>)
-                     -> Result<super::paging::process::Pin, mac_abi::Status>
+                     -> Result<crate::machine::paging::process::Pin, mac_abi::Status>
 {
     let scheduler = SCHEDULER.lock();
     let thread = scheduler.iter()

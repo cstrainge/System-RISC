@@ -9,4 +9,5 @@
 pub(crate) mod clock;
 pub(crate) mod cpu;
 pub(crate) mod interrupts;
+pub(crate) mod mmu;
 pub(crate) mod power;

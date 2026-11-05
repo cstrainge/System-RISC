@@ -10,7 +10,7 @@ pub fn run<F: FnOnce() -> R, R>(function: F) -> Result<R, AccessError>
 pub fn run_owned<A, F: FnOnce(A) -> R, R>(argument: A, function: F) -> Result<R, (AccessError, A)>
 {
     super::interrupts::with_masked(|| {
-        let owner = super::paging::firmware_owner_hart();
+        let owner = crate::machine::paging::firmware_owner_hart();
         if owner.is_none() || super::traps::execution::hart_id() != owner
         {
             return Err((AccessError::WrongOwner, argument));

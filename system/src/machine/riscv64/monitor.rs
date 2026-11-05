@@ -610,7 +610,7 @@ impl Drop for Issuer
             BROKEN.store(true, Ordering::Release);
         }
         ISSUING.store(false, Ordering::Release);
-        super::paging::modules::monitor_released();
+        crate::machine::paging::modules::monitor_released();
     }
 }
 /// Called after image writes and before any executable binding is published.

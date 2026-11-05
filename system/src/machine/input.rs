@@ -121,7 +121,7 @@ impl Queue
         self.base = base;
         self.validate_device()?;
         let translate = |cpu: usize, bytes: usize, buffer| {
-            super::paging::bus_address(cpu as u64, bytes as u64).ok_or(Error::Dma { buffer,
+            crate::machine::paging::bus_address(cpu as u64, bytes as u64).ok_or(Error::Dma { buffer,
                                                                                     cpu,
                                                                                     bytes })
         };

@@ -72,7 +72,7 @@ impl Buffer
 
     pub(crate) fn device_address(&self) -> Result<u64, Status>
     {
-        super::paging::bus_address(self.address(), self.length()).ok_or(NOT_SUPPORTED)
+        crate::machine::paging::bus_address(self.address(), self.length()).ok_or(NOT_SUPPORTED)
     }
 }
 impl Drop for Buffer
