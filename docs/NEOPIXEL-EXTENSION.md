@@ -84,39 +84,55 @@ asks for them at initialisation.
   the platform as the cause, and **declines to attach**. It does not publish an
   endpoint that will fail later, and it does not leave a partially claimed
   hardware path behind.
-* On a system whose named-pipe facility is absent — which is every system today —
-  it declines for that reason instead, naming the missing facility rather than
-  the hardware. That refusal is the same declared-dependency mechanism, and it is
-  what makes the extension loadable and reviewable before the transport exists.
+* On a system whose named-pipe facility is absent — which is every system today,
+  since the facility is specified and not implemented — it declines for that
+  reason instead, naming the missing facility rather than the hardware. That
+  refusal is the same declared-dependency mechanism, and it is what makes the
+  extension reviewable before the transport exists.
 
 The second case is not hypothetical: the emulated ARM board used for development
 has no GPIO controller, no PWM and no DMA at all. Loading this extension there
 must produce a visible refusal beside the module — not a crash, and not a loaded
 extension whose first job fails.
 
-## Dependencies
+## The transport: named pipes
 
-**Requires named pipes; unnamed pipes exist today but are stubbed, and making
-them work properly with named pipes is a separate future project.** This
-extension does not build one, and must not: a second pipe implementation inside
-an extension is the duplication that makes the real facility harder to land.
+**Requires named pipes; the pipes facility is specified (`docs/PIPES.md`) but not
+implemented, and finishing it is a separate project's work.** This extension does
+not build a pipe, and must not: a second pipe implementation inside an extension
+is the duplication that would make the real facility harder to land.
 
-What exists today is **class-addressed request/reply**: a module publishes an
-interface class, the kernel selects one provider, a caller sends a bounded
-request and receives a reply, with a deferred-completion protocol for work that
-takes time. Services are resolved by class, not by name. That is enough for the
-configuration side of this extension and not enough for the streaming side,
-because there is no endpoint an application can connect to by name, no connection
-lifetime the extension is told about, and no delivery from the extension to an
-application.
+The composition, using only the pipes facility's own operations:
 
-The transport being pending does not weaken the design above: the protocol is
-independent of how the bytes arrive, and when named pipes land, this extension
-becomes wiring rather than a design exercise.
+* the extension **creates a named pipe per strip** and holds the reader;
+* an application **connects** to that name and writes frames;
+* the extension reads frames, encodes them, and submits a timed-output job;
+* replies — an accepted configuration, a refusal with its reason, a completed
+  latch — travel back on a **reply pipe the application creates**, whose name the
+  application sends in its first frame. The extension connects to it as a writer.
 
-The other dependency — that an application's death closes its connection — is the
-pipe project's to provide for the same reason it is not this extension's to
-detect: a module cannot safely observe another owner's death.
+Nothing crosses a process: a handle belongs to the process it was issued to, and
+this composition never needs a handle to move. The lifecycle works out of the
+facility's own rules: a name disappears when its last handle closes, an
+application dying closes its handles and so raises end-of-stream on the
+extension's read, and the extension dying closes the reader and makes the
+application's next write report a broken pipe.
+
+**One property is missing from the facility as specified, and this extension is
+where it bites.** A pipe has one reader and any number of writers, all appending
+to one ring, and a read reports bytes without saying which writer produced them.
+Two applications on one strip would therefore interleave their frames in one
+stream, and the extension could neither attribute the bytes nor refuse the second
+owner — it would corrupt rather than refuse, which is the failure mode this
+design exists to avoid.
+
+The smallest addition to the pipes facility that fixes it: **a writer limit at
+creation**, refused at `connect` beyond the limit. With one writer per strip pipe,
+ownership is structural rather than declared: the second application is refused
+at the connection with a reason, frames cannot interleave, and end-of-stream means
+"this strip's owner has gone". No new registry, no second facility, and it is
+useful to every future streaming extension that has an exclusive resource behind
+it.
 
 ## What this example does not cover
 

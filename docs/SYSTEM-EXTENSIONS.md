@@ -210,14 +210,13 @@ their own. It shows the intended split — mechanisms in the system, composition
 the extension — and the argument for that split holds whether or not its transport
 exists.
 
-Its transport is the one dependency this machinery does not yet supply: unnamed
-pipes exist but are stubbed, and making them work with named pipes is a separate
-future project with its own lane. That project owns the name registry, the
-connection lifetime (including a consumer's owner dying), bounded per-connection
-queueing and provider-initiated delivery. Until it lands, an extension that
-streams declares the dependency, refuses to attach with that cause visible, and
-waits — which is the same behaviour as an absent device class, and the reason the
-declared-dependency rule exists.
+Its transport is the named-pipe facility, not anything this document describes: a
+pipe *is* a name registry with a connection lifetime, so an extension that
+streams needs no resident service of its own to pair with applications. Pipes are
+specified and not yet implemented, and finishing them is a separate project. Until
+that lands, an extension that streams declares the dependency, refuses to attach
+with that cause visible, and waits — the same behaviour as an absent device
+class, and the reason the declared-dependency rule exists.
 
 ## Startup, failure and lifetime
 
