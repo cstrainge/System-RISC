@@ -6,5 +6,6 @@
 //! architecture-specific and must not be duplicated here; it belongs in shared
 //! code above the selection point.
 
+pub(crate) mod clock;
 pub(crate) mod interrupts;
 pub(crate) mod power;
