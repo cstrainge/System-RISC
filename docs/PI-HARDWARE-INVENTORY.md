@@ -68,7 +68,7 @@ state, and that is a supported interface rather than a bypass.
 | Power management (PM) | `0x3F100000` | 4 KiB | — | ARM | resident | Reset controller (offset `0x1C`), watchdog (offset `0x24`), reset-strap status (offset `0x20`). Declared in the record as `bcm2835-pm` and used for the fatal-shutdown path. |
 | RNG | `0x3F104000` | 4 KiB | 61 | ARM | **ENTR** (existing class) | A ring-oscillator entropy source. Declared in the record as `bcm2835-rng`; the existing entropy interface has no BCM2837 driver. |
 | sdhci (Arasan EMMC) | `0x3F300000` | 4 KiB | 62 | ARM | storage controller | The SD Host Controller Standard Interface. This is the controller the boot payload reads the card through. Declared in the record as `sdhci`. |
-| sdhost (SD host) | `0x3F202000` | 4 KiB | 30 (see note) | ARM | storage controller | The older, simpler SD controller. On this board the card slot is wired to **one** of sdhci and sdhost by the board design, not both; the record deliberately declares sdhci only and lists sdhost as `unused`. That choice is what the boot payload implements. The interrupt number is not declared in the record and is not needed while sdhost is unused. |
+| sdhost (SD host) | `0x3F202000` | 4 KiB | 30 (see note) | ARM | storage controller | **This is the controller the board's microSD slot is wired to.** The board's device tree attaches the card to this node as `mmc0` and attaches the wireless chip to sdhci as `mmc1`. The record declares sdhci as its storage device because that is the only SD controller the emulated machine models, which means the boot payload's card read works in emulation and cannot see the card on silicon. Reading the card on the board needs a driver for this block. |
 | USB OTG (dwc2) | `0x3F980000` | 4 KiB | 9 | ARM | USB host (future) | The single OTG port. On this board the visible USB sockets are behind an on-board hub chip attached to it, so a driver sees the hub, and a host controller stack is needed before anything downstream is reachable. Not in the record. |
 | MPHI (message passing host interface) | `0x3F00B000`-adjacent | — | 32 | ARM | — | Host-interface channels used by the firmware's message protocol. Overlaps the region the record gives the mailbox controller. No driver planned; listed to explain the shared window. |
 
@@ -97,9 +97,12 @@ driver may touch: the resident MMIO inventory is what grants a module its claim.
    application access.
 2. **Clock manager (`0x3F101000`, 4 KiB).** Required for any driver that has to
    know or set a peripheral clock.
-3. **sdhost (`0x3F202000`).** Already listed under `hardware.unused` with a
-   reason; it has no `mmio_devices` window, which is correct while it is unused,
-   and it must gain both together if that ever changes.
+3. **sdhost (`0x3F202000`) — the card's own controller.** It must gain an
+   `mmio_devices` window, a `hardware.devices` entry and a driver together: a
+   window granted to no module is a claim nobody can use, and a driver with no
+   window cannot map its registers. This is the largest gap in the record,
+   because until it closes the platform can build and boot an image but cannot
+   read that image's card on the board.
 4. **USB (`0x3F980000`).** Needed only when a USB stack exists.
 5. **HVS (`0x3F400000`) and V3D (`0x3FC00000`).** These should be recorded as
    VideoCore-owned so that their absence is a stated decision rather than an
