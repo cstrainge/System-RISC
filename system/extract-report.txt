@@ -1,7 +1,6 @@
 System 7.5.1 Performa 5200 series restore CD
 disc:    System-7.5.1-Performa-5200-Restore-CD.iso
 source:  Hard Disk Files/System Folder Files/System
-source:  Hard Disk Files/System Folder Files/System 7.5 Update
 source:  Hard Disk Files/System Folder Files/Fonts/American Heritage Font
 source:  Hard Disk Files/System Folder Files/Fonts/Arial MT Cn Lt
 source:  Hard Disk Files/System Folder Files/Fonts/Bodoni MT Ultra Bold
@@ -24,56 +23,58 @@ source:  Hard Disk Files/System Folder Files/Fonts/Times
 source:  Hard Disk Files/System Folder Files/Fonts/TTYFont
 source:  Hard Disk Files/System Folder Files/Fonts/VT102Font
 package: system (system/resources.json)
-ours: 879 resources — extract 562, keep ours 38 customised, 264 ours-only, 7 ambiguous, 8 native-code
+ours: 879 resources — extract 539, keep ours 44 customised, 266 ours-only, 3 ambiguous, 19 held, 8 native-code
 disc: 1513 resources, 802 whose (type, id) we do not name
 
 by type
-  type   ours  extract  customised  ours-only  ambiguous  native
-  ALRT     43       23          10          9          1       0
-  BNDL      3        1           0          2          0       0
-  CDEF      6        0           0          0          0       6
-  CNTL     14       10           0          4          0       0
-  CURS     15        8           0          7          0       0
-  DITL    110       64          14         31          1       0
-  DLOG     64       44           0         20          0       0
-  FOND      9        0           6          0          3       0
-  FONT     10        3           0          7          0       0
-  FREF     11        8           0          3          0       0
-  ICN#     49       40           0          9          0       0
-  ICON     30       24           1          4          1       0
-  MDEF      1        0           0          0          0       1
-  MENU      9        8           0          1          0       0
-  NFNT     47        8           0         39          0       0
-  PAT       5        3           0          2          0       0
-  PAT#      1        1           0          0          0       0
-  PICT     46       25           1         19          1       0
-  SICN     24       23           0          1          0       0
-  STR       2        0           0          2          0       0
-  STR#      4        0           1          3          0       0
-  WDEF      1        0           0          0          0       1
-  WIND      1        0           0          1          0       0
-  acur      1        1           0          0          0       0
-  cctb      1        1           0          0          0       0
-  cicn     11        1           0         10          0       0
-  clut      8        1           0          7          0       0
-  dctb     14       13           1          0          0       0
-  fmap      2        2           0          0          0       0
-  icl4     40       37           0          3          0       0
-  icl8     41       36           0          5          0       0
-  ics#     62       55           1          6          0       0
-  ics4     59       54           1          4          0       0
-  ics8     57       50           1          6          0       0
-  kcs#     22        4           0         18          0       0
-  kcs4     22        4           0         18          0       0
-  pixs     12        2           0         10          0       0
-  pmap      2        2           0          0          0       0
-  ppat      2        1           1          0          0       0
-  sfnt     17        4           0         13          0       0
-  wctb      1        1           0          0          0       0
+  type   ours  extract  customised  ours-only  ambiguous   held  native
+  ALRT     43       20          13          9          0      1       0
+  BNDL      3        1           0          2          0      0       0
+  CDEF      6        0           0          0          0      0       6
+  CNTL     14       10           0          4          0      0       0
+  CURS     15        8           0          7          0      0       0
+  DITL    110       62          16         32          0      0       0
+  DLOG     64       44           0         20          0      0       0
+  FOND      9        0           6          0          3      0       0
+  FONT     10        3           0          7          0      0       0
+  FREF     11        8           0          3          0      0       0
+  ICN#     49       38           0          9          0      2       0
+  ICON     30       24           2          4          0      0       0
+  MDEF      1        0           0          0          0      0       1
+  MENU      9        8           0          1          0      0       0
+  NFNT     47        8           0         39          0      0       0
+  PAT       5        3           0          2          0      0       0
+  PAT#      1        1           0          0          0      0       0
+  PICT     46       19           1         20          0      6       0
+  SICN     24       23           0          1          0      0       0
+  STR       2        0           0          2          0      0       0
+  STR#      4        0           1          3          0      0       0
+  WDEF      1        0           0          0          0      0       1
+  WIND      1        0           0          1          0      0       0
+  acur      1        1           0          0          0      0       0
+  cctb      1        1           0          0          0      0       0
+  cicn     11        1           0         10          0      0       0
+  clut      8        1           0          7          0      0       0
+  dctb     14       13           1          0          0      0       0
+  fmap      2        2           0          0          0      0       0
+  icl4     40       35           0          3          0      2       0
+  icl8     41       34           0          5          0      2       0
+  ics#     62       53           1          6          0      2       0
+  ics4     59       52           1          4          0      2       0
+  ics8     57       48           1          6          0      2       0
+  kcs#     22        4           0         18          0      0       0
+  kcs4     22        4           0         18          0      0       0
+  pixs     12        2           0         10          0      0       0
+  pmap      2        2           0          0          0      0       0
+  ppat      2        1           1          0          0      0       0
+  sfnt     17        4           0         13          0      0       0
+  wctb      1        1           0          0          0      0       0
 
 keep ours
   ours-only   ALRT   -20010                               ORIGINAL_VISUAL_414C5254_N20010  ()
-  ambiguous   ALRT   -16500                               ORIGINAL_VISUAL_414C5254_N16500  ()
+  customised  ALRT   -16502                               ORIGINAL_VISUAL_414C5254_N16502  (payload differs)
+  customised  ALRT   -16501                               ORIGINAL_VISUAL_414C5254_N16501  (payload differs)
+  customised  ALRT   -16500                               ORIGINAL_VISUAL_414C5254_N16500  (payload differs)
   ours-only   ALRT   -16463  About System RISC            ABOUT_SYSTEM_ALERT  ()
   ours-only   ALRT   -16462  Core Save Changes Alert      CORE_SAVE_CHANGES_ALERT  ()
   ours-only   ALRT   -16461  Core Out Of Memory Alert     CORE_OUT_OF_MEMORY_ALERT  ()
@@ -115,8 +116,10 @@ keep ours
   ours-only   DITL   -16595                               ORIGINAL_VISUAL_4449544C_N16595  ()
   ours-only   DITL   -16594                               ORIGINAL_VISUAL_4449544C_N16594  ()
   ours-only   DITL   -16593                               ORIGINAL_VISUAL_4449544C_N16593  ()
-  customised  DITL   -16505                               ORIGINAL_VISUAL_4449544C_N16505  (payload differs)
-  ambiguous   DITL   -16500                               ORIGINAL_VISUAL_4449544C_N16500  ()
+  ours-only   DITL   -16505                               ORIGINAL_VISUAL_4449544C_N16505  ()
+  customised  DITL   -16502                               ORIGINAL_VISUAL_4449544C_N16502  (payload differs)
+  customised  DITL   -16501                               ORIGINAL_VISUAL_4449544C_N16501  (payload differs)
+  customised  DITL   -16500                               ORIGINAL_VISUAL_4449544C_N16500  (payload differs)
   ours-only   DITL   -16491                               ORIGINAL_VISUAL_4449544C_N16491  ()
   customised  DITL   -16490                               ORIGINAL_VISUAL_4449544C_N16490  (payload differs)
   customised  DITL   -16489                               ORIGINAL_VISUAL_4449544C_N16489  (payload differs)
@@ -202,7 +205,7 @@ keep ours
   ours-only   ICON   -20185                               ORIGINAL_VISUAL_49434F4E_N20185  ()
   ours-only   ICON   -20184                               ORIGINAL_VISUAL_49434F4E_N20184  ()
   ours-only   ICON   -20183                               ORIGINAL_VISUAL_49434F4E_N20183  ()
-  ambiguous   ICON   -16573                               ORIGINAL_VISUAL_49434F4E_N16573  ()
+  customised  ICON   -16573                               ORIGINAL_VISUAL_49434F4E_N16573  (attributes differ)
   customised  ICON   -16565                               ORIGINAL_VISUAL_49434F4E_N16565  (payload differs)
   ours-only   ICON   -16400  Original System error bomb   PANIC_BOMB  ()
   ours-only   MENU   -16488  System Apple menu            SYSTEM_APPLE_MENU  ()
@@ -258,8 +261,8 @@ keep ours
   ours-only   PICT   -20006                               ORIGINAL_VISUAL_50494354_N20006  ()
   ours-only   PICT   -20005                               ORIGINAL_VISUAL_50494354_N20005  ()
   ours-only   PICT   -20004                               ORIGINAL_VISUAL_50494354_N20004  ()
-  customised  PICT   -16620                               ORIGINAL_VISUAL_50494354_N16620  (payload differs)
-  ambiguous   PICT   -16610                               ORIGINAL_VISUAL_50494354_N16610  ()
+  ours-only   PICT   -16620                               ORIGINAL_VISUAL_50494354_N16620  ()
+  customised  PICT   -16610                               ORIGINAL_VISUAL_50494354_N16610  (payload differs)
   ours-only   PICT      100  DiskMode 0                   ORIGINAL_VISUAL_50494354_100  ()
   ours-only   PICT      101  DiskMode 1                   ORIGINAL_VISUAL_50494354_101  ()
   ours-only   PICT      102  DiskMode 2                   ORIGINAL_VISUAL_50494354_102  ()
@@ -381,3 +384,137 @@ keep ours
   ours-only   sfnt    12010  Times Bold                   FONT_BUNDLE_SFNT_12010  ()
   ours-only   sfnt    12011  Times Italic                 FONT_BUNDLE_SFNT_12011  ()
   ours-only   sfnt    12012  Times Bold Italic            FONT_BUNDLE_SFNT_12012  ()
+
+held out of the list
+  ALRT   -16505                               ORIGINAL_VISUAL_414C5254_N16505  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ICN#   -32507                               ORIGINAL_VISUAL_49434E23_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ICN#    -3967                               ORIGINAL_VISUAL_49434E23_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16506                               ORIGINAL_VISUAL_50494354_N16506  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16505                               ORIGINAL_VISUAL_50494354_N16505  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16504                               ORIGINAL_VISUAL_50494354_N16504  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16503                               ORIGINAL_VISUAL_50494354_N16503  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16502                               ORIGINAL_VISUAL_50494354_N16502  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16501                               ORIGINAL_VISUAL_50494354_N16501  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  icl4   -32507                               ORIGINAL_VISUAL_69636C34_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  icl4    -3967                               ORIGINAL_VISUAL_69636C34_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  icl8   -32507                               ORIGINAL_VISUAL_69636C38_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  icl8    -3967                               ORIGINAL_VISUAL_69636C38_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics#   -32507                               ORIGINAL_VISUAL_69637323_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics#    -3967                               ORIGINAL_VISUAL_69637323_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics4   -32507                               ORIGINAL_VISUAL_69637334_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics4    -3967                               ORIGINAL_VISUAL_69637334_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics8   -32507                               ORIGINAL_VISUAL_69637338_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics8    -3967                               ORIGINAL_VISUAL_69637338_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+
+ambiguous — kept as ours, not extracted
+  FOND        0  Chicago                      FONT_BUNDLE_FOND_0
+  FOND        3  Geneva                       FONT_BUNDLE_FOND_3
+  FOND        4  Monaco                       FONT_BUNDLE_FOND_4
+  reason: more than one disc file carries this (type, id) and none is byte-identical, so the tool cannot say which file the resource came from. They stay ours until a ruling; the usage section below says whether anything names them.
+
+usage — static scan of 1272 Rust source files
+  extracted 539
+    referenced by name, literal or symbol    73
+    reachable from another extracted resource 53
+    cannot be ruled out (type looked up with a computed id) 361
+    no reference found at all                 52
+  of the referenced, 13 are named only by test code
+  ambiguous 3 — referenced 3, no reference found 0
+  how: a resources.json symbol, a (type, id) literal in the same expression (or, where the id is computed, an id literal in the same file), or a quoted resource name, anywhere in the repository's Rust sources. Tests are included and counted separately.
+  not searchable this way: ids computed at runtime, ids read from data or from another resource, names built at runtime, classic software asking for a resource by number, and anything outside this repository. A type that is ever looked up with a computed id is therefore reported as 'cannot be ruled out', never as unused. 'No reference found' is not proof of disuse and must not be treated as one.
+
+  sample references
+    BNDL        0  ORIGINAL_VISUAL_424E444C_0   system/src/toolbox/quickdraw/icons.rs:897  (literal BNDL 0)
+    CURS    -6078  ORIGINAL_VISUAL_43555253_N6078 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6078 (same file))
+    CURS    -6077  ORIGINAL_VISUAL_43555253_N6077 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6077 (same file))
+    CURS    -6076  ORIGINAL_VISUAL_43555253_N6076 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6076 (same file))
+    CURS    -6075  ORIGINAL_VISUAL_43555253_N6075 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6075 (same file))
+    CURS    -6074  ORIGINAL_VISUAL_43555253_N6074 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6074 (same file))
+    CURS    -6073  ORIGINAL_VISUAL_43555253_N6073 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6073 (same file))
+    CURS    -6072  ORIGINAL_VISUAL_43555253_N6072 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6072 (same file))
+    CURS    -5760  ORIGINAL_VISUAL_43555253_N5760 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -5760 (same file))
+    DITL    -6046  ORIGINAL_VISUAL_4449544C_N6046 system/src/toolbox/standard_file/templates.rs:56  (literal DITL -6046 (same file))
+    DITL    -6045  ORIGINAL_VISUAL_4449544C_N6045 system/src/toolbox/standard_file/templates.rs:56  (literal DITL -6045 (same file))
+    DITL    -6044  ORIGINAL_VISUAL_4449544C_N6044 system/src/toolbox/standard_file/templates.rs:56  (literal DITL -6044 (same file))
+
+  reachable from another extracted resource
+    DITL   -32512  ORIGINAL_VISUAL_4449544C_N32512 read with DLOG -32512
+    DITL   -32511  ORIGINAL_VISUAL_4449544C_N32511 read with DLOG -32511
+    DITL   -32510  ORIGINAL_VISUAL_4449544C_N32510 read with DLOG -32510
+    DITL   -32509  ORIGINAL_VISUAL_4449544C_N32509 read with DLOG -32509
+    DITL   -29909  ORIGINAL_VISUAL_4449544C_N29909 read with DLOG -29909
+    DITL   -29908  ORIGINAL_VISUAL_4449544C_N29908 read with DLOG -29908
+    DITL   -16761  ORIGINAL_VISUAL_4449544C_N16761 named by ALRT -16761
+    DITL   -16760  ORIGINAL_VISUAL_4449544C_N16760 read with DLOG -16760
+
+  no reference found at all (review, do not delete on this alone)
+    CNTL   -32512                               ORIGINAL_VISUAL_434E544C_N32512
+    CNTL   -16487                               ORIGINAL_VISUAL_434E544C_N16487
+    CNTL   -16486                               ORIGINAL_VISUAL_434E544C_N16486
+    CNTL   -16485                               ORIGINAL_VISUAL_434E544C_N16485
+    CNTL   -16484                               ORIGINAL_VISUAL_434E544C_N16484
+    CNTL   -16483                               ORIGINAL_VISUAL_434E544C_N16483
+    CNTL   -16482                               ORIGINAL_VISUAL_434E544C_N16482
+    CNTL    -6049                               ORIGINAL_VISUAL_434E544C_N6049
+    CNTL    -6046                               ORIGINAL_VISUAL_434E544C_N6046
+    CNTL    -5760                               ORIGINAL_VISUAL_434E544C_N5760
+    FONT      396                               FONT_BUNDLE_FONT_396
+    FONT      521                               FONT_BUNDLE_FONT_521
+    NFNT     1025                               FONT_BUNDLE_NFNT_1025
+    NFNT     1026                               FONT_BUNDLE_NFNT_1026
+    NFNT     1027                               FONT_BUNDLE_NFNT_1027
+    NFNT     1028                               FONT_BUNDLE_NFNT_1028
+    NFNT     1029                               FONT_BUNDLE_NFNT_1029
+    NFNT     1030                               FONT_BUNDLE_NFNT_1030
+    NFNT     1031                               FONT_BUNDLE_NFNT_1031
+    NFNT     1032                               FONT_BUNDLE_NFNT_1032
+    PAT        16                               ORIGINAL_VISUAL_50415420_16
+    PAT        17                               ORIGINAL_VISUAL_50415420_17
+    PAT        19                               ORIGINAL_VISUAL_50415420_19
+    PAT#        0                               ORIGINAL_VISUAL_50415423_0
+    cctb        0                               ORIGINAL_VISUAL_63637462_0
+    dctb   -32512                               ORIGINAL_VISUAL_64637462_N32512
+    dctb   -32510                               ORIGINAL_VISUAL_64637462_N32510
+    dctb   -16473                               ORIGINAL_VISUAL_64637462_N16473
+    dctb   -16409                               ORIGINAL_VISUAL_64637462_N16409
+    dctb    -6046                               ORIGINAL_VISUAL_64637462_N6046
+    dctb    -6043                               ORIGINAL_VISUAL_64637462_N6043
+    dctb    -6042                               ORIGINAL_VISUAL_64637462_N6042
+    dctb    -5792                               ORIGINAL_VISUAL_64637462_N5792
+    dctb    -5791                               ORIGINAL_VISUAL_64637462_N5791
+    dctb    -5790                               ORIGINAL_VISUAL_64637462_N5790
+    dctb    -5789                               ORIGINAL_VISUAL_64637462_N5789
+    dctb    -5760                               ORIGINAL_VISUAL_64637462_N5760
+    dctb    -5696                               ORIGINAL_VISUAL_64637462_N5696
+    fmap   -16505                               ORIGINAL_VISUAL_666D6170_N16505
+    fmap    -6046                               ORIGINAL_VISUAL_666D6170_N6046
+    kcs#   -16492                               ORIGINAL_VISUAL_6B637323_N16492
+    kcs#   -16491                               ORIGINAL_VISUAL_6B637323_N16491
+    kcs#    16383                               ORIGINAL_VISUAL_6B637323_16383
+    kcs4   -16492                               ORIGINAL_VISUAL_6B637334_N16492
+    kcs4   -16491                               ORIGINAL_VISUAL_6B637334_N16491
+    kcs4    16383                               ORIGINAL_VISUAL_6B637334_16383
+    pixs   -14335                               ORIGINAL_VISUAL_70697873_N14335
+    pixs   -14334                               ORIGINAL_VISUAL_70697873_N14334
+    pmap   -14336                               ORIGINAL_VISUAL_706D6170_N14336
+    pmap   -10208                               ORIGINAL_VISUAL_706D6170_N10208
+    ppat       42                               ORIGINAL_VISUAL_70706174_42
+    wctb        0                               ORIGINAL_VISUAL_77637462_0
+
+  cannot be ruled out, by type (count of extracted resources)
+    ALRT  20
+    DITL  1
+    DLOG  35
+    ICN#  31
+    ICON  21
+    MENU  7
+    PICT  18
+    SICN  21
+    cicn  1
+    clut  1
+    icl4  29
+    icl8  28
+    ics#  52
+    ics4  51
+    ics8  42
+    sfnt  3
