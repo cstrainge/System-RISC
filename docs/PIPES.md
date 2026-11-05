@@ -30,6 +30,9 @@ running a user thread for each byte.
 Two kinds exist:
 
 - **Anonymous pipe.** Created in pairs. No name. Never appears in the Finder.
+  It is not registered anywhere: it has no name, no catalog identity and no
+  object in the folder's namespace, so enumeration cannot reveal it — not even
+  through a count or through timing.
 - **Named pipe.** Created in pairs and additionally registered under a name. The
   name is how another process reaches it. Named pipes appear as items in the
   `Pipes` folder described in section 9.
@@ -300,6 +303,12 @@ one:
 A directory read of the `Pipes` folder returns the real children and the named
 pipes as one sequence. The merge is part of the File Manager's enumeration for
 that catalog node ID, not a second volume and not a Finder-only display.
+
+The provider behind the folder is the **named-pipe registry and nothing else**.
+It is not a filtered view of one table that holds every pipe: an anonymous pipe
+never enters the registry, so the folder has no object to describe and no count
+to report. A request for an anonymous pipe's item therefore does not exist as a
+refusal case — it is not an entry in that namespace at all.
 
 - Real children are listed first, in ordinary HFS catalog order.
 - Named pipes follow, in HFS name order.
@@ -701,6 +710,8 @@ against the shipping artifacts rather than a host substitute:
 - The boot check remains 17 of 17 and the canonical public-SDK suite still
   passes.
 
+Section 15 records which of these have actually been executed.
+
 ## 15. Implementation status
 
 Implemented and built into the guest, with the guest booting:
@@ -711,6 +722,14 @@ Implemented and built into the guest, with the guest booting:
   process exit, and blocking that parks the calling thread.
 - The public SDK (`Pipes`, `PipeReader`, `PipeWriter`) behind `System::pipes()`.
 
+Verified by execution in the guest, not only by compilation: a probe
+application replaces Finder on a cloned disk and runs five cases — echo,
+a 512-byte atomic write into a full pipe that must wait for a reader, would-block
+versus end-of-stream, broken pipe, and name removal. The probe is
+`crates/mac-toolbox/tests/fixtures/pipes-probe` and the transport is
+`scripts/capture_pipes_probe.py`; it records the QEMU command, the serial log and
+its hash.
+
 Not implemented:
 
 - The File Manager's merged enumeration of the folder, the folder's creation and
@@ -720,8 +739,6 @@ Not implemented:
 - The folder icon family, the `PIPE`/`PIPE` document family and its bundle, and
   the corresponding extension of the canonical icon-reservation allowlist.
 
-No pipe operation has been exercised in the guest. The boot check proves only
-that the facility compiles and does not disturb boot; it is not evidence that
-transfers, blocking, end-of-stream, would-block or broken pipe behave correctly
-at runtime. A native application caller is required before any of the acceptance
-items in section 14 can be claimed.
+The probe covers the transport contract. It does not cover multiple concurrent
+writers, a wake lost under load, cancellation of a blocked caller by process
+exit, or stale and foreign handles. Those remain unverified.
