@@ -51,9 +51,42 @@ once without. Photograph screen 1.
 The checks are: mailbox board revision, firmware revision, core clock, ARM
 memory size, framebuffer acquire, framebuffer write/read-back, SDHCI sector 0
 and its MBR, the system timer, the MMU/caches, the cleaned read-back, and the
-uncleaned read-back. The last one is expected to *differ* from what was written;
-that difference is the evidence the cache is real and the clean is what makes
-the display correct.
+uncleaned read-back.
+
+## Reading the result
+
+`SELF TEST n OK m FAIL` is the summary; the QR carries the same per-check lines,
+so photograph screen 1/2 rather than 2/2.
+
+Two checks are easy to misread, and both are about the data cache:
+
+- **`cache-clean`** writes `0xa5`, cleans the lines with `dc cvac`, and reads
+  them back through a mapping of the same page that is marked non-cacheable.
+  It must read back `0xa5` at every byte. A failure means the clean never
+  reached memory, and the display would tear.
+- **`cache-dirty`** writes `0x5a` and does *not* clean, then reads through the
+  same non-cacheable mapping. It must read back **`0xa5`** -- the earlier
+  pattern -- because the `0x5a` is still in the write-back cache. Reading back
+  `0x5a` means the store reached memory without a clean, which is the condition
+  that makes `dc cvac` pointless.
+
+The non-cacheable alias exists because no cached read can show the difference:
+`dc ivac` would have been the obvious way to look at memory, but on Cortex-A53
+it cleans a dirty line before invalidating it, so it writes the very data the
+test is trying to keep out of memory.
+
+Expected on silicon: every check passes. Expected on QEMU: `cache-dirty` fails
+with `no-drift`, because TCG has no data cache, so memory always holds the last
+store and the alias sees it.
+
+`sdhci` is the one check whose *failure text* matters. A refusal names the
+command, both interrupt status registers and the capabilities register, for
+example `cmd 41 int 0x8001 err 0x0 cap 0xc00`. `cmd 8` with `err 0x1` is a
+command timeout, which is what an empty slot produces.
+
+Board revision, firmware revision, clock rates, ARM memory size, framebuffer
+base and size, and the partition table all belong to the particular board and
+card. Only the pass/fail column is portable.
 
 ## QEMU
 
