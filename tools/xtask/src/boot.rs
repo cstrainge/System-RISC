@@ -78,35 +78,41 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
                                  elf.display())));
     }
     let memory = workspace.platform.memory()?;
-    let flash = memory.flash().ok_or_else(|| {
-                                   error(format!("platform '{}' declares bootloader package '{}' \
-                                                  but no flash window to place it in",
-                                                 workspace.platform.name, bootloader.package))
-                               })?;
-    let flash_bytes = flash.end - flash.start;
-    let flattened = elf::flatten(&fs::read(&elf)?, flash_bytes)?;
+    // A machine that fetches its first stage from flash places the payload in
+    // the flash window it declares. A machine the emulator loads a bootable
+    // image into has no flash window at all, and its payload goes into the
+    // window that machine loads its first stage into. Both are statements the
+    // record already makes; nothing here invents a window.
+    let (window, medium) = match memory.flash()
+    {
+        Some(flash) => (flash, "flash"),
+        None => (memory.boot_window(), "load")
+    };
+    let window_bytes = window.end - window.start;
+    let flattened = elf::flatten(&fs::read(&elf)?, window_bytes)?;
     let rom = dist.join(format!("{}.bin", bootloader.artifact));
     fs::write(&rom, &flattened.bytes)?;
-    OpenOptions::new().write(true).open(&rom)?.set_len(flash_bytes)?;
+    OpenOptions::new().write(true).open(&rom)?.set_len(window_bytes)?;
     let elf_copy = dist.join(format!("{}.elf", bootloader.artifact));
     fs::copy(&elf, &elf_copy)?;
     let report = json!({"image": workspace.describe(&rom),
                         "elf": workspace.describe(&elf_copy),
                         "bootloader": bootloader.package,
-                        "flash_base": flash.start,
+                        "medium": medium,
+                        "window_base": window.start,
+                        "window_bytes": window_bytes,
                         "load_base": flattened.base,
                         "entry": flattened.entry,
                         "payload_size": flattened.bytes.len(),
-                        "flash_bank_size": flash_bytes,
                         "sha256": package::sha256(&fs::read(&rom)?),
                         "source": bootloader.package,
                         "execution": bootloader.description});
     write_json(&dist.join(format!("{}.json", bootloader.artifact)), &report)?;
-    println!("Packaged {}: {} bytes at 0x{:x} in {} MiB platform flash bank.",
+    println!("Packaged {}: {} bytes at 0x{:x} in the {medium} window (0x{:x} bytes).",
              bootloader.package,
              flattened.bytes.len(),
              flattened.base,
-             flash_bytes / (1024 * 1024));
+             window_bytes);
     Ok(Some(report))
 }
 

@@ -25,8 +25,12 @@ pub struct Definition
     pub artifact:      String,
     /// The entry assembly the package includes, relative to the repository root.
     pub entry:         String,
-    /// The linker script the package links with, relative to the repository root.
-    pub linker_script: String,
+    /// The linker script the package links with, relative to the repository
+    /// root. A bootloader that derives its own script from the record — because
+    /// where its image loads is a fact about the board — omits this rather than
+    /// naming a script it does not use.
+    #[serde(default)]
+    pub linker_script: Option<String>,
     /// The architecture page-table crate the bootloader links, if any. The
     /// bootloader may depend on one; the shared packager may not.
     #[serde(default)]
@@ -45,7 +49,6 @@ impl Definition
         for (field, value) in [("package", &self.package),
                                ("artifact", &self.artifact),
                                ("entry", &self.entry),
-                               ("linker_script", &self.linker_script),
                                ("description", &self.description)]
         {
             if value.trim().is_empty()
@@ -58,8 +61,13 @@ impl Definition
             return Err(reject("artifact",
                               format!("'{}' must be a bare artifact name", self.artifact)));
         }
-        for (field, path) in [("entry", &self.entry), ("linker_script", &self.linker_script)]
+        for (field, path) in [("entry", Some(&self.entry)), ("linker_script", self.linker_script.as_ref())]
         {
+            let Some(path) = path
+            else
+            {
+                continue;
+            };
             if !crate::paths::is_repo_relative(path)
             {
                 return Err(reject(field,

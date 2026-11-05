@@ -201,8 +201,15 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
         }
         BootMedium::Sd =>
         {}
+        // A machine that loads a bootable image itself takes the payload where
+        // the record says its first stage goes. `-kernel` is that machine's
+        // spelling for it: the emulator reads the image and places it at its
+        // link address rather than exposing a flash device to fetch from.
         BootMedium::Direct =>
-        {}
+        {
+            let payload = boot::payload(platform, dist)?;
+            push(args, "-kernel", payload.display().to_string());
+        }
     }
     // Translates the transports the record names: a machine whose disks,
     // display, keyboard, pointer or entropy sit on `virtio-mmio` needs the
