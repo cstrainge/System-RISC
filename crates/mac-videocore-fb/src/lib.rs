@@ -4,7 +4,10 @@
 //! single linear framebuffer over mailbox channel 8 and is told where that
 //! buffer is. This crate builds those property messages and decodes the reply.
 //! It performs no I/O and no allocation: the caller supplies the transport (the
-//! register block, from the platform record) and a fixed message buffer.
+//! register block, from the platform record) and the fixed storage the message
+//! lives in, so the address handed to the firmware is memory the caller owns.
+//! The firmware writes the reply through the bus into that storage, which is
+//! why the words cannot be a copy inside this crate.
 //!
 //! The hardware interface is described in `docs/VIDEOCORE-2D-DESIGN.md`,
 //! section 4. The facts this module depends on, and the pitfalls they create:
@@ -129,7 +132,8 @@ impl Framebuffer
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
 {
-    /// The message buffer's bus address is not 16-byte aligned.
+    /// The message's bus address, or the storage it lives in, is not 16-byte
+    /// aligned.
     MessageAlignment
     {
         address: u32
@@ -221,7 +225,7 @@ impl fmt::Display for Error
         {
             Self::MessageAlignment { address } =>
             {
-                write!(f, "mailbox message address {address:#010x} is not 16-byte aligned")
+                write!(f, "mailbox message buffer {address:#010x} is not 16-byte aligned")
             }
             Self::AllocationAlignment { alignment } =>
             {
@@ -420,17 +424,19 @@ impl<'a> Walk<'a>
 
 /// One fixed property message and its bus address.
 ///
-/// The buffer lives with the caller so its address can be taken once: on the
-/// target it is static storage whose physical address the boot code knows, and
-/// nothing in the acquisition path allocates.
-pub struct Message
+/// The storage belongs to the caller: the firmware reads and writes the message
+/// *through the bus* at the address it is given, so the words must live where
+/// that address points, not in a copy. A boot path therefore owns a static
+/// 16-byte aligned buffer and states its bus address; nothing in the
+/// acquisition path allocates.
+pub struct Message<'a>
 {
+    words:    &'a mut [u32; WORDS],
     address:  u32,
-    words:    [u32; WORDS],
     len:      usize,
     finished: bool
 }
-impl fmt::Debug for Message
+impl fmt::Debug for Message<'_>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {
@@ -441,18 +447,25 @@ impl fmt::Debug for Message
          .finish()
     }
 }
-impl Message
+impl<'a> Message<'a>
 {
-    /// `address` is the buffer's bus address. On a 1 GiB BCM2837 the 0x0-based
-    /// RAM alias equals the ARM physical address.
-    pub fn new(address: u32) -> Result<Self, Error>
+    /// `words` is the message storage and `address` its bus address. On a 1 GiB
+    /// BCM2837 the 0x0-based RAM alias equals the ARM physical address, so an
+    /// identity-mapped buffer's pointer is its address; a translated mapping
+    /// must supply the physical address instead, which is why the caller states
+    /// it rather than the crate guessing.
+    pub fn new(words: &'a mut [u32; WORDS], address: u32) -> Result<Self, Error>
     {
         if address & (ADDRESS_ALIGNMENT - 1) != 0
         {
             return Err(Error::MessageAlignment { address });
         }
-        Ok(Self { address,
-                  words: [0; WORDS],
+        if (words.as_ptr() as usize) & (ADDRESS_ALIGNMENT as usize - 1) != 0
+        {
+            return Err(Error::MessageAlignment { address: words.as_ptr() as usize as u32 });
+        }
+        Ok(Self { words,
+                  address,
                   len: HEADER_WORDS,
                   finished: false })
     }
@@ -648,7 +661,10 @@ impl Message
     fn value(&self, id: u32, needed: u32) -> Result<Tag<'_>, Error>
     {
         let tag = self.find(id)?;
-        if tag.returned() < needed
+        // `check` bounds the returned length by the declared buffer; requiring
+        // both here keeps every later `value[..]` in bounds without relying on
+        // that reasoning.
+        if tag.returned() < needed || tag.value.len() < (needed / 4) as usize
         {
             return Err(Error::ShortValue { tag: id,
                                            needed,
