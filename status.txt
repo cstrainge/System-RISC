@@ -980,4 +980,57 @@ Still blocking a desktop on qemu_arm64
 4. mac-sdhci is not yet a shared crate: the reader lives in bootrom-aarch64 and
    the kernel consumer does not exist.
 
+Machine tree ISA split, measured - 2026-11-04
+---------------------------------------------
+The RISC-V machine tree is 25,029 lines across 51 files, and contains only 58
+`asm!` blocks. Those blocks are confined to ten files:
+
+  traps.S              267 lines   (the trap entry assembly)
+  traps/hart.rs       1100 lines  16 asm
+  paging.rs           1128 lines   9 asm
+  monitor.rs          1227 lines   8 asm
+  paging/user.rs      1337 lines   6 asm
+  power.rs              59 lines   6 asm
+  traps.rs            1446 lines   4 asm
+  scheduler.rs        1879 lines   3 asm
+  interrupts.rs        118 lines   3 asm
+  display.rs           248 lines   2 asm
+  cpu.rs                32 lines   1 asm
+
+The other 41 files - about 16,600 lines - have no assembly at all. They were
+written for RISC-V and filed under RISC-V, not written because of RISC-V.
+
+Nine modules have already moved above the selection point and are shared:
+io, dma, pages, smp, video, memory, input, driver_devices and emergency. The
+aarch64 side has clock, cpu, interrupts and power. The aarch64 build now fails
+only on four modules, and the compiler names them exactly: scheduler 157
+references, paging 97, traps 51, monitor 4.
+
+This is the extraction the port needs, not a 25,000-line rewrite. The remaining
+work is to lift the neutral bulk of those four trees above the selection point
+and keep an ISA core per architecture, which is roughly 8,400 lines of
+assembly-bearing code rather than the whole tree.
+
+The extraction has a real cost that is worth stating: sharing a module widens
+whatever the shared caller reaches for. emergency needed TerminalClaim,
+TerminalOwnership, TerminalWinner and stop_peers widened from module-private to
+crate-visible, and paging needed display's front-buffer entry points widened the
+same way. Each widening is a small loss of encapsulation bought with reuse.
+
+Note on scope: the qemu_arm64 record declares maximum_active_harts = 1, so the
+secondary-CPU transport (monitor, CLINT-based) is not on the single-hart boot
+path. An aarch64 kernel can reach BOOT_SYSTEM_READY with one hart before the
+PSCI-based secondary start exists.
+
+Clock decision for aarch64
+--------------------------
+This SoC has a monotonic system timer and no battery-backed real-time clock, so
+clock::now() returns NOT_SUPPORTED rather than reporting seconds since boot as a
+date. No caller changed: the file timestamp path already falls back to zero, and
+the two write paths already propagate the error and refuse the write rather than
+stamping a fabricated date. A machine with no time source does not get to invent
+one. A settable epoch belongs there later, with the system timer supplying
+elapsed time.
+
+
 
