@@ -167,11 +167,14 @@ claim of its own to drive a strip, and an extension that does the composition
 declines to attach on a board with no serialiser rather than publishing an
 endpoint that cannot work.
 
-The transport between the two is **pending**: unnamed pipes exist but are stubbed,
-and named pipes are a separate future project. That does not weaken the split —
-the argument for it is about who holds the deadline, and the deadline is held by
-the extension either way — but it does mean the worked example describes a
-composition that cannot yet be run end to end.
+The transport between the two is a **named pipe** the extension publishes: the
+application writes frames, the extension reads them and submits them as jobs.
+Pipes are specified but not yet implemented, so the worked example describes a
+composition that cannot be run end to end — but the split does not depend on the
+transport: the argument is about who holds the deadline, and the extension holds
+it either way. There is deliberately no timed-output service for applications
+here, because an application that held a contract with the serialiser directly
+would be back to owning the timing.
 
 ## Arbitration
 
