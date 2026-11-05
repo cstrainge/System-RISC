@@ -19,7 +19,10 @@ pub(crate) enum Kind
     SystemPanic,
     StartupRefused,
     OutOfMemory,
-    PrivilegedFault
+    PrivilegedFault,
+    /// The machine has no power-management device, so System cannot switch it
+    /// off. It shows the classic notice instead of pretending to power down.
+    SafeToTurnOff
 }
 impl Kind
 {
@@ -30,7 +33,8 @@ impl Kind
             Self::SystemPanic => "System Panic",
             Self::StartupRefused => "System Startup Failed",
             Self::OutOfMemory => "System Out of Memory",
-            Self::PrivilegedFault => "System Privileged Fault"
+            Self::PrivilegedFault => "System Privileged Fault",
+            Self::SafeToTurnOff => "Shut Down"
         }
     }
 }
@@ -268,7 +272,13 @@ impl Screen
         let _ = text.write_str(record.text());
         let omitted = text.omitted;
         canvas.set_clip(previous_clip);
-        let notice = if record.flags()
+        let notice = if record.kind() == Kind::SafeToTurnOff
+        {
+            // The machine cannot switch itself off, so it says so plainly and
+            // offers Restart rather than claiming a power-down it cannot do.
+            "This computer is safe to turn off. Use Restart to start it again."
+        }
+        else if record.flags()
                         & (DefinitionPanic::FORMAT_FAILED | DefinitionPanic::TRUNCATED)
                         == DefinitionPanic::FORMAT_FAILED | DefinitionPanic::TRUNCATED
         {

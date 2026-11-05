@@ -17,6 +17,12 @@ pub(crate) fn fatal_shutdown() -> !
     }
     crate::machine::emergency::serial(format_args!("SYSTEM_SHUTDOWN: fatal privileged fault; recovery is \
                                            not proven\n"));
+    // A record that declares no finisher reaches the same shared path every
+    // other machine uses, so the behaviour is not per-board.
+    if platform::FATAL_FINISHER_ADDRESS == 0
+    {
+        crate::machine::power_shutdown::without_finisher(crate::machine::power_shutdown::Request::Shutdown);
+    }
     // SAFETY: the current platform is QEMU virt in S mode. Mask local
     // interrupts and request its mapped finisher's guest-panic shutdown/code 1.
     // No heap, driver registry or borrowed desktop service is involved.
@@ -44,6 +50,10 @@ pub(crate) fn emergency_restart() -> !
         core::arch::asm!("csrci sstatus, 2", options(nostack));
     }
     crate::machine::emergency::serial(format_args!("SYSTEM_RESTART: emergency terminal requested reset\n"));
+    if platform::FATAL_FINISHER_ADDRESS == 0
+    {
+        crate::machine::power_shutdown::without_finisher(crate::machine::power_shutdown::Request::Restart);
+    }
     // SAFETY: terminal admission retains the mapped checked board register and
     // execution never resumes. Mask interrupts before submitting its reset value.
     unsafe {
@@ -56,5 +66,15 @@ pub(crate) fn emergency_restart() -> !
         unsafe {
             core::arch::asm!("wfi", options(nostack));
         }
+    }
+}
+
+/// Waits for a reset that only the operator can perform.
+pub(crate) fn halt() -> !
+{
+    loop
+    {
+        // SAFETY: waiting for an interrupt changes only this CPU's state.
+        unsafe { core::arch::asm!("wfi", options(nostack)) };
     }
 }

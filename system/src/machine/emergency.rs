@@ -36,6 +36,10 @@ unsafe impl Sync for Kit
 }
 static KIT: spin::Once<Kit> = spin::Once::new();
 static CLAIMED: TerminalOwnership = TerminalOwnership::new();
+/// Set once the terminal path has taken the machine. It never clears: the path
+/// does not return, and re-entering it would recurse into the stop path.
+static IN_TERMINAL: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug)]
 pub(crate) enum Error
@@ -210,6 +214,7 @@ pub(crate) fn enter(kind: Kind, arguments: fmt::Arguments<'_>) -> !
     {
         stop(format_args!("SYSTEM_EMERGENCY_UNAVAILABLE: terminal kit not installed"));
     };
+    IN_TERMINAL.store(true, core::sync::atomic::Ordering::Release);
     let invocation = Invocation { kind,
                                   arguments,
                                   _hart: PhantomData };
@@ -223,6 +228,22 @@ pub(crate) fn enter(kind: Kind, arguments: fmt::Arguments<'_>) -> !
                                    run,
                                    (&invocation as *const Invocation<'_>).cast())
     }
+}
+
+/// Presents the classic "safe to turn off" notice with its Restart button.
+///
+/// A machine with no power-management device cannot switch itself off, so this
+/// is what a shutdown request becomes there. It returns `false` when the
+/// terminal path is unavailable or already running, so the caller can report and
+/// halt instead of recursing into the stop path.
+pub(crate) fn try_safe_to_turn_off() -> bool
+{
+    if IN_TERMINAL.load(core::sync::atomic::Ordering::Acquire) || KIT.get().is_none()
+    {
+        return false;
+    }
+    enter(Kind::SafeToTurnOff,
+          format_args!("This machine declares no power-management device, so System cannot switch                         it off."));
 }
 
 unsafe extern "C" fn run(pointer: *const ()) -> !
@@ -240,7 +261,8 @@ unsafe extern "C" fn run(pointer: *const ()) -> !
         Kind::SystemPanic => "SYSTEM_PANIC:",
         Kind::StartupRefused => "SYSTEM_STARTUP_REFUSED:",
         Kind::OutOfMemory => "SYSTEM_ALLOCATION_FAILED:",
-        Kind::PrivilegedFault => "SYSTEM_TRAP:"
+        Kind::PrivilegedFault => "SYSTEM_TRAP:",
+        Kind::SafeToTurnOff => "SYSTEM_SAFE_TO_TURN_OFF:"
     };
     serial(format_args!("{marker} {}", record.text()));
     // SAFETY: the authenticated terminal claim has one winner, SIE is clear,
