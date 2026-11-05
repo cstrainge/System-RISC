@@ -61,6 +61,11 @@ pub const SECTOR_BYTES: usize = 512;
 /// A real card may take close to a second to leave idle in ACMD41, and each
 /// poll here is a pair of commands, so this is not a tight spin count.
 const INITIALISE_POLLS: usize = 1_000_000;
+/// Enough idle time for the 74 clocks a card needs before it answers its first
+/// command. At the 400 kHz identification rate that is under 200 microseconds,
+/// and the part's measured core clock is 250 MHz, so this spin is comfortably
+/// longer than required and costs nothing at boot.
+const STARTUP_CLOCKS: u32 = 100_000;
 const TRANSFER_POLLS: usize = 1_000_000;
 
 /// Why a step refused, with enough state to tell the possibilities apart on
@@ -72,7 +77,18 @@ pub struct Failure
     pub what:    &'static str,
     pub command: u8,
     pub normal:  u16,
-    pub error:   u16
+    pub error:   u16,
+    /// The capabilities register at the time of failure, so a wrong base clock
+    /// can be told from a card that simply refused.
+    pub caps:    u32,
+    /// Normal interrupt status read *before* the command was issued. Non-zero
+    /// here means the controller was already reporting something, so the error
+    /// did not come from this command.
+    pub before:  u16,
+    /// A command that completed and returned a response even though the error
+    /// interrupt was asserted; `resp` is that first response word.
+    pub completed: bool,
+    pub resp:      u32
 }
 
 impl Failure
@@ -80,9 +96,13 @@ impl Failure
     fn plain(what: &'static str) -> Self
     {
         Self { what,
-               command: u8::MAX,
-               normal:  0,
-               error:   0 }
+               command:   u8::MAX,
+               normal:    0,
+               error:     0,
+               caps:      0,
+               before:    0,
+               completed: false,
+               resp:      0 }
     }
 }
 
@@ -113,8 +133,22 @@ impl Disk
         disk.write16(NORMAL_INT_ENABLE,
                      INT_COMMAND_COMPLETE | INT_TRANSFER_COMPLETE | INT_BUFFER_READ_READY);
         disk.write16(ERROR_INT_ENABLE, ERROR_ALL);
+        // A card needs at least 74 clocks with the command line idle before it
+        // will answer anything. The clock is running by now, so hold still long
+        // enough for those; a card that has not been clocked never answers
+        // CMD8, which is indistinguishable from a dead controller. QEMU does
+        // not require this, so only silicon can show the difference.
+        disk.wait_startup_clocks();
         disk.identify()?;
         Ok(disk)
+    }
+
+    fn wait_startup_clocks(&self)
+    {
+        for _ in 0..STARTUP_CLOCKS
+        {
+            core::hint::spin_loop();
+        }
     }
 
     fn read8(&self, offset: usize) -> u8
@@ -235,6 +269,10 @@ impl Disk
         self.wait_inhibit()?;
         self.write16(NORMAL_INT_STATUS, 0xffff);
         self.write16(ERROR_INT_STATUS, ERROR_ALL);
+        // Read back after the write-1-to-clear. A stuck error interrupt here
+        // means the flag was already asserted and the clear did not take, so
+        // the failure below belongs to an earlier command rather than this one.
+        let before = self.read16(NORMAL_INT_STATUS);
         let mut transfer = 0u16;
         if data
         {
@@ -263,10 +301,18 @@ impl Disk
             let status = self.read16(NORMAL_INT_STATUS);
             if status & INT_ERROR != 0
             {
+                // A completed command has a valid response even when the error
+                // interrupt is asserted, and reading it separates "the card
+                // refused" from "the controller complained about nothing".
+                let completed = status & INT_COMMAND_COMPLETE != 0;
                 return Err(Failure { what:    "command failed",
                                      command: index as u8,
                                      normal:  status,
-                                     error:   self.read16(ERROR_INT_STATUS) });
+                                     error:   self.read16(ERROR_INT_STATUS),
+                                     caps:    self.read32(CAPABILITIES),
+                                     before,
+                                     completed,
+                                     resp:    if completed { self.read32(0x10) } else { 0 } });
             }
             if status & INT_COMMAND_COMPLETE != 0
             {
@@ -279,7 +325,11 @@ impl Disk
         Err(Failure { what:    "command did not complete",
                       command: index as u8,
                       normal:  self.read16(NORMAL_INT_STATUS),
-                      error:   self.read16(ERROR_INT_STATUS) })
+                      error:   self.read16(ERROR_INT_STATUS),
+                      caps:    self.read32(CAPABILITIES),
+                      before,
+                      completed: false,
+                      resp:    0 })
     }
 
     fn identify(&mut self) -> Result<(), Failure>
@@ -328,7 +378,11 @@ impl Disk
                 return Err(Failure { what:    "read failed",
                                      command: CMD_READ_SINGLE_BLOCK as u8,
                                      normal:  status,
-                                     error:   self.read16(ERROR_INT_STATUS) });
+                                     error:   self.read16(ERROR_INT_STATUS),
+                                     caps:    self.read32(CAPABILITIES),
+                                     before:  0,
+                                     completed: false,
+                                     resp:    0 });
             }
             while words < SECTOR_BYTES / 4 && self.read32(PRESENT_STATE) & PRESENT_BUFFER_READ != 0
             {
@@ -345,13 +399,21 @@ impl Disk
                 return Err(Failure { what:    "transfer completed short",
                                      command: CMD_READ_SINGLE_BLOCK as u8,
                                      normal:  status,
-                                     error:   self.read16(ERROR_INT_STATUS) });
+                                     error:   self.read16(ERROR_INT_STATUS),
+                                     caps:    self.read32(CAPABILITIES),
+                                     before:  0,
+                                     completed: true,
+                                     resp:    0 });
             }
         }
         Err(Failure { what:    "read did not complete",
                       command: CMD_READ_SINGLE_BLOCK as u8,
                       normal:  self.read16(NORMAL_INT_STATUS),
-                      error:   self.read16(ERROR_INT_STATUS) })
+                      error:   self.read16(ERROR_INT_STATUS),
+                      caps:    self.read32(CAPABILITIES),
+                      before:  0,
+                      completed: false,
+                      resp:    0 })
     }
 }
 
