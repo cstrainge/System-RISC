@@ -146,6 +146,27 @@ claims of one serialiser both work. It may not assume that a completion means th
 strip has updated — completion means the last bit left the serialiser, and the
 latch is the idle gap after it.
 
+## Where the composition lives
+
+The class gives an application a job. It does not give an application a strip of
+LEDs, and it should not: "a strip" is a composition of a pin, a serialiser, a
+feeder, an encoding and a latch rule, and the kernel has no business knowing it.
+
+The shape that works — worked out in full in `docs/NEOPIXEL-EXTENSION.md` — is a
+**System extension that owns the hardware and publishes an endpoint**:
+
+* the application sends a colour buffer and says which pins carry which strips;
+* the extension claims the pins through the GPIO class and the serialiser and DMA
+  channel through this class, and turns the buffer into a waveform job;
+* the deadline never reaches the application, and the LED protocol is written
+  once, in one place, by whoever knows the strip.
+
+That is the split this class is designed to make possible: mechanisms here,
+composition in an extension. An application therefore needs **no** timed-output
+claim of its own to drive a strip, and an extension that does the composition
+declines to attach on a board with no serialiser rather than publishing an
+endpoint that cannot work.
+
 ## Arbitration
 
 * A claim names the serialiser and the feeder. Both are exclusive and both are

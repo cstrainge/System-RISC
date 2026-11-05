@@ -60,8 +60,8 @@ source confirms.
 | I2C0 (BSC0) | `0x3F205000` | `0x200` | 53 | ARM | **I2C** (new) | The camera/EEPROM bus. Reserved for the camera connector and the HAT ID EEPROM on some models; the record must state whether it is available here. Not in the record. |
 | I2C1 (BSC1) | `0x3F804000` | 4 KiB | 53 | ARM | I2C | The user/GPIO-header bus. All three controllers share one interrupt source on this SoC, so a driver must identify its controller before acknowledging. Not in the record. |
 | I2C2 (BSC2) | `0x3F805000` | 4 KiB | 53 | ARM | I2C | Wired to the HDMI DDC lines. Same shared interrupt source. Not in the record. |
-| I2S / PCM | `0x3F203000` | `0x24` | **none on the ARM side** | ARM | **timed output** (audio encodings) | A serialiser with its own clock dividers and FIFOs, so it fills the waveform role for audio. **Deterministic timed output.** The board's hardware description gives this block no ARM interrupt, and its reference driver uses none. Not in the record: see the gap note below. |
-| PWM | `0x3F20C000` | `0x28` | **none on the ARM side** | ARM | **timed output** + PWM | Two independent channels, each emitting a duty value per period at a divided clock. **Deterministic timed output** — this is the serialiser the LED-strip case uses. The block raises no ARM interrupt at all; completion is a DMA event. The audio output is wired to these channels on the header models, so channel ownership matters as much as controller ownership. Not in the record: see the gap note below. |
+| I2S / PCM | `0x3F203000` | `0x24` | **none on the ARM side** | ARM | **timed output** (audio encodings) | A serialiser with its own clock dividers and FIFOs, so it fills the waveform role for audio. **Deterministic timed output.** The board's hardware description gives this block no ARM interrupt, and its reference driver uses none. Declared in the record with `interrupt: null`. |
+| PWM | `0x3F20C000` | `0x28` | **none on the ARM side** | ARM | **timed output** + PWM | Two independent channels, each emitting a duty value per period at a divided clock. **Deterministic timed output** — this is the serialiser the LED-strip case uses. The block raises no ARM interrupt at all; completion is a DMA event. The audio output is wired to these channels on the header models, so channel ownership matters as much as controller ownership. Declared in the record with `interrupt: null`. |
 | System timer | `0x3F003000` | 4 KiB | 0 | ARM | resident timing | Free-running 1 MHz counter plus four compare channels. Channel 3 is conventionally the ARM's; channels 0–1 are used by the VideoCore firmware's own timers. Declared in the record as `bcm2835-systimer`. |
 | ARM timer | `0x3F00B400` | 4 KiB | 64 | ARM | resident timing | A second timer inside the ARM-peripheral area, with its own prescaler and free-running counter. Not in the record. |
 | ARM-local block (intc + local timers) | `0x40000000` | 4 KiB | — | ARM | resident interrupt controller | Outside the `0x3F` peripheral aperture. Four cores: per-core control/IRQ-source/FIQ-source registers, per-core mailbox, and the generic timer path. Declared in the record as `bcm2836-l1-intc`. |
@@ -73,7 +73,7 @@ source confirms.
 | V3D (3D engine) | `0x3FC00000` | 64 KiB | 66, 67 | VideoCore | — | Three interrupt lines (job done, MMU error, flo). The firmware runs the 3D stack; the ARM has no supported way to submit jobs. |
 | TXP (texture pixel processor) | inside the MMR block | — | 65 | VideoCore | — | Legacy 2D path. Superseded by V3D, still owned by the firmware. |
 | SMI (secondary memory interface) | `0x3F600000` | 4 KiB | 43, 44 | ARM | SMI | A parallel bus for things like a camera/VGA interface. No consumer on a stock board; listed so nobody wires it by accident. Not in the record. |
-| Clock manager (CPRMAN) | `0x3F101000` | 4 KiB | — | ARM (read), VideoCore (rate policy) | resident | Divides the oscillators for every peripheral and for the ARM cores, and is therefore what a timed output's element rate is eventually derived from. A driver may set a peripheral's own divider through its control registers, and may query or ask for rates through the mailbox; it must not reprogram the ARM/AXI/display clocks the firmware is using. **Not covered by any declared window.** The record's `bcm2835-pm` window ends exactly where this block starts. |
+| Clock manager (CPRMAN) | `0x3F101000` | `0x2000` | **none** | ARM (read), VideoCore (rate policy) | resident | Divides the oscillators for every peripheral and for the ARM cores, and is therefore what a timed output's element rate is eventually derived from. A driver may set a peripheral's own divider through its control registers, and may query or ask for rates through the mailbox; it must not reprogram the ARM/AXI/display clocks the firmware is using. Two pages, so it is declared as two claimable ranges of one device; it raises no interrupt. |
 | Power management (PM) | `0x3F100000` | 4 KiB | — | ARM | resident | Reset controller (offset `0x1C`), watchdog (offset `0x24`), reset-strap status (offset `0x20`). Declared in the record as `bcm2835-pm` and used for the fatal-shutdown path. |
 | RNG | `0x3F104000` | 4 KiB | 61 | ARM | **ENTR** (existing class) | A ring-oscillator entropy source. Declared in the record as `bcm2835-rng`; the existing entropy interface has no BCM2837 driver. |
 | sdhci (Arasan EMMC) | `0x3F300000` | 4 KiB | 62 | ARM | storage controller | The SD Host Controller Standard Interface, and **the controller this board's card answers on** — see `docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md`. Declared in the record as `sdhci`; the boot payload and the shared reader read the card through it. |
@@ -131,28 +131,30 @@ driver may touch: the resident MMIO inventory is what grants a module its claim.
    same change: a window granted to no module is a claim nobody can use, and a
    driver with no window cannot map its registers.
 4. **USB (`0x3F980000`).** Needed only when a USB stack exists.
-5. **PWM (`0x3F20C000`) and I2S/PCM (`0x3F203000`) — the windows the record
-   cannot state yet.** Both are in this inventory with a verified base and size,
-   and neither can be declared as a claimable window: the record's MMIO inventory
-   requires an interrupt number per window, and these two blocks raise no ARM
-   interrupt at all. Stating a number would be inventing one, and using zero
-   would claim the system timer's interrupt, so both stay out until the schema can
-   express "no interrupt" rather than the inventory silently gaining a false fact.
-   A waveform over **SPI0** is not blocked by this; a waveform over **PWM**, which
-   is the LED-strip case, is.
-6. **Clock manager (`0x3F101000`).** Its documented extent is `0x2000` — two
-   pages — while a claimable window is one page, so it cannot be declared as a
-   single device window under the current rule. It needs either a two-page
-   device window or a rule that lets one device own two adjacent pages.
-
 ### What the record gained
 
 `SPI0` (`0x3F204000` + `0x200`, interrupt 54), the `AUX` block
-(`0x3F215000` + 4 KiB, interrupt 29, covering mini UART, SPI1 and SPI2) and the
-`DMA` controller (`0x3F007000` + `0xf00`, channels' interrupts 16–28). The
-generated device tree carries a node for each, with the window the record
-states, so a probe on this platform finds them and a probe for a driver that does
-not exist loads nothing.
+(`0x3F215000` + 4 KiB, interrupt 29, covering mini UART, SPI1 and SPI2), the
+`DMA` controller (`0x3F007000` + `0xf00`, channels' interrupts 16–28), `PWM`
+(`0x3F20C000` + `0x28`), `I2S/PCM` (`0x3F203000` + `0x24`) and the clock manager
+(`0x3F101000` + `0x2000`).
+
+The generated device tree carries a node for each, with the window the record
+states — confirmed by parsing the built tree, not by reading the record. A probe
+on this platform finds them, and a probe for a driver that does not exist loads
+nothing.
+
+Two rules had to change for that, and both changed because the hardware is
+broader than the validation was:
+
+* **An interrupt can be declared absent.** PWM and I2S/PCM raise none, so the
+  record says `"interrupt": null`. The field is still required: absent is
+  refused, so a typo cannot read as "raises none". A window with no interrupt
+  reaches consumers as a value outside every interrupt the controller can raise.
+* **A device window may span pages.** The clock manager's documented extent is
+  two pages; it now claims one page-sized range per page, while the rule that one
+  claimed page carries at most one device window is unchanged — that rule is
+  about one claimant per page, which the AUX block still obeys.
 5. **HVS (`0x3F400000`) and V3D (`0x3FC00000`).** These should be recorded as
    VideoCore-owned so that their absence is a stated decision rather than an
    omission. The resident inventory should be able to express "exists, not
