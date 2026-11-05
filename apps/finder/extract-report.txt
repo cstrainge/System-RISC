@@ -1,0 +1,75 @@
+System 7.5.1 Performa 5200 series restore CD
+disc:    System-7.5.1-Performa-5200-Restore-CD.iso
+source:  Hard Disk Files/System Folder Files/Finder
+package: finder (apps/finder/resources.json)
+ours: 195 resources — extract 159, keep ours 4 customised, 32 ours-only, 0 ambiguous, 0 native-code
+disc: 693 resources, 530 whose (type, id) we do not name
+
+by type
+  type   ours  extract  customised  ours-only  ambiguous  native
+  ALRT      8        7           0          1          0       0
+  CURS      7        7           0          0          0       0
+  DITL     12       11           0          1          0       0
+  DLOG      3        3           0          0          0       0
+  ICN#      9        8           0          1          0       0
+  MENU      5        0           0          5          0       0
+  PICT     23       23           0          0          0       0
+  SICN      7        7           0          0          0       0
+  SIZE      1        0           1          0          0       0
+  STR       8        4           0          4          0       0
+  STR#      9        1           1          7          0       0
+  WIND      2        0           0          2          0       0
+  acur      1        1           0          0          0       0
+  cicn      7        7           0          0          0       0
+  cpUI      1        0           0          1          0       0
+  dctb      1        1           0          0          0       0
+  fdmn      4        4           0          0          0       0
+  fmap     13       12           1          0          0       0
+  fmnu     22       22           0          0          0       0
+  fvew      4        3           1          0          0       0
+  gInf      4        0           0          4          0       0
+  gSum      1        0           0          1          0       0
+  icl4      6        5           0          1          0       0
+  icl8      6        5           0          1          0       0
+  ics#     10        9           0          1          0       0
+  ics4     10        9           0          1          0       0
+  ics8     10        9           0          1          0       0
+  pltt      1        1           0          0          0       0
+
+keep ours
+  ours-only   ALRT     2001  Native Finder error ALRT     ERROR_ALRT  ()
+  ours-only   DITL     2001  Native Finder error DITL     ERROR_DITL  ()
+  ours-only   ICN#     3967                               ORIGINAL_VISUAL_49434E23_3967  ()
+  ours-only   MENU     1252  Native Finder File menu      FILE_MENU  ()
+  ours-only   MENU     1253  Native Finder Edit menu      EDIT_MENU  ()
+  ours-only   MENU     1254  Native Finder View menu      VIEW_MENU  ()
+  ours-only   MENU     1255  Native Finder Special menu   SPECIAL_MENU  ()
+  ours-only   MENU     1256  Native Finder Label menu     LABEL_MENU  ()
+  customised  SIZE       -1                               MEMORY_REQUIREMENTS  (payload differs)
+  ours-only   STR       128  Product name                 PRODUCT_NAME  ()
+  ours-only   STR      2005  Transfer recovery pending    TRANSFER_RECOVERY_PENDING  ()
+  ours-only   STR      2006  Transfer committed cleanup pending TRANSFER_COMMITTED_CLEANUP  ()
+  ours-only   STR     20022  Unknown Trash Allocation     UNKNOWN_TRASH_ALLOCATION  ()
+  ours-only   STR#      128                               DESKTOP_LABELS  ()
+  ours-only   STR#     2000  Native Finder interface strings UI_TEXT  ()
+  ours-only   STR#     2003                               GET_INFO_STRINGS  ()
+  customised  STR#     8750  Copy and Move Messages       COPY_WINDOW_STRINGS  (payload, name and attributes differ)
+  ours-only   STR#     8752  Copy and Move Window Titles  COPY_WINDOW_TITLES  ()
+  ours-only   STR#    20020  ERROR_ACTIONS                ERROR_ACTIONS  ()
+  ours-only   STR#    20021  ERROR_CAUSES                 ERROR_CAUSES  ()
+  ours-only   STR#    20030  Multiple Items information   MULTIPLE_INFO_STRINGS  ()
+  ours-only   WIND     2002  Clipboard native Finder layout CLIPBOARD_LAYOUT  ()
+  ours-only   WIND     2003  Font suitcase native Finder layout FONT_SUITCASE_LAYOUT  ()
+  ours-only   cpUI     8751  Copy Window (Finder 7.6.1 layout) COPY_WINDOW_LAYOUT  ()
+  customised  fmap    11330                               ORIGINAL_VISUAL_666D6170_11330  (payload differs)
+  customised  fvew    11511                               GET_INFO_DISK_FVEW  (attributes differ)
+  ours-only   gInf    11261                               GET_INFO_LAYOUT_11261  ()
+  ours-only   gInf    11511                               GET_INFO_DISK_GINF  ()
+  ours-only   gInf    12761                               GET_INFO_LAYOUT_12761  ()
+  ours-only   gInf    17011                               GET_INFO_LAYOUT_17011  ()
+  ours-only   gSum    20031  Multiple Items window layout MULTIPLE_INFO_LAYOUT  ()
+  ours-only   icl4     3967                               ORIGINAL_VISUAL_69636C34_3967  ()
+  ours-only   icl8     3967                               ORIGINAL_VISUAL_69636C38_3967  ()
+  ours-only   ics#     3967                               ORIGINAL_VISUAL_69637323_3967  ()
+  ours-only   ics4     3967                               ORIGINAL_VISUAL_69637334_3967  ()
+  ours-only   ics8     3967                               ORIGINAL_VISUAL_69637338_3967  ()

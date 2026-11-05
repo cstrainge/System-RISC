@@ -74,6 +74,10 @@ pub fn build_guest() -> Result<()>
     let out = env::var("OUT_DIR")?;
     let out = Path::new(&out);
     println!("cargo:rerun-if-changed={}", path.display());
+    for include in manifest.include_files()
+    {
+        println!("cargo:rerun-if-changed={}", include.display());
+    }
     // Cargo may add package/hash directories below profile/build. Resolve
     // that boundary instead of assuming a fixed OUT_DIR ancestor depth.
     // Watching nonexistent definition paths makes every build dirty and also
