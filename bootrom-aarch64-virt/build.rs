@@ -43,11 +43,10 @@ fn main()
     fs::write(out.join("platform-hardware.inc"),
               format!(".equ PL011_BASE, {console_base}\n"))
         .expect("hardware include");
-    // The record is the author of the machine description. The bootloader and
-    // the kernel consume this blob, so it is emitted once at build time and
-    // linked in rather than assembled at runtime.
-    let tree = mac_build::devicetree::generate().expect("device tree generation");
-    fs::write(out.join("devicetree.dtb"), &tree).expect("device tree blob");
+    // Nothing is generated here. This machine supplies its own device tree and
+    // the bootloader reads the pointer it passes, so embedding a second
+    // description would give one machine two trees and a consumer a choice.
+    let fdt_tail_bytes = memory["fdt_tail_bytes"].as_str().expect("memory.fdt_tail_bytes");
     fs::write(out.join("platform-memory.rs"),
               format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
                        pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
@@ -65,7 +64,10 @@ fn main()
                        pub const L3_BASE: u64 = {};\n\
                        pub const VM_SYSTEM_IMAGE_BASE: u64 = {system_image_base};\n\
                        pub const IMAGE_BASE: u64 = {image_base};\n\
-                       pub const IMAGE_BYTES: u64 = {image_bytes};\n",
+                       pub const IMAGE_BYTES: u64 = {image_bytes};\n\
+                       // The reservation a machine-supplied tree must fit inside. A blob that\
+                       // states a larger size is refused rather than read past its end.\n\
+                       pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n",
               format!("{ram_base}u64 + 0x1000"),
               format!("{ram_base}u64 + 0x2000"),
               format!("{ram_base}u64 + 0x3000"),

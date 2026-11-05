@@ -85,6 +85,7 @@ kmap_bad:
     adr x0, kmap_bad_marker
     bl uart_puts
 kmap_done:
+    mov x0, x19
     bl virt_probe
     adr x0, ready_marker
     bl uart_puts

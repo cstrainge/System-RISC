@@ -42,10 +42,47 @@ core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardwar
 
 include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
 
-/// The machine description, generated from the platform record at build time and
-/// linked in read-only. The bootloader is a consumer of this tree, not its
-/// author, so nothing here hardcodes a peripheral address.
-static DEVICE_TREE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devicetree.dtb"));
+/// The machine's device tree, as a checked slice.
+///
+/// The pointer comes from the machine, so nothing about it is trusted: it must
+/// be non-zero, eight-byte aligned as the specification requires, carry the
+/// header magic, and state a total size that fits inside the reservation the
+/// record declares. A machine that supplies nothing is a named refusal, never a
+/// reason to build a tree of our own: an invented tree is a claim nothing can
+/// check, and a wrong one sends the probe at hardware that is not there.
+fn firmware_tree(address: usize) -> Option<&'static [u8]>
+{
+    if address == 0 || address % 8 != 0
+    {
+        return None;
+    }
+    let header = address as *const u8;
+    // SAFETY: the machine handed us this address and the header is the first
+    // thing a blob must contain; the reads are bounded by the two words of the
+    // header, and the full slice is only taken once `total` is known to fit the
+    // reservation.
+    let magic = u32::from_be(unsafe { core::ptr::read_volatile(header as *const u32) });
+    if magic != 0xd00d_feed
+    {
+        return None;
+    }
+    let total = u32::from_be(unsafe {
+                      core::ptr::read_volatile(header.add(4) as *const u32)
+                  }) as usize;
+    if total < 40 || total as u64 > FDT_TAIL_BYTES
+    {
+        return None;
+    }
+    puts("BOOT_AARCH64_DT_MAGIC: magic=");
+    puthex(magic as u64);
+    puts(" bytes=");
+    puthex(total as u64);
+    puts("\n");
+    // SAFETY: `total` was read from the header and bounded by the declared
+    // reservation, and the machine guarantees the blob is resident for the
+    // bootloader's lifetime.
+    Some(unsafe { core::slice::from_raw_parts(header, total) })
+}
 
 // Translation tables live inside the declared boot window, clear of the loaded
 // image and its stack. A 39-bit regime with a 4 KiB granule starts its walk at
@@ -262,22 +299,28 @@ fn puthex(value: u64)
 /// it actually found. A card that answers but returns the wrong sector still
 /// reaches here, so the signature is the evidence rather than the call returning.
 #[unsafe(no_mangle)]
-pub extern "C" fn virt_probe() -> u64
+pub extern "C" fn virt_probe(tree_address: usize) -> u64
 {
     use mac_block::BlockDevice;
     init_heap();
-    // Peripheral addresses come from the generated tree, not from constants, so
-    // the record remains the only place this board's hardware is written down.
-    // Early output had to use the record's constant before any tree could be
-    // read, so the first thing the tree is asked is whether it agrees with the
-    // console actually in use. A divergence is reported by name rather than
-    // discovered later as garbled output.
-    let tree = match devicetree::Tree::new(DEVICE_TREE)
+    let Some(bytes) = firmware_tree(tree_address)
+    else
+    {
+        puts("BOOT_AARCH64_DT_REFUSED: the machine supplied no usable device tree\n");
+        return 0;
+    };
+    // Peripheral addresses come from the machine's tree, not from constants, so
+    // the record is a declaration to be checked rather than the runtime source.
+    // Early output had to use the record's console constant before any tree
+    // could be read, so the first thing the tree is asked is whether it agrees
+    // with the console actually in use. A divergence is reported by name rather
+    // than discovered later as garbled output.
+    let tree = match devicetree::Tree::new(bytes)
     {
         Some(tree) => tree,
         None =>
         {
-            puts("BOOT_AARCH64_DT_REFUSED: the generated tree has no valid header\n");
+            puts("BOOT_AARCH64_DT_REFUSED: the machine's tree has no valid header\n");
             return 0;
         }
     };
@@ -301,58 +344,57 @@ pub extern "C" fn virt_probe() -> u64
     // Every peripheral address now comes from the tree. The loader holds no
     // address of its own, so the record is the only place this machine's
     // hardware is written down.
-    let (virtio, virtio_bytes) = match tree.window("virtio,mmio")
+    let Some((virtio, _)) = tree.window("virtio,mmio")
+    else
     {
-        Some(window) => window,
-        None =>
-        {
-            puts("BOOT_AARCH64_DT_REFUSED: no virtio-mmio window in the tree\n");
-            return 0;
-        }
+        puts("BOOT_AARCH64_DT_REFUSED: no virtio-mmio window in the tree\n");
+        return 0;
     };
     puts("BOOT_AARCH64_DT_VIRTIO: base=");
     puthex(virtio);
     puts("\n");
-    // The disk is whatever the machine presents on the virtio-MMIO bank. The
-    // transport is shared with the other bootloader; only the bus differs, so
-    // this scans the bank the way the machine lays it out.
+    // Every peripheral address comes from the machine's tree. The loader holds
+    // no address of its own, so the record is a declaration to be checked
+    // rather than the runtime source of truth.
     let mut disks: alloc::vec::Vec<mac_bootloader::virtio_blk::Disk<BootMachine>> =
         alloc::vec::Vec::new();
-    // The number of slots is the bank's declared length divided by the
-    // transport's register stride, so a machine that lays out a different
-    // number of slots needs no change here.
-    let slots = (virtio_bytes / 0x200) as usize;
-    for slot in 0..slots
-    {
-        let base = virtio as usize + slot * 0x200;
-        if !mac_bootloader::virtio_blk::is_block(base)
-        {
-            continue;
-        }
-        match mac_bootloader::virtio_blk::Disk::<BootMachine>::open(base)
-        {
-            Ok(disk) =>
-            {
-                puts("BOOT_AARCH64_VIRTIO_BLK: base=");
-                puthex(base as u64);
-                puts(" sectors=");
-                puthex(disk.sector_count());
-                puts("\n");
-                disks.push(disk);
-            }
-            Err(error) =>
-            {
-                puts("BOOT_AARCH64_VIRTIO_BLK_REFUSED: base=");
-                puthex(base as u64);
-                puts(" cause=");
-                for byte in alloc::format!("{error}").bytes()
-                {
-                    putc(byte);
-                }
-                puts("\n");
-            }
-        }
-    }
+    // The machine says which transport slots exist, so this walks the nodes it
+    // declares rather than assuming a bank of a fixed size. A machine that
+    // models one node per slot and one that models a single bank are both
+    // answered by the same walk.
+    tree.visit_nodes(|compatible, base, _bytes| {
+          if compatible != "virtio,mmio"
+          {
+              return;
+          }
+          if !mac_bootloader::virtio_blk::is_block(base as usize)
+          {
+              return;
+          }
+          match mac_bootloader::virtio_blk::Disk::<BootMachine>::open(base as usize)
+          {
+              Ok(disk) =>
+              {
+                  puts("BOOT_AARCH64_VIRTIO_BLK: base=");
+                  puthex(base);
+                  puts(" sectors=");
+                  puthex(disk.sector_count());
+                  puts("\n");
+                  disks.push(disk);
+              }
+              Err(error) =>
+              {
+                  puts("BOOT_AARCH64_VIRTIO_BLK_REFUSED: base=");
+                  puthex(base);
+                  puts(" cause=");
+                  for byte in alloc::format!("{error}").bytes()
+                  {
+                      putc(byte);
+                  }
+                  puts("\n");
+              }
+          }
+      });
     if disks.is_empty()
     {
         puts("BOOT_AARCH64_NO_DISK: the virtio-MMIO bank presents no block device\n");

@@ -35,18 +35,6 @@ pub struct Definition
     pub boot_image:  Option<String>,
     #[serde(default)]
     pub console:     Option<Console>,
-    /// Whether this workspace compiles the record's device information into a
-    /// device-tree blob bound into the bootloader.
-    ///
-    /// Absence means false, and false does **not** mean the platform has no
-    /// device tree: every platform hands the kernel one. It means no tree is
-    /// generated here, so the bootloader supplies the platform's own native
-    /// description at boot - the firmware's blob where there is one, or a
-    /// translation of ACPI on a machine that has no device tree of its own.
-    /// A platform that neither generates a tree nor receives one fails at boot
-    /// with a named error rather than being handed an invented one.
-    #[serde(default)]
-    pub generate_device_tree: bool,
     /// The RAM window the SoC maps, as a board fact. This is not the platform
     /// level `memory` section: that describes the paging, linker and ROM ranges
     /// this workspace's kernel runs in, while this states where the board puts
@@ -183,6 +171,41 @@ pub enum PeripheralKind
     Entropy
 }
 
+impl Peripheral
+{
+    /// The window this device occupies, when it declares one.
+    ///
+    /// A device that states a base but no size is refused rather than given a
+    /// default: one window must have one declaration, and a second source could
+    /// disagree with the first. A device with no base describes a function
+    /// rather than a window, and yields `None`.
+    pub fn window(&self, platform: &str) -> Result<Option<(u64, u64)>>
+    {
+        let Some(text) = self.base.as_deref()
+        else
+        {
+            return Ok(None);
+        };
+        let base = super::parse_hex(text).ok_or_else(|| {
+                                                error(format!("platform '{platform}' device {} \
+                                                               states an unreadable base {text:?}",
+                                                              self.model))
+                                            })?;
+        let text = self.bytes.as_deref().ok_or_else(|| {
+                                                error(format!("platform '{platform}' device {} \
+                                                               states a base but no size, so its \
+                                                               window is not fully declared",
+                                                              self.model))
+                                            })?;
+        let bytes = super::parse_hex(text).ok_or_else(|| {
+                                                  error(format!("platform '{platform}' device {} \
+                                                                 states an unreadable size {text:?}",
+                                                                self.model))
+                                              })?;
+        Ok(Some((base, bytes)))
+    }
+}
+
 impl Definition
 {
     pub fn check(&self, platform: &str) -> Result<()>
@@ -212,9 +235,6 @@ impl Definition
             return Err(reject("boot_image",
                               "must name the storage image this board is written with".into()));
         }
-        // Vendor firmware that hands over its own tree needs no generated one,
-        // so there is nothing to require here. A platform that generates one
-        // declares it with `generate_device_tree`.
         for tool in &self.tooling
         {
             if tool.trim().is_empty()

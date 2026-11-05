@@ -25,17 +25,18 @@ const END_NODE: u32 = 2;
 const PROP: u32 = 3;
 const END: u32 = 9;
 
-/// Whether this platform compiles its device information into a tree.
+/// Whether this machine's device list is compiled into a tree.
 ///
-/// Absence of the flag means no tree is generated here, which is not the same as
-/// having no device tree: the bootloader supplies the platform's own native
-/// description at boot instead. Generation is therefore a build-time fact rather
-/// than a fallback, and a platform that asks for it gets exactly one tree.
+/// The declaration lives on the emulation profile, because it is a fact about
+/// the machine rather than about the board: a machine that supplies its own
+/// tree needs nothing generated, and one that supplies none states the devices
+/// it does model so a tree can be built from them. Generation is therefore a
+/// build-time fact for that machine, not a fallback for a board.
 pub fn generates(platform: &Platform) -> bool
 {
-    platform.hardware
+    platform.emulation
             .as_ref()
-            .is_some_and(|hardware| hardware.generate_device_tree)
+            .is_some_and(|emulation| emulation.generate_device_tree)
 }
 
 /// Builds the tree for the currently selected platform.
@@ -51,18 +52,32 @@ pub fn generate() -> Result<Vec<u8>>
     generate_for(platform)
 }
 
-/// Builds the tree a platform record describes: its RAM window, its CPUs and the
-/// peripheral windows it declares. A platform with no declared RAM or no
-/// declared devices is refused rather than emitting an empty tree that both
-/// consumers would then have to interpret.
+/// Builds the tree for one machine: its RAM window, its CPUs and the device
+/// windows that machine models.
+///
+/// The devices come from the emulation profile, never from the board's list. A
+/// machine that models a subset of a board states the subset, and a tree built
+/// from the board's list would name hardware the machine does not have — which
+/// the bootloader would then probe and find returning zero. A machine with no
+/// declared RAM or no declared devices is refused rather than emitting an empty
+/// tree that a consumer would have to interpret.
 pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
 {
+    let emulation = platform.emulation
+                            .as_ref()
+                            .ok_or_else(|| {
+                                crate::error(format!("platform '{}' asks for a generated device \
+                                                      tree but declares no emulation section, so \
+                                                      no machine is being described",
+                                                     platform.name))
+                            })?;
+    let machine = emulation.machine.as_str();
     let mut tree = Builder::default();
     tree.begin_node("");
     tree.property_u32("#address-cells", &[2]);
     tree.property_u32("#size-cells", &[2]);
-    tree.property_string("model", &platform.name);
-    tree.property_string("compatible", &platform.name);
+    tree.property_string("model", machine);
+    tree.property_string("compatible", machine);
 
     let memory = platform.memory().map_err(|error| {
                                             crate::error(format!("platform '{}' declares no \
@@ -77,6 +92,7 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
     tree.end_node();
 
     let harts = platform.harts();
+    let cpu = emulation.cpu.as_deref().unwrap_or(&platform.rust_target);
     tree.begin_node("cpus");
     tree.property_u32("#address-cells", &[1]);
     tree.property_u32("#size-cells", &[0]);
@@ -85,16 +101,15 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
         tree.begin_node(&format!("cpu@{hart}"));
         tree.property_string("device_type", "cpu");
         tree.property_u32("reg", &[hart as u32]);
-        tree.property_string("compatible", &platform.rust_target);
+        tree.property_string("compatible", cpu);
         tree.end_node();
     }
     tree.end_node();
 
-    let devices = platform.declared_devices()?;
-    if devices.is_empty()
+    if emulation.devices.is_empty()
     {
-        return Err(crate::error(format!("platform '{}' declares no peripheral windows; a \
-                                         generated device tree would describe no hardware",
+        return Err(crate::error(format!("platform '{}' emulation declares no devices; a generated \
+                                         device tree would describe no hardware",
                                         platform.name)));
     }
     tree.begin_node("soc");
@@ -102,13 +117,26 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
     tree.property_u32("#address-cells", &[2]);
     tree.property_u32("#size-cells", &[2]);
     tree.property_u32("ranges", &[]);
-    for device in devices
+    for device in &emulation.devices
     {
-        tree.begin_node(&format!("{}@{:x}", device.compatible, device.base));
-        tree.property_string("compatible", &device.compatible);
-        tree.property_u32("reg",
-                          &[high(device.base), low(device.base), high(device.bytes),
-                            low(device.bytes)]);
+        let Some((base, bytes)) = device.window(&platform.name)?
+        else
+        {
+            // A device with no window describes a function rather than a region,
+            // and a tree node without a `reg` would name an address it does not
+            // have.
+            continue;
+        };
+        tree.begin_node(&format!("{}@{base:x}", device.model));
+        tree.property_string("compatible", &device.model);
+        tree.property_u32("reg", &[high(base), low(base), high(bytes), low(bytes)]);
+        if let Some(interrupt) = device.interrupt
+        {
+            // Emitted only where the machine declares one. A device that raises
+            // no interrupt is a fact, and a consumer must read an absent
+            // property as that fact rather than supplying a default.
+            tree.property_u32("interrupts", &[interrupt]);
+        }
         tree.end_node();
     }
     tree.end_node();

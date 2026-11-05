@@ -55,6 +55,23 @@ pub fn media(platform: &mac_build::platform::Platform, dist: &Path, image: &str)
 
 pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
 {
+    let dist = workspace.dist().to_path_buf();
+    fs::create_dir_all(&dist)?;
+    // A machine that supplies no device tree is given one, built from its own
+    // emulation profile. The blob is a build artifact rather than something
+    // embedded in the bootloader: the emulator is handed it with `-dtb` and
+    // passes it back in x0, so the bootloader reads one pointer whatever the
+    // source and never knows where the tree came from.
+    if mac_build::devicetree::generates(&workspace.platform)
+    {
+        let blob = mac_build::devicetree::generate_for(&workspace.platform)?;
+        let path = dist.join(format!("{}.dtb", workspace.platform.name));
+        fs::write(&path, &blob)?;
+        println!("Generated {} for the emulated machine: {} bytes, passed to the emulator with \
+                  -dtb.",
+                 workspace.describe(&path),
+                 blob.len());
+    }
     let Some(bootloader) = workspace.platform.bootloader.clone()
     else
     {
@@ -62,8 +79,6 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
                  workspace.platform.name);
         return Ok(None);
     };
-    let dist = workspace.dist().to_path_buf();
-    fs::create_dir_all(&dist)?;
     let elf = workspace.target()
                        .join(&workspace.platform.rust_target)
                        .join("release")

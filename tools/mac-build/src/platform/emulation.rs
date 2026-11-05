@@ -486,6 +486,20 @@ pub struct Definition
     pub screen:      Screen,
     pub console:     Console,
     pub readiness:   Readiness,
+    /// Devices this machine models, as measured rather than as the board has
+    /// them. A machine whose description is incomplete — one that models a
+    /// subset of a board — states the subset here, and this is the only list a
+    /// generated tree for it may be built from. Copying the board's device list
+    /// would invite the bootloader to probe hardware the machine does not have.
+    #[serde(default)]
+    pub devices:     Vec<super::hardware::Peripheral>,
+    /// Whether this workspace compiles the machine's device list into a
+    /// device-tree blob and hands it to the emulator. Set it only for a machine
+    /// that supplies no tree of its own; a machine that does — QEMU's own
+    /// `virt` machine, or firmware that loads a board description — needs
+    /// nothing generated and the bootloader reads the pointer it passes.
+    #[serde(default)]
+    pub generate_device_tree: bool,
     /// Escape hatch for a one-off. Discouraged: anything a platform genuinely
     /// needs belongs in the schema above. No shipped platform record uses it.
     #[serde(default)]
