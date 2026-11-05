@@ -262,6 +262,13 @@ one:
   separate pipe namespaces, and a name does not move with a volume.
 - Registering a name is refused with `AlreadyExists` while that name resolves to
   a live pipe.
+- Application exit is the ordinary last-close path, not a special case. Every
+  handle the exiting process held is closed; if that closes the last handle of a
+  pipe, the pipe is destroyed and its name is removed. A process that exits with
+  a named pipe still open therefore takes its name with it, and a concurrent
+  `connect` fails with `NotFound` rather than reaching a name nobody serves.
+  Termination never leaks a name and never leaves a handle usable by a
+  relaunched process.
 
 ## 9. The `Pipes` folder
 
@@ -342,11 +349,24 @@ returns two sources' children as one listing. A provider mount at
 `System Folder/Pipes` therefore cannot be expressed by the existing mechanism.
 
 The named-pipe registry is resident System state, not an independently owned
-storage format. Mounting it through a loadable provider would add a driver
-boundary, a module contract and a job/acknowledgement path around state that
-never leaves the System. The contract above therefore requires the File Manager
-to enumerate the folder from two sources directly: its own catalog and the
-resident name registry.
+storage format. A provider exists because a volume's contents come from
+somewhere else: a disk, an archive, a host export. The pipe registry's contents
+do not come from anywhere else. They are System state, owned and validated by
+the same System that would have to be the provider's only client. Mounting it
+through a loadable provider would add a driver boundary, a module contract and a
+job/acknowledgement path around state that never leaves the System, and the
+boundary would exist for nobody. That is a false abstraction, and this project
+rejects that kind rather than keeping it for symmetry with real volumes.
+
+The contract above therefore requires the File Manager to enumerate the folder
+from two sources directly: its own catalog and the resident name registry.
+
+The cost comparison supports the same conclusion, though the correctness argument
+is the reason: a merged enumeration in the File Manager is roughly 600 to 1,000
+resident lines, while expressing the same result as a sub-volume provider mount
+is roughly 1,800 to 2,500. The larger number buys a general mount-point feature
+that this facility does not need and a provider boundary that would be
+unjustified.
 
 A general sub-volume provider mount — a mount point on a live directory, a
 provider whose entries are projected into that directory's catalogue, a shared
@@ -364,7 +384,7 @@ replace them:
 | Finder-launched GUI application (`APPL`/`FNDR`), including the platform standard-library profile | stdin is permanently at end-of-stream; stdout and stderr discard bytes and report a successful flush; none of them is a terminal | No |
 | Any native application that calls the Toolbox pipes interface | real endpoints from this facility | Yes |
 | Child process creation, redirection or inherited standard streams | does not exist in this tree | No |
-| Terminal/CLAP session endpoints | not implemented | No |
+| Terminal/CLAP session endpoints | not implemented; the launch attachment gap is recorded in section 10.1 | No |
 
 The two coexist on purpose. The null standard streams are a stated GUI profile,
 not a placeholder for anonymous pipes, and the launch path that installs them is
@@ -375,6 +395,62 @@ In v1 the facility's only caller is therefore an application that asks for a pip
 explicitly. The intended first caller is the NeoPixel extension. No resident
 service and no launcher consumes pipes in v1; the facility is built ahead of that
 caller rather than in response to existing demand.
+
+### 10.1 The Terminal and `CLAP` command-line applications
+
+`CLAP` is the file type for command-line applications. A Terminal hosts a
+`CLAP` invocation in a session and connects to it with three anonymous pipes:
+one carrying the child's standard input, one its standard output, one its
+standard error. Three one-way byte transports is the whole requirement; there is
+no framing, no record boundary and no terminal-protocol object inside the pipe.
+
+The intended arrangement is that the **Terminal creates the pipes, not System**:
+
+- The Terminal creates three anonymous pipes.
+- It keeps one end of each: the writer of the input pipe, the reader of the
+  output pipe, the reader of the error pipe.
+- It gives the other end of each to the child: the reader of the input pipe, the
+  writer of the output pipe, the writer of the error pipe.
+- It installs those three handles as the child's standard input, output and
+  error before the child enters its program.
+
+This facility supports the first two steps as an ordinary application: `create`
+is a normal application operation, not a System-only one. There is no privileged
+caller and no resident caller requirement. Any process may create pipes, hold one
+end and hand the other end to a child, exactly as the Terminal intends.
+
+**The launch gap.** The third step cannot be expressed today, and this facility
+does not pretend otherwise. The Process Manager's launch call identifies a target
+by volume and catalog node ID and carries no handle, endpoint or attachment
+field. The services table an application receives at entry is a single
+System-wide immutable record holding a version, a size, a trap entry point and a
+capability bit set; there is no per-application attachment record, and no
+per-application table exists to hang one on. Standard input and output are
+supplied by the application's own standard-library profile, which knows nothing
+about pipes.
+
+A Terminal therefore needs the following from launch, none of which exists in
+v1:
+
+1. A launch call that accepts three pre-made pipe handles, one per standard
+   stream, in addition to the target identity.
+2. A defined ownership transfer. The handles the Terminal passes stop belonging
+   to the Terminal at the moment the launch commits; from then on they belong to
+   the child, and the Terminal's copies are invalid. If the launch is refused or
+   fails, the handles remain the Terminal's. Without this rule the child and the
+   parent would both hold the same endpoint, which this facility's ownership
+   model forbids.
+3. A child-side way to read its three endpoints — an attachment record, a query,
+   or an entry-point parameter — so the platform standard-library profile can
+   bind real `stdin`/`stdout`/`stderr` instead of the null profile.
+4. The ordinary last-close consequences that already follow from this contract:
+   when the child exits, its ends close, the Terminal's reads see end-of-stream
+   and its writes fail with broken pipe.
+
+This facility supplies the pipes and the ownership rules for (2) and (4). It does
+not supply (1) or (3), and v1 does not add them: the Terminal and the `CLAP`
+launch path are separate work. The gap is recorded here rather than designed
+around, so that the launches that exist today keep their single meaning.
 
 ## 11. Authority
 
@@ -529,6 +605,14 @@ namespace in two other namespaces; that is not a collision, because a class
 identifier is never compared with a file type and an object namespace is never
 compared with either. The repeated value is chosen so a reader who meets `PIPE`
 in any of the three places knows which facility it belongs to.
+
+`CLAP` is the second reserved type, for command-line applications (section 10.1).
+It is not implemented and appears in no metadata position, resource or classifier
+row at this baseline: every occurrence is prose planning. This facility does not
+allocate it, does not read it, and does not claim it; it is recorded here because
+the intended consumer of pipes introduces it, and a reader of this register
+should see that the two codes are distinct and that `CLAP` is not yet a real
+type.
 
 ### 13.5 Resource types
 
