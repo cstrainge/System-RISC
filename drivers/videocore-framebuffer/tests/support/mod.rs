@@ -156,8 +156,11 @@ impl Channel for SimChannel
 #[derive(Debug)]
 pub struct SimAllocation
 {
-    pub address: u64,
-    pub pixels:  Vec<u32>
+    pub address:        u64,
+    /// Deliberately unrelated to `address`, so a test can tell the two apart and
+    /// a substituted or zeroed value is visible rather than plausible.
+    pub device_address: u64,
+    pub pixels:         Vec<u32>
 }
 
 pub struct SimPlatform
@@ -172,10 +175,15 @@ pub struct SimPlatform
     /// Every cache-clean request: (physical, offset, bytes).
     pub cleaned:       Vec<(u32, usize, usize)>,
     pub freed:         Vec<u64>,
+    /// Every release, as the Device service saw it: (handle, device address).
+    /// Recorded so a test can prove the address issued at allocation is the one
+    /// handed back, rather than a reconstructed or zeroed value.
+    pub released:      Vec<(u64, u64)>,
     /// Refuse the next Device DMA allocation.
     pub out_of_memory: bool,
     next_handle:       u64,
     next_address:      u64,
+    next_device:       u64,
     clock:             u64
 }
 impl SimPlatform
@@ -190,9 +198,11 @@ impl SimPlatform
                allocations: BTreeMap::new(),
                cleaned: Vec::new(),
                freed: Vec::new(),
+               released: Vec::new(),
                out_of_memory: false,
                next_handle: 0x1000_0000_0000,
                next_address: 0xffff_0000_0000_0000,
+               next_device: 0x0000_0000_4000_0000,
                clock: 1 }
     }
 
@@ -258,22 +268,35 @@ impl Platform for SimPlatform
         self.next_handle += 1;
         let address = self.next_address;
         self.next_address += 0x10_0000;
+        let device_address = self.next_device;
+        self.next_device += 0x10_0000;
         let words = (bytes as usize).div_ceil(4);
         self.allocations.insert(handle,
                                 SimAllocation { address,
+                                                device_address,
                                                 pixels: vec![0; words] });
         Ok(Allocation { handle,
                         address,
+                        device_address,
                         length: bytes })
     }
 
     fn free(&mut self, allocation: Allocation) -> Result<(), Refusal>
     {
-        if self.allocations.remove(&allocation.handle).is_none()
+        let Some(held) = self.allocations.get(&allocation.handle)
+        else
         {
             return Err(Refusal::UnknownAllocation { allocation: allocation.handle });
-        }
+        };
+        // The release must name the allocation that was issued. This holds every
+        // existing test to it, so a value that is dropped between allocate and
+        // free fails here rather than silently releasing something else.
+        assert_eq!(allocation.device_address,
+                   held.device_address,
+                   "release must hand back the device address the allocation issued");
+        self.allocations.remove(&allocation.handle);
         self.freed.push(allocation.handle);
+        self.released.push((allocation.handle, allocation.device_address));
         Ok(())
     }
 
