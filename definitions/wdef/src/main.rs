@@ -436,7 +436,7 @@ fn grow_outline(rect: &Rect, canvas: &mut Canvas) -> mac_traps::Result<()>
 
 /// # Safety
 /// System supplies a live definition call and exclusive borrowed state/surface.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn _start(call: *mut mac_abi::DefinitionCall) -> i64
