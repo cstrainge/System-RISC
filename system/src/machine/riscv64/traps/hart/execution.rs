@@ -123,8 +123,8 @@ pub(crate) fn selected_hart() -> HartKey
 /// Genuine COLD may claim before the registry, without becoming a runtime key.
 /// Its pointer stays private: labels and caller-chosen numbers cannot create a
 /// winner, and no factory can reconstruct execution authority from this cell.
-pub(in crate::machine::riscv64) struct TerminalOwnership(AtomicPtr<HartLocal>);
-pub(in crate::machine::riscv64) enum TerminalClaim
+pub(crate) struct TerminalOwnership(AtomicPtr<HartLocal>);
+pub(crate) enum TerminalClaim
 {
     Winner(TerminalWinner),
     Recursive,
@@ -133,7 +133,7 @@ pub(in crate::machine::riscv64) enum TerminalClaim
 /// Winner affinity is valid for the actual current hot or cold selection.
 /// It grants terminal stop only, never runtime/firmware execution authority.
 /// A boot owner cannot transfer this native claim to another CPU.
-pub(in crate::machine::riscv64) struct TerminalWinner
+pub(crate) struct TerminalWinner
 {
     local: &'static HartLocal,
     _cpu:  core::marker::PhantomData<*mut ()>
@@ -154,14 +154,14 @@ impl TerminalWinner
 }
 impl TerminalOwnership
 {
-    pub(in crate::machine::riscv64) const fn new() -> Self
+    pub(crate) const fn new() -> Self
     {
         Self(AtomicPtr::new(core::ptr::null_mut()))
     }
 
     /// Claims only for the genuine current CPU. Never reset/release this owner:
     /// terminal execution abandons all contexts and backing until machine reset.
-    pub(in crate::machine::riscv64) fn claim(&self) -> TerminalClaim
+    pub(crate) fn claim(&self) -> TerminalClaim
     {
         with_masked(|| {
             let local = match super::terminal_local()

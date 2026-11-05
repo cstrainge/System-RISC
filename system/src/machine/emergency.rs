@@ -98,9 +98,9 @@ pub(crate) fn prepare() -> Result<(), Error>
         // Exact immutable payloads used by this terminal. Shared code, string
         // literals and the normal/terminal shared RAMFB ownership byte are not
         // extra reserve allocations and are not a dedicated terminal footprint.
-        let image_assets = include_bytes!("../../../assets/crashes/classic-bomb.icon").len()
-            + include_bytes!("../../../assets/cursors/arrow.curs").len()
-            + include_bytes!("../../toolbox/quickdraw/assets/chicago-12.font").len();
+        let image_assets = include_bytes!("../../assets/crashes/classic-bomb.icon").len()
+            + include_bytes!("../../assets/cursors/arrow.curs").len()
+            + include_bytes!("../toolbox/quickdraw/assets/chicago-12.font").len();
         let reserve_bytes = frame.bytes().checked_add(stack.bytes()).ok_or(Error::Size)?;
         let requirement = Requirement {
             service: EmergencyService::SystemPanicRestart,
@@ -186,22 +186,12 @@ struct Invocation<'a>
     arguments: fmt::Arguments<'a>,
     _hart:     PhantomData<*mut ()>
 }
-core::arch::global_asm!(".section .text", ".balign 4", ".global __system_terminal_stack",
-                        "__system_terminal_stack:", "mv sp, a0", "andi sp, sp, -16", "mv t0, a1",
-                        "mv a0, a2", "li ra, 0", "jr t0");
-unsafe extern "C" {
-    fn __system_terminal_stack(top: usize, entry: unsafe extern "C" fn(*const ()) -> !,
-                               argument: *const ())
-                               -> !;
-}
-
 pub(crate) fn enter(kind: Kind, arguments: fmt::Arguments<'_>) -> !
 {
-    // Never restore SIE, schedule, unwind or resume a suspended Rust/firmware
-    // borrow. The current authenticated row, not a hardware label, owns entry.
-    unsafe {
-        core::arch::asm!("csrci sstatus, 2", options(nostack));
-    }
+    // Never restore the interrupt state, schedule, unwind or resume a suspended
+    // Rust/firmware borrow. The current authenticated row, not a hardware label,
+    // owns entry.
+    super::interrupts::disable();
     let winner = match CLAIMED.claim()
     {
         TerminalClaim::Winner(winner) => winner,
@@ -227,7 +217,11 @@ pub(crate) fn enter(kind: Kind, arguments: fmt::Arguments<'_>) -> !
     // its format arguments remain on pinned, abandoned storage; no scheduler or
     // teardown resumes to reclaim it. The trampoline cannot return to that stack.
     unsafe {
-        __system_terminal_stack(kit.stack.top(), run, (&invocation as *const Invocation<'_>).cast())
+        // SAFETY: the terminal kit's stack is mapped, writable and owned by this
+        // path; `run` never returns.
+        super::cpu::terminal_stack(kit.stack.top(),
+                                   run,
+                                   (&invocation as *const Invocation<'_>).cast())
     }
 }
 
@@ -352,9 +346,7 @@ unsafe extern "C" fn run(pointer: *const ()) -> !
         {
             stop(format_args!("SYSTEM_EMERGENCY_PAINT_FAILED: input retirement: {error}"));
         }
-        unsafe {
-            core::arch::asm!("fence iorw, iorw", options(nostack));
-        }
+        super::cpu::barrier();
         core::hint::spin_loop();
     }
 }

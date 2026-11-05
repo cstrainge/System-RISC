@@ -115,3 +115,13 @@ pub(crate) fn with_masked<R>(operation: impl FnOnce() -> R) -> R
     let _restore = mask();
     operation()
 }
+
+/// Masks IRQ permanently, with no restore. Only the terminal path uses this:
+/// execution never resumes, so there is no scope to restore into.
+pub(crate) fn disable()
+{
+    // SAFETY: clearing only this CPU's SIE bit; the caller never returns.
+    unsafe {
+        core::arch::asm!("csrci sstatus, 2", options(nostack));
+    }
+}

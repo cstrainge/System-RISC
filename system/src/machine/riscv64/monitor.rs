@@ -790,7 +790,7 @@ fn publish_all(publication: Publication) -> Result<u64, Error>
 /// Irreversible terminal operation. Bypasses every normal command/owner lock;
 /// peers may be interrupted while holding those locks. The caller must abandon
 /// ordinary execution and must use direct shutdown on any refusal.
-pub(super) fn stop_peers(winner: &super::traps::execution::TerminalWinner) -> Result<(), Error>
+pub(crate) fn stop_peers(winner: &super::traps::execution::TerminalWinner) -> Result<(), Error>
 {
     let monitor = MONITOR.get().ok_or(Error::Missing)?;
     // The terminal claim carries a genuine current cold/hot selection. Do not

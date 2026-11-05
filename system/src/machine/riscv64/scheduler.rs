@@ -609,7 +609,7 @@ impl ThreadCore
         let Some(backing) = backing.as_ref()
         else
         {
-            super::emergency::enter(crate::emergency::Kind::SystemPanic,
+            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                                     format_args!("Claimed thread lost CPU backing before frame \
                                                   publication."));
         };
@@ -1505,7 +1505,7 @@ pub(crate) fn reclaim_retired()
 
 fn claim_lost(hart: HartKey, slot: usize, reason: &str) -> !
 {
-    super::emergency::enter(crate::emergency::Kind::SystemPanic,
+    crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                             format_args!("Scheduler execution claim invariant: hart {}, slot \
                                           {}, {}.",
                                          hart.number(),

@@ -14,6 +14,7 @@
 // the selected implementation, so they are written once for every architecture.
 pub(crate) mod dma;
 pub(crate) mod driver_devices;
+pub(crate) mod emergency;
 pub(crate) mod input;
 pub(crate) mod io;
 pub(crate) mod memory;
