@@ -115,8 +115,7 @@
     "entry": "bootrom-aarch64-virt/src/entry.S"
   },
   "hardware": {
-    "description": "QEMU virt machine, 4x Cortex-A72, 2 GiB RAM at 0x40000000. It generates its device tree from this record rather than taking the one the emulator passes, so the bootloader and the kernel read the same declared hardware - the PL011 console and the virtio-MMIO bank - instead of fixed addresses written into the loader.",
-    "generate_device_tree": true,
+    "description": "QEMU virt machine, 4x Cortex-A72, 2 GiB RAM at 0x40000000. The machine supplies its own device tree and the bootloader reads the pointer it passes in x0, so this section is a declaration to be checked against that tree rather than the runtime source. Nothing is generated for this platform.",
     "boot": {
       "medium": {
         "kind": "none"

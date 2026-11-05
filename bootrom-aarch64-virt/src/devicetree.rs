@@ -115,6 +115,89 @@ impl<'a> Tree<'a>
         None
     }
 
+    /// Visits every node that carries both a `compatible` and a `reg` window, in
+    /// tree order, as `(compatible, address, bytes)`, and returns how many it
+    /// saw.
+    ///
+    /// This is the general form of [`Self::window`]: a machine that models one
+    /// node per device and a machine that models a single bank are both answered
+    /// by the same walk, so nothing here assumes how a machine lays its devices
+    /// out.
+    pub fn visit_nodes(&self, mut visit: impl FnMut(&str, u64, u64)) -> usize
+    {
+        let mut cursor = 0usize;
+        let mut compatible: Option<&str> = None;
+        let mut window = None;
+        let mut seen = 0usize;
+        while cursor + 4 <= self.structure.len()
+        {
+            let Some(token) = self.word(&mut cursor)
+            else
+            {
+                return seen;
+            };
+            match token
+            {
+                BEGIN_NODE =>
+                {
+                    self.skip_name(&mut cursor);
+                    compatible = None;
+                    window = None;
+                }
+                END_NODE =>
+                {
+                    if let (Some(name), Some((address, bytes))) = (compatible, window)
+                    {
+                        visit(name, address, bytes);
+                        seen += 1;
+                    }
+                }
+                PROP =>
+                {
+                    let Some(length) = self.word(&mut cursor).map(|word| word as usize)
+                    else
+                    {
+                        return seen;
+                    };
+                    let Some(name_offset) = self.word(&mut cursor).map(|word| word as usize)
+                    else
+                    {
+                        return seen;
+                    };
+                    let start = cursor;
+                    if start + length > self.structure.len()
+                    {
+                        return seen;
+                    }
+                    if let Some(name) = self.name(name_offset)
+                    {
+                        if name == "compatible"
+                        {
+                            let value = &self.structure[start..start + length];
+                            let end = value.iter().position(|byte| *byte == 0).unwrap_or(length);
+                            compatible = core::str::from_utf8(&value[..end]).ok();
+                        }
+                        else if name == "reg" && length == 16
+                        {
+                            let cell = |index: usize| -> u64 {
+                                u32::from_be_bytes(self.structure[start + index * 4
+                                                                  ..start + index * 4 + 4]
+                                                       .try_into()
+                                                       .unwrap()) as u64
+                            };
+                            window = Some(((cell(0) << 32) | cell(1), (cell(2) << 32) | cell(3)));
+                        }
+                    }
+                    self.align(&mut cursor, length);
+                }
+                NOP => {}
+                END => break,
+                _ => return seen
+            }
+        }
+        seen
+    }
+
     fn word(&self, cursor: &mut usize) -> Option<u32>
     {
         let end = cursor.checked_add(4)?;

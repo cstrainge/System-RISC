@@ -211,6 +211,15 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
             push(args, "-kernel", payload.display().to_string());
         }
     }
+    // A machine that supplies no tree of its own is handed the one this build
+    // generated from its emulation profile. The emulator passes it back in x0,
+    // so the bootloader sees one pointer either way and the tree's origin is a
+    // decision made here rather than something the bootloader or kernel knows.
+    if definition.generate_device_tree
+    {
+        let tree = dist.join(format!("{}.dtb", platform.name));
+        push(args, "-dtb", tree.display().to_string());
+    }
     // Translates the transports the record names: a machine whose disks,
     // display, keyboard, pointer or entropy sit on `virtio-mmio` needs the
     // modern transport, and one that does not must never be given the flag.
