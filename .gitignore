@@ -21,3 +21,4 @@ __pycache__/
 *.py[cod]
 .DS_Store
 Thumbs.db
+/status.txt
