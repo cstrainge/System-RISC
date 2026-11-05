@@ -369,6 +369,13 @@
     ],
     "tooling": [
       "dd"
+    ],
+    "unused": [
+      {
+        "model": "bcm2835-sdhost",
+        "base": "0x3f202000",
+        "reason": "This SoC carries two SD controllers. The platform drives the Arasan sdhci at 0x3f300000 because it is the controller the sdhci register interface documents and the one this record declares a window for; bcm2835-sdhost is deliberately left unused so nobody wires the wrong controller."
+      }
     ]
   }
 }

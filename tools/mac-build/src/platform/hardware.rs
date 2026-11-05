@@ -47,6 +47,12 @@ pub struct Definition
     /// Integrated peripherals, by identity. Not emulator device kinds.
     #[serde(default)]
     pub devices:     Vec<Peripheral>,
+    /// Controllers this board carries that this platform deliberately does not
+    /// use, with the reason. Several SoCs have two parts that could serve one
+    /// function; recording the one that is not wired up stops a later reader
+    /// from driving the wrong controller and debugging a silent absence.
+    #[serde(default)]
+    pub unused:      Vec<Unused>,
     /// Programs needed to write the artifact to the medium.
     #[serde(default)]
     pub tooling:     Vec<String>
@@ -143,12 +149,23 @@ pub struct Region
     pub bytes: String
 }
 
+/// A controller the board carries but this platform does not use.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Unused
+{
+    /// The part's own name, e.g. `bcm2835-sdhost`.
+    pub model:  String,
+    pub base:   String,
+    /// Why this platform drives a different controller instead.
+    pub reason: String
+}
+
 /// An integrated peripheral identified the way a SoC datasheet identifies it.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Peripheral
-{
-    pub kind:      PeripheralKind,
+{    pub kind:      PeripheralKind,
     /// The part's own name, e.g. `pl011`, `sdhci`, `genet`.
     pub model:     String,
     #[serde(default)]
