@@ -1336,7 +1336,7 @@ mod artifact_tests
         }
         let error = load("NoSuchBoard").err().unwrap().to_string();
         assert!(error.contains("cannot select platform 'NoSuchBoard'")
-                && error.contains("known platforms: qemu_arm64, qemu_riscv"));
+                && error.contains("known platforms: qemu_arm64, qemu_riscv, raspi3b"));
         for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234", "0x80000000"]
         {
             let mut bad = load("qemu_riscv").unwrap();
@@ -1360,7 +1360,7 @@ mod artifact_tests
     #[test]
     fn a_peripheral_window_and_the_page_a_driver_claims_cannot_describe_different_devices()
     {
-        let platform = load("qemu_arm64").unwrap();
+        let platform = load("raspi3b").unwrap();
         platform.check_peripheral_windows().unwrap();
         // The mailbox registers start part way into the ARM control page the
         // record claims, so one device is declared at two granularities on
@@ -1372,7 +1372,7 @@ mod artifact_tests
                               .expect("the record declares the mailbox window");
         assert_eq!((mailbox.base, mailbox.bytes), (0x3f00b880, 0x40));
         // A window moved out of the page that claims it is refused.
-        let mut drifted = load("qemu_arm64").unwrap();
+        let mut drifted = load("raspi3b").unwrap();
         drifted.hardware
                .as_mut()
                .unwrap()
@@ -1386,7 +1386,7 @@ mod artifact_tests
         assert!(error.contains("outside every declared MMIO range"), "{error}");
         // A claimed page moved away from the window it is supposed to hold is
         // refused in the same way.
-        let mut drifted = load("qemu_arm64").unwrap();
+        let mut drifted = load("raspi3b").unwrap();
         drifted.mmio_devices
                .iter_mut()
                .find(|device| device.id == "bcm2835-mbox")
@@ -1396,7 +1396,7 @@ mod artifact_tests
         assert!(error.contains("outside every declared MMIO range"), "{error}");
         // Two windows in one claimed page would make a single claim cover two
         // devices, which is the same defect in the other direction.
-        let mut crowded = load("qemu_arm64").unwrap();
+        let mut crowded = load("raspi3b").unwrap();
         crowded.hardware
                .as_mut()
                .unwrap()
