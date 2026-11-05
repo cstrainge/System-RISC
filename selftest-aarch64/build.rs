@@ -57,18 +57,19 @@ fn main()
                       & !0x1f_ffff;
     let display = &record["memory"]["display"];
     let boot = &record["memory"]["boot"];
-    // The aarch64 platform record is the OS's inventory and is owned by the
-    // kernel lane; it does not declare the SPI0, DMA or power-management
-    // windows. This temporary self-test needs them, so it states them here
-    // instead of extending a shared record. They are BCM2837 board facts, and
-    // the record remains the authority for everything the OS consumes.
+    // This self-test is standalone pre-boot code, so it deliberately does not
+    // ask the build to extend the platform record for the windows its new
+    // checks need. The record declares the power-management window, and that is
+    // read from it; SPI0 and the DMA controller are stated here as BCM2837
+    // board facts. The record remains the authority for everything the OS
+    // consumes, and this test does not edit it.
     const SPI0_BASE: u64 = 0x3f20_4000;
     const DMA_BASE: u64 = 0x3f00_7000;
-    const PM_BASE: u64 = 0x3f10_0000;
     /// Channels 0, 2, 4, 5 and 8 through 14: the set the firmware leaves the
     /// ARM. A channel outside this set accepts a control block and delivers it
     /// somewhere else, which is why it is never considered.
     const DMA_POOL: u32 = 0x7f35;
+    let pm = mmio("bcm2835-pm");
     let out = Path::new(&env::var("OUT_DIR").expect("Cargo supplies OUT_DIR")).to_path_buf();
     let facts =
         format!("pub const PLATFORM_NAME: &str = \"{name}\";\npub const MAILBOX_BASE: usize = \
@@ -86,7 +87,7 @@ fn main()
                 spi0 = SPI0_BASE,
                 dma = DMA_BASE,
                 dma_pool = DMA_POOL,
-                pm = PM_BASE,
+                pm = pm,
                 ram_base = number(&hardware["ram"]["base"]),
                 ram_bytes = number(&hardware["ram"]["bytes"]),
                 width = display["width"].as_u64().expect("memory.display.width"),

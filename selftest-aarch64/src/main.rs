@@ -1283,6 +1283,7 @@ pub extern "C" fn rust_entry() -> !
         cache::clean(source as usize, long_words * 4);
         cache::clean(source2 as usize, 256 * 4);
         cache::invalidate(dest as usize, long_words * 4);
+        cache::invalidate(dest2 as usize, 256 * 4);
         let first = dma::ControlBlock::memory_copy(source as usize, dest as usize, long_words * 4);
         match ch.start(&first)
         {
@@ -1294,16 +1295,25 @@ pub extern "C" fn rust_entry() -> !
                 let second_start = ch.start(&second);
                 let wait = ch.wait();
                 cache::invalidate(dest as usize, long_words * 4);
-                // SAFETY: `dest` is inside the buffer.
-                let first_landed = unsafe { read_volatile(dest) } == 0x5566_7788;
-                if busy && wait.is_ok() && first_landed
+                cache::invalidate(dest2 as usize, 256 * 4);
+                // Every word, not the first: a transfer that moved four bytes
+                // and stopped must not look like a completed copy.
+                let mut first_landed = true;
+                for index in 0..long_words
                 {
-                    report.push("dma-2nd", true, "")
-                          .push_str("busy seen; second ")
-                          .push_str(if second_start.is_ok() { "accepted" } else { "refused" })
-                          .push_str(", first intact");
+                    // SAFETY: `index` is inside the buffer.
+                    if unsafe { read_volatile(dest.add(index)) } != (0x5566_7788 ^ index as u32)
+                    {
+                        first_landed = false;
+                        break;
+                    }
                 }
-                else if !busy
+                // The second block's destination is the arbitration observation:
+                // if it was written, the engine ran a second submission while the
+                // first was still in flight instead of refusing it.
+                // SAFETY: `dest2` is inside the buffer.
+                let second_ran = unsafe { read_volatile(dest2) } == 0x99aa_bbcc;
+                if !busy
                 {
                     report.push("dma-2nd", false, "too-fast")
                           .push_str("the first transfer finished before it was observed");
@@ -1313,15 +1323,24 @@ pub extern "C" fn rust_entry() -> !
                     report.push("dma-2nd", false, "corrupt")
                           .push_str("the second acquisition disturbed the first");
                 }
-                else
+                else if second_ran
                 {
-                    let reason = match wait
-                    {
-                        Err(reason) => reason,
-                        Ok(()) => "second"
-                    };
+                    report.push("dma-2nd", false, "accepted")
+                          .push_str("busy seen; the engine ran a second block, first intact");
+                }
+                else if let Err(reason) = wait
+                {
                     report.push("dma-2nd", false, reason)
                           .push_str("first transfer did not complete");
+                }
+                else if let Err(reason) = second_start
+                {
+                    report.push("dma-2nd", false, reason).push_str("start: ").push_str(reason);
+                }
+                else
+                {
+                    report.push("dma-2nd", true, "")
+                          .push_str("busy seen; second refused, first intact");
                 }
             }
             Err(reason) =>
@@ -1373,24 +1392,25 @@ pub extern "C" fn rust_entry() -> !
                           .push_str("uncleaned copy: ")
                           .push_str(reason);
                 }
+                else if observed == 0xa5a5_a5a5
+                {
+                    report.push("dma-clean", true, "")
+                          .push_str("unclean read 0xa5a5a5a5; clean required");
+                }
+                else if observed == 0x5a5a_5a5a
+                {
+                    report.push("dma-clean", true, "")
+                          .push_str("unclean read 0x5a5a5a5a; clean not observable");
+                }
                 else
                 {
-                    let note = if observed == 0xa5a5_a5a5
-                    {
-                        " clean required"
-                    }
-                    else if observed == 0x5a5a_5a5a
-                    {
-                        " clean not observable"
-                    }
-                    else
-                    {
-                        ""
-                    };
-                    report.push("dma-clean", true, "")
+                    // Neither pattern means neither hypothesis held. That is
+                    // the one outcome this check exists to catch, so it fails
+                    // and carries the value.
+                    report.push("dma-clean", false, "unexpected")
                           .push_str("unclean read ")
                           .push_hex(u64::from(observed))
-                          .push_str(note);
+                          .push_str("; neither pattern");
                 }
             }
             Err(reason) =>
