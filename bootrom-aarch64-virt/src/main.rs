@@ -93,7 +93,7 @@ pub extern "C" fn mmu_init()
     assert!(physmap_index < 512, "the physmap must sit inside the kernel half");
     unsafe
     {
-        for table in [L1_LOW, L2_LOW, L1_HIGH, L2_PHYSMAP, L2_LOWDEV]
+        for table in [L1_LOW, L2_LOW, L1_HIGH, L2_PHYSMAP, L2_LOWDEV, L2_IMAGE]
         {
             clear(table);
         }
@@ -122,6 +122,22 @@ pub extern "C" fn mmu_init()
         for index in 0..ram_blocks
         {
             entry(L2_PHYSMAP, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
+        }
+        // The kernel's image window. Its base is not on a gigabyte boundary - it
+        // sits 2 MiB into a gigabyte - so the level-2 index has to carry that
+        // offset. Deriving it from the virtual address rather than assuming zero
+        // is the difference between mapping the image and mapping the gigabyte
+        // below it.
+        let image_l1 = ((VM_SYSTEM_IMAGE_BASE - KERNEL_HALF) / (1 << 30)) as usize;
+        let image_first = ((VM_SYSTEM_IMAGE_BASE & 0x3fff_ffff) / BLOCK) as usize;
+        let image_blocks = (IMAGE_BYTES / BLOCK) as usize;
+        assert!(image_l1 < 512, "the image window must sit inside the kernel half");
+        assert!(image_first + image_blocks <= 512,
+                "the image window must fit one level-2 table");
+        entry(L1_HIGH, image_l1, L2_IMAGE | TABLE);
+        for index in 0..image_blocks
+        {
+            entry(L2_IMAGE, image_first + index, IMAGE_BASE + index as u64 * BLOCK | NORMAL);
         }
         core::arch::asm!(
             "dsb sy",
@@ -160,6 +176,26 @@ pub extern "C" fn physmap_check() -> u64
     let identity = unsafe { core::ptr::read_volatile(at as *const u64) };
     let aliased = unsafe { core::ptr::read_volatile((PHYSMAP_BASE + (at - PHYSICAL_RAM_BASE)) as *const u64) };
     u64::from(identity == aliased)
+}
+
+/// Confirms the kernel image window resolves to the physical image window.
+///
+/// A mapping is only correct if a value written through the physical address is
+/// visible through the virtual one, so this writes a sentinel and reads it back
+/// rather than trusting the tables it just built.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_map_check() -> u64
+{
+    let offset = 0x10_0000u64;
+    let physical = IMAGE_BASE + offset;
+    let virtual_address = VM_SYSTEM_IMAGE_BASE + offset;
+    const SENTINEL: u64 = 0x4b4d_4150_5f4f_4b21;
+    unsafe {
+        core::ptr::write_volatile(physical as *mut u64, SENTINEL);
+        core::arch::asm!("dsb sy", options(nostack));
+        let seen = core::ptr::read_volatile(virtual_address as *const u64);
+        u64::from(seen == SENTINEL)
+    }
 }
 
 fn putc(byte: u8)
