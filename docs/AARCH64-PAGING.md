@@ -266,6 +266,62 @@ descriptor encoding — is the shape this implies. The alternative, a second
 paging implementation beside the shared one, is the duplication this document
 exists to prevent.
 
+## The supervisor handoff
+
+Starting System means satisfying four contracts, all read from the ABI rather
+than inferred.
+
+### `BootInfo` (`mac_abi::BootInfo`, 176 bytes, layout asserted)
+
+| Field | Source |
+| ----- | ------ |
+| `header` | `Header::for_type::<BootInfo>()` |
+| `ram_base`, `ram_size` | the first RAM bank |
+| `log`, `disk_info`, `read_sector`, `write_sector`, `flush_disk`, `storage_context` | the loader's disk callbacks |
+| `startup_disk`, `flags`, `startup_partition_start` | the boot volume |
+| `ram_regions`, `reservations` and their counts | the checked memory account |
+| `display_scratch` | the reserved framebuffer extent, or zero for a headless boot |
+| `execution` | the `boot::execution::Execution` record for the load plan |
+| `cpus`, `cpu_count` | sorted enabled hart IDs |
+| `monitor` | the monitor `Directory` |
+| `monitor_layout` | must equal `boot::monitor::LAYOUT_FINGERPRINT` |
+
+The kernel refuses the image if `monitor_layout` does not match, so the monitor
+is not optional and cannot be stubbed with a zero.
+
+### The monitor `Directory`
+
+```
+entries:     *const Entry     per hart: { hart, msip, storage: BootMemoryRange }
+count:       usize
+stack_bytes: u64
+timebase_hz: u64              the real /cpus frequency, never a hardcoded clock
+image:       *const BootImage
+```
+
+`monitor::admit` validates every isolated control extent against the checked
+memory view before borrowing the atomic cells, so the storage ranges must be
+real, page-aligned reservations.
+
+**An ISA-specific field sits in this shared ABI.** `Entry::msip` is a RISC-V
+memory-mapped software-interrupt register. AArch64 has no equivalent — its
+interprocessor interrupts are GIC SGIs — so an AArch64 loader can only publish
+zero there, and the AArch64 monitor must drive IPIs through the GIC instead. That
+is a property of the ABI, not a choice, and it should be resolved deliberately
+rather than by writing zero and hoping the kernel never reads it.
+
+### What the loader must still do
+
+1. Read the System code resource from the resource fork and decode it with the
+   native image format, not an ELF reader: `mac_formats::native::image::decode`
+   plus `LoadPlan`, both already shared and already used by the RISC-V loader.
+2. Map the rest of the kernel half — stacks, heap, the definition and application
+   bases — not just the image window.
+3. Build `BootInfo` and the monitor `Directory` in reserved RAM.
+4. Drop to EL1 and branch to System's virtual entry with the `BootInfo` pointer.
+
+Only step 2 is currently started, and only for the image window.
+
 ## Open items
 
 - The image window is currently mapped with 2 MiB blocks and the read-back check
