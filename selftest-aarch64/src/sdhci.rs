@@ -381,6 +381,7 @@ impl Disk
         self.command(CMD_READ_SINGLE_BLOCK, 0, RESPONSE_48, true, true, true)?;
         let mut bytes = [0u8; SECTOR_BYTES];
         let mut words = 0usize;
+        let mut saw_ready = false;
         for _ in 0..TRANSFER_POLLS
         {
             let status = self.read16(NORMAL_INT_STATUS);
@@ -395,11 +396,21 @@ impl Disk
                                      completed: false,
                                      resp:    0 });
             }
-            while words < SECTOR_BYTES / 4 && self.read32(PRESENT_STATE) & PRESENT_BUFFER_READ != 0
+            // Drain only once the controller says a block is in the buffer.
+            // Buffer Read Enable on its own is not that signal: a controller
+            // that raises it early hands out a whole block of words before the
+            // card has sent them, which reads as 512 zero bytes and is
+            // indistinguishable from a card returning an empty sector.
+            if status & INT_BUFFER_READ_READY != 0
             {
-                let word = self.read32(BUFFER_DATA).to_le_bytes();
-                bytes[words * 4..words * 4 + 4].copy_from_slice(&word);
-                words += 1;
+                saw_ready = true;
+                while words < SECTOR_BYTES / 4
+                      && self.read32(PRESENT_STATE) & PRESENT_BUFFER_READ != 0
+                {
+                    let word = self.read32(BUFFER_DATA).to_le_bytes();
+                    bytes[words * 4..words * 4 + 4].copy_from_slice(&word);
+                    words += 1;
+                }
             }
             if words == SECTOR_BYTES / 4
             {
@@ -410,7 +421,16 @@ impl Disk
             }
             if status & INT_TRANSFER_COMPLETE != 0 && words < SECTOR_BYTES / 4
             {
-                return Err(Failure { what:    "transfer completed short",
+                // Not having seen Buffer Read Ready at all is a different
+                // fault from draining a block that then came up short.
+                return Err(Failure { what:    if saw_ready
+                                              {
+                                                  "transfer completed short"
+                                              }
+                                              else
+                                              {
+                                                  "no buffer ready"
+                                              },
                                      command: CMD_READ_SINGLE_BLOCK as u8,
                                      normal:  status,
                                      error:   self.read16(ERROR_INT_STATUS),
