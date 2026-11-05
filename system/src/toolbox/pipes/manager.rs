@@ -29,9 +29,12 @@ const WRITER: bool = false;
 /// last endpoint of either kind decides when it may be destroyed.
 struct Pipe
 {
-    ring:    Ring,
-    readers: u32,
-    writers: u32
+    ring:        Ring,
+    readers:     u32,
+    writers:     u32,
+    /// Writer handles currently obtained through `connect`. The creator's own
+    /// writer is not a connection and is not counted here.
+    connections: u32
 }
 /// The named-pipe registry. Anonymous pipes never enter this vector, so they
 /// have no name, no catalog identity and no object in the folder's namespace:
@@ -43,7 +46,12 @@ struct Named
     cnid:    u32,
     /// Registration instant in Mac-epoch microseconds, so the item's dates are
     /// stable across enumerations instead of reading the clock per row.
-    created: u64
+    created: u64,
+    /// Maximum concurrent `connect` writers; zero is unlimited. A limit of one
+    /// makes the name's writer ownership structural: the second application is
+    /// refused at the connection instead of interleaving into the first one's
+    /// stream.
+    writers: u32
 }
 /// One registry row as the File Manager sees it. Copied out under the manager
 /// lock so a catalog step never holds two locks or borrows registry storage.
@@ -63,9 +71,12 @@ impl Row
 #[derive(Clone, Copy)]
 struct Endpoint
 {
-    pipe:     u64,
-    reader:   bool,
-    blocking: bool
+    pipe:      u64,
+    reader:    bool,
+    blocking:  bool,
+    /// Obtained through `connect`, so its retirement releases a connection
+    /// slot of the name's writer limit.
+    connected: bool
 }
 struct Manager
 {
@@ -323,7 +334,9 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
             }
             else
             {
-                if call.name_length != 0
+                // An anonymous pipe has no name, so it has no connections and
+                // no writer limit to state.
+                if call.name_length != 0 || call.writers != 0
                 {
                     return Err(BAD_ARGUMENT);
                 }
@@ -333,7 +346,11 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
         }
         wire::CONNECT =>
         {
-            if resumed || call.handle != 0 || !output.is_empty() || !input.is_empty()
+            if resumed
+               || call.handle != 0
+               || call.writers != 0
+               || !output.is_empty()
+               || !input.is_empty()
             {
                 return Err(BAD_ARGUMENT);
             }
@@ -343,7 +360,7 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
         }
         wire::READ =>
         {
-            if call.handle == 0 || call.name_length != 0 || !input.is_empty()
+            if call.handle == 0 || call.name_length != 0 || call.writers != 0 || !input.is_empty()
             {
                 return Err(BAD_ARGUMENT);
             }
@@ -351,7 +368,7 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
         }
         wire::WRITE =>
         {
-            if call.handle == 0 || call.name_length != 0 || !output.is_empty()
+            if call.handle == 0 || call.name_length != 0 || call.writers != 0 || !output.is_empty()
             {
                 return Err(BAD_ARGUMENT);
             }
@@ -359,7 +376,11 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
         }
         wire::SET_BLOCKING =>
         {
-            if resumed || call.handle == 0 || !output.is_empty() || !input.is_empty()
+            if resumed
+               || call.handle == 0
+               || call.writers != 0
+               || !output.is_empty()
+               || !input.is_empty()
             {
                 return Err(BAD_ARGUMENT);
             }
@@ -367,7 +388,11 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
         }
         wire::CLOSE =>
         {
-            if resumed || call.handle == 0 || !output.is_empty() || !input.is_empty()
+            if resumed
+               || call.handle == 0
+               || call.writers != 0
+               || !output.is_empty()
+               || !input.is_empty()
             {
                 return Err(BAD_ARGUMENT);
             }
@@ -394,6 +419,7 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
     let manager = manager()?;
     let mut manager = manager.lock();
     let mut cnid = None;
+    let mut limit = 0;
     if let Some(name) = &name
     {
         for entry in &manager.named
@@ -403,6 +429,7 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
                 return Err(ALREADY_EXISTS);
             }
         }
+        limit = u32::try_from(call.writers).map_err(|_| BAD_ARGUMENT)?;
         // Preflight the registry slot before any pipe or endpoint exists, so a
         // refused insertion cannot leave a half-registered name. The identity
         // is taken before the objects so exhaustion is refused before them
@@ -413,13 +440,15 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
     let pipe = manager.pipes
                       .insert(&system,
                               Pipe { ring,
-                                     readers: 1,
-                                     writers: 1 })
+                                     readers:     1,
+                                     writers:     1,
+                                     connections: 0 })
                       .map_err(status)?;
     let reader = match manager.endpoints.insert(owner,
                                                 Endpoint { pipe,
                                                            reader: READER,
-                                                           blocking: call.nonblocking == 0 })
+                                                           blocking: call.nonblocking == 0,
+                                                           connected: false })
     {
         Ok(id) => id,
         Err(error) =>
@@ -431,7 +460,8 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
     let writer = match manager.endpoints.insert(owner,
                                                 Endpoint { pipe,
                                                            reader: WRITER,
-                                                           blocking: call.nonblocking == 0 })
+                                                           blocking: call.nonblocking == 0,
+                                                           connected: false })
     {
         Ok(id) => id,
         Err(error) =>
@@ -446,7 +476,8 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
         manager.named.push(Named { name,
                                    pipe,
                                    cnid,
-                                   created: registration_time() });
+                                   created: registration_time(),
+                                   writers: limit });
         manager.bump();
     }
     call.reader = reader;
@@ -454,31 +485,50 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
     Ok(RequestAction::Return)
 }
 
+/// Add a writer end for a registered name. The name's writer limit bounds the
+/// concurrent connections, not the total writer count: the creator already
+/// holds a writer handle that is not a connection. A full name is refused with
+/// `AccessDenied` and consumes nothing.
 fn connect(call: &mut wire::Call, owner: &OwnerRef, name: Name) -> Result<RequestAction, Status>
 {
     let manager = manager()?;
     let mut manager = manager.lock();
-    let Some(pipe) = manager.named
-                            .iter()
-                            .find(|entry| same_name(named(entry), &name.1[..name.0 as usize]))
-                            .map(|entry| entry.pipe)
+    let Some((pipe, limit)) = manager.named
+                                     .iter()
+                                     .find(|entry| {
+                                         same_name(named(entry), &name.1[..name.0 as usize])
+                                     })
+                                     .map(|entry| (entry.pipe, entry.writers))
     else
     {
         return Err(NOT_FOUND);
     };
+    let Some(state) = manager.pipes.get(pipe)
+    else
+    {
+        return Err(NOT_FOUND);
+    };
+    if limit != 0 && state.connections >= limit
+    {
+        return Err(ACCESS_DENIED);
+    }
+    let writers = state.writers.checked_add(1).ok_or(BAD_ARGUMENT)?;
+    let connections = state.connections.checked_add(1).ok_or(BAD_ARGUMENT)?;
     let writer = manager.endpoints
                         .insert(owner,
                                 Endpoint { pipe,
                                            reader: WRITER,
-                                           blocking: call.nonblocking == 0 })
+                                           blocking: call.nonblocking == 0,
+                                           connected: true })
                         .map_err(status)?;
-    let Some(pipe) = manager.pipes.get_mut(pipe)
+    let Some(state) = manager.pipes.get_mut(pipe)
     else
     {
         let _ = manager.endpoints.remove(writer);
         return Err(NOT_FOUND);
     };
-    pipe.writers = pipe.writers.checked_add(1).ok_or(BAD_ARGUMENT)?;
+    state.writers = writers;
+    state.connections = connections;
     call.writer = writer;
     Ok(RequestAction::Return)
 }
@@ -644,6 +694,10 @@ fn retire_endpoint(manager: &mut Manager, endpoint: Endpoint)
     else
     {
         pipe.writers = pipe.writers.saturating_sub(1);
+        if endpoint.connected
+        {
+            pipe.connections = pipe.connections.saturating_sub(1);
+        }
     }
     if pipe.readers == 0 && pipe.writers == 0
     {

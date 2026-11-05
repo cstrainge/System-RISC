@@ -1,13 +1,14 @@
 # Pipes
 
-Status: core and the merged `Pipes` folder listing implemented; folder
-creation-at-boot, Finder open-as-connect and the icon families not.
+Status: core, the writer limit and the merged `Pipes` folder listing implemented;
+folder creation-at-boot, Finder open-as-connect and the icon families not.
 Baseline: `2f6d8e93`, 2026-11-05.
 
-The resident byte-transport facility, its blocking wait, the public SDK and the
-File Manager's merged listing of the `Pipes` folder are implemented and the guest
-builds and boots. Boot-time folder ensure, Finder open-as-connect and the two
-icon families are not implemented; section 15 records the exact state.
+The resident byte-transport facility, its blocking wait, the per-name writer
+limit, the public SDK and the File Manager's merged listing of the `Pipes` folder
+are implemented and the guest builds and boots. Boot-time folder ensure, Finder
+open-as-connect and the two icon families are not implemented; section 15 records
+the exact state.
 
 This document is the contract for anonymous and named pipes in System RISC. It
 states what a pipe is, what each operation means, which refusals are distinct,
@@ -58,6 +59,17 @@ Multiple writer handles for one pipe can exist: the creator holds one, and each
 successful `connect` to a named pipe adds another. `connect` never creates a
 second reader endpoint.
 
+The number of *connected* writers is bounded by the writer limit the name was
+registered with (section 3.2). A limit of one makes writer ownership of a name
+structural: a second application is refused at `connect` rather than joined to
+the first application's stream. Without a limit the ring has one byte stream and
+no per-writer provenance, so two writers can interleave and neither can tell its
+own bytes from the other's; a name that backs an exclusive resource must state a
+limit of one.
+
+The creator's own writer handle is not a connection and is not counted, so a
+limit of one means one connecting owner at a time, not zero.
+
 ## 3. Operations
 
 The facility exposes seven operations. Every one of them is a synchronous native
@@ -67,8 +79,8 @@ the System scheduler (section 7).
 | Operation | Endpoint | Meaning | Success |
 |---|---|---|---|
 | `create` | none | Create an anonymous pipe with a stated capacity. | Returns a reader handle and a writer handle |
-| `create_named` | none | Create a pipe as `create` and register the name. | Returns a reader handle and a writer handle; the name now resolves |
-| `connect` | none | Obtain a writer handle for a registered name. | Returns a writer handle |
+| `create_named` | none | Create a pipe as `create`, register the name, and state its writer limit. | Returns a reader handle and a writer handle; the name now resolves |
+| `connect` | none | Obtain a writer handle for a registered name, within its writer limit. | Returns a writer handle |
 | `read` | reader | Remove up to the buffer length bytes from the ring. | Returns the number of bytes transferred |
 | `write` | writer | Add bytes to the ring. | Returns the number of bytes transferred |
 | `set_blocking` | either | Set this handle's blocking mode for future operations. | Nothing; the mode persists on that handle |
@@ -108,12 +120,34 @@ not a legal item name, or that is already registered, is refused with
 `BadArgument` or `AlreadyExists` respectively, and no pipe is created and no
 handle is issued.
 
+The call also states the name's **writer limit**: the maximum number of
+concurrently open writer handles obtained through `connect`. Zero means
+unlimited. The limit belongs to the name, is fixed at registration, and is not
+a property of any endpoint.
+
+- A limit is validated before anything is created. An anonymous `create` that
+  carries a nonzero limit is `BadArgument`, because an anonymous pipe has no
+  name and no connections.
+- The limit does not count the creator's own writer handle. A limit of one
+  therefore means one connecting owner at a time, and the creator still holds
+  the writer it was given.
+- A limit larger than the endpoint population the System can hold is accepted
+  and behaves as unlimited; the registry's own limit decides when endpoints run
+  out.
+
 ### 3.3 `connect`
 
 - The name is resolved against the resident name registry. An unregistered name
   is refused with `NotFound`.
 - A successful `connect` adds one writer handle. It does not change capacity, does
   not disturb existing data, and does not reorder anything.
+- A name whose declared writer limit is already reached refuses `connect` with
+  `AccessDenied`. The refusal consumes nothing: no handle is issued, no existing
+  writer is disturbed and the pipe is unchanged. This is the refusal that makes
+  exclusive writer ownership structural rather than advisory.
+- Closing a connected writer handle releases its slot, so a later `connect`
+  within the limit succeeds. A closed slot is never reassigned to a different
+  pipe.
 - `connect` to a name that is being torn down because its last handle is closing
   is refused rather than handed a dead endpoint. It never succeeds against
   something nobody serves.
@@ -248,7 +282,8 @@ one:
   rather than assume the transfer is available.
 - Multiple writers are permitted and receive no fairness guarantee: a writer that
   always has data may keep the ring full. There is no round-robin, no quota and
-  no priority.
+  no priority. A name's writer limit bounds how many writers there are; it does
+  not order them, and a limit above one therefore permits interleaving.
 - Multiple readers are not reachable in v1: `create`/`create_named` issue exactly
   one reader handle and `connect` issues only writers.
 
@@ -357,8 +392,9 @@ association.
   successful open produces the writer handle the caller would have obtained from
   `connect` by name.
 - A failed open reports why: `NotFound` when the pipe's last handle closed
-  between enumeration and the open, `AccessDenied`/`BadArgument` for a stale
-  identity. The Finder reports the failure and refreshes the folder; it does not
+  between enumeration and the open, `AccessDenied` when the name's writer limit is
+  already reached or for a stale identity, `BadArgument` for a malformed one. The
+  Finder reports the failure and refreshes the folder; it does not
   open a different item and does not launch an application.
 - No launch association, file-kind handler registration, or `OPEN`/`OPEN_PATH`
   File Manager operation is defined for `PIPE`/`PIPE`. The File Manager's generic
@@ -417,9 +453,14 @@ not a placeholder for anonymous pipes, and the launch path that installs them is
 not converted to this facility. A future Terminal or command-runner profile will
 bind real session endpoints, and that work is separate from this contract.
 
-In v1 the facility's first named consumer is the NeoPixel extension. Anonymous
-pipes are intended for the Terminal/`CLAP` path described in section 10.1, where
-the Terminal creates them; named-pipe creation and connection remain ordinary
+In v1 the facility's first named consumer is the NeoPixel extension. It depends
+on the writer limit, not merely on named pipes: one pipe per strip is worthless
+if a second application can also connect to it, because two applications'
+frames would interleave in one stream and the extension could neither tell them
+apart nor refuse the second owner. A name registered with a writer limit of one
+is what makes "this strip has one owner" a structural fact. Anonymous pipes are
+intended for the Terminal/`CLAP` path described in section 10.1, where the
+Terminal creates them; named-pipe creation and connection remain ordinary
 application operations because the folder and that extension need them.
 
 ### 10.1 The Terminal and `CLAP` command-line applications
@@ -463,7 +504,8 @@ extension up and does not ask it for anything directly.
 
 Named-pipe creation is unaffected: `create_named` and `connect` remain ordinary
 application operations, because the folder's purpose is that applications offer
-and reach named pipes and the NeoPixel extension depends on it.
+and reach named pipes, and the NeoPixel extension depends on registering each
+strip's name with a writer limit of one.
 
 **What exists, and what does not.**
 
@@ -539,12 +581,18 @@ Handle ownership (section 3) prevents one process from using another process's
 handle, but it does not prevent a process from connecting to a name. A future
 revision that adds authority must extend this contract rather than assume it.
 
+The writer limit of section 3.2 is a capacity bound, not a permission. It says
+how many connections a name has, not who may hold them: any process may connect
+while a slot is free, and the limit does not distinguish one process from
+another.
+
 ## 12. Deferred
 
 Explicitly not promised, with the reason:
 
 - **Fairness among multiple writers.** Permitted, not promised. Nothing in v1
-  prevents one writer from monopolising a pipe.
+  prevents one writer from monopolising a pipe. A writer limit of one removes the
+  case entirely rather than ordering it.
 - **Wakeup ordering beyond arrival order.** Waiters are woken in arrival order,
   but the outcome of the resulting race is unspecified.
 - **Deadlines.** No v1 operation has one. "Blocking does not spin" is the whole
@@ -731,6 +779,9 @@ against the shipping artifacts rather than a host substitute:
 - End-of-stream, would-block and broken pipe are each observed, and each is
   distinguishable from the other two in the same scenario family.
 - A 512-byte write from two concurrent writers is never interleaved.
+- A name registered with a writer limit of one refuses a second `connect` with
+  `AccessDenied`, accepts a new connection after the first closes, and leaves the
+  first owner's stream untouched by the refusal.
 - A non-blocking read of an empty pipe with a live writer reports would-block and
   not end-of-stream.
 - Closing the last writer makes a blocked reader complete with end-of-stream;
@@ -753,6 +804,8 @@ Implemented and built into the guest, with the guest booting:
 
 - The seven operations, the three outcomes, the fixed ring, the 512-byte
   atomicity rule, capacity bounds, the name registry and last-close removal.
+- The per-name writer limit: `create_named` states it, `connect` refuses a full
+  name with `AccessDenied`, and closing a connected writer releases the slot.
 - Per-process endpoint handles from the shared handle facility, cleanup on
   process exit, and blocking that parks the calling thread.
 - The public SDK (`Pipes`, `PipeReader`, `PipeWriter`) behind `System::pipes()`.
@@ -766,15 +819,18 @@ Implemented and built into the guest, with the guest booting:
 Verified by execution in the guest, not only by compilation: a probe
 application replaces Finder on a cloned disk and runs five cases — echo,
 a 512-byte atomic write into a full pipe that must wait for a reader, would-block
-versus end-of-stream, broken pipe, and name removal — followed by the folder
-markers. The probe is `crates/mac-toolbox/tests/fixtures/pipes-probe`;
-`cargo xtask boot-check` builds it and runs it as the single `pipes-probe` case,
-so the marker set is part of the gate (18 of 18). The folder markers assert one
-item per named pipe, identical identity by name and by CNID, `NotFound` for an
-unknown name, identity stability across two enumerations and non-reuse after
-destruction, that an anonymous pipe does not appear, and eleven refused
-mutations. `scripts/capture_pipes_probe.py` boots the same artifact standalone
-and records the QEMU command and the serial hash.
+versus end-of-stream, broken pipe, and name removal — followed by the writer-limit
+and folder markers. The probe is
+`crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
+it and runs it as the single `pipes-probe` case, so the marker set is part of the
+gate (18 of 18). The writer-limit markers assert that a one-writer name accepts
+one `connect`, refuses the second with `AccessDenied`, accepts a new connection
+once the first closes, and still disappears with its last handle. The folder
+markers assert one item per named pipe, identical identity by name and by CNID,
+`NotFound` for an unknown name, identity stability across two enumerations and
+non-reuse after destruction, that an anonymous pipe does not appear, and eleven
+refused mutations. `scripts/capture_pipes_probe.py` boots the same artifact
+standalone and records the QEMU command and the serial hash.
 
 Not implemented:
 
@@ -784,8 +840,9 @@ Not implemented:
   the corresponding extension of the canonical icon-reservation allowlist. The
   type pair is reported today; the icons that would use it are not.
 
-The probe covers the transport contract. It does not cover multiple concurrent
-writers, or stale and foreign handle refusals, which are refinements. Lost wake
+The probe covers the transport contract and the writer limit. It does not cover
+multiple concurrent writers interleaving under load, or stale and foreign handle
+refusals, which are refinements. Lost wake
 under load and cancellation of a blocked caller by process exit are recorded in
 section 10.1 as gates on the Terminal/`CLAP` project, not as footnotes: a hang
 there is the failure that project cannot absorb.

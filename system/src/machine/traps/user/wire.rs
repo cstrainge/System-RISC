@@ -1264,6 +1264,7 @@ wire_struct!(mac_abi::pipes::Call {
     writer: u64,
     name: [u8; mac_abi::pipes::NAME_BYTES],
     reserved: [u64; 2],
+    writers: u64,
 });
 
 wire_struct!(mac_abi::power::PowerCall { operation:     u32,

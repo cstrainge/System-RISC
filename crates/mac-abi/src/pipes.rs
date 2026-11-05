@@ -37,7 +37,12 @@ pub struct Call
     pub reader:      u64,
     pub writer:      u64,
     pub name:        [u8; NAME_BYTES],
-    pub reserved:    [u64; 2]
+    pub reserved:    [u64; 2],
+    /// Maximum concurrent `connect` writers for a named pipe; zero is
+    /// unlimited. The creator's own writer handle is not a connection and is
+    /// not counted, so a limit of one means one connecting owner at a time.
+    /// Only `CREATE_NAMED` accepts a nonzero value.
+    pub writers:     u64
 }
 impl Default for Call
 {
@@ -54,11 +59,12 @@ impl Default for Call
                reader:      0,
                writer:      0,
                name:        [0; NAME_BYTES],
-               reserved:    [0; 2] }
+               reserved:    [0; 2],
+               writers:     0 }
     }
 }
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<Call>() == 112
+const _: () = assert!(core::mem::size_of::<Call>() == 120
                       && core::mem::align_of::<Call>() == 8
                       && core::mem::offset_of!(Call, handle) == 8
                       && core::mem::offset_of!(Call, capacity) == 16
@@ -68,4 +74,5 @@ const _: () = assert!(core::mem::size_of::<Call>() == 112
                       && core::mem::offset_of!(Call, reader) == 48
                       && core::mem::offset_of!(Call, writer) == 56
                       && core::mem::offset_of!(Call, name) == 64
-                      && core::mem::offset_of!(Call, reserved) == 96);
+                      && core::mem::offset_of!(Call, reserved) == 96
+                      && core::mem::offset_of!(Call, writers) == 112);
