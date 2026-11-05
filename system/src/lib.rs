@@ -3,7 +3,7 @@
 #![recursion_limit = "256"]
 #![feature(allocator_ext)]
 extern crate alloc;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 macro_rules! serial { ($($arg:tt)*) => {{ use core::fmt::Write as _; let _ = writeln!($crate::kernel::Serial, $($arg)*); }} }
 pub(crate) mod display;
 pub(crate) mod emergency;
@@ -12,21 +12,21 @@ pub mod drivers;
 pub(crate) mod state;
 pub(crate) mod context;
 pub(crate) mod allocation;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub mod kernel;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) mod images;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod allocator;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) mod recovery;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod machine;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod trace;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 use machine::{display as platform, input as virtio_input};
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 use toolbox::resources::loader;
 
 #[cfg(test)]
@@ -34,14 +34,14 @@ use toolbox::resources::loader;
 pub(crate) mod test_wdef;
 
 
-#[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+#[cfg(all(feature = "test-support", not(systemrisc)))]
 #[path = "../../definitions/mdef/src/main.rs"]
 pub(crate) mod test_mdef;
 
-#[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+#[cfg(all(feature = "test-support", not(systemrisc)))]
 extern crate std;
-#[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+#[cfg(all(feature = "test-support", not(systemrisc)))]
 pub mod testing;
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod boot_screen;
