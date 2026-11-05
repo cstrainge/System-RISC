@@ -172,6 +172,8 @@ struct Frames<'a>
 impl Tables for Frames<'_>
 {
     type Error = FrameError;
+    type Descriptor = mac_riscv_pages::Entry;
+    type Layout = mac_riscv_pages::Sv39;
 
     fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, FrameError>
     {
