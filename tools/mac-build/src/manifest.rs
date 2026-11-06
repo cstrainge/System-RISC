@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Result, error};
 
 mod commands;
+mod include;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -53,8 +54,14 @@ pub struct Manifest
     /// Required provider interfaces for native application launch admission.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_services: Vec<RequiredService>,
-    #[serde(default)]
-    pub resources:         Vec<Definition>
+    /// Resource entries in manifest order, with every `{ "include": … }` entry
+    /// replaced by the included file's resources.
+    pub resources:         Vec<Definition>,
+    /// Included resources files, in the order they were read. Not part of the
+    /// manifest text: it lets the build watch files the manifest only names
+    /// indirectly.
+    #[serde(skip)]
+    pub includes:          Vec<PathBuf>
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -336,18 +343,28 @@ impl Manifest
 {
     pub fn read(path: &Path) -> Result<Self>
     {
-        let mut manifest: Self = serde_json::from_slice(&fs::read(path)?).map_err(|cause| {
-                                     error(format!("invalid resource project {}: {cause}; update \
-                                                    resources.json for the current SDK and \
-                                                    rebuild",
-                                                   path.display()))
-                                 })?;
+        let invalid = |cause: serde_json::Error| {
+            error(format!("invalid resource project {}: {cause}; update resources.json for the \
+                           current SDK and rebuild",
+                          path.display()))
+        };
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(path)?).map_err(invalid)?;
+        let includes = include::expand(path, &mut document)?;
+        let mut manifest: Self = serde_json::from_value(document).map_err(invalid)?;
+        manifest.includes = includes;
         if !manifest.archive
         {
             manifest.cargo_version = package_version(path)?;
         }
         manifest.validate()?;
         Ok(manifest)
+    }
+
+    /// The included resources files this manifest expanded, in read order.
+    pub fn include_files(&self) -> &[PathBuf]
+    {
+        &self.includes
     }
 
     pub fn validate(&self) -> Result<()>
@@ -721,139 +738,178 @@ impl Manifest
         }
         for definition in &self.resources
         {
-            let data = match &definition.payload
+            let payload = self.payload(definition, &command_table, path, artifacts)?;
+            if let Some(commands) = payload.commands
             {
-                Payload::Pstring { text: value } =>
+                if self.resources.iter().any(|r| r.kind == "MCMD" && r.id == definition.id)
                 {
-                    if definition.kind != "STR "
-                    {
-                        return Err(error("pstring payload requires resource type STR (with \
-                                          trailing space)"));
-                    }
-                    text::pstring(value)?
+                    return Err(error("menu command fields conflict with explicit MCMD resource"));
                 }
-                Payload::Strings { strings } =>
-                {
-                    if definition.kind != "STR#"
-                    {
-                        return Err(error("strings payload requires STR#"));
-                    }
-                    let mut out = u16::try_from(strings.len())?.to_be_bytes().to_vec();
-                    for value in strings
-                    {
-                        out.extend(text::pstring(value)?);
-                    }
-                    out
-                }
-                Payload::Menu { title,
-                                items } =>
-                {
-                    if definition.kind != "MENU"
-                       || items.len() > 31
-                       || items.iter().any(|item| item.text().is_empty())
-                    {
-                        return Err(error("invalid MENU definition"));
-                    }
-                    let mut out = definition.id.to_be_bytes().to_vec();
-                    out.extend_from_slice(&[0; 6]); // width, height, procedure ID
-                    let enable_bits = items.iter().enumerate().fold(1u32, |bits, (index, item)| {
-                                                                  bits
-                                                                  | if item.enabled()
-                                                                  {
-                                                                      1u32 << (index + 1)
-                                                                  }
-                                                                  else
-                                                                  {
-                                                                      0
-                                                                  }
-                                                              });
-                    out.extend_from_slice(&enable_bits.to_be_bytes());
-                    out.extend(text::pstring(title)?);
-                    let mut commands = Vec::new();
-                    for (item, command) in items.iter().zip(&command_table.menus[&definition.id])
-                    {
-                        out.extend(text::pstring(item.text())?);
-                        out.extend_from_slice(&item.metadata()?);
-                        commands.extend_from_slice(&command.to_be_bytes());
-                    }
-                    if commands.iter().any(|byte| *byte != 0)
-                    {
-                        if self.resources.iter().any(|r| r.kind == "MCMD" && r.id == definition.id)
-                        {
-                            return Err(error("menu command fields conflict with explicit MCMD \
-                                              resource"));
-                        }
-                        resources.push(Resource { kind:       *b"MCMD",
-                                                  id:         definition.id,
-                                                  name:       None,
-                                                  attributes: 0,
-                                                  data:       commands });
-                    }
-                    out.push(0);
-                    out
-                }
-                Payload::OpenTypes { signature,
-                                     types } =>
-                {
-                    if definition.kind != "open"
-                    {
-                        return Err(error("open_types payload requires resource type open"));
-                    }
-                    let signature = fourcc(signature)?;
-                    let types = types.iter().map(|kind| fourcc(kind)).collect::<Result<Vec<_>>>()?;
-                    let mut out = vec![0; 8 + types.len() * 4];
-                    mac_formats::open_types::encode(signature, &types, &mut out)?;
-                    out
-                }
-                Payload::Hex { hex } =>
-                {
-                    let hex: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
-                    if !hex.is_ascii() || !hex.len().is_multiple_of(2)
-                    {
-                        return Err(error("hex payload must contain pairs of ASCII hex digits"));
-                    }
-                    (0..hex.len()).step_by(2)
-                                  .map(|i| Ok(u8::from_str_radix(&hex[i..i + 2], 16)?))
-                                  .collect::<Result<Vec<u8>>>()?
-                }
-                Payload::File { path: source } => fs::read(path.parent().unwrap().join(source))?,
-                Payload::NativeCode { artifact } =>
-                {
-                    let source = artifacts.ok_or_else(|| {
-                                              error("native_code requires this build's artifact \
-                                                     directory; rebuild with mac-build package")
-                                          })?
-                                          .join(artifact);
-                    let elf = fs::read(&source)?;
-                    let range = crate::platform::current().link_range(Role::CodeResource)?;
-                    let mut descriptor = Descriptor { role:        Role::CodeResource,
-                                                      abi_version: self.abi_version,
-                                                      load_base:   range.start,
-                                                      load_limit:  range.end,
-                                                      entry:       range.start };
-                    let image = mac_formats::elf::decode(&elf, descriptor.load_base,
-                                                         descriptor.load_limit)?;
-                    descriptor.entry = image.entry;
-                    descriptor.load_limit = descriptor.load_base.checked_add(mac_formats::elf::relocation::span(&image, descriptor.load_base)?).ok_or_else(|| error("definition extent overflows"))?;
-                    let relocations = mac_formats::elf::relocation::extract(&elf, &image, descriptor.load_base, descriptor.role)?
-                        .ok_or_else(|| error("definition requires relocation-capable linking"))?;
-                    let mut payload = descriptor.encode()?.to_vec();
-                    payload.extend(compact_code(&elf, &image, &descriptor)?);
-                    payload.extend(relocations);
-                    payload
-                }
-            };
-            resources.push(Resource { kind: fourcc(&definition.kind)?,
-                                      id: definition.id,
-                                      name: definition.name
-                                                      .as_deref()
-                                                      .map(text::encode)
-                                                      .transpose()?,
+                resources.push(Resource { kind:       *b"MCMD",
+                                          id:         definition.id,
+                                          name:       None,
+                                          attributes: 0,
+                                          data:       commands });
+            }
+            resources.push(Resource { kind:       fourcc(&definition.kind)?,
+                                      id:         definition.id,
+                                      name:       definition.name
+                                                            .as_deref()
+                                                            .map(text::encode)
+                                                            .transpose()?,
                                       attributes: definition.attributes,
-                                      data });
+                                      data:       payload.data });
         }
         Ok(resources)
     }
+
+    /// Every definition's classic payload, in manifest order, without the
+    /// native image a package build adds around them. A definition that does
+    /// not compile is reported at its own index with the reason, so a caller
+    /// auditing a package sees every entry rather than only the first failure.
+    pub fn classic_payloads(
+        &self, path: &Path, artifacts: Option<&Path>)
+        -> Result<Vec<std::result::Result<ClassicPayload, Box<dyn std::error::Error>>>>
+    {
+        let command_table = self.validated_commands()?;
+        Ok(self.resources
+               .iter()
+               .map(|definition| self.payload(definition, &command_table, path, artifacts))
+               .collect())
+    }
+
+    /// One payload form's classic bytes. A MENU's command fields are returned
+    /// separately: they compile to their own MCMD resource and the menu payload
+    /// does not contain them.
+    fn payload(&self, definition: &Definition, command_table: &commands::Commands, path: &Path,
+               artifacts: Option<&Path>)
+               -> Result<ClassicPayload>
+    {
+        let mut menu_commands = None;
+        let data = match &definition.payload
+        {
+            Payload::Pstring { text: value } =>
+            {
+                if definition.kind != "STR "
+                {
+                    return Err(error("pstring payload requires resource type STR (with \
+                                      trailing space)"));
+                }
+                text::pstring(value)?
+            }
+            Payload::Strings { strings } =>
+            {
+                if definition.kind != "STR#"
+                {
+                    return Err(error("strings payload requires STR#"));
+                }
+                let mut out = u16::try_from(strings.len())?.to_be_bytes().to_vec();
+                for value in strings
+                {
+                    out.extend(text::pstring(value)?);
+                }
+                out
+            }
+            Payload::Menu { title,
+                            items } =>
+            {
+                if definition.kind != "MENU"
+                   || items.len() > 31
+                   || items.iter().any(|item| item.text().is_empty())
+                {
+                    return Err(error("invalid MENU definition"));
+                }
+                let mut out = definition.id.to_be_bytes().to_vec();
+                out.extend_from_slice(&[0; 6]); // width, height, procedure ID
+                let enable_bits = items.iter().enumerate().fold(1u32, |bits, (index, item)| {
+                                                              bits
+                                                              | if item.enabled()
+                                                              {
+                                                                  1u32 << (index + 1)
+                                                              }
+                                                              else
+                                                              {
+                                                                  0
+                                                              }
+                                                          });
+                out.extend_from_slice(&enable_bits.to_be_bytes());
+                out.extend(text::pstring(title)?);
+                let mut commands = Vec::new();
+                for (item, command) in items.iter().zip(&command_table.menus[&definition.id])
+                {
+                    out.extend(text::pstring(item.text())?);
+                    out.extend_from_slice(&item.metadata()?);
+                    commands.extend_from_slice(&command.to_be_bytes());
+                }
+                if commands.iter().any(|byte| *byte != 0)
+                {
+                    menu_commands = Some(commands);
+                }
+                out.push(0);
+                out
+            }
+            Payload::OpenTypes { signature,
+                                 types } =>
+            {
+                if definition.kind != "open"
+                {
+                    return Err(error("open_types payload requires resource type open"));
+                }
+                let signature = fourcc(signature)?;
+                let types = types.iter().map(|kind| fourcc(kind)).collect::<Result<Vec<_>>>()?;
+                let mut out = vec![0; 8 + types.len() * 4];
+                mac_formats::open_types::encode(signature, &types, &mut out)?;
+                out
+            }
+            Payload::Hex { hex } =>
+            {
+                let hex: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
+                if !hex.is_ascii() || !hex.len().is_multiple_of(2)
+                {
+                    return Err(error("hex payload must contain pairs of ASCII hex digits"));
+                }
+                (0..hex.len()).step_by(2)
+                              .map(|i| Ok(u8::from_str_radix(&hex[i..i + 2], 16)?))
+                              .collect::<Result<Vec<u8>>>()?
+            }
+            Payload::File { path: source } => fs::read(path.parent().unwrap().join(source))?,
+            Payload::NativeCode { artifact } =>
+            {
+                let source = artifacts.ok_or_else(|| {
+                                          error("native_code requires this build's artifact \
+                                                 directory; rebuild with mac-build package")
+                                      })?
+                                      .join(artifact);
+                let elf = fs::read(&source)?;
+                let range = crate::platform::current().link_range(Role::CodeResource)?;
+                let mut descriptor = Descriptor { role:        Role::CodeResource,
+                                                  abi_version: self.abi_version,
+                                                  load_base:   range.start,
+                                                  load_limit:  range.end,
+                                                  entry:       range.start };
+                let image =
+                    mac_formats::elf::decode(&elf, descriptor.load_base, descriptor.load_limit)?;
+                descriptor.entry = image.entry;
+                descriptor.load_limit = descriptor.load_base.checked_add(mac_formats::elf::relocation::span(&image, descriptor.load_base)?).ok_or_else(|| error("definition extent overflows"))?;
+                let relocations = mac_formats::elf::relocation::extract(&elf, &image, descriptor.load_base, descriptor.role)?
+                        .ok_or_else(|| error("definition requires relocation-capable linking"))?;
+                let mut payload = descriptor.encode()?.to_vec();
+                payload.extend(compact_code(&elf, &image, &descriptor)?);
+                payload.extend(relocations);
+                payload
+            }
+        };
+        Ok(ClassicPayload { data,
+                            commands: menu_commands })
+    }
+}
+
+/// One definition's classic payload bytes, and a MENU's command fields when it
+/// has any. The command fields compile to a separate MCMD resource.
+pub struct ClassicPayload
+{
+    pub data:     Vec<u8>,
+    pub commands: Option<Vec<u8>>
 }
 
 fn compact_code(bytes: &[u8], image: &mac_formats::elf::Image, descriptor: &Descriptor)

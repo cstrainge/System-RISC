@@ -492,3 +492,36 @@ fn tag_accessors_expose_the_returned_length_and_honour_flag()
     assert!(!refused.succeeded());
     assert_eq!(refused.returned(), 0);
 }
+
+/// A tag this crate does not model is still a property tag: the caller states
+/// the value buffer and reads the reply back by name.
+const TAG_BOARD_REVISION: u32 = 0x0001_0002;
+
+struct Revision;
+impl Channel for Revision
+{
+    fn transact(&mut self, _address: u32, words: &mut [u32]) -> Result<(), Error>
+    {
+        assert_eq!(words[0] as usize, words.len() * 4, "request size word");
+        words[1] = RESPONSE_SUCCESS;
+        words[4] = RESPONSE_SUCCESS | 4;
+        words[5] = 0x00a0_2082;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_tag_the_crate_does_not_model_round_trips_through_the_message()
+{
+    let mut storage = Storage::new();
+    let mut message = Message::new(&mut storage.0, ADDRESS).unwrap();
+    message.request(TAG_BOARD_REVISION, &[0]).unwrap();
+    message.finish().unwrap();
+    message.transact(&mut Revision).unwrap();
+    message.check().unwrap();
+    assert_eq!(message.reply(TAG_BOARD_REVISION, 1).unwrap(), &[0x00a0_2082]);
+    assert!(matches!(message.reply(TAG_BOARD_REVISION, 2),
+                     Err(Error::ShortValue { tag:      TAG_BOARD_REVISION,
+                                             needed:   8,
+                                             returned: 4 })));
+}

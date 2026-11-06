@@ -1,0 +1,601 @@
+System 7.5.1 Performa 5200 series restore CD
+disc:    System-7.5.1-Performa-5200-Restore-CD.iso
+source:  Hard Disk Files/System Folder Files/System
+source:  Hard Disk Files/System Folder Files/Fonts/American Heritage Font
+source:  Hard Disk Files/System Folder Files/Fonts/Arial MT Cn Lt
+source:  Hard Disk Files/System Folder Files/Fonts/Bodoni MT Ultra Bold
+source:  Hard Disk Files/System Folder Files/Fonts/Chicago
+source:  Hard Disk Files/System Folder Files/Fonts/ClosedCaption2
+source:  Hard Disk Files/System Folder Files/Fonts/Courier
+source:  Hard Disk Files/System Folder Files/Fonts/eWorld Fonts
+source:  Hard Disk Files/System Folder Files/Fonts/Geneva
+source:  Hard Disk Files/System Folder Files/Fonts/Gill Sans Condensed Bold
+source:  Hard Disk Files/System Folder Files/Fonts/Helvetica
+source:  Hard Disk Files/System Folder Files/Fonts/Klang MT
+source:  Hard Disk Files/System Folder Files/Fonts/Monaco
+source:  Hard Disk Files/System Folder Files/Fonts/New Berolina MT
+source:  Hard Disk Files/System Folder Files/Fonts/New York
+source:  Hard Disk Files/System Folder Files/Fonts/Old English Text MT
+source:  Hard Disk Files/System Folder Files/Fonts/Palatino
+source:  Hard Disk Files/System Folder Files/Fonts/Script MT Bold
+source:  Hard Disk Files/System Folder Files/Fonts/Symbol
+source:  Hard Disk Files/System Folder Files/Fonts/Times
+source:  Hard Disk Files/System Folder Files/Fonts/TTYFont
+source:  Hard Disk Files/System Folder Files/Fonts/VT102Font
+package: system (system/resources.json)
+ours: 905 resources — extract 578, keep ours 44 customised, 292 ours-only, 3 ambiguous, 19 held, 8 native-code
+disc: 1513 resources, 802 whose (type, id) we do not name
+
+by type
+  type   ours  extract  customised  ours-only  ambiguous   held  native
+  ALRT     43       20          13          9          0      1       0
+  BNDL      3        1           0          2          0      0       0
+  CDEF      6        0           0          0          0      0       6
+  CNTL     14       10           0          4          0      0       0
+  CURS     15        8           0          7          0      0       0
+  DITL    110       62          16         32          0      0       0
+  DLOG     64       44           0         20          0      0       0
+  FOND      9        0           6          0          3      0       0
+  FONT     10        3           0          7          0      0       0
+  FREF     11        8           0          3          0      0       0
+  ICN#     49       38           0          9          0      2       0
+  ICON     30       24           2          4          0      0       0
+  MDEF      1        0           0          0          0      0       1
+  MENU      9        8           0          1          0      0       0
+  NFNT     83       26           0         57          0      0       0
+  PAT       5        3           0          2          0      0       0
+  PAT#      1        1           0          0          0      0       0
+  PICT     46       19           1         20          0      6       0
+  SICN     24       23           0          1          0      0       0
+  STR       2        0           0          2          0      0       0
+  STR#      4        0           1          3          0      0       0
+  WDEF      1        0           0          0          0      0       1
+  WIND      1        0           0          1          0      0       0
+  acur      1        1           0          0          0      0       0
+  cctb      1        1           0          0          0      0       0
+  cicn     11        1           0         10          0      0       0
+  clut      8        1           0          7          0      0       0
+  dctb     14       13           1          0          0      0       0
+  fmap      2        2           0          0          0      0       0
+  icl4     40       35           0          3          0      2       0
+  icl8     41       34           0          5          0      2       0
+  ics#     62       53           1          6          0      2       0
+  ics4     59       52           1          4          0      2       0
+  ics8     57       48           1          6          0      2       0
+  kcs#     22        4           0         18          0      0       0
+  kcs4     22        4           0         18          0      0       0
+  pixs     12        2           0         10          0      0       0
+  pmap      2        2           0          0          0      0       0
+  ppat      2        1           1          0          0      0       0
+  sfnt     46       25           0         21          0      0       0
+  wctb      1        1           0          0          0      0       0
+
+keep ours
+  ours-only   ALRT   -20010                               ORIGINAL_VISUAL_414C5254_N20010  ()
+  customised  ALRT   -16502                               ORIGINAL_VISUAL_414C5254_N16502  (payload differs)
+  customised  ALRT   -16501                               ORIGINAL_VISUAL_414C5254_N16501  (payload differs)
+  customised  ALRT   -16500                               ORIGINAL_VISUAL_414C5254_N16500  (payload differs)
+  ours-only   ALRT   -16463  About System RISC            ABOUT_SYSTEM_ALERT  ()
+  ours-only   ALRT   -16462  Core Save Changes Alert      CORE_SAVE_CHANGES_ALERT  ()
+  ours-only   ALRT   -16461  Core Out Of Memory Alert     CORE_OUT_OF_MEMORY_ALERT  ()
+  ours-only   ALRT   -16460  Core Error Alert             CORE_ERROR_ALERT  ()
+  ours-only   ALRT   -16388                               ORIGINAL_VISUAL_414C5254_N16388  ()
+  ours-only   ALRT   -16387                               ORIGINAL_VISUAL_414C5254_N16387  ()
+  ours-only   ALRT   -16386                               ORIGINAL_VISUAL_414C5254_N16386  ()
+  customised  ALRT    -6078                               ORIGINAL_VISUAL_414C5254_N6078  (payload differs)
+  customised  ALRT    -6077                               ORIGINAL_VISUAL_414C5254_N6077  (payload differs)
+  customised  ALRT    -6076                               ORIGINAL_VISUAL_414C5254_N6076  (payload differs)
+  customised  ALRT    -6075                               ORIGINAL_VISUAL_414C5254_N6075  (payload differs)
+  customised  ALRT    -6074                               ORIGINAL_VISUAL_414C5254_N6074  (payload differs)
+  customised  ALRT    -6073                               ORIGINAL_VISUAL_414C5254_N6073  (payload differs)
+  customised  ALRT    -6072                               ORIGINAL_VISUAL_414C5254_N6072  (payload differs)
+  customised  ALRT    -6071                               ORIGINAL_VISUAL_414C5254_N6071  (payload differs)
+  customised  ALRT    -6070                               ORIGINAL_VISUAL_414C5254_N6070  (payload differs)
+  customised  ALRT    -6069                               ORIGINAL_VISUAL_414C5254_N6069  (payload differs)
+  ours-only   ALRT    -4080                               ORIGINAL_VISUAL_414C5254_N4080  ()
+  ours-only   BNDL   -30001  Native driver type icon      NATIVE_DRIVER_ICON_BUNDLE  ()
+  ours-only   BNDL    15500  Generic font file icons      FONT_ICON_BUNDLE  ()
+  ours-only   CNTL    -4080                               ORIGINAL_VISUAL_434E544C_N4080  ()
+  ours-only   CNTL    -4079                               ORIGINAL_VISUAL_434E544C_N4079  ()
+  ours-only   CNTL    -4078                               ORIGINAL_VISUAL_434E544C_N4078  ()
+  ours-only   CNTL    -4077                               ORIGINAL_VISUAL_434E544C_N4077  ()
+  ours-only   CURS   -20161                               ORIGINAL_VISUAL_43555253_N20161  ()
+  ours-only   CURS        1                               ORIGINAL_VISUAL_43555253_1  ()
+  ours-only   CURS        2                               ORIGINAL_VISUAL_43555253_2  ()
+  ours-only   CURS        3                               ORIGINAL_VISUAL_43555253_3  ()
+  ours-only   CURS        4                               ORIGINAL_VISUAL_43555253_4  ()
+  ours-only   CURS       17  Resize Horizontal            CURSOR_RESIZE_HORIZONTAL  ()
+  ours-only   CURS       21  Resize Vertical              CURSOR_RESIZE_VERTICAL  ()
+  ours-only   DITL   -20163                               ORIGINAL_VISUAL_4449544C_N20163  ()
+  ours-only   DITL   -20162                               ORIGINAL_VISUAL_4449544C_N20162  ()
+  ours-only   DITL   -20161                               ORIGINAL_VISUAL_4449544C_N20161  ()
+  ours-only   DITL   -20065                               ORIGINAL_VISUAL_4449544C_N20065  ()
+  ours-only   DITL   -20038                               ORIGINAL_VISUAL_4449544C_N20038  ()
+  ours-only   DITL   -20037                               ORIGINAL_VISUAL_4449544C_N20037  ()
+  ours-only   DITL   -20010                               ORIGINAL_VISUAL_4449544C_N20010  ()
+  ours-only   DITL   -16595                               ORIGINAL_VISUAL_4449544C_N16595  ()
+  ours-only   DITL   -16594                               ORIGINAL_VISUAL_4449544C_N16594  ()
+  ours-only   DITL   -16593                               ORIGINAL_VISUAL_4449544C_N16593  ()
+  ours-only   DITL   -16505                               ORIGINAL_VISUAL_4449544C_N16505  ()
+  customised  DITL   -16502                               ORIGINAL_VISUAL_4449544C_N16502  (payload differs)
+  customised  DITL   -16501                               ORIGINAL_VISUAL_4449544C_N16501  (payload differs)
+  customised  DITL   -16500                               ORIGINAL_VISUAL_4449544C_N16500  (payload differs)
+  ours-only   DITL   -16491                               ORIGINAL_VISUAL_4449544C_N16491  ()
+  customised  DITL   -16490                               ORIGINAL_VISUAL_4449544C_N16490  (payload differs)
+  customised  DITL   -16489                               ORIGINAL_VISUAL_4449544C_N16489  (payload differs)
+  customised  DITL   -16483                               ORIGINAL_VISUAL_4449544C_N16483  (payload differs)
+  ours-only   DITL   -16463  About System RISC items      ABOUT_SYSTEM_ITEMS  ()
+  ours-only   DITL   -16462  Core Save Changes Alert Items CORE_SAVE_CHANGES_ALERT_ITEMS  ()
+  ours-only   DITL   -16461  Core Out Of Memory Alert Items CORE_OUT_OF_MEMORY_ALERT_ITEMS  ()
+  ours-only   DITL   -16460  Core Error Alert Items       CORE_ERROR_ALERT_ITEMS  ()
+  ours-only   DITL   -16388                               ORIGINAL_VISUAL_4449544C_N16388  ()
+  ours-only   DITL   -16387                               ORIGINAL_VISUAL_4449544C_N16387  ()
+  ours-only   DITL   -16386                               ORIGINAL_VISUAL_4449544C_N16386  ()
+  customised  DITL    -6078                               ORIGINAL_VISUAL_4449544C_N6078  (payload differs)
+  customised  DITL    -6077                               ORIGINAL_VISUAL_4449544C_N6077  (payload differs)
+  customised  DITL    -6076                               ORIGINAL_VISUAL_4449544C_N6076  (payload differs)
+  customised  DITL    -6075                               ORIGINAL_VISUAL_4449544C_N6075  (payload differs)
+  customised  DITL    -6074                               ORIGINAL_VISUAL_4449544C_N6074  (payload differs)
+  customised  DITL    -6073                               ORIGINAL_VISUAL_4449544C_N6073  (payload differs)
+  customised  DITL    -6072                               ORIGINAL_VISUAL_4449544C_N6072  (payload differs)
+  customised  DITL    -6071                               ORIGINAL_VISUAL_4449544C_N6071  (payload differs)
+  customised  DITL    -6070                               ORIGINAL_VISUAL_4449544C_N6070  (payload differs)
+  customised  DITL    -6069                               ORIGINAL_VISUAL_4449544C_N6069  (payload differs)
+  ours-only   DITL    -6060                               ORIGINAL_VISUAL_4449544C_N6060  ()
+  ours-only   DITL    -6059                               ORIGINAL_VISUAL_4449544C_N6059  ()
+  ours-only   DITL    -6058                               ORIGINAL_VISUAL_4449544C_N6058  ()
+  ours-only   DITL    -6057                               ORIGINAL_VISUAL_4449544C_N6057  ()
+  ours-only   DITL    -6056                               ORIGINAL_VISUAL_4449544C_N6056  ()
+  ours-only   DITL    -6055                               ORIGINAL_VISUAL_4449544C_N6055  ()
+  ours-only   DITL    -6054                               ORIGINAL_VISUAL_4449544C_N6054  ()
+  ours-only   DITL    -6053                               ORIGINAL_VISUAL_4449544C_N6053  ()
+  ours-only   DITL    -6052                               ORIGINAL_VISUAL_4449544C_N6052  ()
+  ours-only   DITL    -6051                               ORIGINAL_VISUAL_4449544C_N6051  ()
+  ours-only   DITL    -6050                               ORIGINAL_VISUAL_4449544C_N6050  ()
+  ours-only   DITL    -4096                               ORIGINAL_VISUAL_4449544C_N4096  ()
+  ours-only   DITL    -4080                               ORIGINAL_VISUAL_4449544C_N4080  ()
+  ours-only   DLOG   -20163                               ORIGINAL_VISUAL_444C4F47_N20163  ()
+  ours-only   DLOG   -20161                               ORIGINAL_VISUAL_444C4F47_N20161  ()
+  ours-only   DLOG   -20065                               ORIGINAL_VISUAL_444C4F47_N20065  ()
+  ours-only   DLOG   -20038                               ORIGINAL_VISUAL_444C4F47_N20038  ()
+  ours-only   DLOG   -20037                               ORIGINAL_VISUAL_444C4F47_N20037  ()
+  ours-only   DLOG   -16595                               ORIGINAL_VISUAL_444C4F47_N16595  ()
+  ours-only   DLOG   -16594                               ORIGINAL_VISUAL_444C4F47_N16594  ()
+  ours-only   DLOG   -16593                               ORIGINAL_VISUAL_444C4F47_N16593  ()
+  ours-only   DLOG   -16491                               ORIGINAL_VISUAL_444C4F47_N16491  ()
+  ours-only   DLOG    -6060  EraseDefectAlertManID        ORIGINAL_VISUAL_444C4F47_N6060  ()
+  ours-only   DLOG    -6059  EraseFailedAlertManID        ORIGINAL_VISUAL_444C4F47_N6059  ()
+  ours-only   DLOG    -6058  EraseCancelledAlertManID     ORIGINAL_VISUAL_444C4F47_N6058  ()
+  ours-only   DLOG    -6057  InitLockedAlertManID         ORIGINAL_VISUAL_444C4F47_N6057  ()
+  ours-only   DLOG    -6056  InitDefectAlertManID         ORIGINAL_VISUAL_444C4F47_N6056  ()
+  ours-only   DLOG    -6055  InitFailedAlertManID         ORIGINAL_VISUAL_444C4F47_N6055  ()
+  ours-only   DLOG    -6054  InitCancelledAlertManID      ORIGINAL_VISUAL_444C4F47_N6054  ()
+  ours-only   DLOG    -6053  CantFormatAlertID            ORIGINAL_VISUAL_444C4F47_N6053  ()
+  ours-only   DLOG    -6052  CantEraseAlertID             ORIGINAL_VISUAL_444C4F47_N6052  ()
+  ours-only   DLOG    -6051  CantFormatAlertManID         ORIGINAL_VISUAL_444C4F47_N6051  ()
+  ours-only   DLOG    -6050  CantEraseAlertManID          ORIGINAL_VISUAL_444C4F47_N6050  ()
+  ambiguous   FOND        0  Chicago                      FONT_BUNDLE_FOND_0  ()
+  customised  FOND        2  New York                     FONT_BUNDLE_FOND_2  (payload differs)
+  ambiguous   FOND        3  Geneva                       FONT_BUNDLE_FOND_3  ()
+  ambiguous   FOND        4  Monaco                       FONT_BUNDLE_FOND_4  ()
+  customised  FOND       16  Palatino                     FONT_BUNDLE_FOND_16  (payload differs)
+  customised  FOND       20  Times                        FONT_BUNDLE_FOND_20  (payload differs)
+  customised  FOND       21  Helvetica                    FONT_BUNDLE_FOND_21  (payload differs)
+  customised  FOND       22  Courier                      FONT_BUNDLE_FOND_22  (payload differs)
+  customised  FOND       23  Symbol                       FONT_BUNDLE_FOND_23  (payload differs)
+  ours-only   FONT        0                               FONT_BUNDLE_FONT_0  ()
+  ours-only   FONT       12                               FONT_BUNDLE_FONT_12  ()
+  ours-only   FONT      384                               FONT_BUNDLE_FONT_384  ()
+  ours-only   FONT      512                               FONT_BUNDLE_FONT_512  ()
+  ours-only   FONT    12000                               FONT_BUNDLE_FONT_12000  ()
+  ours-only   FONT    12001                               FONT_BUNDLE_FONT_12001  ()
+  ours-only   FONT    12002                               FONT_BUNDLE_FONT_12002  ()
+  ours-only   FREF   -30001  Native driver type icon      NATIVE_DRIVER_ICON_REFERENCE  ()
+  ours-only   FREF    14500                               TRUETYPE_ICON_REFERENCE  ()
+  ours-only   FREF    15500                               FONT_SUITCASE_ICON_REFERENCE  ()
+  ours-only   ICN#   -30001  Driver file                  DRIVER_FILE_LARGE_MONO  ()
+  ours-only   ICN#   -30000  Drivers folder               DRIVERS_FOLDER_LARGE_MONO  ()
+  ours-only   ICN#   -20024                               ORIGINAL_VISUAL_49434E23_N20024  ()
+  ours-only   ICN#    14500                               TRUETYPE_LARGE_MONO  ()
+  ours-only   ICN#    15500                               FONT_SUITCASE_LARGE_MONO  ()
+  ours-only   ICN#    24000  Virtio hard disk             VIRTIO_DISK_ICON  ()
+  ours-only   ICN#    32740                               BOOT_HAPPY_MAC  ()
+  ours-only   ICN#    32741                               BOOT_MISSING_DISK  ()
+  ours-only   ICN#    32742                               BOOT_BLANK_DISK  ()
+  ours-only   ICON   -20185                               ORIGINAL_VISUAL_49434F4E_N20185  ()
+  ours-only   ICON   -20184                               ORIGINAL_VISUAL_49434F4E_N20184  ()
+  ours-only   ICON   -20183                               ORIGINAL_VISUAL_49434F4E_N20183  ()
+  customised  ICON   -16573                               ORIGINAL_VISUAL_49434F4E_N16573  (attributes differ)
+  customised  ICON   -16565                               ORIGINAL_VISUAL_49434F4E_N16565  (payload differs)
+  ours-only   ICON   -16400  Original System error bomb   PANIC_BOMB  ()
+  ours-only   MENU   -16488  System Apple menu            SYSTEM_APPLE_MENU  ()
+  ours-only   NFNT    12000                               FONT_BUNDLE_NFNT_12000  ()
+  ours-only   NFNT    12001                               FONT_BUNDLE_NFNT_12001  ()
+  ours-only   NFNT    12002                               FONT_BUNDLE_NFNT_12002  ()
+  ours-only   NFNT    12003                               FONT_BUNDLE_NFNT_12003  ()
+  ours-only   NFNT    12004                               FONT_BUNDLE_NFNT_12004  ()
+  ours-only   NFNT    12005                               FONT_BUNDLE_NFNT_12005  ()
+  ours-only   NFNT    12006                               FONT_BUNDLE_NFNT_12006  ()
+  ours-only   NFNT    12007                               FONT_BUNDLE_NFNT_12007  ()
+  ours-only   NFNT    12008                               FONT_BUNDLE_NFNT_12008  ()
+  ours-only   NFNT    12009                               FONT_BUNDLE_NFNT_12009  ()
+  ours-only   NFNT    12010                               FONT_BUNDLE_NFNT_12010  ()
+  ours-only   NFNT    12011                               FONT_BUNDLE_NFNT_12011  ()
+  ours-only   NFNT    12012                               FONT_BUNDLE_NFNT_12012  ()
+  ours-only   NFNT    12013                               FONT_BUNDLE_NFNT_12013  ()
+  ours-only   NFNT    12014                               FONT_BUNDLE_NFNT_12014  ()
+  ours-only   NFNT    12015                               FONT_BUNDLE_NFNT_12015  ()
+  ours-only   NFNT    12016                               FONT_BUNDLE_NFNT_12016  ()
+  ours-only   NFNT    12017                               FONT_BUNDLE_NFNT_12017  ()
+  ours-only   NFNT    12018                               FONT_BUNDLE_NFNT_12018  ()
+  ours-only   NFNT    12019                               FONT_BUNDLE_NFNT_12019  ()
+  ours-only   NFNT    12020                               FONT_BUNDLE_NFNT_12020  ()
+  ours-only   NFNT    12021                               FONT_BUNDLE_NFNT_12021  ()
+  ours-only   NFNT    12022                               FONT_BUNDLE_NFNT_12022  ()
+  ours-only   NFNT    12023                               FONT_BUNDLE_NFNT_12023  ()
+  ours-only   NFNT    12024                               FONT_BUNDLE_NFNT_12024  ()
+  ours-only   NFNT    12025                               FONT_BUNDLE_NFNT_12025  ()
+  ours-only   NFNT    12026                               FONT_BUNDLE_NFNT_12026  ()
+  ours-only   NFNT    12027                               FONT_BUNDLE_NFNT_12027  ()
+  ours-only   NFNT    12028                               FONT_BUNDLE_NFNT_12028  ()
+  ours-only   NFNT    12029                               FONT_BUNDLE_NFNT_12029  ()
+  ours-only   NFNT    12030                               FONT_BUNDLE_NFNT_12030  ()
+  ours-only   NFNT    12031                               FONT_BUNDLE_NFNT_12031  ()
+  ours-only   NFNT    12032                               FONT_BUNDLE_NFNT_12032  ()
+  ours-only   NFNT    12033                               FONT_BUNDLE_NFNT_12033  ()
+  ours-only   NFNT    12034                               FONT_BUNDLE_NFNT_12034  ()
+  ours-only   NFNT    12035                               FONT_BUNDLE_NFNT_12035  ()
+  ours-only   NFNT    12036                               FONT_BUNDLE_NFNT_12036  ()
+  ours-only   NFNT    12037                               FONT_BUNDLE_NFNT_12037  ()
+  ours-only   NFNT    12038                               FONT_BUNDLE_NFNT_12038  ()
+  ours-only   NFNT    13021                               EXTRACTED_NFNT_5380  ()
+  ours-only   NFNT    13022                               EXTRACTED_NFNT_3662  ()
+  ours-only   NFNT    13023                               EXTRACTED_NFNT_3169  ()
+  ours-only   NFNT    13024                               EXTRACTED_NFNT_2784  ()
+  ours-only   NFNT    13025                               EXTRACTED_NFNT_11814  ()
+  ours-only   NFNT    13026                               EXTRACTED_NFNT_20845  ()
+  ours-only   NFNT    13027                               EXTRACTED_NFNT_19129  ()
+  ours-only   NFNT    13028                               EXTRACTED_NFNT_15521  ()
+  ours-only   NFNT    13029                               EXTRACTED_NFNT_7155  ()
+  ours-only   NFNT    13030                               EXTRACTED_NFNT_18252  ()
+  ours-only   NFNT    13031                               EXTRACTED_NFNT_27283  ()
+  ours-only   NFNT    13032                               EXTRACTED_NFNT_7843  ()
+  ours-only   NFNT    13033                               EXTRACTED_NFNT_28809  ()
+  ours-only   NFNT    13034                               EXTRACTED_NFNT_28812  ()
+  ours-only   NFNT    13035                               EXTRACTED_NFNT_17234  ()
+  ours-only   NFNT    13036                               EXTRACTED_NFNT_15516  ()
+  ours-only   NFNT    13037                               EXTRACTED_NFNT_30500  ()
+  ours-only   NFNT    13038                               EXTRACTED_NFNT_30501  ()
+  ours-only   PAT        15                               ORIGINAL_VISUAL_50415420_15  ()
+  ours-only   PAT        18                               ORIGINAL_VISUAL_50415420_18  ()
+  ours-only   PICT   -20242                               ORIGINAL_VISUAL_50494354_N20242  ()
+  ours-only   PICT   -20241                               ORIGINAL_VISUAL_50494354_N20241  ()
+  ours-only   PICT   -20240                               ORIGINAL_VISUAL_50494354_N20240  ()
+  ours-only   PICT   -20239                               ORIGINAL_VISUAL_50494354_N20239  ()
+  ours-only   PICT   -20238                               ORIGINAL_VISUAL_50494354_N20238  ()
+  ours-only   PICT   -20237                               ORIGINAL_VISUAL_50494354_N20237  ()
+  ours-only   PICT   -20236                               ORIGINAL_VISUAL_50494354_N20236  ()
+  ours-only   PICT   -20235                               ORIGINAL_VISUAL_50494354_N20235  ()
+  ours-only   PICT   -20006                               ORIGINAL_VISUAL_50494354_N20006  ()
+  ours-only   PICT   -20005                               ORIGINAL_VISUAL_50494354_N20005  ()
+  ours-only   PICT   -20004                               ORIGINAL_VISUAL_50494354_N20004  ()
+  ours-only   PICT   -16620                               ORIGINAL_VISUAL_50494354_N16620  ()
+  customised  PICT   -16610                               ORIGINAL_VISUAL_50494354_N16610  (payload differs)
+  ours-only   PICT      100  DiskMode 0                   ORIGINAL_VISUAL_50494354_100  ()
+  ours-only   PICT      101  DiskMode 1                   ORIGINAL_VISUAL_50494354_101  ()
+  ours-only   PICT      102  DiskMode 2                   ORIGINAL_VISUAL_50494354_102  ()
+  ours-only   PICT      103  DiskMode 3                   ORIGINAL_VISUAL_50494354_103  ()
+  ours-only   PICT      104  DiskMode 4                   ORIGINAL_VISUAL_50494354_104  ()
+  ours-only   PICT      105  DiskMode 5                   ORIGINAL_VISUAL_50494354_105  ()
+  ours-only   PICT      106  DiskMode 6                   ORIGINAL_VISUAL_50494354_106  ()
+  ours-only   PICT      501  Decrypt Data                 ORIGINAL_VISUAL_50494354_501  ()
+  ours-only   SICN   -16386                               ORIGINAL_VISUAL_5349434E_N16386  ()
+  ours-only   STR       128  Product name                 PRODUCT_NAME  ()
+  ours-only   STR       129                               BOOT_WELCOME  ()
+  customised  STR#   -16490  Native Standard File labels  STANDARD_FILE_LABELS  (payload, name and attributes differ)
+  ours-only   STR#   -16400  Native panic viewer labels   PANIC_LABELS  ()
+  ours-only   STR#      128                               BOOT_MESSAGES  ()
+  ours-only   STR#    32760  System application menu commands APPLICATION_MENU_LABELS  ()
+  ours-only   WIND   -16400  System panic report window   PANIC_WINDOW  ()
+  ours-only   cicn   -20019                               ORIGINAL_VISUAL_6369636E_N20019  ()
+  ours-only   cicn   -20018                               ORIGINAL_VISUAL_6369636E_N20018  ()
+  ours-only   cicn   -20017                               ORIGINAL_VISUAL_6369636E_N20017  ()
+  ours-only   cicn   -20016                               ORIGINAL_VISUAL_6369636E_N20016  ()
+  ours-only   cicn   -20015                               ORIGINAL_VISUAL_6369636E_N20015  ()
+  ours-only   cicn   -20014                               ORIGINAL_VISUAL_6369636E_N20014  ()
+  ours-only   cicn   -20013                               ORIGINAL_VISUAL_6369636E_N20013  ()
+  ours-only   cicn   -20012                               ORIGINAL_VISUAL_6369636E_N20012  ()
+  ours-only   cicn   -20011                               ORIGINAL_VISUAL_6369636E_N20011  ()
+  ours-only   cicn   -20010                               ORIGINAL_VISUAL_6369636E_N20010  ()
+  ours-only   clut        1  1BitStd                      ORIGINAL_VISUAL_636C7574_1  ()
+  ours-only   clut        2  2BitStd                      ORIGINAL_VISUAL_636C7574_2  ()
+  ours-only   clut        4  4BitStd                      ORIGINAL_VISUAL_636C7574_4  ()
+  ours-only   clut        5                               ORIGINAL_VISUAL_636C7574_5  ()
+  ours-only   clut        8  8BitStd                      ORIGINAL_VISUAL_636C7574_8  ()
+  ours-only   clut        9                               ORIGINAL_VISUAL_636C7574_9  ()
+  ours-only   clut      127                               ORIGINAL_VISUAL_636C7574_127  ()
+  customised  dctb    -6079                               ORIGINAL_VISUAL_64637462_N6079  (payload differs)
+  ours-only   icl4   -20024                               ORIGINAL_VISUAL_69636C34_N20024  ()
+  ours-only   icl4    14500                               TRUETYPE_LARGE_COLOR_4  ()
+  ours-only   icl4    15500                               FONT_SUITCASE_LARGE_COLOR_4  ()
+  ours-only   icl8   -30001  Driver file                  DRIVER_FILE_LARGE_COLOR  ()
+  ours-only   icl8   -30000  Drivers folder               DRIVERS_FOLDER_LARGE_COLOR  ()
+  ours-only   icl8   -20024                               ORIGINAL_VISUAL_69636C38_N20024  ()
+  ours-only   icl8    14500                               TRUETYPE_LARGE_COLOR_8  ()
+  ours-only   icl8    15500                               FONT_SUITCASE_LARGE_COLOR_8  ()
+  ours-only   ics#   -30001  Driver file                  DRIVER_FILE_SMALL_MONO  ()
+  ours-only   ics#   -30000  Drivers folder               DRIVERS_FOLDER_SMALL_MONO  ()
+  ours-only   ics#   -20024                               ORIGINAL_VISUAL_69637323_N20024  ()
+  ours-only   ics#   -16387                               TRANS_FLAG_69637323_N16387  ()
+  customised  ics#   -16386                               ORIGINAL_VISUAL_69637323_N16386  (payload differs)
+  ours-only   ics#    14500                               TRUETYPE_SMALL_MONO  ()
+  ours-only   ics#    15500                               FONT_SUITCASE_SMALL_MONO  ()
+  ours-only   ics4   -20024                               ORIGINAL_VISUAL_69637334_N20024  ()
+  ours-only   ics4   -16387                               TRANS_FLAG_69637334_N16387  ()
+  customised  ics4   -16386                               ORIGINAL_VISUAL_69637334_N16386  (payload differs)
+  ours-only   ics4    14500                               TRUETYPE_SMALL_COLOR_4  ()
+  ours-only   ics4    15500                               FONT_SUITCASE_SMALL_COLOR_4  ()
+  ours-only   ics8   -30001  Driver file                  DRIVER_FILE_SMALL_COLOR  ()
+  ours-only   ics8   -30000  Drivers folder               DRIVERS_FOLDER_SMALL_COLOR  ()
+  ours-only   ics8   -20024                               ORIGINAL_VISUAL_69637338_N20024  ()
+  ours-only   ics8   -16387                               TRANS_FLAG_69637338_N16387  ()
+  customised  ics8   -16386                               ORIGINAL_VISUAL_69637338_N16386  (payload differs)
+  ours-only   ics8    14500                               TRUETYPE_SMALL_COLOR_8  ()
+  ours-only   ics8    15500                               FONT_SUITCASE_SMALL_COLOR_8  ()
+  ours-only   kcs#        1  French                       ORIGINAL_VISUAL_6B637323_1  ()
+  ours-only   kcs#        2  British                      ORIGINAL_VISUAL_6B637323_2  ()
+  ours-only   kcs#        3  German                       ORIGINAL_VISUAL_6B637323_3  ()
+  ours-only   kcs#        4  Italian                      ORIGINAL_VISUAL_6B637323_4  ()
+  ours-only   kcs#        6  Flemish                      ORIGINAL_VISUAL_6B637323_6  ()
+  ours-only   kcs#        7  Swedish                      ORIGINAL_VISUAL_6B637323_7  ()
+  ours-only   kcs#        8  Spanish                      ORIGINAL_VISUAL_6B637323_8  ()
+  ours-only   kcs#        9  Danish                       ORIGINAL_VISUAL_6B637323_9  ()
+  ours-only   kcs#       11  French Canadian              ORIGINAL_VISUAL_6B637323_11  ()
+  ours-only   kcs#       12  Norwegian                    ORIGINAL_VISUAL_6B637323_12  ()
+  ours-only   kcs#       15  Australian                   ORIGINAL_VISUAL_6B637323_15  ()
+  ours-only   kcs#       17  Finnish                      ORIGINAL_VISUAL_6B637323_17  ()
+  ours-only   kcs#       18  Swiss French                 ORIGINAL_VISUAL_6B637323_18  ()
+  ours-only   kcs#       19  Swiss German                 ORIGINAL_VISUAL_6B637323_19  ()
+  ours-only   kcs#       26  Dutch                        ORIGINAL_VISUAL_6B637323_26  ()
+  ours-only   kcs#       28  ISO Canadian                 ORIGINAL_VISUAL_6B637323_28  ()
+  ours-only   kcs#       32  Danish Mac Plus              ORIGINAL_VISUAL_6B637323_32  ()
+  ours-only   kcs#     1111  French - numerical           ORIGINAL_VISUAL_6B637323_1111  ()
+  ours-only   kcs4        1  French                       ORIGINAL_VISUAL_6B637334_1  ()
+  ours-only   kcs4        2  British                      ORIGINAL_VISUAL_6B637334_2  ()
+  ours-only   kcs4        3  German                       ORIGINAL_VISUAL_6B637334_3  ()
+  ours-only   kcs4        4  Italian                      ORIGINAL_VISUAL_6B637334_4  ()
+  ours-only   kcs4        6  Flemish                      ORIGINAL_VISUAL_6B637334_6  ()
+  ours-only   kcs4        7  Swedish                      ORIGINAL_VISUAL_6B637334_7  ()
+  ours-only   kcs4        8  Spanish                      ORIGINAL_VISUAL_6B637334_8  ()
+  ours-only   kcs4        9  Danish                       ORIGINAL_VISUAL_6B637334_9  ()
+  ours-only   kcs4       11  French Canadian              ORIGINAL_VISUAL_6B637334_11  ()
+  ours-only   kcs4       12  Norwegian                    ORIGINAL_VISUAL_6B637334_12  ()
+  ours-only   kcs4       15  Australian                   ORIGINAL_VISUAL_6B637334_15  ()
+  ours-only   kcs4       17  Finnish                      ORIGINAL_VISUAL_6B637334_17  ()
+  ours-only   kcs4       18  Swiss French                 ORIGINAL_VISUAL_6B637334_18  ()
+  ours-only   kcs4       19  Swiss German                 ORIGINAL_VISUAL_6B637334_19  ()
+  ours-only   kcs4       26  Dutch                        ORIGINAL_VISUAL_6B637334_26  ()
+  ours-only   kcs4       28  ISO Canadian                 ORIGINAL_VISUAL_6B637334_28  ()
+  ours-only   kcs4       32  Danish Mac Plus              ORIGINAL_VISUAL_6B637334_32  ()
+  ours-only   kcs4     1111  French - numerical           ORIGINAL_VISUAL_6B637334_1111  ()
+  ours-only   pixs   -10208                               ORIGINAL_VISUAL_70697873_N10208  ()
+  ours-only   pixs   -10207                               ORIGINAL_VISUAL_70697873_N10207  ()
+  ours-only   pixs   -10206                               ORIGINAL_VISUAL_70697873_N10206  ()
+  ours-only   pixs   -10205                               ORIGINAL_VISUAL_70697873_N10205  ()
+  ours-only   pixs   -10204                               ORIGINAL_VISUAL_70697873_N10204  ()
+  ours-only   pixs   -10203                               ORIGINAL_VISUAL_70697873_N10203  ()
+  ours-only   pixs   -10202                               ORIGINAL_VISUAL_70697873_N10202  ()
+  ours-only   pixs   -10201                               ORIGINAL_VISUAL_70697873_N10201  ()
+  ours-only   pixs   -10200                               ORIGINAL_VISUAL_70697873_N10200  ()
+  ours-only   pixs   -10199                               ORIGINAL_VISUAL_70697873_N10199  ()
+  customised  ppat       16                               ORIGINAL_VISUAL_70706174_16  (payload differs)
+  ours-only   sfnt    12000  Courier                      FONT_BUNDLE_SFNT_12000  ()
+  ours-only   sfnt    12001  Geneva                       FONT_BUNDLE_SFNT_12001  ()
+  ours-only   sfnt    12002  Helvetica                    FONT_BUNDLE_SFNT_12002  ()
+  ours-only   sfnt    12003  Helvetica Bold               FONT_BUNDLE_SFNT_12003  ()
+  ours-only   sfnt    12004  Monaco                       FONT_BUNDLE_SFNT_12004  ()
+  ours-only   sfnt    12005  New York                     FONT_BUNDLE_SFNT_12005  ()
+  ours-only   sfnt    12006  Palatino                     FONT_BUNDLE_SFNT_12006  ()
+  ours-only   sfnt    12007  Palatino Italic              FONT_BUNDLE_SFNT_12007  ()
+  ours-only   sfnt    12008  Symbol                       FONT_BUNDLE_SFNT_12008  ()
+  ours-only   sfnt    12009  Times                        FONT_BUNDLE_SFNT_12009  ()
+  ours-only   sfnt    12010  Times Bold                   FONT_BUNDLE_SFNT_12010  ()
+  ours-only   sfnt    12011  Times Italic                 FONT_BUNDLE_SFNT_12011  ()
+  ours-only   sfnt    12012  Times Bold Italic            FONT_BUNDLE_SFNT_12012  ()
+  ours-only   sfnt    13000  Arial MT Condensed Light     EXTRACTED_SFNT_10967  ()
+  ours-only   sfnt    13001                               EXTRACTED_SFNT_10957  ()
+  ours-only   sfnt    13002                               EXTRACTED_SFNT_5130  ()
+  ours-only   sfnt    13005  Gill Sans Condensed Bold     EXTRACTED_SFNT_15011  ()
+  ours-only   sfnt    13008  Klang MT                     EXTRACTED_SFNT_10840  ()
+  ours-only   sfnt    13010  New Berolina MT              EXTRACTED_SFNT_10909  ()
+  ours-only   sfnt    13012  Old English Text MT          EXTRACTED_SFNT_10897  ()
+  ours-only   sfnt    13015  Script MT Bold               EXTRACTED_SFNT_10890  ()
+
+held out of the list
+  ALRT   -16505                               ORIGINAL_VISUAL_414C5254_N16505  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ICN#   -32507                               ORIGINAL_VISUAL_49434E23_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ICN#    -3967                               ORIGINAL_VISUAL_49434E23_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16506                               ORIGINAL_VISUAL_50494354_N16506  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16505                               ORIGINAL_VISUAL_50494354_N16505  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16504                               ORIGINAL_VISUAL_50494354_N16504  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16503                               ORIGINAL_VISUAL_50494354_N16503  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16502                               ORIGINAL_VISUAL_50494354_N16502  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  PICT   -16501                               ORIGINAL_VISUAL_50494354_N16501  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  icl4   -32507                               ORIGINAL_VISUAL_69636C34_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  icl4    -3967                               ORIGINAL_VISUAL_69636C34_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  icl8   -32507                               ORIGINAL_VISUAL_69636C38_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  icl8    -3967                               ORIGINAL_VISUAL_69636C38_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics#   -32507                               ORIGINAL_VISUAL_69637323_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics#    -3967                               ORIGINAL_VISUAL_69637323_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics4   -32507                               ORIGINAL_VISUAL_69637334_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics4    -3967                               ORIGINAL_VISUAL_69637334_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics8   -32507                               ORIGINAL_VISUAL_69637338_N32507  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+  ics8    -3967                               ORIGINAL_VISUAL_69637338_N3967  (identical to Hard Disk Files/System Folder Files/System 7.5 Update)
+
+ambiguous — kept as ours, not extracted
+  FOND        0  Chicago                      FONT_BUNDLE_FOND_0
+  FOND        3  Geneva                       FONT_BUNDLE_FOND_3
+  FOND        4  Monaco                       FONT_BUNDLE_FOND_4
+  reason: more than one disc file carries this (type, id) and none is byte-identical, so the tool cannot say which file the resource came from. They stay ours until a ruling; the usage section below says whether anything names them.
+
+fonts — outlines imported by enumeration, not by ID lookup
+  taken: 39 faces from 20 families
+    American Heritage Font     5 face(s)  sfnt 13021, 13022, 13023, 13024, 13025  [, , , , ]
+    Arial MT Cn Lt             1 face(s)  sfnt 13000  [Arial MT Condensed Light]
+    Bodoni MT Ultra Bold       1 face(s)  sfnt 13001  []
+    ClosedCaption2             1 face(s)  sfnt 13002  []
+    Courier                    1 face(s)  sfnt 13003  [Courier]
+    Geneva                     1 face(s)  sfnt 13004  [Geneva]
+    Gill Sans Condensed Bold   1 face(s)  sfnt 13005  [Gill Sans Condensed Bold]
+    Helvetica                  2 face(s)  sfnt 13006, 13007  [Helvetica, Helvetica Bold]
+    Klang MT                   1 face(s)  sfnt 13008  [Klang MT]
+    Monaco                     1 face(s)  sfnt 13009  [Monaco]
+    New Berolina MT            1 face(s)  sfnt 13010  [New Berolina MT]
+    New York                   1 face(s)  sfnt 13011  [New York]
+    Old English Text MT        1 face(s)  sfnt 13012  [Old English Text MT]
+    Palatino                   2 face(s)  sfnt 13013, 13014  [Palatino, Palatino Italic]
+    Script MT Bold             1 face(s)  sfnt 13015  [Script MT Bold]
+    Symbol                     1 face(s)  sfnt 13016  [Symbol]
+    TTYFont                    2 face(s)  sfnt 13026, 13027  [, ]
+    Times                      4 face(s)  sfnt 13017, 13018, 13019, 13020  [Times, Times Bold, Times Italic, Times Bold Italic]
+    VT102Font                  4 face(s)  sfnt 13028, 13029, 13030, 13031  [, , , ]
+    eWorld Fonts               7 face(s)  sfnt 13032, 13033, 13034, 13035, 13036, 13037, 13038  [, , , , , , ]
+  numbering: the disc reuses sfnt IDs across families — 9217 (Courier, Geneva, Helvetica, Monaco, New York, Palatino, Symbol, Times); 9218 (Helvetica, Palatino, Times), so its numbering is per file and cannot be imported as-is. Every imported face is assigned a unique ID from 13000 upward; a face we already carry byte-identically keeps its ID, and the disc's ID stays beside it as source_id.
+  bitmaps: the disc's font files also carry NFNT bitmaps (IDs 1025+ per family). This list takes the outlines only, so every family above ends with an outline and no bitmap from the disc.
+  our bitmaps: 57 NFNT and 7 FONT have no disc counterpart by ID — bitmap absent, outline present where the family is imported. They stay ours; nothing is dropped from the manifest.
+  FOND: all 9 are ours and are not extracted; they are the tables to regenerate. Source: system/assets/fonts/FOND-*.bin, referenced from system/resources.json (symbols FONT_BUNDLE_FOND_*). Each must be rewritten to the font IDs the package actually installs.
+    FOND   0  Chicago      FONT_BUNDLE_FOND_0  (ambiguous)
+    FOND   2  New York     FONT_BUNDLE_FOND_2  (customised)
+    FOND   3  Geneva       FONT_BUNDLE_FOND_3  (ambiguous)
+    FOND   4  Monaco       FONT_BUNDLE_FOND_4  (ambiguous)
+    FOND  16  Palatino     FONT_BUNDLE_FOND_16  (customised)
+    FOND  20  Times        FONT_BUNDLE_FOND_20  (customised)
+    FOND  21  Helvetica    FONT_BUNDLE_FOND_21  (customised)
+    FOND  22  Courier      FONT_BUNDLE_FOND_22  (customised)
+    FOND  23  Symbol       FONT_BUNDLE_FOND_23  (customised)
+
+usage — static scan of 1284 Rust source files
+  extracted 578
+    referenced by name, literal or symbol    81
+    reachable from another extracted resource 53
+    cannot be ruled out (type looked up with a computed id) 374
+    no reference found at all                 70
+  of the referenced, 20 are named only by test code
+  excluded from the extract list on this basis: 52 (listed below; they stay in resources.json and are not extracted at all)
+  ambiguous 3 — referenced 3, no reference found 0
+  how: a resources.json symbol, a (type, id) literal in the same expression (or, where the id is computed, an id literal in the same file), or a quoted resource name, anywhere in the repository's Rust sources. Tests are included and counted separately.
+  not searchable this way: ids computed at runtime, ids read from data or from another resource, names built at runtime, classic software asking for a resource by number, and anything outside this repository. A type that is ever looked up with a computed id is therefore reported as 'cannot be ruled out', never as unused. 'No reference found' is not proof of disuse and must not be treated as one.
+
+  sample references
+    BNDL        0  ORIGINAL_VISUAL_424E444C_0   system/src/toolbox/quickdraw/icons.rs:897  (literal BNDL 0)
+    CURS    -6078  ORIGINAL_VISUAL_43555253_N6078 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6078 (same file))
+    CURS    -6077  ORIGINAL_VISUAL_43555253_N6077 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6077 (same file))
+    CURS    -6076  ORIGINAL_VISUAL_43555253_N6076 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6076 (same file))
+    CURS    -6075  ORIGINAL_VISUAL_43555253_N6075 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6075 (same file))
+    CURS    -6074  ORIGINAL_VISUAL_43555253_N6074 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6074 (same file))
+    CURS    -6073  ORIGINAL_VISUAL_43555253_N6073 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6073 (same file))
+    CURS    -6072  ORIGINAL_VISUAL_43555253_N6072 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -6072 (same file))
+    CURS    -5760  ORIGINAL_VISUAL_43555253_N5760 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS -5760 (same file))
+    DITL    -6046  ORIGINAL_VISUAL_4449544C_N6046 system/src/toolbox/standard_file/templates.rs:56  (literal DITL -6046 (same file))
+    DITL    -6045  ORIGINAL_VISUAL_4449544C_N6045 system/src/toolbox/standard_file/templates.rs:56  (literal DITL -6045 (same file))
+    DITL    -6044  ORIGINAL_VISUAL_4449544C_N6044 system/src/toolbox/standard_file/templates.rs:56  (literal DITL -6044 (same file))
+
+  reachable from another extracted resource
+    DITL   -32512  ORIGINAL_VISUAL_4449544C_N32512 read with DLOG -32512
+    DITL   -32511  ORIGINAL_VISUAL_4449544C_N32511 read with DLOG -32511
+    DITL   -32510  ORIGINAL_VISUAL_4449544C_N32510 read with DLOG -32510
+    DITL   -32509  ORIGINAL_VISUAL_4449544C_N32509 read with DLOG -32509
+    DITL   -29909  ORIGINAL_VISUAL_4449544C_N29909 read with DLOG -29909
+    DITL   -29908  ORIGINAL_VISUAL_4449544C_N29908 read with DLOG -29908
+    DITL   -16761  ORIGINAL_VISUAL_4449544C_N16761 named by ALRT -16761
+    DITL   -16760  ORIGINAL_VISUAL_4449544C_N16760 read with DLOG -16760
+
+  no reference found at all (review, do not delete on this alone)
+    CNTL   -32512                               ORIGINAL_VISUAL_434E544C_N32512
+    CNTL   -16487                               ORIGINAL_VISUAL_434E544C_N16487
+    CNTL   -16486                               ORIGINAL_VISUAL_434E544C_N16486
+    CNTL   -16485                               ORIGINAL_VISUAL_434E544C_N16485
+    CNTL   -16484                               ORIGINAL_VISUAL_434E544C_N16484
+    CNTL   -16483                               ORIGINAL_VISUAL_434E544C_N16483
+    CNTL   -16482                               ORIGINAL_VISUAL_434E544C_N16482
+    CNTL    -6049                               ORIGINAL_VISUAL_434E544C_N6049
+    CNTL    -6046                               ORIGINAL_VISUAL_434E544C_N6046
+    CNTL    -5760                               ORIGINAL_VISUAL_434E544C_N5760
+    FONT      396                               FONT_BUNDLE_FONT_396
+    FONT      521                               FONT_BUNDLE_FONT_521
+    NFNT     1025                               FONT_BUNDLE_NFNT_1025
+    NFNT     1026                               FONT_BUNDLE_NFNT_1026
+    NFNT     1027                               FONT_BUNDLE_NFNT_1027
+    NFNT     1028                               FONT_BUNDLE_NFNT_1028
+    NFNT     1029                               FONT_BUNDLE_NFNT_1029
+    NFNT     1030                               FONT_BUNDLE_NFNT_1030
+    NFNT     1031                               FONT_BUNDLE_NFNT_1031
+    NFNT     1032                               FONT_BUNDLE_NFNT_1032
+    NFNT    13021                               EXTRACTED_NFNT_2784_2
+    NFNT    13022                               EXTRACTED_NFNT_3169_2
+    NFNT    13023                               EXTRACTED_NFNT_3662_2
+    NFNT    13024                               EXTRACTED_NFNT_5380_2
+    NFNT    13025                               EXTRACTED_NFNT_11814_2
+    NFNT    13026                               EXTRACTED_NFNT_28809_2
+    NFNT    13027                               EXTRACTED_NFNT_28812_2
+    NFNT    13028                               EXTRACTED_NFNT_15516_2
+    NFNT    13029                               EXTRACTED_NFNT_17234_2
+    NFNT    13030                               EXTRACTED_NFNT_30500_2
+    NFNT    13031                               EXTRACTED_NFNT_30501_2
+    NFNT    13032                               EXTRACTED_NFNT_7155_2
+    NFNT    13033                               EXTRACTED_NFNT_7843_2
+    NFNT    13034                               EXTRACTED_NFNT_15521_2
+    NFNT    13035                               EXTRACTED_NFNT_18252_2
+    NFNT    13036                               EXTRACTED_NFNT_19129_2
+    NFNT    13037                               EXTRACTED_NFNT_20845_2
+    NFNT    13038                               EXTRACTED_NFNT_27283_2
+    PAT        16                               ORIGINAL_VISUAL_50415420_16
+    PAT        17                               ORIGINAL_VISUAL_50415420_17
+    PAT        19                               ORIGINAL_VISUAL_50415420_19
+    PAT#        0                               ORIGINAL_VISUAL_50415423_0
+    cctb        0                               ORIGINAL_VISUAL_63637462_0
+    dctb   -32512                               ORIGINAL_VISUAL_64637462_N32512
+    dctb   -32510                               ORIGINAL_VISUAL_64637462_N32510
+    dctb   -16473                               ORIGINAL_VISUAL_64637462_N16473
+    dctb   -16409                               ORIGINAL_VISUAL_64637462_N16409
+    dctb    -6046                               ORIGINAL_VISUAL_64637462_N6046
+    dctb    -6043                               ORIGINAL_VISUAL_64637462_N6043
+    dctb    -6042                               ORIGINAL_VISUAL_64637462_N6042
+    dctb    -5792                               ORIGINAL_VISUAL_64637462_N5792
+    dctb    -5791                               ORIGINAL_VISUAL_64637462_N5791
+    dctb    -5790                               ORIGINAL_VISUAL_64637462_N5790
+    dctb    -5789                               ORIGINAL_VISUAL_64637462_N5789
+    dctb    -5760                               ORIGINAL_VISUAL_64637462_N5760
+    dctb    -5696                               ORIGINAL_VISUAL_64637462_N5696
+    fmap   -16505                               ORIGINAL_VISUAL_666D6170_N16505
+    fmap    -6046                               ORIGINAL_VISUAL_666D6170_N6046
+    kcs#   -16492                               ORIGINAL_VISUAL_6B637323_N16492
+    kcs#   -16491                               ORIGINAL_VISUAL_6B637323_N16491
+    kcs#    16383                               ORIGINAL_VISUAL_6B637323_16383
+    kcs4   -16492                               ORIGINAL_VISUAL_6B637334_N16492
+    kcs4   -16491                               ORIGINAL_VISUAL_6B637334_N16491
+    kcs4    16383                               ORIGINAL_VISUAL_6B637334_16383
+    pixs   -14335                               ORIGINAL_VISUAL_70697873_N14335
+    pixs   -14334                               ORIGINAL_VISUAL_70697873_N14334
+    pmap   -14336                               ORIGINAL_VISUAL_706D6170_N14336
+    pmap   -10208                               ORIGINAL_VISUAL_706D6170_N10208
+    ppat       42                               ORIGINAL_VISUAL_70706174_42
+    wctb        0                               ORIGINAL_VISUAL_77637462_0
+
+  cannot be ruled out, by type (count of extracted resources)
+    ALRT  20
+    DITL  1
+    DLOG  35
+    ICN#  31
+    ICON  21
+    MENU  7
+    PICT  18
+    SICN  21
+    cicn  1
+    clut  1
+    icl4  29
+    icl8  28
+    ics#  52
+    ics4  51
+    ics8  42
+    sfnt  16

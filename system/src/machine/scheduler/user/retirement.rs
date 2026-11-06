@@ -272,6 +272,7 @@ pub(in crate::machine::scheduler) fn reclaim()
         return;
     }
     address::release_retired();
+    pipe::release_retired();
     let mut after = 0;
     loop
     {

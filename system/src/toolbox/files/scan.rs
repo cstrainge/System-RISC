@@ -20,7 +20,15 @@ impl Manager
 {
     pub(super) fn scan_request(&mut self, call: &mut FileScanCall) -> Result<(), Status>
     {
-        if call.operation != SCAN_DIRECTORY || call.directory < ROOT_ID || call.cursor.reserved != 0
+        if call.operation != SCAN_DIRECTORY || call.directory < ROOT_ID
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        // The Pipes folder appends registry rows after its real catalog
+        // children, so its continuation also carries the registry revision and
+        // the row offset. Every other directory leaves both fields zero.
+        let registry = self.pipes_scan_revision(call.volume, call.directory);
+        if registry.is_none() && (call.cursor.reserved != 0 || call.cursor.registry != 0)
         {
             return Err(BAD_ARGUMENT);
         }
@@ -39,6 +47,7 @@ impl Manager
             cursor.revision = mounted.catalog_revision;
             cursor.volume = call.volume;
             cursor.directory = call.directory;
+            cursor.reserved = registry.unwrap_or(0);
         }
         else
         {
@@ -47,6 +56,12 @@ impl Manager
                 return Err(BAD_ARGUMENT);
             }
             if cursor.revision != mounted.catalog_revision
+            {
+                return Err(SCAN_STALE);
+            }
+            // A registration or destruction while this enumeration is open
+            // invalidates the row offsets already handed out.
+            if registry.is_some_and(|revision| cursor.reserved != revision)
             {
                 return Err(SCAN_STALE);
             }
@@ -78,6 +93,21 @@ impl Manager
                 SCAN_ENTRY
             }
             Step::Pending => SCAN_PENDING,
+            // Real children come first; registry rows begin only once the
+            // catalog portion of this folder is exhausted.
+            Step::Done if registry.is_some() =>
+            {
+                match self.pipes_row(call.volume, call.directory, cursor.registry)
+                {
+                    Some(entry) =>
+                    {
+                        call.entry = entry;
+                        cursor.registry = cursor.registry.checked_add(1).ok_or(BAD_ARGUMENT)?;
+                        SCAN_ENTRY
+                    }
+                    None => SCAN_DONE
+                }
+            }
             Step::Done => SCAN_DONE
         };
         cursor.node = position.node;

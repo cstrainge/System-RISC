@@ -282,16 +282,21 @@ pub(crate) fn service() -> Result<Option<Size>, Status>
             }
         }
     }
-    let rect = super::display::take_dirty();
-    let damage = rect.map_or(Damage::default(), |rect| {
-                         Damage { x:      rect.left as u32,
-                                  y:      rect.top as u32,
-                                  width:  (rect.right - rect.left) as u32,
-                                  height: (rect.bottom - rect.top) as u32 }
-                     });
-    match call(SERVICE, &damage.encode(), Poll::BYTES)
+    let dirty = super::display::take_dirty();
+    let mut input = [0; Damage::BYTES * Damage::MAX_RECTS];
+    for (chunk, rect) in input.chunks_exact_mut(Damage::BYTES).zip(dirty.rects())
     {
-        Ok(reply) => Ok(Poll::decode(&reply).ok_or(mac_abi::BAD_ABI)?.settled),
+        let damage = Damage { x:      rect.left as u32,
+                              y:      rect.top as u32,
+                              width:  (rect.right - rect.left) as u32,
+                              height: (rect.bottom - rect.top) as u32 };
+        chunk.copy_from_slice(&damage.encode());
+    }
+    let length = dirty.rects().len() * Damage::BYTES;
+    match call(SERVICE, &input[..length], Poll::BYTES)
+        .and_then(|reply| Poll::decode(&reply).ok_or(mac_abi::BAD_ABI))
+    {
+        Ok(poll) => Ok(poll.settled),
         Err(status) =>
         {
             if provider_withdrawn()
@@ -299,10 +304,7 @@ pub(crate) fn service() -> Result<Option<Size>, Status>
                 detach();
             }
             // Keep the damage so the next successful call presents it.
-            if let Some(rect) = rect
-            {
-                super::display::mark_dirty(rect);
-            }
+            super::display::restore_dirty(dirty);
             Err(status)
         }
     }
