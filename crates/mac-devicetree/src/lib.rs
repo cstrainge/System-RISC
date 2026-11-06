@@ -1030,6 +1030,24 @@ mod tests
         fn finish(mut self) -> Vec<u8>
         {
             self.structure.extend_from_slice(&END.to_be_bytes());
+            self.assemble()
+        }
+
+        /// Finishes with bytes after the END token, which the specification does
+        /// not allow and the reader must refuse.
+        fn finish_with_trailer(mut self, trailer: &[u8]) -> Vec<u8>
+        {
+            self.structure.extend_from_slice(&END.to_be_bytes());
+            self.structure.extend_from_slice(trailer);
+            while self.structure.len() % 4 != 0
+            {
+                self.structure.push(0);
+            }
+            self.assemble()
+        }
+
+        fn assemble(self) -> Vec<u8>
+        {
             let reserved = 16usize;
             let structure_offset = HEADER_BYTES + reserved;
             let strings_offset = structure_offset + self.structure.len();
@@ -1286,5 +1304,97 @@ mod tests
         let is_leaf = |index: usize| !parents.iter().any(|parent| *parent == Some(index));
         assert!(is_leaf(clint.expect("clint node")), "the clint has no children");
         assert!(!is_leaf(container.expect("container node")), "the container has a child");
+    }
+
+    #[test]
+    fn a_property_after_a_child_node_is_refused()
+    {
+        // The specification requires a node's properties to precede its
+        // subnodes. Once a child has been opened, a property at the parent's
+        // depth can no longer be attributed to the parent without guessing, so
+        // the tree is refused rather than read with an assumed ownership.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("soc");
+            b.begin("child").end();
+            // Back at the parent's depth, after its child: this is the defect.
+            b.u32("#address-cells", 1);
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("the envelope itself is valid");
+        assert_eq!(tree.for_each_node(|_| {}).unwrap_err(), Error::Structure);
+
+        // The same tree with the property before the child is accepted, so the
+        // refusal is about the order and not about the property's presence.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("soc").u32("#address-cells", 1);
+            b.begin("child").end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert_eq!(tree.for_each_node(|_| {}), Ok(3));
+    }
+
+    #[test]
+    fn a_named_root_is_refused()
+    {
+        // The root of a flattened device tree is unnamed; a named one is a
+        // different document that this reader does not claim to understand.
+        let blob = {
+            let mut b = Blob::new();
+            b.begin("not-the-root");
+            b.end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("the envelope itself is valid");
+        assert_eq!(tree.for_each_node(|_| {}).unwrap_err(), Error::Structure);
+    }
+
+    #[test]
+    fn a_second_root_is_refused()
+    {
+        // One blob describes one tree. A second root would leave a consumer
+        // reading whichever it met first.
+        let blob = {
+            let mut b = Blob::new();
+            b.begin("");
+            b.end();
+            b.begin("");
+            b.end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("the envelope itself is valid");
+        assert_eq!(tree.for_each_node(|_| {}).unwrap_err(), Error::Structure);
+    }
+
+    #[test]
+    fn tokens_after_the_end_token_are_refused()
+    {
+        // Trailing bytes after END are not part of the tree. Accepting them
+        // would mean a blob could carry a second, unread description.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.end();
+            b.finish_with_trailer(&0xffff_ffffu32.to_be_bytes())
+        };
+        let tree = Tree::new(&blob).expect("the envelope itself is valid");
+        assert_eq!(tree.for_each_node(|_| {}).unwrap_err(), Error::Structure);
+
+        // Alignment padding of zeroes after END is not trailing content, and a
+        // tree that carries it is still readable.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.end();
+            b.finish_with_trailer(&[0, 0, 0, 0])
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert_eq!(tree.for_each_node(|_| {}), Ok(1));
     }
 }
