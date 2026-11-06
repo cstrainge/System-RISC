@@ -13,6 +13,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub mod completion;
 pub mod virtio_blk;
+pub mod volume;
 
 /// Where shared diagnostics go. The bootstrap installs its own console before
 /// any device work, so this code never names a UART.

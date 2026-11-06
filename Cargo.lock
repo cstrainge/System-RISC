@@ -439,6 +439,7 @@ name = "mac-bootloader"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+ "mac-block",
  "mac-filesystem",
  "mac-formats",
 ]
