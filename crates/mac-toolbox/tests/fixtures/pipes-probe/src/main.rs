@@ -6,14 +6,10 @@
 use core::{fmt::{self, Write},
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
-use mac_toolbox::{Error, System, abi::pipes as wire, files};
+use mac_toolbox::{Error, Rect, System, abi::pipes as wire, files, pipes::Endpoint};
 
 static ARMED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
-/// Reader handle created by the main thread and used by the parked reader
-/// thread. Endpoint ownership is per process, so the same application's other
-/// thread may read through it.
-static READER_HANDLE: AtomicU64 = AtomicU64::new(0);
 /// Count transferred to the parked reader, and its first eight bytes packed
 /// little-endian, so the main thread can check what the parked read received.
 static RECEIVED: AtomicU64 = AtomicU64::new(0);
@@ -73,8 +69,9 @@ fn check(condition: bool, cause: &str) -> Result<(), Line>
 /// cannot claim a count the run did not reach.
 fn run(system: &System<'_>) -> Result<u32, Line>
 {
-    let cases: [fn(&System<'_>) -> Result<(), Line>; 10] =
-        [echo, block, reader_park, eof, broken, named, writer_limit, folder, scan, pipe_open];
+    let cases: [fn(&System<'_>) -> Result<(), Line>; 11] = [echo, block, reader_park, eof, broken,
+                                                            named, writer_limit, folder, scan,
+                                                            icons, pipe_open];
     let mut completed = 0;
     for case in cases
     {
@@ -241,15 +238,17 @@ fn block(system: &System<'_>) -> Result<(), Line>
 /// for a thread, which the SDK does not expose and which this repository will
 /// not grow production introspection for the sake of one probe. Read the marker
 /// as "the read waited for a writer", not as "the thread was parked".
-unsafe extern "C" fn parked_reader(_: *mut u8)
+unsafe extern "C" fn parked_reader(pointer: *mut u8)
 {
     let Ok(system) = System::new()
     else
     {
         return;
     };
-    let handle = READER_HANDLE.load(Ordering::Acquire);
-    let Ok(mut reader) = system.pipes().adopt_reader(handle)
+    // The endpoint token was moved onto this thread's argument by the creator;
+    // taking it here is the only adoption of that handle.
+    let endpoint = unsafe { core::ptr::read(pointer.cast::<Endpoint<'_>>()) };
+    let Ok(mut reader) = system.pipes().adopt_reader(endpoint)
     else
     {
         note(&system, "PIPES_PROBE_READER_REFUSED\n");
@@ -291,28 +290,28 @@ fn reader_park(system: &System<'_>) -> Result<(), Line>
     let (reader, mut writer) = system.pipes()
                                      .create_named("ProbeRead", wire::MIN_CAPACITY, 0)
                                      .map_err(|error| failed("create reader pipe", error))?;
-    READER_HANDLE.store(reader.raw(), Ordering::Release);
     ARMED.store(false, Ordering::Release);
     DONE.store(false, Ordering::Release);
     RECEIVED.store(0, Ordering::Release);
     FIRST_BYTES.store(0, Ordering::Release);
-    // SAFETY: the entry takes no caller pointer, and the join right stays on
-    // this creating application thread.
-    let right = match unsafe {
-              system.client().create_native_thread(parked_reader, core::ptr::null_mut(), 64 * 1024)
-          }
-    {
-        Ok(right) => right,
-        Err(failure) =>
+    // The reader leaves this thread as an endpoint token and is adopted there.
+    // Releasing consumes the reader, so the handle has no second owner here.
+    let slot = core::mem::ManuallyDrop::new(reader.release());
+    let pointer = (&*slot as *const Endpoint<'_>).cast_mut().cast::<u8>();
+    // SAFETY: `slot` outlives the handoff - this thread keeps it until the
+    // reader reports ARMED, which it does only after taking the token. The
+    // pointer is the entry's own argument and nothing else reads it.
+    let right =
+        match unsafe { system.client().create_native_thread(parked_reader, pointer, 64 * 1024) }
         {
-            let mut line = Line::new();
-            let _ = writeln!(line, "PIPES_PROBE_FAIL reader thread {failure}");
-            return Err(line);
-        }
-    };
-    // The reader thread now owns the reader end through the same handle; this
-    // copy must not close it while that thread is parked on it.
-    core::mem::forget(reader);
+            Ok(right) => right,
+            Err(failure) =>
+            {
+                let mut line = Line::new();
+                let _ = writeln!(line, "PIPES_PROBE_FAIL reader thread {failure}");
+                return Err(line);
+            }
+        };
     let mut spins = 0u32;
     while !ARMED.load(Ordering::Acquire)
     {
@@ -496,7 +495,7 @@ fn folder(system: &System<'_>) -> Result<(), Line>
     // The folder is the System's to create, not the probe's: this replaces
     // Finder, so if it had to create the folder the boot step would be
     // untested. Its absence is a failure, not a fallback.
-    let folder = match files.lookup(volume.id, blessed, "Pipes")
+    let folder = match files.lookup(volume.id, blessed, mac_abi::files::PIPES_FOLDER_NAME)
     {
         Ok(entry) => entry,
         Err(Error::NotFound) =>
@@ -623,7 +622,7 @@ fn scan(system: &System<'_>) -> Result<(), Line>
     const SECOND: &str = "ScanPipeB";
     let files = system.files();
     let volume = startup_volume(files)?;
-    let folder = files.lookup(volume.id, volume.blessed_folder, "Pipes")
+    let folder = files.lookup(volume.id, volume.blessed_folder, mac_abi::files::PIPES_FOLDER_NAME)
                       .map_err(|error| failed("lookup Pipes", error))?;
     let (mut reader, writer) = system.pipes()
                                      .create_named(FIRST, wire::MIN_CAPACITY, 0)
@@ -701,7 +700,144 @@ fn drain(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid)
     Err(fault("the folder scan never finished"))
 }
 
-/// Opening a pipe item is `connect`, and the item's reserved type and creator
+/// The two glyph families, resolved and drawn. This is the evidence the icon
+/// work needs: an identifier in a table proves nothing, so each glyph is
+/// plotted into an offscreen world and compared, pixel for pixel, with the
+/// generic folder or document it must not be.
+///
+/// The folder is resolved the way the Finder resolves it - by name under the
+/// blessed folder, through the SDK table the Finder itself uses - and the item
+/// through the resident type bundle, which is the path that turns the
+/// `PIPE`/`PIPE` pair into an icon id.
+fn icons(system: &System<'_>) -> Result<(), Line>
+{
+    use mac_toolbox::quickdraw::icons::standard;
+
+    const ICON: &str = "IconPipe";
+    let files = system.files();
+    let volume = startup_volume(files)?;
+    let folder = files.lookup(volume.id, volume.blessed_folder, mac_abi::files::PIPES_FOLDER_NAME)
+                      .map_err(|error| failed("lookup Pipes", error))?;
+    check(folder.is_directory(), "Pipes is not a folder")?;
+    check(folder.parent == volume.blessed_folder,
+          "Pipes is not directly inside the blessed folder")?;
+    // The only way this can fail is the shared table not knowing the folder's
+    // name, which is the one thing it exists to get right. Its value is not
+    // compared with the constant the table returns: that cannot fail.
+    let folder_id = standard::for_blessed_folder(folder.name()).ok_or_else(|| {
+                                                                   fault("the Pipes folder has no \
+                                                                          icon of its own")
+                                                               })?;
+
+    let (reader, writer) = system.pipes()
+                                 .create_named(ICON, wire::MIN_CAPACITY, 0)
+                                 .map_err(|error| failed("create icon pipe", error))?;
+    let item = files.lookup(volume.id, folder.id, ICON)
+                    .map_err(|error| failed("lookup named pipe item", error))?;
+    let item_id = system.quickdraw()
+                        .icons()
+                        .for_file(item.creator, item.file_type)
+                        .map_err(|error| failed("resolve the pipe type", error))?;
+    check(item_id != standard::DOCUMENT, "the named pipe type drew the generic document")?;
+
+    // Each family carries a monochrome payload as well as a colour one. The
+    // plot below selects the colour payload at 32 pixels, so the 1-bit pair is
+    // read here directly: a blank or absent `ICN#`/`ics#` would otherwise leave
+    // every marker in this case green.
+    let folder_bits = mono_bits(system, folder_id, 256)? + mono_bits(system, folder_id, 64)?;
+    let item_bits = mono_bits(system, item_id, 256)? + mono_bits(system, item_id, 64)?;
+    check(folder_bits > 0, "the Pipes folder has no monochrome artwork")?;
+    check(item_bits > 0, "the named pipe has no monochrome artwork")?;
+    let mut line = Line::new();
+    let _ = writeln!(line, "PIPES_ICON_MONO_OK folder_bits={folder_bits} item_bits={item_bits}");
+    note(system, line.text());
+    note(system, "\n");
+
+    // A fresh world's own pixels are the background, so no fill and no
+    // assumption about what colour the surface starts as.
+    let mut blank = [0u32; 32 * 32];
+    let background = {
+        let world = system.quickdraw()
+                          .new_gworld(32, 32)
+                          .map_err(|error| failed("create comparison world", error))?;
+        let count = world.pixels(&mut blank).map_err(|error| failed("read blank world", error))?;
+        check(count == blank.len(), "the comparison world is not 32 by 32")?;
+        blank[0]
+    };
+    let mut folder_pixels = [0u32; 32 * 32];
+    let mut item_pixels = [0u32; 32 * 32];
+    let mut other = [0u32; 32 * 32];
+    let generic_folder = draw(system, standard::FOLDER, background, &mut other)?;
+    let pipes_folder = draw(system, folder_id, background, &mut folder_pixels)?;
+    check(pipes_folder > 0, "the Pipes folder glyph drew nothing")?;
+    check(pipes_folder != generic_folder, "the Pipes folder drew the generic folder")?;
+    note(system, line_of("PIPES_ICON_FOLDER_OK", folder_id, pipes_folder).text());
+    note(system, "\n");
+
+    let generic_document = draw(system, standard::DOCUMENT, background, &mut other)?;
+    let named_pipe = draw(system, item_id, background, &mut item_pixels)?;
+    check(named_pipe > 0, "the named pipe glyph drew nothing")?;
+    check(named_pipe != generic_document, "the named pipe drew the generic document")?;
+    let different =
+        folder_pixels.iter().zip(item_pixels.iter()).filter(|(left, right)| left != right).count();
+    check(different > 0, "the folder and the named pipe drew the same glyph")?;
+    note(system, line_of("PIPES_ICON_ITEM_OK", item_id, named_pipe).text());
+    note(system, "\n");
+    let mut line = Line::new();
+    let _ = writeln!(line,
+                     "PIPES_ICON_DISTINCT_OK differ={different} folder_drawn={pipes_folder} \
+                      item_drawn={named_pipe}");
+    note(system, line.text());
+    note(system, "\n");
+
+    drop(writer);
+    drop(reader);
+    Ok(())
+}
+
+/// Count set bits in a family's monochrome payload, read from the System's
+/// resources by kind and id. `bytes` is the whole payload, bitmap and mask.
+fn mono_bits(system: &System<'_>, id: i16, bytes: usize) -> Result<u32, Line>
+{
+    let kind = if bytes == 256 { *b"ICN#" } else { *b"ics#" };
+    let resource = system.resources()
+                         .get(mac_toolbox::ResourceKey { kind: kind.into(),
+                                                         id })
+                         .map_err(|error| failed("read monochrome icon", error))?;
+    check(resource.size() == bytes, "the monochrome icon payload is the wrong size")?;
+    let mut buffer = [0u8; 256];
+    let count = resource.read(0, &mut buffer[..bytes])
+                        .map_err(|error| failed("read monochrome icon bytes", error))?;
+    check(count == bytes, "the monochrome icon payload was short")?;
+    Ok(buffer[..bytes].iter().map(|byte| u32::from(byte.count_ones())).sum())
+}
+
+fn line_of(marker: &str, id: i16, drawn: u32) -> Line
+{
+    let mut line = Line::new();
+    let _ = writeln!(line, "{marker} id={id} drawn={drawn}");
+    line
+}
+
+/// Plot `id` into a fresh 32 by 32 world, leave the pixels in `output`, and
+/// return how many of them differ from `background`.
+fn draw(system: &System<'_>, id: i16, background: u32, output: &mut [u32]) -> Result<u32, Line>
+{
+    use mac_toolbox::quickdraw::icons::IconFlags;
+
+    let world = system.quickdraw()
+                      .new_gworld(32, 32)
+                      .map_err(|error| failed("create icon world", error))?;
+    let target = world.graphics().target();
+    system.quickdraw()
+          .icons()
+          .plot(target, id, Rect::new(0, 0, 32, 32), IconFlags::default())
+          .map_err(|error| failed("plot icon", error))?;
+    let count = world.pixels(output).map_err(|error| failed("read icon world", error))?;
+    check(count == output.len(), "the icon world is not 32 by 32")?;
+    Ok(output.iter().filter(|pixel| **pixel != background).count() as u32)
+}
+
 /// keep it away from application launch. The witness for "no application was
 /// launched" is the process count across the open: the item carries no fork, so
 /// the File Manager resolves it and the pipe facility attaches a writer.
@@ -716,7 +852,7 @@ fn pipe_open(system: &System<'_>) -> Result<(), Line>
     const OPENED: &str = "OpenPipe";
     let files = system.files();
     let volume = startup_volume(files)?;
-    let folder = files.lookup(volume.id, volume.blessed_folder, "Pipes")
+    let folder = files.lookup(volume.id, volume.blessed_folder, mac_abi::files::PIPES_FOLDER_NAME)
                       .map_err(|error| failed("lookup Pipes", error))?;
     let (mut creator, keeper) = system.pipes()
                                       .create_named(OPENED, wire::MIN_CAPACITY, 1)
@@ -728,24 +864,24 @@ fn pipe_open(system: &System<'_>) -> Result<(), Line>
     };
 
     let before = system.processes().count().map_err(|error| failed("process count", error))?;
-    let handle =
-        files.open_pipe(volume.id, cnid).map_err(|error| failed("open pipe item", error))?;
-    check(handle != 0, "the open produced no writer")?;
+    // The open returns an owned writer: there is no handle to adopt, and no way
+    // to obtain a second owner of it.
+    let mut adopted = system.pipes()
+                            .open_item(volume.id, cnid)
+                            .map_err(|error| failed("open pipe item", error))?;
     let after = system.processes().count().map_err(|error| failed("process count", error))?;
     check(after == before, "opening a pipe item launched an application")?;
-    let adopted = system.pipes().adopt_writer(handle).map_err(|error| failed("adopt", error))?;
     let mut launched = Line::new();
     let _ = writeln!(launched,
                      "PIPES_OPEN_NO_LAUNCH_OK processes_before={before} processes_after={after}");
     note(system, launched.text());
     note(system, "\n");
 
-    // The handle is a real connection: it consumes the one declared writer.
-    check(matches!(files.open_pipe(volume.id, cnid), Err(Error::AccessDenied)),
+    // The connection is a real one: it consumes the name's one declared writer.
+    check(matches!(system.pipes().open_item(volume.id, cnid), Err(Error::AccessDenied)),
           "the open did not pass the writer limit")?;
     note(system, "PIPES_OPEN_LIMIT_OK\n");
 
-    let mut adopted = adopted;
     let sent = [0x5au8, 0xa5, 0x01, 0x02];
     check(adopted.write(&sent).map_err(|error| failed("open write", error))? == sent.len(),
           "the opened writer wrote short")?;
@@ -762,7 +898,7 @@ fn pipe_open(system: &System<'_>) -> Result<(), Line>
     drop(creator);
     check(listing(files, volume.id, folder.id, OPENED)?.found.is_none(),
           "the destroyed pipe is still listed")?;
-    check(matches!(files.open_pipe(volume.id, cnid), Err(Error::NotFound)),
+    check(matches!(system.pipes().open_item(volume.id, cnid), Err(Error::NotFound)),
           "opening a destroyed identity did not refuse")?;
     note(system, "PIPES_OPEN_GONE_OK\n");
     Ok(())

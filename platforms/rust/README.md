@@ -85,8 +85,8 @@ mac-build's normal manifest compilation; authors need no readiness call or
 manifest entry. Identical declarations are reused, conflicting versions refused.
 Low-level native packaging does not infer std from arbitrary ELF input. Writable
 files and launch data remain adoption gates; GUI standard streams deliberately
-use the null profile and real CLAP streams/pipes are deferred, as detailed in
-`docs/RUST-STD.md`.
+use the null profile while real CLAP streams remain deferred; the pipes facility
+those streams will bind to ships, as detailed in `docs/RUST-STD.md`.
 There is no no_threads implementation, static TLS, zero-seed generator or host
 allocator substituted to get an executable to link.
 
@@ -134,8 +134,9 @@ contract. These new executable/environment adapters require separate matching
 native qualification; CLAP/Command inheritance remains deferred.
 GUI stdin deliberately returns EOF, while stdout/stderr discard bytes and
 flush successfully; all are non-terminal. These graphical semantics do not
-implement real CLAP session streams. Full pipes belong to the planned pipes
-extension replacing kernel stubs through the production service boundary.
+implement real CLAP session streams. Byte transport is the resident pipes
+facility, which ships; what belongs to the planned standard-stream profile is the
+binding of std's streams to it through the production service boundary.
 Other upstream unsupported backends remain explicitly unsupported. Neither linking std nor resolving one of its
 private symbols qualifies a service.
 
