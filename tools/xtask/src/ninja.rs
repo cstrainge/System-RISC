@@ -12,8 +12,7 @@
 //! ninja's log and dependency files land there too.
 use std::{fs,
           io::Write,
-          path::{Path, PathBuf},
-          process::Command};
+          path::{Path, PathBuf}};
 
 use mac_build::{Result, error};
 use serde_json::json;
@@ -316,13 +315,13 @@ pub fn run(workspace: &Workspace, targets: &[String]) -> Result<()>
 {
     let ninja = ensure()?;
     let file = generate(workspace)?;
-    let mut command = Command::new(&ninja);
     // Ninja's own children inherit this process's environment, and they do not
-    // run in the checkout, so the root travels with them explicitly.
-    command.current_dir(workspace.root())
-           .env(crate::LEASE_ENV, workspace.dist())
-           .env(crate::ROOT_ENV, workspace.root())
-           .env(crate::DIST_ENV, workspace.dist())
+    // run in the checkout. They therefore need the same platform, build and
+    // root this build selected, not whatever the operator happened to export:
+    // a child that falls back to the default platform builds the wrong
+    // architecture and reports success.
+    let mut command = workspace.command(&ninja);
+    command.env(crate::LEASE_ENV, workspace.dist())
            .arg("-f")
            .arg(&file);
     for target in targets

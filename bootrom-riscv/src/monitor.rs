@@ -171,10 +171,10 @@ impl Published
             // SAFETY: exclusive unpublished aligned storage covers Control; no
             // ordinary &Control is ever formed after assembly publication.
             unsafe {
-                (base as *mut Control).write(Control::new(route.hart, route.msip));
+                (base as *mut Control).write(Control::new(route.hart, route.signal));
             }
-            entries.push(Entry { hart:    route.hart,
-                                 msip:    route.msip,
+            entries.push(Entry { hart:     route.hart,
+                                 signal:   route.signal,
                                  storage: BootMemoryRange { base,
                                                             length: MONITOR_STACK_BYTES } });
             storage.push(backing);
@@ -189,15 +189,16 @@ impl Published
                                     count:       entries.len(),
                                     stack_bytes: MONITOR_STACK_BYTES,
                                     timebase_hz: routes.timebase_hz,
+                                    signalling:  mac_abi::boot::monitor::Signalling::Cells(
+                                        BootMemoryRange { base:   CLINT_BASE,
+                                                          length: CLINT_BYTES }),
                                     image:       images.as_ptr() };
         directory.checked(&entries,
                           cpus,
                           account,
                           MONITOR_STACK_BYTES,
                           BootMemoryRange { base:   FIRMWARE_HEAP_BASE,
-                                            length: FIRMWARE_HEAP_BYTES },
-                          BootMemoryRange { base:   CLINT_BASE,
-                                            length: CLINT_BYTES })?;
+                                            length: FIRMWARE_HEAP_BYTES })?;
         let owner = entries.iter()
                            .find(|entry| entry.hart == primary)
                            .ok_or(Error::PrimaryMissing { hart: primary })?;
@@ -206,7 +207,7 @@ impl Published
         for entry in &entries
         {
             unsafe {
-                ptr::write_volatile(entry.msip as *mut u32, 0);
+                ptr::write_volatile(entry.signal as *mut u32, 0);
             }
         }
         let owner_control = owner.storage.base;
@@ -252,7 +253,7 @@ impl Published
             // First fresh post-reset hardware notification authorizes only
             // reading the published directory and joining an M-mode park.
             unsafe {
-                ptr::write_volatile(entry.msip as *mut u32, 1);
+                ptr::write_volatile(entry.signal as *mut u32, 1);
             }
         }
         unsafe {
@@ -368,11 +369,11 @@ global_asm!(concat!(include_str!("../../platforms/riscv64-supervisor-probe.S"), 
     frame=const core::mem::offset_of!(Control,frame)+core::mem::offset_of!(mac_abi::boot::monitor::Frame,registers),
     pc=const core::mem::offset_of!(Control,frame)+core::mem::offset_of!(mac_abi::boot::monitor::Frame,pc),
     status=const core::mem::offset_of!(Control,frame)+core::mem::offset_of!(mac_abi::boot::monitor::Frame,status),
-    hart=const core::mem::offset_of!(Control,hart), msip=const core::mem::offset_of!(Control,msip),
+    hart=const core::mem::offset_of!(Control,hart), signal=const core::mem::offset_of!(Control,signal),
     anchor_entries=const core::mem::offset_of!(Anchor,entries), anchor_count=const core::mem::offset_of!(Anchor,count),
     anchor_image=const core::mem::offset_of!(Anchor,image),
     entry_bytes=const core::mem::size_of::<Entry>(), entry_shift=const core::mem::size_of::<Entry>().trailing_zeros(),
-    entry_hart=const core::mem::offset_of!(Entry,hart), entry_msip=const core::mem::offset_of!(Entry,msip),
+    entry_hart=const core::mem::offset_of!(Entry,hart), entry_signal=const core::mem::offset_of!(Entry,signal),
     entry_base=const core::mem::offset_of!(Entry,storage), entry_length=const core::mem::offset_of!(Entry,storage)+core::mem::offset_of!(BootMemoryRange,length),
     requested=const core::mem::offset_of!(Control,requested),
     acknowledged=const core::mem::offset_of!(Control,acknowledged),

@@ -13,6 +13,7 @@ use mac_kernel_model::pages::{PageGeometry, PageLayout};
 /// architecture's descriptor encoder.
 pub(crate) use mac_aarch64_pages::{Decoded, Entry, LeafSize};
 pub(crate) use mac_aarch64_pages::mapping;
+pub(crate) use mac_aarch64_pages::walk;
 use mac_kernel_model::policy::AddressRange;
 
 /// The base page. AArch64 also permits 16 KiB and 64 KiB granules; the platform
@@ -44,6 +45,16 @@ pub(crate) fn valid_virtual_range(range: AddressRange) -> bool
     mac_aarch64_pages::valid_virtual_range(range)
 }
 
+pub(crate) fn lower_half_end() -> u64
+{
+    0x0000_0080_0000_0000
+}
+
+pub(crate) fn upper_half_start() -> u64
+{
+    0xffff_ff80_0000_0000
+}
+
 /// The name the admission diagnostic reports, so a refused root says which
 /// format it was measured against.
 pub(crate) const NAME: &str = "aarch64-39";
@@ -67,6 +78,16 @@ impl mac_kernel_model::pages::PageLayout for Aarch64Layout
     fn valid_virtual_range(range: AddressRange) -> bool
     {
         valid_virtual_range(range)
+    }
+
+    fn lower_half_end() -> u64
+    {
+        lower_half_end()
+    }
+
+    fn upper_half_start() -> u64
+    {
+        upper_half_start()
     }
 }
 
@@ -105,12 +126,20 @@ pub(crate) fn validate_root(root: usize, expected_physical: u64) -> bool
     root >> 48 == 0 && root & (PAGE_BYTES as usize - 1) == 0 && root as u64 == expected_physical
 }
 
-/// The register value that selects `physical` as the root table under `tag`.
-/// TTBR0_EL1 has no mode field — the translation regime lives in TCR_EL1 — so
-/// the tag is the only thing layered above the base address.
-pub(crate) fn encode_root(physical: u64, tag: u64) -> usize
+/// The register values that select `physical` as the root table under `tag`,
+/// as the primary and secondary root of this layout.
+///
+/// AArch64 addresses two halves of the address space through two base
+/// registers, so this layout genuinely has two roots and a single value could
+/// not express it. TTBR0_EL1 has no mode field — the translation regime lives
+/// in TCR_EL1 — so the tag is the only thing layered above the base address,
+/// and it belongs to the primary. The secondary selects the same physical root
+/// for the higher half, untagged, because the physmap and the kernel half are
+/// reached through TTBR1_EL1 and a tag there would have to be re-derived at
+/// every switch.
+pub(crate) fn encode_roots(physical: u64, tag: u64) -> (usize, usize)
 {
-    physical as usize | ((tag as usize & 0xffff) << 48)
+    (physical as usize | ((tag as usize & 0xffff) << 48), physical as usize)
 }
 
 /// The admission check requires interrupts to be off, so that no handler can

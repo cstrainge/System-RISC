@@ -428,7 +428,7 @@
         "kind": "storage",
         "model": "sdhci",
         "compatible": "brcm,bcm2835-mmc",
-        "note": "The board's own firmware tree puts a different function at this address and puts the card on the other controller, while the board's card answered here. See the storage section of docs/PI-HARDWARE-INVENTORY.md; the contradiction is recorded, not resolved.",
+        "note": "The controller this board's card answers on. The firmware's own tree disables this node and configures the same registers as a wireless SDIO host, and marks sdhost okay instead; the hardware run is what settles it, because a card in the slot returned its master boot record through this block on real silicon. See the storage section of docs/PI-HARDWARE-INVENTORY.md.",
         "base": "0x3f300000",
         "bytes": "0x1000",
         "interrupt": 62
@@ -516,13 +516,13 @@
       }
     ],
     "tooling": [
-      "cargo xtask flash"
+      "dd"
     ],
     "unused": [
       {
         "model": "bcm2835-sdhost",
         "base": "0x3f202000",
-        "reason": "The board's own firmware tree describes the card slot on this controller: mmc@7e202000, compatible brcm,bcm2835-sdhost, status okay. The same tree carries the Arasan block the platform instead drives - mmc@7e300000, compatible brcm,bcm2835-mmc, status disabled - so the two sources disagree and neither is dismissed. What the board did is recorded in docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md: a self-test binary read the card's partition table through the Arasan block at 0x3f300000 on real silicon. The likely reconciliation is that the firmware's status describes the configuration it was given rather than what the hardware can do, since a bare-metal reader drives the controller without the firmware's model, but that is an explanation and not evidence. Nothing drives bcm2835-sdhost here, so it has no mmio_devices window: a window granted to no module is a claim nobody can use."
+        "reason": "Unused here, and the hardware run is what decides that. The board's own firmware tree puts the card slot on this controller - mmc@7e202000, compatible brcm,bcm2835-sdhost, status okay - and disables the Arasan block the platform drives instead. Against that, docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md records a card in the slot on real silicon whose master boot record was read through the Arasan block at 0x3f300000; the partition offsets in what came back prove the bytes were the physical card's and not our own image. A firmware status describes the driver set the firmware was configured to bring up, not what a bare-metal reader can drive, so where the two disagree the card that answered is the evidence and the tree is the configuration. Nothing drives bcm2835-sdhost here, so it has no mmio_devices window: a window granted to no module is a claim nobody can use."
       }
     ]
   }

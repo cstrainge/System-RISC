@@ -2,8 +2,7 @@
 //! thread has a canonical primary-service lease. This private native gate is
 //! not a public placement grant or an independently issued thread identity.
 #![allow(unsafe_code)]
-use core::{arch::global_asm,
-           mem::{align_of, size_of},
+use core::{           mem::{align_of, size_of},
            ptr};
 
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, OK, Status};
@@ -16,43 +15,11 @@ use crate::machine::traps::TrapFrame;
 /// `Option<ServiceLease>` output on its actual, retained continuation stack.
 pub(crate) const TRAP: u32 = 0x4d535256; // MSRV
 
-#[cfg(target_arch = "riscv64")]
-global_asm!(
-    ".pushsection .text.system_primary_service,\"ax\",@progbits",
-    ".balign 4",
-    ".global __system_primary_service_acquire",
-    ".type __system_primary_service_acquire,@function",
-    "__system_primary_service_acquire:",
-    "li a7, {trap}",
-    ".global __system_primary_service_acquire_ecall",
-    "__system_primary_service_acquire_ecall:",
-    "ecall",
-    "ret",
-    ".size __system_primary_service_acquire, .-__system_primary_service_acquire",
-    ".popsection",
-    trap = const TRAP
-);
+// The gate itself belongs to the architecture that owns the trap instruction:
+// see `machine::riscv64::primary_service` and
+// `machine::aarch64::primary_service`. The symbol names are unchanged, so the
+// caller and its test probe are unaffected and this file contains no `cfg`.
 
-// The same gate on AArch64: the trap number travels in x8 and the call is an
-// svc. The symbol names are kept so the caller and its test probe do not change.
-#[cfg(target_arch = "aarch64")]
-global_asm!(
-    ".pushsection .text.system_primary_service,\"ax\",@progbits",
-    ".balign 4",
-    ".global __system_primary_service_acquire",
-    ".type __system_primary_service_acquire,%function",
-    "__system_primary_service_acquire:",
-    "movz x8, #{low}",
-    "movk x8, #{high}, lsl #16",
-    ".global __system_primary_service_acquire_ecall",
-    "__system_primary_service_acquire_ecall:",
-    "svc #0",
-    "ret",
-    ".size __system_primary_service_acquire, .-__system_primary_service_acquire",
-    ".popsection",
-    low = const TRAP & 0xffff,
-    high = const (TRAP >> 16) & 0xffff
-);
 unsafe extern "C" {
     fn __system_primary_service_acquire(output: *mut (), bytes: usize) -> isize;
     fn __system_primary_service_acquire_ecall();

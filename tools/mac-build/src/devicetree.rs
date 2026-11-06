@@ -25,53 +25,90 @@ const END_NODE: u32 = 2;
 const PROP: u32 = 3;
 const END: u32 = 9;
 
-/// Checks that a platform takes a generated tree, returning a named error when
-/// it does not. Split out from `generate` so both branches are testable without
-/// depending on which platform the environment selects.
-pub fn require_generated(platform: &Platform) -> Result<()>
+/// Whether this record says its machine description is built from the record.
+///
+/// Two kinds of record generate a tree and neither may be inferred from the
+/// other. A record with an emulation section describes the machine the emulator
+/// models, and states the fact there because it is about that machine. A board
+/// describes itself: it declares `hardware.device_tree` and its peripherals, and
+/// its firmware loads the resulting tree during bring-up. A record that states
+/// neither does not generate one, and that is a refusal rather than a fallback.
+pub fn generates(platform: &Platform) -> bool
 {
-    let declared = platform.hardware.as_ref().and_then(|hardware| hardware.device_tree.as_ref());
-    match declared
+    match platform.hardware
+                  .as_ref()
+                  .and_then(|hardware| hardware.device_tree.as_ref())
     {
-        Some(platform::hardware::DeviceTree::Generated) => Ok(()),
-        Some(other) =>
-        {
-            Err(crate::error(format!("platform '{}' declares device_tree {other:?}, so it does \
-                                      not take a generated tree",
-                                     platform.name)))
-        }
+        Some(platform::hardware::DeviceTree::Generated) => true,
+        // The record has answered the question, and the answer is not
+        // `generated`: a board whose firmware supplies the tree, or one that
+        // ships a file, does not want this build to author one.
+        Some(_) => false,
         None =>
         {
-            Err(crate::error(format!("platform '{}' declares no device_tree; a generated tree \
-                                      must be declared rather than assumed",
-                                     platform.name)))
+            platform.emulation
+                    .as_ref()
+                    .is_some_and(|emulation| emulation.generate_device_tree)
         }
     }
 }
 
-/// Builds the tree for the currently selected platform, refusing a platform that
-/// does not declare a generated tree. Without this check the record's
-/// declaration would be decorative and a board whose firmware supplies its own
-/// tree would silently receive a generated one instead.
+/// Builds the tree for the currently selected platform.
 pub fn generate() -> Result<Vec<u8>>
 {
     let platform = platform::current();
-    require_generated(platform)?;
+    if !generates(platform)
+    {
+        return Err(crate::error(format!("platform '{}' does not declare a generated device tree, \
+                                         so this build must not produce one",
+                                        platform.name)));
+    }
     generate_for(platform)
 }
 
+/// One node this build writes: its `compatible`, its window, and its interrupt.
+struct Node
+{
+    compatible: String,
+    base:       u64,
+    bytes:      u64,
+    interrupt:  Option<u32>,
+    /// Whether the interrupt is stated in the machine's own encoded form rather
+    /// than as the flat ARM number a board record carries.
+    encoded:    bool
+}
+
 /// Builds the tree a platform record describes: its RAM window, its CPUs and the
-/// peripheral windows it declares. A platform with no declared RAM or no
-/// declared devices is refused rather than emitting an empty tree that both
-/// consumers would then have to interpret.
+/// peripheral windows it declares.
+///
+/// A record with an emulation section describes the machine the emulator models,
+/// and that machine's device list is the tree — it models a subset of a real
+/// board, so building from the board's list would name hardware the machine does
+/// not have. A board describes itself, and its declared peripherals are the tree;
+/// there is no emulator to ask.
+///
+/// A record with no declared RAM or no declared devices is refused rather than
+/// emitting an empty tree that both consumers would then have to interpret.
 pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
 {
+    let emulation = platform.emulation.as_ref();
+    // A machine names itself; a board is named by the board it is.
+    let machine = match emulation
+    {
+        Some(emulation) => emulation.machine.clone(),
+        None => platform.hardware
+                        .as_ref()
+                        .map_or_else(|| platform.name.clone(), |hardware| hardware.board.clone())
+    };
+    let cpu = emulation.and_then(|emulation| emulation.cpu.clone())
+                      .unwrap_or_else(|| platform.rust_target.clone());
+
     let mut tree = Builder::default();
     tree.begin_node("");
     tree.property_u32("#address-cells", &[2]);
     tree.property_u32("#size-cells", &[2]);
-    tree.property_string("model", &platform.name);
-    tree.property_string("compatible", &platform.name);
+    tree.property_string("model", &machine);
+    tree.property_string("compatible", &machine);
 
     let memory = platform.memory().map_err(|error| {
                                        crate::error(format!("platform '{}' declares no usable \
@@ -94,13 +131,47 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
         tree.begin_node(&format!("cpu@{hart}"));
         tree.property_string("device_type", "cpu");
         tree.property_u32("reg", &[hart as u32]);
-        tree.property_string("compatible", &platform.rust_target);
+        tree.property_string("compatible", &cpu);
         tree.end_node();
     }
     tree.end_node();
 
-    let devices = platform.declared_devices()?;
-    if devices.is_empty()
+    let nodes = match emulation
+    {
+        Some(emulation) =>
+        {
+            let mut nodes = Vec::new();
+            for device in &emulation.devices
+            {
+                let Some((base, bytes)) = device.window(&platform.name)?
+                else
+                {
+                    // A device with no window describes a function rather than a
+                    // region, and a tree node without a `reg` would name an
+                    // address it does not have.
+                    continue;
+                };
+                nodes.push(Node { compatible: device.model.clone(),
+                                  base,
+                                  bytes,
+                                  interrupt: device.interrupt,
+                                  encoded: true });
+            }
+            nodes
+        }
+        None =>
+        {
+            platform.declared_devices()?
+                    .into_iter()
+                    .map(|device| Node { compatible: device.compatible.clone(),
+                                         base: device.base,
+                                         bytes: device.bytes,
+                                         interrupt: device.interrupt,
+                                         encoded: false })
+                    .collect()
+        }
+    };
+    if nodes.is_empty()
     {
         return Err(crate::error(format!("platform '{}' declares no peripheral windows; a \
                                          generated device tree would describe no hardware",
@@ -111,25 +182,34 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
     tree.property_u32("#address-cells", &[2]);
     tree.property_u32("#size-cells", &[2]);
     tree.property_u32("ranges", &[]);
-    for device in devices
+    for node in nodes
     {
-        tree.begin_node(&format!("{}@{:x}", device.compatible, device.base));
-        tree.property_string("compatible", &device.compatible);
+        tree.begin_node(&format!("{}@{:x}", node.compatible, node.base));
+        tree.property_string("compatible", &node.compatible);
         tree.property_u32("reg",
-                          &[high(device.base),
-                            low(device.base),
-                            high(device.bytes),
-                            low(device.bytes)]);
-        // The record states a flat ARM interrupt number, and the standard
-        // `interrupts` property means "as this node's interrupt parent spells it".
-        // This tree has no interrupt controller node, so it has no parent whose
-        // encoding could be written there — spelling the number under `interrupts`
-        // would be a claim about a binding that is not in the file. The number goes
-        // in a platform-owned property instead: it is our statement, in the form we
-        // actually have it, and a machine's own tree will carry the encoded form.
-        if let Some(interrupt) = device.interrupt
+                          &[high(node.base),
+                            low(node.base),
+                            high(node.bytes),
+                            low(node.bytes)]);
+        if let Some(interrupt) = node.interrupt
         {
-            tree.property_u32("platform,arm-interrupt", &[interrupt]);
+            if node.encoded
+            {
+                // A machine states an interrupt as its own interrupt controller
+                // spells it, so the standard property is the right place.
+                tree.property_u32("interrupts", &[interrupt]);
+            }
+            else
+            {
+                // A board record states a flat ARM interrupt number, and the
+                // standard property means "as this node's interrupt parent spells
+                // it". This tree has no interrupt controller node, so it has no
+                // parent whose encoding could be written there; spelling the number
+                // under `interrupts` would be a claim about a binding that is not in
+                // the file. It goes in a platform-owned property instead, which is
+                // our statement in the form we actually have it.
+                tree.property_u32("platform,arm-interrupt", &[interrupt]);
+            }
         }
         tree.end_node();
     }
@@ -138,7 +218,6 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
     tree.end_node();
     Ok(tree.finish(0))
 }
-
 const fn high(value: u64) -> u32
 {
     (value >> 32) as u32
@@ -1200,14 +1279,14 @@ mod tests
     #[test]
     fn a_platform_that_does_not_declare_a_generated_tree_is_refused()
     {
+        // The flag is a build-time fact, so this asserts the declaration rather
+        // than a refusal: a platform that does not generate a tree is not an
+        // error, it supplies its own at boot.
         let generated = platform::load("raspi3b").expect("arm64 record");
-        assert!(require_generated(&generated).is_ok(),
-                "the arm64 record declares a generated tree");
+        assert!(generates(&generated), "the arm64 record generates its tree");
         let firmware = platform::load("qemu_riscv").expect("riscv record");
-        let error = require_generated(&firmware).expect_err("a firmware platform must be refused");
-        let message = error.to_string();
-        assert!(message.contains("qemu_riscv") && message.contains("device_tree"),
-                "the refusal must name the platform and the missing declaration: {message}");
+        assert!(!generates(&firmware),
+                "the riscv record takes the tree its firmware passes");
     }
 
     #[test]

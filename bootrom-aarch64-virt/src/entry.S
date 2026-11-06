@@ -8,6 +8,10 @@
 .section .text.entry
 .global _start
 _start:
+    // The machine's device tree arrives in x0. It is captured before anything
+    // else runs, because the very next instruction reuses x0, and x19 is
+    // callee-saved, so the pointer survives every call below.
+    mov x19, x0
     mrs x0, mpidr_el1
     and x0, x0, #0xff
     cbnz x0, parked
@@ -47,6 +51,14 @@ el1_entry:
     msr cpacr_el1, x0
     isb
     bl uart_init
+    // Reported before anything can depend on it: whether this machine supplies
+    // a tree is a measured fact, not an assumption.
+    adr x0, x0_label
+    bl uart_puts
+    mov x0, x19
+    bl uart_puthex
+    adr x0, newline
+    bl uart_puts
     mrs x0, currentel
     cmp x0, #0x4
     b.ne el_bad
@@ -73,11 +85,21 @@ kmap_bad:
     adr x0, kmap_bad_marker
     bl uart_puts
 kmap_done:
+    mov x0, x19
     bl virt_probe
+    // A refusal is not recoverable. The probe returns zero when it has already
+    // named its reason, and printing READY after that is how a named refusal
+    // used to scroll past as a green boot. Nothing downstream may run once the
+    // machine's description has been refused.
+    cbz x0, refused
     adr x0, ready_marker
     bl uart_puts
 2:  wfe
     b 2b
+
+refused:
+4:  wfe
+    b 4b
 
 el_bad:
     adr x0, el_bad_marker
@@ -165,6 +187,8 @@ trap:
 5:  b 5b
 
 .section .rodata
+x0_label:
+    .asciz "BOOT_AARCH64_X0: "
 el1_marker:
     .asciz "BOOT_AARCH64_EL1_READY: running at EL1\n"
 el_bad_marker:

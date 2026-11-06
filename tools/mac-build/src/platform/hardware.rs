@@ -131,31 +131,22 @@ pub enum FirstStage
 #[serde(deny_unknown_fields)]
 pub struct Console
 {
-    /// The UART model, e.g. `pl011`.
+    /// The UART model, e.g. `pl011`. This is the record's own identity for the
+    /// part and is what `hardware.devices` must name it by.
     pub kind:   String,
+    /// The `compatible` string the machine's device tree declares for this
+    /// console, when it differs from `kind`. A machine's tree uses the standard
+    /// vocabulary — `arm,pl011` — while a record names the part. Declaring
+    /// the mapping here is what stops the bootloader from having to guess it,
+    /// and what makes the console a stated fact rather than whichever device
+    /// happened to be first in a list.
+    #[serde(default)]
+    pub compatible: Option<String>,
     /// The device node a host sees it as, e.g. `ttyAMA0`.
     #[serde(default)]
     pub device: Option<String>,
     #[serde(default)]
     pub baud:   Option<u32>
-}
-
-/// A device tree is supplied by board firmware, shipped as a file, or generated
-/// from this record at build time. Which one is a platform fact, not a build
-/// assumption: a board whose firmware passes no tree needs the record to be the
-/// author, so the bootloader and the kernel consume the same declared hardware
-/// rather than each hardcoding it.
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum DeviceTree
-{
-    Firmware,
-    Generated,
-    File
-    {
-        path: String
-    },
-    None
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -274,6 +265,41 @@ pub enum PeripheralKind
     /// inventory purposes, whatever runs on it.
     #[serde(rename = "3d")]
     ThreeDimensional
+}
+
+impl Peripheral
+{
+    /// The window this device occupies, when it declares one.
+    ///
+    /// A device that states a base but no size is refused rather than given a
+    /// default: one window must have one declaration, and a second source could
+    /// disagree with the first. A device with no base describes a function
+    /// rather than a window, and yields `None`.
+    pub fn window(&self, platform: &str) -> Result<Option<(u64, u64)>>
+    {
+        let Some(text) = self.base.as_deref()
+        else
+        {
+            return Ok(None);
+        };
+        let base = super::parse_hex(text).ok_or_else(|| {
+                                                error(format!("platform '{platform}' device {} \
+                                                               states an unreadable base {text:?}",
+                                                              self.model))
+                                            })?;
+        let text = self.bytes.as_deref().ok_or_else(|| {
+                                                error(format!("platform '{platform}' device {} \
+                                                               states a base but no size, so its \
+                                                               window is not fully declared",
+                                                              self.model))
+                                            })?;
+        let bytes = super::parse_hex(text).ok_or_else(|| {
+                                                  error(format!("platform '{platform}' device {} \
+                                                                 states an unreadable size {text:?}",
+                                                                self.model))
+                                              })?;
+        Ok(Some((base, bytes)))
+    }
 }
 
 impl Definition

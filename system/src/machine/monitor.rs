@@ -398,14 +398,17 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
                                                                       .ok_or(Error::Missing)?;
     let entries = unsafe { crate::machine::memory::primary_slice(info, directory.entries, directory.count) }
         .map_err(Error::Memory)?;
+    // The route is whatever the loader published, because it is a fact about the
+    // platform and this code runs on more than one. Reading it here rather than
+    // from a generated constant is what lets a platform whose signalling is not
+    // a CLINT admit at all: there is no CLINT on such a machine, and a constant
+    // for one would be a hardcoded refusal.
     directory.checked(entries,
                       cpus,
                       memory,
                       MONITOR_STACK_BYTES,
                       BootMemoryRange { base:   FIRMWARE_HEAP_BASE,
-                                        length: FIRMWARE_HEAP_BYTES },
-                      BootMemoryRange { base:   CLINT_BASE,
-                                        length: CLINT_BYTES })
+                                        length: FIRMWARE_HEAP_BYTES })
              .map_err(Error::Directory)?;
     let image =
         unsafe { crate::machine::memory::primary_slice(info, directory.image, 1) }.map_err(Error::Memory)?
@@ -458,7 +461,7 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
         // Only immutable identity words are read directly. No &Control is formed.
         let identity_matches = unsafe {
             ptr::read_volatile(ptr::addr_of!((*control).hart)) == entry.hart
-            && ptr::read_volatile(ptr::addr_of!((*control).msip)) == entry.msip
+            && ptr::read_volatile(ptr::addr_of!((*control).signal)) == entry.signal
         };
         if !identity_matches
            || field(entry, core::mem::offset_of!(Control, joined)).load(Ordering::Acquire)
@@ -580,7 +583,7 @@ fn notify(entry: &Entry)
     // Release alone does not order MMIO. Neither operation calls foreign code.
     crate::machine::cpu::barrier();
     unsafe {
-        ptr::write_volatile(entry.msip as *mut u32, 1);
+        ptr::write_volatile(entry.signal as *mut u32, 1);
     }
     crate::machine::cpu::barrier();
 }
@@ -865,6 +868,7 @@ fn payload(entry: &Entry) -> *const SecondaryStart
 pub(crate) struct StartReport
 {
     pub(crate) root_register:     u64,
+    pub(crate) root_register_aux: u64,
     pub(crate) control_virtual:   u64,
     pub(crate) service_top:       u64,
     pub(crate) vector_bytes:      u64,
@@ -887,6 +891,7 @@ pub(crate) fn validate_start(proof: &crate::machine::traps::StartingHart, pointe
         || proof.sequence()==0 { return Err(Error::StartBinding{hart:entry.hart}); }
     let report=StartReport {
         root_register:start_field(entry,core::mem::offset_of!(SecondaryStart,root_register)).load(Ordering::Relaxed),
+        root_register_aux:start_field(entry,core::mem::offset_of!(SecondaryStart,root_register_aux)).load(Ordering::Relaxed),
         control_virtual:start_field(entry,core::mem::offset_of!(SecondaryStart,control_virtual)).load(Ordering::Relaxed),
         service_top:start_field(entry,core::mem::offset_of!(SecondaryStart,service_top)).load(Ordering::Relaxed),
         vector_bytes:start_field(entry,core::mem::offset_of!(SecondaryStart,vector_bytes)).load(Ordering::Relaxed),
@@ -998,6 +1003,7 @@ pub(crate) fn begin_secondary(mut prepared: crate::machine::traps::PreparedHart)
         }
         prepared.bind_sequence(sequence).map_err(Error::Entry)?;
         start_field(entry,core::mem::offset_of!(SecondaryStart,root_register)).store(prepared.root_register() as u64,Ordering::Relaxed);
+        start_field(entry,core::mem::offset_of!(SecondaryStart,root_register_aux)).store(prepared.root_register_aux() as u64,Ordering::Relaxed);
         start_field(entry,core::mem::offset_of!(SecondaryStart,control_virtual)).store(prepared.control() as u64,Ordering::Relaxed);
         start_field(entry,core::mem::offset_of!(SecondaryStart,service_top)).store(prepared.service_top() as u64,Ordering::Relaxed);
         start_field(entry, core::mem::offset_of!(SecondaryStart, sequence)).store(sequence,

@@ -22,7 +22,7 @@ use std::{env, fs,
 
 use mac_build::{Result, error, package};
 use serde_json::Value;
-pub(crate) use workspace::{DIST_ENV, LEASE_ENV, ROOT_ENV, Workspace};
+pub(crate) use workspace::{LEASE_ENV, Workspace};
 
 fn run(command: &mut Command) -> Result<()>
 {

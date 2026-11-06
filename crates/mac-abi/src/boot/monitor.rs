@@ -98,9 +98,17 @@ impl BootImage
 pub struct SecondaryStart
 {
     pub sequence:          AtomicU64,
-    /// Exact owned resident firmware-root SATP value, including its admitted tag.
-    /// Warm S admission moves to the separately owned canonical kernel root.
+    /// The platform's primary translation root: RISC-V's `satp`, AArch64's
+    /// `TTBR0_EL1`. Published before the canonical command request, so a
+    /// secondary re-enters through the same root the primary admitted it with.
     pub root_register:     AtomicU64,
+    /// The platform's secondary translation root, for a machine that addresses
+    /// its kernel half and its physmap through different base registers. RISC-V
+    /// has one root and publishes zero here; AArch64 publishes `TTBR1_EL1`.
+    /// Everything else a secondary needs to re-enter — the control-register
+    /// values, the vector base — it rebuilds from the same record the primary
+    /// used, so those are not carried.
+    pub root_register_aux: AtomicU64,
     pub control_virtual:   AtomicU64,
     pub service_top:       AtomicU64,
     pub phase:             AtomicU64,
@@ -118,6 +126,7 @@ impl SecondaryStart
     {
         Self { sequence:          AtomicU64::new(0),
                root_register:     AtomicU64::new(0),
+               root_register_aux: AtomicU64::new(0),
                control_virtual:   AtomicU64::new(0),
                service_top:       AtomicU64::new(0),
                phase:             AtomicU64::new(START_PREPARED),
@@ -132,6 +141,29 @@ impl SecondaryStart
 }
 /// Legacy CLINT MSIP register bank ends before MTIMECMP.
 pub const MSIP_BYTES: u64 = 0x4000;
+
+/// How a platform delivers an inter-processor interrupt.
+///
+/// The kernel does not choose this and must not assume it: a platform whose
+/// signalling is a bank of memory-mapped per-hart cells and one whose signalling
+/// is a shared interrupt controller differ in both the encoding of an entry's
+/// `signal` and in what can honestly be checked about it. The loader states
+/// which it is, and the kernel validates against that statement.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub enum Signalling
+{
+    /// A memory-mapped bank of 32-bit per-hart cells, four bytes apart, starting
+    /// at the window's base. An entry's `signal` is the address of that hart's
+    /// own cell, so it can be checked for containment, alignment and uniqueness.
+    Cells(BootMemoryRange),
+    /// A shared controller the monitor programs directly, whose target
+    /// selection is part of the value written rather than the address written
+    /// to. An entry's `signal` is a target encoding this platform defines, so
+    /// its numeric value cannot be checked; only the window it belongs to, and
+    /// that the harts do not alias each other.
+    Controller(BootMemoryRange)
+}
 #[repr(C, align(16))]
 pub struct Frame
 {
@@ -143,7 +175,12 @@ pub struct Frame
 pub struct Control
 {
     pub hart:              u64,
-    pub msip:              u64,
+    /// This hart's inter-processor signalling target, encoded by the platform.
+    /// RISC-V publishes the address of its CLINT `msip` cell; a platform whose
+    /// interrupt controller takes a target number publishes that instead. The
+    /// monitor writes whatever its own platform requires, so nothing that is
+    /// not implementing signalling for that platform may interpret it.
+    pub signal:            u64,
     pub requested:         AtomicU64,
     pub acknowledged:      AtomicU64,
     pub stop:              AtomicU64,
@@ -161,10 +198,10 @@ pub struct Control
 }
 impl Control
 {
-    pub const fn new(hart: u64, msip: u64) -> Self
+    pub const fn new(hart: u64, signal: u64) -> Self
     {
         Self { hart,
-               msip,
+               signal,
                requested: AtomicU64::new(0),
                acknowledged: AtomicU64::new(0),
                stop: AtomicU64::new(0),
@@ -183,15 +220,18 @@ impl Control
 }
 pub const CONTROL_BYTES: usize = core::mem::size_of::<Control>();
 pub const CONTROL_ALIGNMENT: usize = core::mem::align_of::<Control>();
-const _: () = assert!(CONTROL_BYTES == 464
+const _: () = assert!(CONTROL_BYTES == 480
                       && CONTROL_ALIGNMENT == 16
-                      && core::mem::offset_of!(Control, frame) == 192);
+                      && core::mem::offset_of!(Control, frame) == 208);
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Entry
 {
     pub hart:    u64,
-    pub msip:    u64,
+    /// The same platform-encoded target the hart's control block carries. The
+    /// loader publishes it so the kernel can check that what it was told and
+    /// what the monitor will use are the same value.
+    pub signal:  u64,
     pub storage: BootMemoryRange
 }
 #[repr(C)]
@@ -202,6 +242,11 @@ pub struct Directory
     pub stack_bytes: u64,
     /// Actual /cpus timebase-frequency; never a second hardcoded clock.
     pub timebase_hz: u64,
+    /// How this platform delivers inter-processor interrupts. Published by the
+    /// loader because it is a fact about the platform, and the kernel must not
+    /// carry a second copy of it: a kernel that hardcodes one platform's route
+    /// cannot run on a platform that has none.
+    pub signalling:  Signalling,
     /// Permanent firmware physical pointer; the primary seals the atomic cells
     /// once, after validating the actual System load plan.
     pub image:       *const BootImage
@@ -245,7 +290,7 @@ impl core::fmt::Display for Error
             }
             Self::Route { hart } =>
             {
-                write!(f, "machine monitor hart {hart} has invalid CLINT MSIP route")
+                write!(f, "machine monitor hart {hart} has invalid inter-processor signalling route")
             }
             Self::Duplicate { hart } =>
             {
@@ -257,7 +302,7 @@ impl core::fmt::Display for Error
 impl Directory
 {
     pub fn checked(&self, entries: &[Entry], cpus: &[Cpu], memory: CheckedMemory<'_>,
-                   stack_bytes: u64, firmware: BootMemoryRange, clint: BootMemoryRange)
+                   stack_bytes: u64, firmware: BootMemoryRange)
                    -> Result<(), Error>
     {
         if self.stack_bytes != stack_bytes
@@ -284,11 +329,33 @@ impl Directory
         {
             return Err(Error::Layout);
         }
-        if clint.length < MSIP_BYTES
+        // The route is validated as the kind it declares itself to be. The
+        // signalling window is device memory rather than RAM — the loader
+        // excludes it from the account for exactly that reason — so it is not
+        // checked against the RAM reservations. A platform that signals through
+        // cells gets the stronger per-hart check; one that signals through a
+        // controller cannot have its encoding checked here, and this says so
+        // rather than pretending otherwise.
+        let route = match self.signalling
         {
-            return Err(Error::Layout);
-        }
-        let clint_end = clint.base.checked_add(MSIP_BYTES).ok_or(Error::Layout)?;
+            Signalling::Cells(window) =>
+            {
+                if window.length < MSIP_BYTES
+                {
+                    return Err(Error::Layout);
+                }
+                let end = window.base.checked_add(MSIP_BYTES).ok_or(Error::Layout)?;
+                Some((window.base, end))
+            }
+            Signalling::Controller(window) =>
+            {
+                if window.length == 0
+                {
+                    return Err(Error::Layout);
+                }
+                None
+            }
+        };
         for (index, (entry, cpu)) in entries.iter().zip(cpus).enumerate()
         {
             if entry.hart != cpu.hart
@@ -311,15 +378,24 @@ impl Directory
             {
                 return Err(Error::Storage { hart: entry.hart });
             }
-            if entry.msip < clint.base
-               || entry.msip.checked_add(4).is_none_or(|end| end > clint_end)
-               || !entry.msip.is_multiple_of(4)
+            if let Some((base, end)) = route
             {
+                if entry.signal < base
+                   || entry.signal.checked_add(4).is_none_or(|cell| cell > end)
+                   || !entry.signal.is_multiple_of(4)
+                {
+                    return Err(Error::Route { hart: entry.hart });
+                }
+            }
+            else if entry.signal == 0
+            {
+                // A controller platform encodes its target itself, so the only
+                // thing that can be said about the value is that it was stated.
                 return Err(Error::Route { hart: entry.hart });
             }
             for other in &entries[..index]
             {
-                if entry.msip == other.msip
+                if entry.signal == other.signal
                    || (entry.storage.base < other.storage.base + other.storage.length
                        && other.storage.base < end)
                 {
@@ -331,13 +407,17 @@ impl Directory
     }
 }
 const _: () =
-    assert!(core::mem::size_of::<Entry>() == 32 && core::mem::size_of::<Directory>() == 40);
+    assert!(core::mem::size_of::<Entry>() == 32
+            && core::mem::size_of::<Signalling>() == 24
+            && core::mem::size_of::<Directory>() == 64
+            && core::mem::offset_of!(Directory, signalling) == 32
+            && core::mem::offset_of!(Directory, image) == 56);
 
-const _: () = assert!(core::mem::size_of::<SecondaryStart>() == 96
+const _: () = assert!(core::mem::size_of::<SecondaryStart>() == 104
                       && core::mem::size_of::<BootImage>() == 80
                       && core::mem::offset_of!(Control, start) == 80
-                      && core::mem::offset_of!(Control, wake_requested) == 176
-                      && core::mem::offset_of!(Control, wake_acknowledged) == 184);
+                      && core::mem::offset_of!(Control, wake_requested) == 184
+                      && core::mem::offset_of!(Control, wake_acknowledged) == 192);
 /// Exact shared layout/protocol identity, checked before any expanded monitor view.
 /// This is an artifact-layout gate, not a security hash or restart epoch.
 pub const LAYOUT_FINGERPRINT: u64 = layout_fingerprint();
@@ -356,7 +436,7 @@ const fn layout_fingerprint() -> u64
                  core::mem::align_of::<Frame>(),
                  core::mem::align_of::<Entry>(),
                  core::mem::offset_of!(Control, hart),
-                 core::mem::offset_of!(Control, msip),
+                 core::mem::offset_of!(Control, signal),
                  core::mem::offset_of!(Control, requested),
                  core::mem::offset_of!(Control, acknowledged),
                  core::mem::offset_of!(Control, stop),
@@ -400,7 +480,7 @@ const fn layout_fingerprint() -> u64
                  core::mem::offset_of!(Frame, pc),
                  core::mem::offset_of!(Frame, status),
                  core::mem::offset_of!(Entry, hart),
-                 core::mem::offset_of!(Entry, msip),
+                 core::mem::offset_of!(Entry, signal),
                  core::mem::offset_of!(Entry, storage),
                  JOIN_PARKED as usize,
                  JOIN_PRIMARY as usize,

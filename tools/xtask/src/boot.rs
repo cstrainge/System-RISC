@@ -55,6 +55,21 @@ pub fn media(platform: &mac_build::platform::Platform, dist: &Path, image: &str)
 
 pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
 {
+    let dist = workspace.dist().to_path_buf();
+    fs::create_dir_all(&dist)?;
+    // A record that declares its machine description is built from the record is
+    // given one here. The blob is a build artifact rather than something embedded
+    // in the bootloader: whoever loads this machine's payload is handed it — an
+    // emulator with `-dtb`, or the board's own firmware as a file on the card —
+    // and passes it back in x0, so the bootloader reads one pointer whatever the
+    // source and never knows where the tree came from.
+    if mac_build::devicetree::generates(&workspace.platform)
+    {
+        let blob = mac_build::devicetree::generate_for(&workspace.platform)?;
+        let path = dist.join(format!("{}.dtb", workspace.platform.name));
+        fs::write(&path, &blob)?;
+        println!("Generated {} from the record: {} bytes.", workspace.describe(&path), blob.len());
+    }
     let Some(bootloader) = workspace.platform.bootloader.clone()
     else
     {
@@ -62,8 +77,6 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
                  workspace.platform.name);
         return Ok(None);
     };
-    let dist = workspace.dist().to_path_buf();
-    fs::create_dir_all(&dist)?;
     let elf = workspace.target()
                        .join(&workspace.platform.rust_target)
                        .join("release")
@@ -79,14 +92,16 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
     }
     let memory = workspace.platform.memory()?;
     // A bootloader is either executed in place from a read-only flash bank or
-    // copied into the boot window by the board's own first stage. Either way
-    // the record states one window that bounds the payload; the difference is
-    // whether the published image is the bank's whole contents or only the
-    // bytes the first stage copies.
+    // copied into the boot window by the board's own first stage. Either way the
+    // record states one window that bounds the payload; the difference is whether
+    // the published image is the bank's whole contents, which a reader fetches
+    // whole and so must be padded to the erased value, or only the bytes the first
+    // stage copies, where padding would add bytes to a file the firmware loads
+    // raw.
     let (window, banked) = match memory.flash()
     {
         Some(flash) => (flash, true),
-        None => (memory.boot(), false)
+        None => (memory.boot_window(), false)
     };
     let window_bytes = window.end - window.start;
     let flattened = elf::flatten(&fs::read(&elf)?, window_bytes)?;

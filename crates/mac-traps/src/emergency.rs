@@ -88,20 +88,11 @@ pub fn exit_returned(status: i64) -> !
     unsafe {
         core::arch::asm!("brk #0", options(noreturn, nostack));
     }
-    // A host build of this crate exists: a few build fixtures and probes link it
-    // so that one copy of the wire types serves them. There is no System to
-    // request an exit from on a host, so the same deliberate fault is raised with
-    // the host's own illegal instruction rather than falling out of a function
-    // that promises not to return.
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        core::arch::asm!("ud2", options(noreturn, nostack));
-    }
-    // Any other host has no deliberate-trap instruction this crate can name. A
-    // halt is the least dishonest thing left, and it is confined to build hosts:
-    // no shipping configuration reaches this arm.
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64",
-                  target_arch = "x86")))]
-    loop
-    {}
+    // A host pipeline that builds this crate — a probe fixture linking the ABI —
+    // has no terminal-fault instruction to name, and its `EXIT` has no resident
+    // System behind it to honour. Panicking is still a loud terminal outcome,
+    // which is what this function exists to produce; the process must not appear
+    // to have exited cleanly.
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    unreachable!("EXIT returned on a host build, where no resident System can honour it")
 }

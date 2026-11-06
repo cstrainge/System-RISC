@@ -467,11 +467,11 @@ impl Checked
         self.flash.clone()
     }
 
-    /// The window the boot payload occupies once the first stage has placed it.
-    /// On a platform with a flash bank this is where the bank's contents are
-    /// mapped; on a board whose firmware copies the payload from removable
-    /// media it is the address and extent that copy is made to.
-    pub fn boot(&self) -> Range<u64>
+    /// The window the machine loads its first stage into. A machine that
+    /// fetches its firmware from flash declares that medium as well; a board
+    /// whose firmware copies the payload from removable media declares only this
+    /// one, and it is the address and extent that copy is made to.
+    pub fn boot_window(&self) -> Range<u64>
     {
         self.boot.clone()
     }

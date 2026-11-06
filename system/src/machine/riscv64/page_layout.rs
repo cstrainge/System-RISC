@@ -16,6 +16,7 @@ pub(crate) use mac_riscv_pages::Sv39;
 /// this module so it never names a format.
 pub(crate) use mac_riscv_pages::{Decoded, Entry, LeafSize};
 pub(crate) use mac_riscv_pages::mapping;
+pub(crate) use mac_riscv_pages::walk;
 
 /// The encoder's failure type, exposed through the selection point so shared
 /// paging reports a refusal without naming a format.
@@ -52,6 +53,16 @@ pub(crate) fn valid_virtual_range(range: AddressRange) -> bool
     Sv39::valid_virtual_range(range)
 }
 
+pub(crate) fn lower_half_end() -> u64
+{
+    1 << 38
+}
+
+pub(crate) fn upper_half_start() -> u64
+{
+    u64::MAX << 38
+}
+
 /// The name the admission diagnostic reports, so a refused root says which
 /// format it was measured against.
 pub(crate) const NAME: &str = "sv39";
@@ -67,13 +78,19 @@ pub(crate) fn validate_root(root: usize, expected_physical: u64) -> bool
     && root & PPN_MASK == expected_physical as usize >> 12
 }
 
-/// The register value that selects `physical` as the root table under `tag`.
-/// The mode field, the tag shift and the page-number width are stated once,
-/// here, so no caller re-derives an Sv39 encoding.
-pub(crate) fn encode_root(physical: u64, tag: u64) -> usize
+/// The register values that select `physical` as the root table under `tag`,
+/// as the primary and secondary root of this layout.
+///
+/// Sv39 selects its whole address space through one register, so the secondary
+/// is zero and a caller must read that as "this layout has no second root"
+/// rather than as a root at address zero. The mode field, the tag shift and the
+/// page-number width are stated once, here, so no caller re-derives an Sv39
+/// encoding.
+pub(crate) fn encode_roots(physical: u64, tag: u64) -> (usize, usize)
 {
-    (MODE << MODE_SHIFT) | ((tag as usize & TAG_MASK) << TAG_SHIFT)
-    | (physical as usize >> 12 & PPN_MASK)
+    ((MODE << MODE_SHIFT) | ((tag as usize & TAG_MASK) << TAG_SHIFT)
+     | (physical as usize >> 12 & PPN_MASK),
+     0)
 }
 
 /// The admission check requires interrupts to be off, so that no handler can

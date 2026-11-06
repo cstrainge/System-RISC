@@ -18,15 +18,23 @@ pub(crate) mod emergency;
 pub(crate) mod input;
 pub(crate) mod io;
 pub(crate) mod memory;
-pub(crate) mod monitor;
 pub(crate) mod pages;
-pub(crate) mod paging;
 pub(crate) mod power_shutdown;
-pub(crate) mod scheduler;
 pub(crate) mod smp;
-pub(crate) mod traps;
 pub(crate) use smp::eligible_harts;
 pub(crate) mod video;
+
+// The scheduler, trap dispatch, pager and monitor are one implementation for
+// every machine. They live here rather than inside an architecture module
+// because they contain no ISA mechanism: what they need from the hardware is
+// reached through the selected adapter, and the parts that do touch it — trap
+// entry, interrupt masking, the timer and the wait instruction — are in that
+// adapter's own `trap_entry`, `interrupts`, `cpu` and `power` modules. That is
+// what makes a second architecture an adapter rather than a copy of these trees.
+pub(crate) mod monitor;
+pub(crate) mod paging;
+pub(crate) mod scheduler;
+pub(crate) mod traps;
 
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
