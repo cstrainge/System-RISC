@@ -18,13 +18,9 @@ pub(crate) mod emergency;
 pub(crate) mod input;
 pub(crate) mod io;
 pub(crate) mod memory;
-pub(crate) mod monitor;
 pub(crate) mod pages;
-pub(crate) mod paging;
 pub(crate) mod power_shutdown;
-pub(crate) mod scheduler;
 pub(crate) mod smp;
-pub(crate) mod traps;
 pub(crate) use smp::eligible_harts;
 pub(crate) mod video;
 
