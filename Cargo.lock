@@ -1225,7 +1225,6 @@ dependencies = [
  "mac-abi",
  "mac-build",
  "mac-driver",
- "mac-pool-interface",
  "mac-wave-interface",
  "serde_json",
  "spinning_top",

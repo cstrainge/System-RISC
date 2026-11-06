@@ -189,7 +189,28 @@ fn puthex(value: u64)
     }
 }
 
+/// Report a refused probe and stop.
+///
+/// A bootloader that prints a refusal and then falls through to its ready marker
+/// boots as if it had succeeded: the transcript says `BOOT_AARCH64_READY` and
+/// nothing distinguishes a card that was read from one that was not. The detail
+/// lines below are the useful part and they are printed before this, so this
+/// function adds the one line a boot case can assert and then halts.
+///
+/// This is deliberately terminal rather than a `return 0`: the caller used to be
+/// free to ignore the value, and did. `entry.S` still checks the return as defence
+/// in depth, but a failed probe can no longer reach the ready marker by any path.
+fn halt_probe() -> !
+{
+    puts("BOOT_AARCH64_PROBE_FAILED: the card was not read, so this boot cannot continue\n");
+    loop
+    {
+        core::hint::spin_loop();
+    }
+}
+
 /// Reads sector zero from the SD card and reports the partition-table signature
+
 /// it actually found. A card that answers but returns the wrong sector still
 /// reaches here, so the signature is the evidence rather than the call returning.
 #[unsafe(no_mangle)]
@@ -205,7 +226,7 @@ pub extern "C" fn sdhci_probe() -> u64
         None =>
         {
             puts("BOOT_AARCH64_DT_REFUSED: the linked tree has no valid header\n");
-            return 0;
+            halt_probe();
         }
     };
     // Looked up by the tree's own `compatible`, which is the device tree's
@@ -224,7 +245,7 @@ pub extern "C" fn sdhci_probe() -> u64
         None =>
         {
             puts("BOOT_AARCH64_DT_REFUSED: no sdhci window in the tree\n");
-            return 0;
+            halt_probe();
         }
     };
     match tree.window("arm,pl011")
@@ -241,13 +262,13 @@ pub extern "C" fn sdhci_probe() -> u64
             if base != PL011_BASE
             {
                 puts("BOOT_AARCH64_DT_MISMATCH: the tree's pl011 is not the console in use\n");
-                return 0;
+            halt_probe();
             }
         }
         None =>
         {
             puts("BOOT_AARCH64_DT_REFUSED: no pl011 window in the tree\n");
-            return 0;
+            halt_probe();
         }
     }
     let mut stage = 0u8;
@@ -267,7 +288,7 @@ pub extern "C" fn sdhci_probe() -> u64
             puts(" err=");
             puthex(u64::from(failure.error));
             puts("\n");
-            return 0;
+            halt_probe();
         }
     };
     puts("BOOT_AARCH64_SD_READY: sectors=");
@@ -277,7 +298,7 @@ pub extern "C" fn sdhci_probe() -> u64
     if disk.read_sector(0, &mut sector).is_err()
     {
         puts("BOOT_AARCH64_SD_READ_FAILED: sector 0\n");
-        return 0;
+            halt_probe();
     }
     let signature = u16::from_le_bytes([sector[510], sector[511]]);
     puts("BOOT_AARCH64_SD_MBR: signature=");
@@ -287,8 +308,15 @@ pub extern "C" fn sdhci_probe() -> u64
     puts(" type=");
     puthex(u64::from(sector[450]));
     puts("\n");
-    find_system(&mut disk);
-    u64::from(signature == 0xAA55)
+    // Two conditions, both required. The MBR signature says the card is the one
+    // this platform writes; `find_system` says the volume and the blessed System
+    // were actually reachable. Returning the signature alone meant a card with a
+    // valid table and no System printed the ready marker.
+    if signature != 0xAA55 || !find_system(&mut disk)
+    {
+        halt_probe();
+    }
+    1
 }
 
 /// Locates the blessed System Folder on the card. The partition table, the
@@ -296,7 +324,7 @@ pub extern "C" fn sdhci_probe() -> u64
 /// this exercises the same code the kernel uses rather than a bootloader-only
 /// reader. The kernel gains no FAT32 or SD knowledge from it: the bootloader
 /// hands on a loaded image.
-fn find_system(disk: &mut Disk)
+fn find_system(disk: &mut Disk) -> bool
 {
     use mac_block::BlockDevice;
     use mac_filesystem::{Format, Partition, Volume};
@@ -370,7 +398,7 @@ fn find_system(disk: &mut Disk)
             Err(_) =>
             {
                 puts("BOOT_AARCH64_SYSTEM_REFUSED: no blessed System Folder\n");
-                return;
+                return false;
             }
         };
         puts("BOOT_AARCH64_BLESSED: cnid=");
@@ -382,7 +410,9 @@ fn find_system(disk: &mut Disk)
             putc(*byte);
         }
         puts("\n");
-        match volume.find_file(folder.id, b"System")
+        // The verdict is whether a System was found, not whether a folder existed:
+        // a card with a blessed folder and no System used to reach the ready marker.
+        return match volume.find_file(folder.id, b"System")
         {
             Ok(file) =>
             {
@@ -396,12 +426,17 @@ fn find_system(disk: &mut Disk)
                 puts(" resource=");
                 puthex(file.resources.length);
                 puts("\n");
+                true
             }
-            Err(_) => puts("BOOT_AARCH64_SYSTEM_REFUSED: no System file in the blessed folder\n")
-        }
-        return;
+            Err(_) =>
+            {
+                puts("BOOT_AARCH64_SYSTEM_REFUSED: no System file in the blessed folder\n");
+                false
+            }
+        };
     }
     puts("BOOT_AARCH64_SYSTEM_REFUSED: no mountable volume\n");
+    false
 }
 
 #[panic_handler]

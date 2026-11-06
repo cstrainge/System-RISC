@@ -75,10 +75,21 @@ el1_entry:
 physmap_bad:
     adr x0, physmap_bad_marker
     bl uart_puts
+    b idle
 physmap_done:
     bl sdhci_probe
+    cbz x0, sdhci_bad
     adr x0, ready_marker
     bl uart_puts
+    b idle
+sdhci_bad:
+    // The probe halts by itself on every refusal it can detect, so this branch is
+    // the defence for a zero that got past it. Before it existed, a refused probe
+    // printed its detail and then reached the ready marker, so a card that was
+    // never read produced the same transcript as one that was.
+    adr x0, sdhci_bad_marker
+    bl uart_puts
+idle:
 2:  wfe
     b 2b
 
@@ -180,6 +191,8 @@ physmap_marker:
     .asciz "BOOT_AARCH64_PHYSMAP_READY: physmap aliases physical RAM\n"
 physmap_bad_marker:
     .asciz "BOOT_AARCH64_PHYSMAP_BAD: physmap does not alias physical RAM\n"
+sdhci_bad_marker:
+    .asciz "BOOT_AARCH64_PROBE_FAILED: the probe returned failure to the entry code\n"
 ready_marker:
     .asciz "BOOT_AARCH64_READY: board bootloader reached its idle loop\n"
 trap_marker:
