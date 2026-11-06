@@ -1,5 +1,5 @@
 {
-  "name": "qemu_arm64",
+  "name": "raspi3b",
   "rust_target": "aarch64-unknown-none",
   "toolchain": "rust/sdk.json",
   "guest_linker": "platforms/linker/aarch64.ld",
@@ -254,65 +254,10 @@
       }
     }
   },
-  "emulation": {
-    "description": "BCM2837-class SoC machine, 4x Cortex-A53, 1 GiB RAM, PL011 UART console, sdhci SD storage, bcm2835 RNG and a VideoCore mailbox framebuffer",
-    "family": "qemu",
-    "binary": "qemu-system-aarch64",
-    "machine": "raspi3b",
-    "ram": "1G",
-    "harts": 4,
-    "firmware": "none",
-    "boot_medium": {
-      "kind": "sd"
-    },
-    "disks": {
-      "transport": "sdhci",
-      "format": "raw",
-      "readonly": true,
-      "attach": [
-        {
-          "image": "sd-card",
-          "boot": true
-        }
-      ]
-    },
-    "display": {
-      "kind": "videocore-mailbox",
-      "framebuffer": "videocore-mailbox"
-    },
-    "entropy": {
-      "kind": "bcm2835-rng"
-    },
-    "network": {
-      "kind": "none"
-    },
-    "screen": {
-      "interactive": "window",
-      "headless": "none"
-    },
-    "console": {
-      "interactive": "stdio",
-      "headless": "file"
-    },
-    "readiness": {
-      "timeout_seconds": 60,
-      "booted": [
-        "DESKTOP_READY:",
-        "BOOT_NO_SYSTEM:"
-      ],
-      "failed": [
-        "BOOT_TRAP:",
-        "BOOT_PANIC:",
-        "BOOT_ALLOCATION_FAILED:",
-        "SYSTEM_PANIC:",
-        "SYSTEM_ALLOCATION_FAILED:",
-        "SYSTEM_STARTUP_FAILED:"
-      ]
-    }
-  },
   "hardware": {
     "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware",
     "board": "bcm2837-class",
+    "harts": 4,
     "soc": "bcm2837",
     "boot": {
       "medium": {
