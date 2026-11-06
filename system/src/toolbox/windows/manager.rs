@@ -1890,13 +1890,11 @@ impl WindowManager
         self.selection_damage.push((id, region));
     }
 
-    #[cfg(target_arch = "riscv64")]
     pub(crate) fn pop_selection_damage(&mut self) -> Option<(WindowId, Region)>
     {
         self.selection_damage.pop()
     }
 
-    #[cfg(target_arch = "riscv64")]
     pub(crate) fn take_selection_redraw(&mut self) -> bool
     {
         core::mem::take(&mut self.selection_redraw)

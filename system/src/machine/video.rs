@@ -9,6 +9,7 @@ use mac_video_interface::{ABORT, APPLY, ATTACH, Attach, CLASS, COMMIT, Damage, O
                           Prepared, RELEASE, RESIZE, SERVICE, Size, Surface, VERSION};
 
 use crate::display::{MAX_HEIGHT, MAX_WIDTH, MIN_HEIGHT, MIN_WIDTH, height, width};
+use crate::toolbox::quickdraw::{Rect, geometry::union_rect};
 
 struct Front
 {
@@ -393,3 +394,81 @@ pub(crate) fn apply(size: Size) -> Result<Outcome, Status>
                                                             size.height as i16));
     Ok(Outcome::Applied)
 }
+
+/// Accumulated damage for the next present, bounded to one message.
+///
+/// This is shared rather than per-architecture: it is data over `Rect` that asks
+/// the display for its bounds, and the shared present path consumes it. It lived
+/// in the RISC-V adapter only because nothing else compiled the present path.
+pub(crate) struct DamageRegion
+{
+    rects: [Rect; mac_video_interface::Damage::MAX_RECTS],
+    pub(crate) len: usize
+}
+
+impl DamageRegion
+{
+    pub(crate) const EMPTY: Self = Self { rects: [Rect::ZERO; mac_video_interface::Damage::MAX_RECTS],
+                               len:   0 };
+
+    pub(crate) fn add(&mut self, mut rect: Rect)
+    {
+        rect = Rect::new(rect.left.max(0),
+                         rect.top.max(0),
+                         rect.right.min(width() as i16),
+                         rect.bottom.min(height() as i16));
+        if rect.is_empty()
+        {
+            return;
+        }
+
+        // Merge only when the union still describes exactly the same pixels.
+        let mut i = 0;
+        while i < self.len
+        {
+            let old = self.rects[i];
+            if old.left <= rect.left
+               && old.top <= rect.top
+               && old.right >= rect.right
+               && old.bottom >= rect.bottom
+            {
+                return;
+            }
+            let bounds = union_rect(old, rect);
+            if bounds == rect
+               || (old.left == rect.left
+                   && old.right == rect.right
+                   && old.top <= rect.bottom
+                   && rect.top <= old.bottom)
+               || (old.top == rect.top
+                   && old.bottom == rect.bottom
+                   && old.left <= rect.right
+                   && rect.left <= old.right)
+            {
+                rect = bounds;
+                self.len -= 1;
+                self.rects[i] = self.rects[self.len];
+                i = 0;
+            }
+            else
+            {
+                i += 1;
+            }
+        }
+        if self.len == self.rects.len()
+        {
+            // Bound the backlog if the display falls behind a complex scene.
+            // Keep all pending pixels covered, without forcing a mode-wide update.
+            rect = self.rects().iter().copied().fold(rect, union_rect);
+            self.len = 0;
+        }
+        self.rects[self.len] = rect;
+        self.len += 1;
+    }
+
+    pub(crate) fn rects(&self) -> &[Rect]
+    {
+        &self.rects[..self.len]
+    }
+}
+

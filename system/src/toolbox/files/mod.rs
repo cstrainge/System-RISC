@@ -490,7 +490,6 @@ pub struct Manager
     /// `(volume, cnid)` of the volume's `Pipes` folder, when one exists. The
     /// folder is a real directory; only its contents come from the resident
     /// pipe registry.
-    #[cfg(target_arch = "riscv64")]
     pipes_folder:         Option<(u32, u32)>,
     pub rejected_volumes: u32
 }
@@ -522,7 +521,6 @@ impl Default for Manager
                    objects::Objects::new(),
                watches:
                    watch::Watches::new(),
-               #[cfg(target_arch = "riscv64")]
                pipes_folder:                                                              None,
                rejected_volumes:                                                          0,
                #[cfg(any(systemrisc, feature = "test-support"))]
