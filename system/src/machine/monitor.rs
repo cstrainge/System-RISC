@@ -590,7 +590,7 @@ fn notify(entry: &Entry)
 fn selected() -> Result<&'static Admitted, Error>
 {
     let monitor = MONITOR.get().ok_or(Error::Missing)?;
-    if crate::machine::hart_id() != monitor.primary
+    if super::hart_id() != monitor.primary
     {
         return Err(Error::ForeignHart);
     }
@@ -732,7 +732,7 @@ impl PublicationLease
         let deadline = now().checked_add(monitor.timebase_hz).ok_or(Error::ClockOverflow)?;
         // Keep only this bounded issue tail local. Waiting owns the command lease,
         // not a manager guard or a newly imposed long interrupts-off interval.
-        crate::machine::interrupts::with_masked(|| {
+        super::interrupts::with_masked(|| {
             selected()?;
             if TERMINAL.load(Ordering::Acquire)
             {
@@ -837,7 +837,7 @@ fn physical_limit(memory: CheckedMemory<'_>) -> Result<u64, Error>
     {
         end = end.max(limit);
     }
-    for &(_, _, base, bytes, _, _) in crate::machine::power::platform::PLATFORM_MMIO_DEVICES
+    for &(_, _, base, bytes, _, _) in super::power::platform::PLATFORM_MMIO_DEVICES
     {
         end = end.max(base.checked_add(bytes).ok_or(Error::Image)?);
     }
@@ -995,7 +995,7 @@ pub(crate) fn begin_secondary(mut prepared: crate::machine::traps::PreparedHart)
     // Reauthenticate and bind on the actual primary in the short native
     // publication tail. No migration, callback, allocation or owning Drop can
     // occur between this irreversible mark and its request/MMIO publication.
-    let published = crate::machine::interrupts::with_masked(|| {
+    let published = super::interrupts::with_masked(|| {
         selected()?;
         if TERMINAL.load(Ordering::Acquire)
         {

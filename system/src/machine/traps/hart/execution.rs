@@ -416,7 +416,7 @@ fn with_invocation_context<R>(local: &HartLocal,
         let Some(idle) = idle.as_ref()
         else
         {
-            crate::machine::entry_lost("System maintenance lost its canonical affine idle Context");
+            super::super::entry_lost("System maintenance lost its canonical affine idle Context");
         };
         operation(Some(idle.context()))
     }
@@ -443,7 +443,7 @@ pub(crate) fn current_context() -> crate::context::ContextRef
             let Some(idle) = idle.as_ref()
             else
             {
-                crate::machine::entry_lost("System maintenance lost its canonical affine idle \
+                super::super::entry_lost("System maintenance lost its canonical affine idle \
                                           Context");
             };
             Some(idle.context().clone())
@@ -681,7 +681,7 @@ pub(crate) fn activate_idle_context()
             let Some(idle) = idle.as_ref()
             else
             {
-                crate::machine::entry_lost("scheduler handoff has no canonical System idle owner");
+                super::super::entry_lost("scheduler handoff has no canonical System idle owner");
             };
             if current == Some(Arc::as_ptr(idle.context()))
             {
@@ -703,7 +703,7 @@ pub(crate) fn idle_frame() -> *mut TrapFrame
         let Some(idle) = idle.as_ref()
         else
         {
-            crate::machine::entry_lost("scheduler bootstrap did not install this hart's canonical \
+            super::super::entry_lost("scheduler bootstrap did not install this hart's canonical \
                                       idle owner");
         };
         super::publish(idle.cpu());

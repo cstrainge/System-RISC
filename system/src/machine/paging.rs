@@ -23,7 +23,7 @@ use mac_kernel_model::{DomainId,
 use crate::machine::page_layout::Entry;
 use crate::machine::page_layout::mapping::{MapError, Mapper, Tables};
 
-use crate::machine::interrupts::{self, NativeInvocationGate};
+use super::interrupts::{self, NativeInvocationGate};
 use crate::machine::memory::*;
 use crate::machine::pages::{ArrayError, Backing, OwnedArray, Stack};
 use crate::allocator::foundation::{self, Foundation};
@@ -170,7 +170,7 @@ pub(crate) enum Error
     Memory(MemoryError),
     Execution(execution::Error),
     Topology(topology::Error),
-    Monitor(crate::machine::monitor::Error),
+    Monitor(super::monitor::Error),
     Physical(PhysicalError),
     Policy(ModelError),
     StackStorage(ArrayError<foundation::Error>),
@@ -257,7 +257,7 @@ impl fmt::Display for Error
                        "supervisor admission refused root={root:#x} status={status:#x} \
                         hart={hart} tag_mask={mask:#x}; expected masked {} bootstrap on hart0 \
                         with the admitted root",
-                       crate::machine::page_layout::NAME)
+                       super::page_layout::NAME)
             }
             Self::ForeignRoot { physical } =>
             {
@@ -276,7 +276,7 @@ impl fmt::Display for Error
 }
 fn root_register() -> usize
 {
-    crate::machine::mmu::root()
+    super::mmu::root()
 }
 /// # Safety
 /// Native entry supplies pinned physical wire arrays through the already active
@@ -287,7 +287,7 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
     // monitor layout before validate_boot forms any Directory/Entry view.
     if info.monitor_layout != mac_abi::boot::monitor::LAYOUT_FINGERPRINT
     {
-        return Err(Error::Monitor(crate::machine::monitor::Error::Layout));
+        return Err(Error::Monitor(super::monitor::Error::Layout));
     }
     if BOOT.get().is_some()
     {
@@ -313,9 +313,9 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
                                      length: FLASH_BYTES })
           .map_err(Error::Execution)?;
     let root = root_register();
-    let status = crate::machine::mmu::status();
-    if !crate::machine::page_layout::validate_root(root, record.root_physical)
-       || !crate::machine::page_layout::admission_interrupts_clear(status)
+    let status = super::mmu::status();
+    if !super::page_layout::validate_root(root, record.root_physical)
+       || !super::page_layout::admission_interrupts_clear(status)
        || record.hart != 0
        || record.hardware_tag_mask > 0xffff
        || !(record.hardware_tag_mask + 1).is_power_of_two()
@@ -330,7 +330,7 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
     // its checked software view, not a hardware mapping operation. Monitor
     // admission checks every isolated control extent against that view before
     // borrowing atomic cells; BOOT/global allocator publication happens later.
-    unsafe { crate::machine::monitor::admit(info, memory, cpus, record.hart as usize, &ram) }.map_err(Error::Monitor)?;
+    unsafe { super::monitor::admit(info, memory, cpus, record.hart as usize, &ram) }.map_err(Error::Monitor)?;
     let boot = BOOT.call_once(|| {
                        Bootstrap { ram,
                                    memory,
@@ -597,27 +597,27 @@ impl PageLayout for SelectedLayout
 {
     fn geometry() -> PageGeometry
     {
-        crate::machine::page_layout::geometry()
+        super::page_layout::geometry()
     }
 
     fn leaf_sizes() -> &'static [u64]
     {
-        crate::machine::page_layout::leaf_sizes()
+        super::page_layout::leaf_sizes()
     }
 
     fn valid_virtual_range(range: AddressRange) -> bool
     {
-        crate::machine::page_layout::valid_virtual_range(range)
+        super::page_layout::valid_virtual_range(range)
     }
 
     fn lower_half_end() -> u64
     {
-        crate::machine::page_layout::lower_half_end()
+        super::page_layout::lower_half_end()
     }
 
     fn upper_half_start() -> u64
     {
-        crate::machine::page_layout::upper_half_start()
+        super::page_layout::upper_half_start()
     }
 }
 impl Architecture for SelectedLayout
@@ -728,7 +728,7 @@ impl PreparedRoots
         // SAFETY: the kernel root was captured from a live address space and is
         // verified by the register read that follows.
         unsafe {
-            crate::machine::mmu::activate(self.spaces.kernel.register);
+            super::mmu::activate(self.spaces.kernel.register);
         }
         if root_register() != self.spaces.kernel.register
         {
@@ -826,7 +826,7 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     {
         leaves += map(&mut mapper, base, base, end - base, READ | WRITE, true)?;
     }
-    for &(_, _, base, bytes, _, _) in crate::machine::power::platform::PLATFORM_MMIO_DEVICES
+    for &(_, _, base, bytes, _, _) in super::power::platform::PLATFORM_MMIO_DEVICES
     {
         leaves += map(&mut mapper, base, base, bytes, READ | WRITE, true)?;
     }
@@ -834,7 +834,7 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     let (root, root_charge) = tables.take_root(physical)?;
     let owner=AddressSpace::<SelectedLayout, PagingBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
     let (register, register_aux) =
-        crate::machine::page_layout::encode_roots(owner.root_physical().0, tag as u64);
+        super::page_layout::encode_roots(owner.root_physical().0, tag as u64);
     Ok(Space { owner,
                tables,
                register,
@@ -909,11 +909,11 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
     // Publish real owners before installing their actual root. One full flush
     // retires the boot-owned ASID0/global translations; no old tree is freed here.
     unsafe {
-        crate::machine::mmu::activate(spaces.kernel.register);
+        super::mmu::activate(spaces.kernel.register);
     }
     serial!("MMU_READY mode={} actual={:#x} kernel_root={:#x} firmware_root={:#x} tables={} \
              leaves={} stack={:#x}+{} guards=2 service_stacks={} stack_table={:#x}+{}",
-            crate::machine::page_layout::NAME,
+            super::page_layout::NAME,
             root_register(),
             spaces.kernel.owner.root_physical().0,
             spaces.firmware.owner.root_physical().0,
@@ -982,11 +982,11 @@ impl RootScope
             // SAFETY: `register` was captured from a live root that this scope
             // restores before it ends.
             unsafe {
-                crate::machine::mmu::write_root(register);
+                super::mmu::write_root(register);
             }
             if fence
             {
-                crate::machine::mmu::flush_translations();
+                super::mmu::flush_translations();
             }
         }
         Self { previous,
@@ -1003,11 +1003,11 @@ impl Drop for RootScope
         {
             // SAFETY: restores the root this scope captured on entry.
             unsafe {
-                crate::machine::mmu::write_root(self.previous);
+                super::mmu::write_root(self.previous);
             }
             if self.fence
             {
-                crate::machine::mmu::flush_translations();
+                super::mmu::flush_translations();
             }
         }
     }
@@ -1104,7 +1104,7 @@ pub(crate) unsafe fn activate_scheduled_root()
     {
         // SAFETY: `selected` is the root this path just chose from the live
         // scheduler directory.
-        unsafe { crate::machine::mmu::activate(selected) }
+        unsafe { super::mmu::activate(selected) }
     }
 }
 

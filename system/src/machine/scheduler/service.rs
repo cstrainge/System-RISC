@@ -545,7 +545,7 @@ impl RequestResult
 pub(crate) enum DeadlineError
 {
     Nanoseconds(u32),
-    Clock(crate::machine::monitor::Error)
+    Clock(super::super::monitor::Error)
 }
 impl DeadlineError
 {
@@ -553,7 +553,7 @@ impl DeadlineError
     {
         match self
         {
-            Self::Nanoseconds(_) | Self::Clock(crate::machine::monitor::Error::ClockOverflow) =>
+            Self::Nanoseconds(_) | Self::Clock(super::super::monitor::Error::ClockOverflow) =>
             {
                 mac_abi::BAD_ARGUMENT
             }
@@ -581,8 +581,8 @@ pub(crate) fn relative_deadline(seconds: u64, nanoseconds: u32) -> Result<u64, D
     {
         return Err(DeadlineError::Nanoseconds(nanoseconds));
     }
-    let interval=crate::machine::monitor::seconds_nanos_to_ticks_ceil(seconds,nanoseconds).map_err(DeadlineError::Clock)?;
-    crate::platform::ticks().checked_add(interval).ok_or(DeadlineError::Clock(crate::machine::monitor::Error::ClockOverflow))
+    let interval=super::super::monitor::seconds_nanos_to_ticks_ceil(seconds,nanoseconds).map_err(DeadlineError::Clock)?;
+    crate::platform::ticks().checked_add(interval).ok_or(DeadlineError::Clock(super::super::monitor::Error::ClockOverflow))
 }
 
 /// Scalar identity of the actual routed saved frame. It grants no Process or
