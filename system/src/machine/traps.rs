@@ -469,7 +469,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         (i64::from(response.status), response.action)
     }
-    else if matches!(number, NATIVE_THREAD | ADDRESS_WAIT)
+    else if matches!(number, NATIVE_THREAD | ADDRESS_WAIT | PIPES)
               || (number == PROCESS && size == size_of::<mac_abi::processes::NativeExitCall>())
     {
         let suspension = crate::machine::scheduler::service::request_suspension_allowed(frame);
@@ -842,6 +842,51 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
                 None =>
                 {
                     crate::machine::scheduler::address::cancel_current();
+                    crate::machine::scheduler::pipe::cancel_current();
+                    RequestResult::done(BAD_ARGUMENT)
+                }
+            }
+        }
+        PIPES =>
+        {
+            match unsafe { request::<mac_abi::pipes::Call>(pointer, size) }
+            {
+                Some(call) =>
+                {
+                    // The bridge already validated this span for the operation's
+                    // direction. A zero length lends an empty slice, never a null
+                    // pointer with a nonzero count.
+                    let empty_in: &[u8] = &[];
+                    let empty_out: &mut [u8] = &mut [];
+                    let (input, output) = if call.operation == mac_abi::pipes::READ
+                    {
+                        let output: &mut [u8] = if call.length == 0
+                        {
+                            empty_out
+                        }
+                        else
+                        {
+                            unsafe { core::slice::from_raw_parts_mut(call.buffer, call.length) }
+                        };
+                        (empty_in, output)
+                    }
+                    else
+                    {
+                        let input: &[u8] = if call.length == 0
+                        {
+                            empty_in
+                        }
+                        else
+                        {
+                            unsafe { core::slice::from_raw_parts(call.buffer, call.length) }
+                        };
+                        (input, empty_out)
+                    };
+                    toolbox::pipes::request(call, input, output, identity, suspension)
+                }
+                None =>
+                {
+                    crate::machine::scheduler::pipe::cancel_current();
                     RequestResult::done(BAD_ARGUMENT)
                 }
             }

@@ -236,7 +236,7 @@ a linked std stub as an implemented service.
 | `thread_local!` and runtime TLS | Canonical per-thread OS-key TLS and bounded std teardown observations | Per-OS-thread keys/values, initialization/reentrancy, destructor order/reentrancy and teardown. Keep code and thread state alive through destructors. Test distinct values on workers, multiple apps and thread-slot reuse. |
 | Mutex/RwLock/Condvar/Once/OnceLock/LazyLock, channels | Interrupt-masked service guards; event-specific wait | General atomic check/enqueue-and-park plus wake/timeout; no lost wakeups, spins behind preempted owners or locks across switches. Specify memory ordering, spurious wakes and fairness. Test blocked-thread progress, initialization races and channels using real workers. |
 | `time::{Instant,SystemTime}`, thread sleep | Monotonic ns, signed Unix seconds and checked HFS conversion | Define precision/resolution, range, subtraction/overflow and wall adjustment. Sleep uses scheduler deadlines and never UI event consumption. Test 2026+, before/after epoch, 2040 HFS boundary and adjustment-independent Instant. |
-| `io` stdin/stdout/stderr, buffering and printing | GUI null-stream profile; CLAP streams deferred | GUI APPL/FNDR stdin is permanent EOF and stdout/stderr intentionally discard writes with successful flush; all are non-terminal. No output window or serial delivery is implied. Future CLAP/Terminal sessions require real owned endpoints, partial I/O, EOF, locks, redirection and readiness. Full pipe functionality belongs to the planned pipes extension, replacing kernel stubs through the service boundary. |
+| `io` stdin/stdout/stderr, buffering and printing | GUI null-stream profile; CLAP streams deferred | GUI APPL/FNDR stdin is permanent EOF and stdout/stderr intentionally discard writes with successful flush; all are non-terminal. No output window or serial delivery is implied. Future CLAP/Terminal sessions require real owned endpoints, partial I/O, EOF, locks, redirection and readiness. No pipe stub exists in this tree; full pipe functionality is specified in [Pipes](PIPES.md) and is resident Toolbox state reached by its own native trap, not a kernel stub. |
 | `fs`, File/OpenOptions, Read/Write/Seek, metadata/read_dir | Native bounded writable descriptions and path services; basic std File/cwd adapter under qualification | General open/create/read/write/append/truncate/seek/sync, large offsets, cursor sharing on clone, flags and access errors, atomic replacement and directory races. A 4 MiB staging writer is not a writable File. Plain std files address the data fork; resource forks stay an explicit native extension. |
 | `path`, OsStr/OsString, environment/cwd/temp/exe paths | Native UTF-8 strings over classic HFS names | Define native path/volume syntax, encoding and invalid-input behavior, HFS case/name limitations, normalization and unsupported Unicode names without lossy substitution. Snapshot args/env and synchronize allowed mutations. Preferences remain JSON, separate from the process environment. |
 | `process::{Command,Child,Stdio}`, exit/abort | Resource-app launch/activation/exit | Child arguments/environment/cwd, process ownership, exit status, wait/try_wait, kill and redirected pipes. Launch resource-fork apps through the loader; no need to implement Unix fork to provide Command. Do not treat activate-existing-app as spawn-a-child. |
@@ -430,11 +430,13 @@ qualification; earlier silent-Err observations describe the previous policy.
 
 These semantics are the graphical application contract, not a real output
 stream, interactive input, serial console or CLAP acceptance. A future CLAP
-profile must bind actual session endpoints before it is supported. Full pipes
-functionality is planned for an external pipes extension that replaces resident
-kernel placeholders through the production service/module boundary; do not grow
-a parallel full kernel pipe implementation or treat unsupported stubs as pipe
-support. Redirection, pipe readiness/backpressure and lifecycle remain deferred.
+profile must bind actual session endpoints before it is supported. Full pipe
+functionality is specified in [Pipes](PIPES.md). There is no resident or kernel
+pipe stub in this tree to replace: the only stub is the null standard-stream
+profile above, and it stays for the graphical profile. Pipes are a resident
+Toolbox facility with its own native trap and are not a second kernel
+implementation. Redirection, pipe readiness/backpressure and lifecycle remain
+deferred to that specification.
 
 
 ### Combined Control Suite observation — 2026-11-02

@@ -287,6 +287,70 @@ impl core::error::Error for Error
 {
 }
 
+/// The QEMU fw_cfg RAMFB backend. `translate` proves the pixel buffer's
+/// device-visible address; a bootstrap that identity-maps passes
+/// `|pointer, _| Some(pointer as u64)`.
+#[cfg(target_arch = "riscv64")]
+pub struct Ramfb
+{
+    registers:   usize,
+    framebuffer: u64,
+    width:       usize,
+    height:      usize,
+    translate:   fn(*const u8, usize) -> Option<u64>
+}
+#[cfg(target_arch = "riscv64")]
+#[allow(unsafe_code)]
+impl Ramfb
+{
+    /// # Safety
+    /// `registers` names a valid mapped fw_cfg register window of at least 24
+    /// bytes, accessible until reset. `framebuffer` is pinned device-visible
+    /// physical guest RAM for `width * height * 4` bytes. `translate` must
+    /// prove contiguous device-visible addresses for the caller's pinned CPU
+    /// spans and must never treat a virtual pointer as a physical address. All
+    /// access to the same fw_cfg window must obey [`configure`]'s ownership
+    /// protocol; the backend is a convenience over it, not a second one.
+    pub const unsafe fn new(registers: usize, framebuffer: u64, width: usize, height: usize,
+                            translate: fn(*const u8, usize) -> Option<u64>)
+                            -> Self
+    {
+        Self { registers,
+               framebuffer,
+               width,
+               height,
+               translate }
+    }
+}
+#[cfg(target_arch = "riscv64")]
+#[allow(unsafe_code)]
+impl crate::backend::Backend for Ramfb
+{
+    type Error = Error;
+
+    fn acquire<'a>(&mut self, pixels: &'a mut [u32]) -> Result<crate::backend::Frame<'a>, Error>
+    {
+        let geometry = || {
+            Error::Geometry { width:  self.width,
+                              height: self.height }
+        };
+        let words = self.width.checked_mul(self.height).ok_or_else(geometry)?;
+        if pixels.len() < words
+        {
+            return Err(geometry());
+        }
+        // SAFETY: the constructor's contract, unchanged. `translate` is a plain
+        // function pointer, so it borrows nothing from this call.
+        unsafe {
+            configure(self.registers, self.framebuffer, self.width, self.height, self.translate)?;
+        }
+        Ok(crate::backend::Frame { width:  self.width,
+                                   height: self.height,
+                                   stride: self.width,
+                                   pixels: &mut pixels[..words] })
+    }
+}
+
 #[cfg(any(target_arch = "riscv64", test))]
 struct Configuration([u8; 28]);
 #[cfg(any(target_arch = "riscv64", test))]

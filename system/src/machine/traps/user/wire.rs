@@ -532,7 +532,8 @@ wire_struct!(mac_abi::files::DirectoryScanCursor { revision:  u64,
                                                    index:     u32,
                                                    traversed: u32,
                                                    state:     u32,
-                                                   reserved:  u32 });
+                                                   reserved:  u32,
+                                                   registry:  u32 });
 
 wire_struct!(mac_abi::files::DesktopScanCursor { volume:    u32,
                                                  state:     u32,
@@ -1248,6 +1249,22 @@ wire_struct!(mac_abi::entropy::Call {
     detail_length: u32,
     reserved2: u32,
     detail: [u8; mac_abi::entropy::DETAIL_BYTES],
+});
+
+wire_struct!(mac_abi::pipes::Call {
+    operation: u32,
+    nonblocking: u32,
+    handle: u64,
+    capacity: u32,
+    name_length: u32,
+    buffer: *mut u8,
+    length: usize,
+    transferred: usize,
+    reader: u64,
+    writer: u64,
+    name: [u8; mac_abi::pipes::NAME_BYTES],
+    reserved: [u64; 2],
+    writers: u64,
 });
 
 wire_struct!(mac_abi::power::PowerCall { operation:     u32,

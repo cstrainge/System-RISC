@@ -38,6 +38,7 @@ pub use toolbox_events as events;
 pub use toolbox_files as files;
 pub use toolbox_memory as memory;
 pub use toolbox_menus as menus;
+pub use toolbox_pipes as pipes;
 pub use toolbox_power as power;
 pub use toolbox_processes as processes;
 pub use toolbox_quickdraw as quickdraw;
@@ -154,6 +155,13 @@ impl<'a> System<'a>
     pub fn files(&self) -> files::Files<'a>
     {
         files::Files::new(self.client)
+    }
+
+    /// Byte-transport pipes. `create` and `connect` are ordinary application
+    /// operations; no privileged caller is required.
+    pub fn pipes(&self) -> pipes::Pipes<'a>
+    {
+        pipes::Pipes::new(self.client)
     }
 
     pub fn controls(&self) -> controls::Controls<'a>

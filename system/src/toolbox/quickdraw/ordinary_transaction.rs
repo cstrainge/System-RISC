@@ -380,10 +380,29 @@ impl Toolbox
             for window in self.windows.back_to_front().filter(|window| ordinary(window))
             {
                 let affected = full || damage.iter().any(|(id, _)| *id == window.id);
+                let content = window.local_bounds();
+                let content_affected =
+                    full
+                    || (affected
+                        && damage.iter().any(|(id, region)| {
+                                            *id == window.id
+                                            && region.bands().iter().any(|band| {
+                                                                        band.top < content.bottom
+                                                                        && band.bottom > content.top
+                                                                        && band.spans
+                                                                               .iter()
+                                                                               .any(|span| {
+                                                                                   span.left
+                                                                                   < content.right
+                                                                                   && span.right
+                                                                                      > content.left
+                                                                               })
+                                                                    })
+                                        }));
                 push(&mut transaction.reads,
                      Read { id:      window.id,
                             stamp:   self.windows.render_stamp(window.id)?,
-                            content: if affected
+                            content: if content_affected
                             {
                                 Some(self.windows.content_revision(window.id)?)
                             }
@@ -442,6 +461,10 @@ impl Toolbox
                             }
                         }
                     }
+                }
+                if !content_affected
+                {
+                    continue;
                 }
                 let mut result = Ok(());
                 self.windows.for_each_layer_visible_rect(window.id, &ordinary, |visible| {

@@ -87,6 +87,19 @@ cargo xtask run --platform qemu_riscv --no-build  # boot what is already built
 cargo xtask run --platform qemu_riscv --headless  # the same boot with no window
 ```
 
+Graphical launches use a fixed 1.5x window zoom (GTK on Windows/Linux, Cocoa
+on macOS), without changing the guest resolution. Headless launches remain
+windowless. Cocoa requires the scale patch linked below.
+
+The `qemu_riscv` graphical launcher also attaches the Host Clipboard extension's
+vdagent transport and enables the display's clipboard peer. GTK requires QEMU
+11.1 or newer with the `qemu-vdagent` backend and `clipboard` display option;
+unsupported QEMU builds report an error rather than silently dropping sharing.
+The platform's `emulation.clipboard.transport` reserves virtio-MMIO slot 4,
+separate from disk slots. Windowless launches omit this transport because there
+is no host clipboard peer; the extension is consequently skipped in that mode.
+Guest Host Clipboard preferences still control sharing policy.
+
 The platform record decides how the emulator is invoked: its machine, memory,
 harts, devices, firmware, which storage image boots, and the console and screen
 each mode gets. `--headless` therefore still boots the real guest and writes its
@@ -533,6 +546,51 @@ Different values that produce the same symbol are rejected with both resource
 and item locations; give one a distinct explicit symbol. Missing or all-zero
 commands emit no constant and cannot have an override. Generation orders names
 deterministically and preserves an unchanged resource constants file.
+
+### Included resources and Apple-derived resources
+
+A `resources` array may contain `{ "include": "file.json" }`. The path is
+relative to the file that names it; the included file is a resources file with
+its own `resources` array, which may itself include others. Expansion is in
+place and in order, and a `file` payload inside an included file resolves from
+the file that declares it. A cycle, or the same `(type, id)` reached twice,
+is an error naming the files and the chain: one resource has one source.
+
+That mechanism is how a package takes Apple-derived resources without carrying
+Apple bytes in git. A package may name an extract list beside its manifest;
+`tools/mac-extract` reads the disc that list names from the repository's `iso`
+directory and writes `extracted_resources.json` plus `extracted_assets/` beside
+it, both ignored by git. Nothing in the tool is package-specific, so a further
+package needs a manifest and a list, not a code change. Gates are presence in
+the named disc file, byte identity with the disc payload, and parity with the
+classic bytes the manifest compiles, so removing the hand-authored original
+cannot change what legacy software observes. `--check` re-derives the pair and
+reports any disagreement with what is on disk.
+
+The unit is the whole package, not a resource family: a package either takes its
+extracted resources from the disc or it does not, so the generated include and
+its rip-out land together. `extract-list.json` is reviewed metadata and stays
+tracked; it records the disc by name, the file on that disc, and each resource's
+type, ID, symbol and payload form.
+
+Fonts need one more step than extraction. `tools/mac-fonts` authors the `FOND`
+family records for imported faces, assigns them IDs from a range this project
+owns, and `verify` checks a packaged fork against the font catalog's admission
+rules. Faces arrive without a family record otherwise, and a face with no family
+is present but unreachable.
+
+**Theme suitcases (System 8/9 Appearance) are not available from this source.**
+The development disc is a System 7.5.1 restore CD — System 7.5, Finder 7.5.1 —
+and Appearance shipped with Mac OS 8 more than two years later. Scanning all
+1,061 files on that volume for the eight Appearance theme resource types
+(`thme`, `thnd`, `thcs`, `thct`, `thdk`, `thmb`, `thml`, `thms`) finds none in
+any of them; the only byte matches in the raw image are substrings inside
+ordinary words and one help-index label. There is also no theme package in this
+tree to fill: theme roles are resident drawing constants, and the theme artwork
+that exists is authored here with provenance. A theme import needs both a
+package and a disc that legitimately carries theme resources, and neither
+exists.
+
 
 The packager reserves:
 

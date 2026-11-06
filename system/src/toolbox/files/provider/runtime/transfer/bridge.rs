@@ -62,6 +62,15 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
     {
         return WRONG_THREAD;
     }
+    // A named pipe's item is not storage, so there is nothing for a transfer to
+    // move or trash. These four operations are routed here rather than to the
+    // catalog mutation path, so the same refusal is made before any job exists.
+    match files(|m| Ok(m.pipes_refuses(call)))
+    {
+        Ok(true) => return NOT_SUPPORTED,
+        Ok(false) => (),
+        Err(error) => return error
+    }
     let existing = files(|m| {
         if let Some((handle, entry)) =
             m.transfers
@@ -138,6 +147,13 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
                 {
                     Ok(()) =>
                     {
+                        // Trashing or putting away the Pipes folder itself is a
+                        // real catalog change; the cached identity must not
+                        // keep pointing at where the folder used to be.
+                        let _ = files(|m| {
+                                   m.pipes_refresh(key.volume, key.cnid);
+                                   Ok(())
+                               });
                         call.entry = entry;
                         OK
                     }
