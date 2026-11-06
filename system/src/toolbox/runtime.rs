@@ -480,6 +480,11 @@ impl Toolbox
             // accessor reports BAD_ABI instead of ever reusing an old stamp.
             let _ = self.windows.content_changed(window);
         }
+        self.queue_scene_damage(id, region);
+    }
+
+    fn queue_scene_damage(&mut self, id: SceneTarget, region: super::quickdraw::region::Region)
+    {
         if !self.system_scene(id)
         {
             self.presentation.ordinary_underlay.changed();
@@ -810,7 +815,6 @@ impl Toolbox
             };
         }
         let id = WindowId(request.id);
-        let active_before = self.windows.active_window();
         let mut patch_damage = None;
         match operation
         {
@@ -1146,8 +1150,7 @@ impl Toolbox
                 self.content_changed(id.0);
             }
         }
-        else if !matches!(operation, BEGIN_UPDATE | INVALIDATE_WINDOW | SET_CLOSE_DEFERRED)
-                  && (operation != SELECT_WINDOW || self.windows.active_window() != active_before)
+        else if !matches!(operation, BEGIN_UPDATE | INVALIDATE_WINDOW | SET_CLOSE_DEFERRED | SELECT_WINDOW)
         {
             self.presentation.redraw = true;
         }
@@ -2817,7 +2820,6 @@ impl Toolbox
                     if let Some(id) = hit.window
                     {
                         let active = active_before == Some(id);
-                        self.presentation.redraw |= hit.part != WindowPart::Drag && !active;
                         // DragWindow activates a background window only after a
                         // successful release; Command-drag preserves its plane.
                         if hit.part != WindowPart::Drag
@@ -2915,12 +2917,10 @@ impl Toolbox
                         }
                         return;
                     }
-                    let active_before = self.windows.active_window();
                     if let Some(action) = self.track_window(point, true, when)
                     {
                         self.action(action, when);
                     }
-                    self.presentation.redraw |= active_before != self.windows.active_window();
                     self.events.post_system(Event { payload: 0,
                                                     kind: EventKind::MouseUp,
                                                     message: 0,
@@ -3264,6 +3264,14 @@ impl Toolbox
         {
             self.system_report_present_pending = true;
             return;
+        }
+        self.presentation.redraw |= self.windows.take_selection_redraw();
+        while let Some((id, region)) = self.windows.pop_selection_damage()
+        {
+            if self.windows.window(id).is_some()
+            {
+                self.queue_scene_damage(id.into(), region);
+            }
         }
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
         self.tick_menu_feedback();
