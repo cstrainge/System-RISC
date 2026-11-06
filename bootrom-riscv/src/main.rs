@@ -666,7 +666,8 @@ extern "C" fn boot_main(tree_address: usize) -> !
         }
         bootrom_riscv::devicetree::Tree::new(core::slice::from_raw_parts(tree_address as *const u8, size))
     };
-    let tree = match tree.and_then(|tree| {
+    let tree = match tree.map_err(bootrom_riscv::devicetree::envelope)
+                         .and_then(|tree| {
                              memory::admit(&tree)?;
                              Ok(tree)
                          })
@@ -679,7 +680,10 @@ extern "C" fn boot_main(tree_address: usize) -> !
         }
     };
 
-    if let Err(error) = tree.cpu_count(primary)
+    // Allocation-free CPU admission, before the heap is touched: the shared
+    // reader validates the container's cells, each CPU's device_type and reg
+    // width, and every status. Discovery below allocates only once this passes.
+    if let Err(error) = tree.cpus_checked(|_| {})
     {
         serial!("BOOT_CPU_TOPOLOGY_REJECTED: {error}");
         halt();

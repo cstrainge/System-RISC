@@ -172,7 +172,24 @@ pub struct Node<'a>
     /// What this node itself declares, which is what its children inherit. A
     /// container is validated on these, a leaf on the inherited pair.
     pub own_address_cells: Option<u32>,
-    pub own_size_cells:    Option<u32>
+    pub own_size_cells:    Option<u32>,
+    /// The raw `ranges` property. Empty means an identity mapping, which is what
+    /// a consumer that supports one translation only needs to know.
+    pub ranges:       Option<&'a [u8]>,
+    /// The raw `interrupts-extended` property, absent when the node uses the
+    /// phandle-based `interrupts` form instead.
+    pub interrupts_extended: Option<&'a [u8]>,
+    /// `phandle`, if the node declares one.
+    pub phandle:      Option<u32>,
+    /// `linux,phandle`, the legacy spelling of the same thing.
+    pub linux_phandle: Option<u32>,
+    /// Whether the node declares the `interrupt-controller` flag. Presence is the
+    /// fact; the property has no value.
+    pub interrupt_controller: bool,
+    /// `#interrupt-cells`, how wide each interrupt specifier is.
+    pub interrupt_cells: Option<u32>,
+    /// `timebase-frequency`, the counter rate a machine states for itself.
+    pub timebase_frequency: Option<u32>
 }
 
 impl Node<'_>
@@ -338,18 +355,31 @@ impl<'a> Tree<'a>
             device_type:  Option<&'a str>,
             reg:          Option<&'a [u8]>,
             interrupts:   Option<&'a [u8]>,
+            interrupts_extended: Option<&'a [u8]>,
+            ranges:       Option<&'a [u8]>,
             status:       Option<&'a str>,
             dma_coherent: bool,
+            interrupt_controller: bool,
+            phandle:      Option<u32>,
+            linux_phandle: Option<u32>,
+            interrupt_cells: Option<u32>,
+            timebase_frequency: Option<u32>,
             address_cells: Option<u32>,
             size_cells:    Option<u32>,
             own_address_cells: Option<u32>,
-            own_size_cells:    Option<u32>
+            own_size_cells:    Option<u32>,
+            /// Whether a child has been opened. The specification requires a
+            /// node's properties to precede its subnodes, and a property after a
+            /// child cannot be attributed to the node it appears to belong to
+            /// without guessing.
+            children_started: bool
         }
         let mut stack = [State::default(); MAX_DEPTH];
         let mut depth = 0usize;
         let mut cursor = 0usize;
         let mut seen = 0usize;
         let mut next_index = 0usize;
+        let mut root_started = false;
         while cursor + 4 <= self.structure.len()
         {
             let token = self.word(&mut cursor)?;
@@ -362,6 +392,15 @@ impl<'a> Tree<'a>
                         return Err(Error::Structure);
                     }
                     let name = self.take_name(&mut cursor)?;
+                    // A blob has exactly one root, and the root is unnamed.
+                    if depth == 0
+                    {
+                        if root_started || !name.is_empty()
+                        {
+                            return Err(Error::Structure);
+                        }
+                        root_started = true;
+                    }
                     // A node inherits its parent's cell declarations; the root
                     // has none until it declares them, and the specification's
                     // default for the root is two address cells and one size.
@@ -379,6 +418,11 @@ impl<'a> Tree<'a>
                     };
                     let index = next_index;
                     next_index += 1;
+                    // Opening a child means the parent's property block is over.
+                    if depth > 0
+                    {
+                        stack[depth - 1].children_started = true;
+                    }
                     stack[depth] = State { name,
                                            parent: if depth == 0
                                            {
@@ -425,7 +469,14 @@ impl<'a> Tree<'a>
                                   address_cells: state.address_cells,
                                   size_cells: state.size_cells,
                                   own_address_cells: state.own_address_cells,
-                                  own_size_cells: state.own_size_cells });
+                                  own_size_cells: state.own_size_cells,
+                                  ranges: state.ranges,
+                                  interrupts_extended: state.interrupts_extended,
+                                  phandle: state.phandle,
+                                  linux_phandle: state.linux_phandle,
+                                  interrupt_controller: state.interrupt_controller,
+                                  interrupt_cells: state.interrupt_cells,
+                                  timebase_frequency: state.timebase_frequency });
                     seen += 1;
                 }
                 PROP =>
@@ -443,6 +494,14 @@ impl<'a> Tree<'a>
                     {
                         let property = self.name(name_offset)?;
                         let state = &mut stack[depth - 1];
+                        // The specification requires a node's properties to
+                        // precede its subnodes. A property after a child cannot
+                        // be attributed to the node it appears to belong to
+                        // without guessing, so the tree is refused instead.
+                        if state.children_started
+                        {
+                            return Err(Error::Structure);
+                        }
                         match property
                         {
                             "compatible" =>
@@ -457,7 +516,14 @@ impl<'a> Tree<'a>
                             "status" => state.status = Some(first_string(value)),
                             "reg" => state.reg = Some(value),
                             "interrupts" => state.interrupts = Some(value),
+                            "interrupts-extended" => state.interrupts_extended = Some(value),
+                            "ranges" => state.ranges = Some(value),
                             "dma-coherent" => state.dma_coherent = true,
+                            "interrupt-controller" => state.interrupt_controller = true,
+                            "phandle" => state.phandle = cell_count(value),
+                            "linux,phandle" => state.linux_phandle = cell_count(value),
+                            "#interrupt-cells" => state.interrupt_cells = cell_count(value),
+                            "timebase-frequency" => state.timebase_frequency = cell_count(value),
                             "#address-cells" =>
                             {
                                 state.own_address_cells = cell_count(value);
@@ -472,7 +538,16 @@ impl<'a> Tree<'a>
                     self.align(&mut cursor, length)?;
                 }
                 NOP => {}
-                END => return Ok(seen),
+                END =>
+                {
+                    // Trailing bytes after the END token are not part of the
+                    // tree; only alignment padding may follow.
+                    if self.structure[cursor..].iter().any(|byte| *byte != 0)
+                    {
+                        return Err(Error::Structure);
+                    }
+                    return Ok(seen);
+                }
                 _ => return Err(Error::Structure)
             }
         }

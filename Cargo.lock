@@ -76,6 +76,7 @@ dependencies = [
  "mac-boot-screen",
  "mac-bootloader",
  "mac-build",
+ "mac-devicetree",
  "mac-filesystem",
  "mac-formats",
  "mac-hfs",

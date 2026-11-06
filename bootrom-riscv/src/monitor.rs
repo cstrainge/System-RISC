@@ -157,7 +157,9 @@ impl Published
         let account = mac_abi::boot::Memory { ram: &memory.ram, reservations: &memory.reserved }
             .checked(PAGE_BYTES, memory.ram[0])
             .and_then(|account| account.exclude_mmio(BootMemoryRange { base: CLINT_BASE, length: CLINT_BYTES }))?;
-        let routes = tree.monitor_routes(cpus, CLINT_BASE..CLINT_BASE + CLINT_BYTES)?;
+        let routes =
+            bootrom_riscv::devicetree::monitor::monitor_routes(tree, cpus,
+                                                      CLINT_BASE..CLINT_BASE + CLINT_BYTES)?;
         let mut entries = Vec::new();
         let mut storage = Vec::new();
         entries.try_reserve_exact(cpus.len())
