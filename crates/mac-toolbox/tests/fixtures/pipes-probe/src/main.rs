@@ -4,12 +4,20 @@
 #![no_std]
 #![no_main]
 use core::{fmt::{self, Write},
-           sync::atomic::{AtomicBool, Ordering}};
+           sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use mac_toolbox::{Error, System, abi::pipes as wire, files};
 
 static ARMED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
+/// Reader handle created by the main thread and used by the parked reader
+/// thread. Endpoint ownership is per process, so the same application's other
+/// thread may read through it.
+static READER_HANDLE: AtomicU64 = AtomicU64::new(0);
+/// Count transferred to the parked reader, and its first eight bytes packed
+/// little-endian, so the main thread can check what the parked read received.
+static RECEIVED: AtomicU64 = AtomicU64::new(0);
+static FIRST_BYTES: AtomicU64 = AtomicU64::new(0);
 const NAME: &str = "ProbePipe";
 const PIPE: &str = "FolderPipe";
 const PIPE2: &str = "FolderPipe2";
@@ -61,16 +69,19 @@ fn check(condition: bool, cause: &str) -> Result<(), Line>
     Err(line)
 }
 
-fn run(system: &System<'_>) -> Result<(), Line>
+/// Run every case in order and report how many actually ran, so the marker
+/// cannot claim a count the run did not reach.
+fn run(system: &System<'_>) -> Result<u32, Line>
 {
-    echo(system)?;
-    block(system)?;
-    eof(system)?;
-    broken(system)?;
-    named(system)?;
-    writer_limit(system)?;
-    folder(system)?;
-    Ok(())
+    let cases: [fn(&System<'_>) -> Result<(), Line>; 10] =
+        [echo, block, reader_park, eof, broken, named, writer_limit, folder, scan, pipe_open];
+    let mut completed = 0;
+    for case in cases
+    {
+        case(system)?;
+        completed += 1;
+    }
+    Ok(completed)
 }
 
 fn echo(system: &System<'_>) -> Result<(), Line>
@@ -215,6 +226,137 @@ fn block(system: &System<'_>) -> Result<(), Line>
     check(reader.read(&mut tail).map_err(|error| failed("eof", error))? == 0,
           "no end of stream after the last writer")?;
     note(system, "PIPES_PROBE_BLOCK_OK parked=1 resumed=1 eof=1\n");
+    Ok(())
+}
+
+/// A reader thread parks on an empty pipe that still has a writer, and is
+/// resumed by the writer. This is the direction the writer-park case does not
+/// cover: the suspension is on the read, and the wake is a write.
+///
+/// What these markers prove, and what they do not. They prove the read did not
+/// return before a byte was written, that it returned all five bytes after the
+/// write, and that the creating thread ran in between. They do **not** prove the
+/// reader was descheduled while it waited: a read that spun would produce the
+/// same sequence. Distinguishing the two needs the scheduler's own wait state
+/// for a thread, which the SDK does not expose and which this repository will
+/// not grow production introspection for the sake of one probe. Read the marker
+/// as "the read waited for a writer", not as "the thread was parked".
+unsafe extern "C" fn parked_reader(_: *mut u8)
+{
+    let Ok(system) = System::new()
+    else
+    {
+        return;
+    };
+    let handle = READER_HANDLE.load(Ordering::Acquire);
+    let Ok(mut reader) = system.pipes().adopt_reader(handle)
+    else
+    {
+        note(&system, "PIPES_PROBE_READER_REFUSED\n");
+        DONE.store(true, Ordering::Release);
+        return;
+    };
+    ARMED.store(true, Ordering::Release);
+    note(&system, "PIPES_PROBE_READER_ARMED\n");
+    let mut buffer = [0u8; 8];
+    match reader.read(&mut buffer)
+    {
+        Ok(count) =>
+        {
+            RECEIVED.store(count as u64, Ordering::Release);
+            let mut packed = 0u64;
+            for (index, byte) in buffer.iter().take(count.min(8)).enumerate()
+            {
+                packed |= u64::from(*byte) << (index * 8);
+            }
+            FIRST_BYTES.store(packed, Ordering::Release);
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_READER_RESUMED transferred={count}");
+            note(&system, line.text());
+            note(&system, "\n");
+        }
+        Err(error) =>
+        {
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_READER_READ_REFUSED {error:?}");
+            note(&system, line.text());
+            note(&system, "\n");
+        }
+    }
+    DONE.store(true, Ordering::Release);
+}
+
+fn reader_park(system: &System<'_>) -> Result<(), Line>
+{
+    let (reader, mut writer) = system.pipes()
+                                     .create_named("ProbeRead", wire::MIN_CAPACITY, 0)
+                                     .map_err(|error| failed("create reader pipe", error))?;
+    READER_HANDLE.store(reader.raw(), Ordering::Release);
+    ARMED.store(false, Ordering::Release);
+    DONE.store(false, Ordering::Release);
+    RECEIVED.store(0, Ordering::Release);
+    FIRST_BYTES.store(0, Ordering::Release);
+    // SAFETY: the entry takes no caller pointer, and the join right stays on
+    // this creating application thread.
+    let right = match unsafe {
+              system.client().create_native_thread(parked_reader, core::ptr::null_mut(), 64 * 1024)
+          }
+    {
+        Ok(right) => right,
+        Err(failure) =>
+        {
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_FAIL reader thread {failure}");
+            return Err(line);
+        }
+    };
+    // The reader thread now owns the reader end through the same handle; this
+    // copy must not close it while that thread is parked on it.
+    core::mem::forget(reader);
+    let mut spins = 0u32;
+    while !ARMED.load(Ordering::Acquire)
+    {
+        spins = spins.saturating_add(1);
+        if spins > 100_000_000
+        {
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_FAIL reader never armed");
+            return Err(line);
+        }
+        core::hint::spin_loop();
+    }
+    // Let the scheduler run the reader so it reaches its wait, rather than
+    // writing while it is still on its way there. An idle wait returns after
+    // one tick with no event required.
+    let _ = system.events().wait_event(mac_toolbox::EventMask::ALL, 2);
+    check(!DONE.load(Ordering::Acquire), "the empty pipe read returned early")?;
+    note(system, "PIPES_PROBE_READER_PARKED\n");
+    let sent = [0x5au8, 0x5b, 0x5c, 0x5d, 0x5e];
+    check(writer.write(&sent).map_err(|error| failed("wake write", error))? == sent.len(),
+          "the waking write was short")?;
+    note(system, "PIPES_PROBE_READER_WROTE\n");
+    match right.join()
+    {
+        Ok(_) => (),
+        Err(_) =>
+        {
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_FAIL reader join refused");
+            return Err(line);
+        }
+    }
+    check(DONE.load(Ordering::Acquire), "the parked reader never resumed")?;
+    check(RECEIVED.load(Ordering::Acquire) == sent.len() as u64,
+          "the resumed read transferred the wrong count")?;
+    let mut expected = 0u64;
+    for (index, byte) in sent.iter().enumerate()
+    {
+        expected |= u64::from(*byte) << (index * 8);
+    }
+    check(FIRST_BYTES.load(Ordering::Acquire) == expected,
+          "the resumed read received different bytes")?;
+    note(system, "PIPES_PROBE_READER_OK parked=1 resumed=1 bytes=5\n");
+    drop(writer);
     Ok(())
 }
 
@@ -453,14 +595,190 @@ fn folder(system: &System<'_>) -> Result<(), Line>
     Ok(())
 }
 
+fn startup_volume(files: files::Files<'_>) -> Result<files::VolumeInfo, Line>
+{
+    for index in 0..files.volume_count().map_err(|error| failed("volume count", error))?
+    {
+        let volume = files.volume_at(index).map_err(|error| failed("volume", error))?;
+        if volume.startup
+        {
+            return Ok(volume);
+        }
+    }
+    Err(fault("no startup volume"))
+}
+
+/// Enumerate the `Pipes` folder the way the Finder's browser window does: one
+/// bounded continuation step at a time, restarting from a fresh cursor only when
+/// the continuation is refused as stale.
+///
+/// A stale scan is provoked deliberately here rather than waited for: the folder
+/// has two sources, so registering a pipe between two steps changes the registry
+/// revision and the next step must be `ScanStale` instead of rows that no longer
+/// mean the same items. Without the provocation nothing in this probe would see
+/// one, so this is coverage of the contract, not of an accident.
+fn scan(system: &System<'_>) -> Result<(), Line>
+{
+    const FIRST: &str = "ScanPipeA";
+    const SECOND: &str = "ScanPipeB";
+    let files = system.files();
+    let volume = startup_volume(files)?;
+    let folder = files.lookup(volume.id, volume.blessed_folder, "Pipes")
+                      .map_err(|error| failed("lookup Pipes", error))?;
+    let (mut reader, writer) = system.pipes()
+                                     .create_named(FIRST, wire::MIN_CAPACITY, 0)
+                                     .map_err(|error| failed("create scanned pipe", error))?;
+
+    // The whole folder through one continuation, counting the steps it takes.
+    // More than one step is the point: the listing is read incrementally, not
+    // handed back as an array.
+    let (entries, steps) = drain(files, volume.id, folder.id)?;
+    check(entries == 1, "the folder did not hold exactly one named pipe")?;
+    let mut line = Line::new();
+    let _ =
+        writeln!(line, "PIPES_SCAN_OK directory={} entries={entries} steps={steps}", folder.id.0);
+    note(system, line.text());
+    note(system, "\n");
+
+    // One step, then a registration between steps, then the same continuation.
+    let mut cursor = files::DirectoryCursor::default();
+    match files.scan_directory(volume.id, folder.id, &mut cursor)
+    {
+        Ok(files::ScanStep::Entry { .. }) => (),
+        Ok(_) => return Err(fault("the first scan step was not an entry")),
+        Err(error) => return Err(failed("first scan step", error))
+    }
+    let (second_reader, second_writer) =
+        system.pipes().create_named(SECOND, wire::MIN_CAPACITY, 0).map_err(|error| {
+                                                                       failed("create second \
+                                                                               scanned pipe",
+                                                                              error)
+                                                                   })?;
+    match files.scan_directory(volume.id, folder.id, &mut cursor)
+    {
+        Ok(_) => return Err(fault("a registration did not invalidate the continuation")),
+        Err(Error::ScanStale) => (),
+        Err(error) => return Err(failed("expected a stale continuation", error))
+    }
+    note(system, "PIPES_SCAN_STALE_OK\n");
+
+    // A stale continuation is discarded, not completed: the restarted scan sees
+    // both pipes, which is what a caller must do with the refusal.
+    let (restarted, restarted_steps) = drain(files, volume.id, folder.id)?;
+    check(restarted == 2, "the restarted scan did not see both named pipes")?;
+    let mut line = Line::new();
+    let _ = writeln!(line, "PIPES_SCAN_RESTART_OK entries={restarted} steps={restarted_steps}");
+    note(system, line.text());
+    note(system, "\n");
+
+    drop(second_writer);
+    drop(second_reader);
+    drop(writer);
+    drop(reader);
+    Ok(())
+}
+
+/// Count the entries of one folder through a single continuation, and how many
+/// steps it took. Bounded so a scan that never reports `Done` fails the probe
+/// instead of hanging the guest before its readiness line.
+fn drain(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid)
+         -> Result<(u32, u32), Line>
+{
+    let mut cursor = files::DirectoryCursor::default();
+    let mut entries = 0;
+    let mut steps = 0;
+    for _ in 0..2048
+    {
+        steps += 1;
+        match files.scan_directory(volume, folder, &mut cursor)
+        {
+            Ok(files::ScanStep::Entry { .. }) => entries += 1,
+            Ok(files::ScanStep::Pending) => (),
+            Ok(files::ScanStep::Done) => return Ok((entries, steps)),
+            Err(error) => return Err(failed("folder scan", error))
+        }
+    }
+    Err(fault("the folder scan never finished"))
+}
+
+/// Opening a pipe item is `connect`, and the item's reserved type and creator
+/// keep it away from application launch. The witness for "no application was
+/// launched" is the process count across the open: the item carries no fork, so
+/// the File Manager resolves it and the pipe facility attaches a writer.
+///
+/// The writer comes back bound to the pipe the creator holds, which the data
+/// path proves: bytes written through the adopted handle are read by the
+/// creator's reader. The declared writer limit is exercised in the same open,
+/// because a handle that did not pass the connection accounting would not
+/// consume the limit a second open then collides with.
+fn pipe_open(system: &System<'_>) -> Result<(), Line>
+{
+    const OPENED: &str = "OpenPipe";
+    let files = system.files();
+    let volume = startup_volume(files)?;
+    let folder = files.lookup(volume.id, volume.blessed_folder, "Pipes")
+                      .map_err(|error| failed("lookup Pipes", error))?;
+    let (mut creator, keeper) = system.pipes()
+                                      .create_named(OPENED, wire::MIN_CAPACITY, 1)
+                                      .map_err(|error| failed("create open pipe", error))?;
+    let Some(cnid) = listing(files, volume.id, folder.id, OPENED)?.found
+    else
+    {
+        return Err(fault("the named pipe is absent from the folder"));
+    };
+
+    let before = system.processes().count().map_err(|error| failed("process count", error))?;
+    let handle =
+        files.open_pipe(volume.id, cnid).map_err(|error| failed("open pipe item", error))?;
+    check(handle != 0, "the open produced no writer")?;
+    let after = system.processes().count().map_err(|error| failed("process count", error))?;
+    check(after == before, "opening a pipe item launched an application")?;
+    let adopted = system.pipes().adopt_writer(handle).map_err(|error| failed("adopt", error))?;
+    let mut launched = Line::new();
+    let _ = writeln!(launched,
+                     "PIPES_OPEN_NO_LAUNCH_OK processes_before={before} processes_after={after}");
+    note(system, launched.text());
+    note(system, "\n");
+
+    // The handle is a real connection: it consumes the one declared writer.
+    check(matches!(files.open_pipe(volume.id, cnid), Err(Error::AccessDenied)),
+          "the open did not pass the writer limit")?;
+    note(system, "PIPES_OPEN_LIMIT_OK\n");
+
+    let mut adopted = adopted;
+    let sent = [0x5au8, 0xa5, 0x01, 0x02];
+    check(adopted.write(&sent).map_err(|error| failed("open write", error))? == sent.len(),
+          "the opened writer wrote short")?;
+    let mut back = [0u8; 4];
+    check(creator.read(&mut back).map_err(|error| failed("open read", error))? == sent.len(),
+          "the creator did not receive the opened writer's bytes")?;
+    check(back == sent, "the opened writer's bytes changed")?;
+    note(system, "PIPES_OPEN_DATA_OK bytes=4\n");
+
+    // A destroyed identity is not-found rather than a fresh pipe. The name is
+    // removed with the last handle, so the identity must go with it.
+    drop(adopted);
+    drop(keeper);
+    drop(creator);
+    check(listing(files, volume.id, folder.id, OPENED)?.found.is_none(),
+          "the destroyed pipe is still listed")?;
+    check(matches!(files.open_pipe(volume.id, cnid), Err(Error::NotFound)),
+          "opening a destroyed identity did not refuse")?;
+    note(system, "PIPES_OPEN_GONE_OK\n");
+    Ok(())
+}
+
 
 fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
 {
     match run(system)
     {
-        Ok(()) =>
+        Ok(cases) =>
         {
-            system.log("PIPES_PROBE_PASS cases=5\n")?;
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_PASS cases={cases}");
+            system.log(line.text())?;
+            system.log("\n")?;
             // The boot check stops reading at the platform's readiness line, so
             // it must follow every outcome marker, never precede them.
             system.log("DESKTOP_READY: pipes probe pass\n")?;

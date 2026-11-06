@@ -627,7 +627,14 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               // case below is where the folder itself is checked.
                               &["System RISC Boot ROM v1 at 0x200",
                                 "blessed folder 'System Folder' CNID=",
-                                "System: native service table ready", "BOOT_SYSTEM_READY:"],
+                                "System: native service table ready", "BOOT_SYSTEM_READY:",
+                                // The stock Finder's browser window enumerates the
+                                // startup root through the bounded scan before it
+                                // paints. The line names the directory it read and
+                                // how many entries it accepted; the count itself is
+                                // not asserted because it moves with the image's
+                                // root contents.
+                                "FINDER_FOLDER_LAYOUT window=", " folder="],
                               true)?];
     // A second probe replaces Finder on a clone to exercise font selection the
     // way an application does: by name, through the public client.
@@ -655,13 +662,26 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     // separate boot-check case. The folder comes from the built
                     // image, so the probe must find it, not create it.
                     &["PIPES_PROBE_ECHO_OK", "PIPES_PROBE_BLOCK_OK",
+                      "PIPES_PROBE_READER_PARKED", "PIPES_PROBE_READER_RESUMED transferred=5",
+                      "PIPES_PROBE_READER_OK parked=1 resumed=1 bytes=5",
                       "PIPES_PROBE_WOULD_BLOCK_OK", "PIPES_PROBE_EOF_OK",
                       "PIPES_PROBE_BROKEN_OK", "PIPES_PROBE_NAME_OK", "PIPES_WRITER_FIRST_OK",
                       "PIPES_WRITER_SECOND_REFUSED", "PIPES_WRITER_RELEASE_OK",
                       "PIPES_WRITER_CLOSED_OK", "PIPES_FOLDER_PRESENT volume=",
                       "PIPES_FOLDER_LIST_OK items=1", "PIPES_FOLDER_LOOKUP_OK",
                       "PIPES_FOLDER_STABLE_OK", "PIPES_FOLDER_ANON_ABSENT_OK",
-                      "PIPES_FOLDER_REFUSED_OK refusals=11", "PIPES_PROBE_PASS cases=5"],
+                      "PIPES_FOLDER_REFUSED_OK refusals=11",
+                      // The folder through one bounded continuation, then a
+                      // registration between two steps of that continuation:
+                      // the next step must be ScanStale, and the restarted scan
+                      // must see both pipes.
+                      "PIPES_SCAN_OK directory=", "PIPES_SCAN_STALE_OK",
+                      "PIPES_SCAN_RESTART_OK entries=2",
+                      // Opening an item is `connect` and launches nothing: the
+                      // process count across the open is the witness.
+                      "PIPES_OPEN_NO_LAUNCH_OK processes_before=", "PIPES_OPEN_LIMIT_OK",
+                      "PIPES_OPEN_DATA_OK bytes=4", "PIPES_OPEN_GONE_OK",
+                      "PIPES_PROBE_PASS cases=10"],
                     true)?);
     if converted.is_some()
     {
