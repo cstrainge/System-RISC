@@ -30,11 +30,12 @@ machine was looked at last.
 **The generated path remains, and remains legitimate**, for a machine that passes
 no tree and for checks that deliberately want a fixed description.
 
-**This record describes two machines.** `platforms/raspi3b.json` serves both the
-physical board and the emulator's model of it — one record, two machines. That is
-coherent only because the tree comes from the machine; where the record itself
-states a fact the two disagree about, the record is stating the board's fact and
-the emulated run is the one that has to be read with that in mind.
+**One record, one machine.** `platforms/raspi3b.json` describes the board and
+declares no emulation; the emulated aarch64 machine is its own record,
+`platforms/qemu_arm64.json`. The two were one record while an emulated Pi profile
+existed, and that arrangement went with the profile: a record serving two machines
+states facts that are true of one and false of the other, and a reader cannot tell
+which is which. Where the two disagree, each machine states its own fact.
 
 ## Cross-checking the record against the machine
 

@@ -674,12 +674,17 @@ impl Platform
     fn check_peripheral_windows(&self) -> Result<()>
     {
         let windows = self.declared_devices()?;
-        if windows.is_empty() || self.mmio_devices.is_empty()
+        if windows.is_empty()
         {
             return Ok(());
         }
-        let ranges = devices::check(&self.mmio_devices, &self.memory()?)?;
-        for window in &windows
+        let memory = self.memory()?;
+        // The inventory is validated even when it declares nothing. An empty set
+        // is a statement about the machine — its modules match devices from the
+        // tree rather than from a claimable range — and not an exemption from
+        // checking the windows the record does declare.
+        let ranges = devices::check(&self.mmio_devices, &memory)?;
+        for (index, window) in windows.iter().enumerate()
         {
             let end = window.base
                            .checked_add(window.bytes)
@@ -689,6 +694,44 @@ impl Platform
                                                     self.name, window.describe(), window.base,
                                                     window.bytes))
                            })?;
+            // A declared window is a device, not storage. One that lands in RAM
+            // or flash describes memory the kernel hands out, so a module
+            // claiming it would be programming an allocator's pages.
+            if !memory.permits_mmio(window.base..end)
+            {
+                return Err(crate::error(format!("platform '{}' peripheral {} window \
+                                                 0x{:x}+0x{:x} lies inside RAM or flash, so it \
+                                                 describes storage rather than a device",
+                                                self.name,
+                                                window.describe(),
+                                                window.base,
+                                                window.bytes)));
+            }
+            // Two windows that overlap are one window claimed twice: a module
+            // holding either would be programming the other's registers.
+            for other in &windows[..index]
+            {
+                if window.base < other.base + other.bytes && other.base < end
+                {
+                    return Err(crate::error(format!("platform '{}' peripheral {} window \
+                                                     0x{:x}+0x{:x} overlaps {} at 0x{:x}+0x{:x}",
+                                                    self.name,
+                                                    window.describe(),
+                                                    window.base,
+                                                    window.bytes,
+                                                    other.describe(),
+                                                    other.base,
+                                                    other.bytes)));
+                }
+            }
+            if ranges.is_empty()
+            {
+                // Nothing claims devices through the MMIO inventory on this
+                // machine, so there is no range to tile against. The window has
+                // still been checked above; skipping the tiling is not skipping
+                // the check.
+                continue;
+            }
             // A device window must be covered by declared MMIO ranges, and a
             // block that genuinely spans several pages claims one range per
             // page: the clock manager's two-page extent is one device and two
@@ -1504,6 +1547,46 @@ mod artifact_tests
                .base = Some("0x3f00b000".into());
         let error = crowded.check_peripheral_windows().unwrap_err().to_string();
         assert!(error.contains("contains 2 declared peripheral windows"), "{error}");
+    }
+
+    /// A machine whose modules match devices from the tree declares no MMIO
+    /// inventory. That is a statement about the machine, not an exemption from
+    /// checking: its windows are still validated, and a bad one is refused by
+    /// name rather than passing because there was no range to compare it with.
+    #[test]
+    fn a_window_is_checked_even_when_the_record_declares_no_mmio_inventory()
+    {
+        let platform = load("qemu_arm64").unwrap();
+        assert!(platform.mmio_devices.is_empty(),
+                "the virt record deliberately declares no claimable range");
+        platform.check_peripheral_windows().unwrap();
+
+        // A window inside RAM describes storage, not a device.
+        let mut in_ram = load("qemu_arm64").unwrap();
+        in_ram.hardware
+              .as_mut()
+              .unwrap()
+              .devices
+              .iter_mut()
+              .find(|device| device.model == "pl011")
+              .unwrap()
+              .base = Some("0x40000000".into());
+        let error = in_ram.check_peripheral_windows().unwrap_err().to_string();
+        assert!(error.contains("pl011"), "{error}");
+        assert!(error.contains("lies inside RAM or flash"), "{error}");
+
+        // Two windows on one address are one device claimed twice.
+        let mut overlapping = load("qemu_arm64").unwrap();
+        overlapping.hardware
+                   .as_mut()
+                   .unwrap()
+                   .devices
+                   .iter_mut()
+                   .find(|device| device.model == "virtio,mmio")
+                   .unwrap()
+                   .base = Some("0x9000000".into());
+        let error = overlapping.check_peripheral_windows().unwrap_err().to_string();
+        assert!(error.contains("overlaps"), "{error}");
     }
 
     #[test]

@@ -342,6 +342,13 @@ impl mac_driver::Driver for VideoCoreFramebuffer
     fn quiesce(&self) -> DriverResult<()>
     {
         let mut slot = DEVICE.try_lock().ok_or(Error(mac_abi::SERVICE_BUSY))?;
+        if let Some((device, _engine)) = slot.as_mut()
+        {
+            // Every allocation this device opened is handed back before the slot
+            // is dropped. Dropping it instead leaves the surface storage owned by
+            // nothing, which is the leak the entropy driver's quiesce had.
+            device.shutdown().map_err(|refusal| Error(refusal.status()))?;
+        }
         *slot = None;
         Ok(())
     }
