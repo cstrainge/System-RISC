@@ -143,14 +143,28 @@ pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Res
 /// as well would create a second source that could disagree with the machine,
 /// and a consumer that read it would be reading a claim rather than the
 /// hardware.
+/// What a window with no ARM interrupt carries in the generated table.
+///
+/// The tuple consumers read is a plain integer, so absence needs a value; this
+/// one is outside every interrupt the controller can raise, and the record is
+/// what says which windows mean it.
+pub const NO_INTERRUPT: u32 = u32::MAX;
+
 pub fn constants(devices: &[Checked]) -> String
 {
-    let mut result = String::from("\npub const DECLARED_DEVICES: &[([u8;4],[u8;16])] = &[\n");
+    let mut result = String::from("\npub const DECLARED_DEVICES: \
+                                   &[([u8;4],[u8;16],u32)] = &[\n");
     for d in devices
     {
-        result.push_str(&format!("({:?},{:?}),\n", d.bus, d.key));
+        result.push_str(&format!("({:?},{:?},{}),\n",
+                                 d.bus,
+                                 d.key,
+                                 d.interrupt.unwrap_or(NO_INTERRUPT)));
     }
     result.push_str("];\n");
+    // The sentinel is emitted so a consumer can tell "the record says this window
+    // raises no ARM interrupt" from "the record states line zero".
+    result.push_str(&format!("\npub const DECLARED_NO_INTERRUPT: u32 = {};\n", NO_INTERRUPT));
     // The pools are a separate table because they answer a different question:
     // the inventory says which windows exist, and this says which of a window's
     // sub-resources an owner may lease. Absent pools are simply not listed, so a

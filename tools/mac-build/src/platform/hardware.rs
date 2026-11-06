@@ -313,7 +313,14 @@ impl PeripheralKind
             PeripheralKind::Timer => "timer",
             PeripheralKind::InterruptController => "interrupt-controller",
             PeripheralKind::Display => "display",
-            PeripheralKind::Entropy => "entropy"
+            PeripheralKind::Entropy => "entropy",
+            PeripheralKind::Dma => "dma",
+            PeripheralKind::Pwm => "pwm",
+            PeripheralKind::Spi => "spi",
+            PeripheralKind::Audio => "audio",
+            PeripheralKind::Auxiliary => "auxiliary",
+            PeripheralKind::Clock => "clock",
+            PeripheralKind::ThreeDimensional => "3d"
         }
     }
 }

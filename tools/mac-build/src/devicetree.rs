@@ -182,6 +182,10 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
     tree.property_u32("#address-cells", &[2]);
     tree.property_u32("#size-cells", &[2]);
     tree.property_u32("ranges", &[]);
+    // The page-granular claims this record declares, so a node can also carry
+    // what a compiled-in device row carried: the bus a driver matches on, its
+    // 16-byte key, and the flags that describe how the range may be used.
+    let claims = platform.claims()?;
     for node in nodes
     {
         tree.begin_node(&format!("{}@{:x}", node.compatible, node.base));
@@ -211,7 +215,7 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
                 tree.property_u32("platform,arm-interrupt", &[interrupt]);
             }
         }
-        if let Some(claim) = platform.claim_for(&claims, base, bytes)
+        if let Some(claim) = platform.claim_for(&claims, node.base, node.bytes)
         {
             // Only where the record declares a claim. The key is the part's own
             // name padded to sixteen bytes, which is what a module matches; the
