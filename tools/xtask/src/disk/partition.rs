@@ -1068,12 +1068,18 @@ mod tests
         let (dir, _cleanup) = temp_dir();
         let path = dir.join("fat.img");
         let size = 64 * 1024 * 1024u64;
-        let inputs = vec![FatFile { path:  "config.txt".into(),
-                                    bytes: b"arm_64bit=1\nkernel=kernel8.img\n".to_vec() },
-                          FatFile { path:  "kernel8.img".into(),
-                                    bytes: (0..5000).map(|index| (index % 251) as u8).collect() },
-                          FatFile { path:  "sub/note.bin".into(),
-                                    bytes: b"nested payload".to_vec() }];
+        // `source` is what the image's provenance records about where each file came
+        // from, so the test states one rather than leaving the field out: an image
+        // whose provenance cannot name a source is what `disk::verify` refuses.
+        let inputs = vec![FatFile { path:   "config.txt".into(),
+                                    bytes:  b"arm_64bit=1\nkernel=kernel8.img\n".to_vec(),
+                                    source: "generated:board-config".into() },
+                          FatFile { path:   "kernel8.img".into(),
+                                    bytes:  (0..5000).map(|index| (index % 251) as u8).collect(),
+                                    source: "artifact:bootrom-aarch64".into() },
+                          FatFile { path:   "sub/note.bin".into(),
+                                    bytes:  b"nested payload".to_vec(),
+                                    source: "file:nested/note.bin".into() }];
         let mut file = File::create(&path).unwrap();
         file.set_len(size).unwrap();
         let report = write_fat32(&mut file, 0, size, 0, &inputs).unwrap();

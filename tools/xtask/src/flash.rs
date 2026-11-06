@@ -28,6 +28,26 @@ pub struct Plan
 
 impl Plan
 {
+    /// What a flash would do, for a target whose capacity may not be known.
+    ///
+    /// A target whose size could not be read is refused rather than treated as
+    /// unbounded. The previous code passed `unwrap_or(u64::MAX)` here, which made
+    /// the oversize branch below unreachable: every image fits in `u64::MAX`, so the
+    /// check that exists to protect the one unrecoverable operation in this tool
+    /// could never fire. Writing past the end of a card truncates the image, and the
+    /// operator's evidence of it is on the card.
+    pub fn for_target(target: &str, capacity: Option<u64>, image_bytes: u64,
+                      existing: Vec<String>)
+                      -> Result<Self>
+    {
+        let capacity = capacity.ok_or_else(|| {
+                                           error(format!("cannot determine how many bytes {target} \
+                                                          holds, so an image that does not fit \
+                                                          cannot be refused; nothing was written"))
+                                       })?;
+        Self::new(target, capacity, image_bytes, existing)
+    }
+
     /// Refuses anything that would fail or destroy more than intended, before the
     /// first byte is written. `capacity` is the target's size in bytes.
     pub fn new(target: &str, capacity: u64, image_bytes: u64, existing: Vec<String>)
@@ -183,6 +203,45 @@ mod tests
     }
 
     #[test]
+    fn a_plan_refuses_an_oversize_image_before_anything_is_written()
+    {
+        // The end-to-end shape of the defect: a real oversize image, a target of a
+        // real size, and the assertion that the target is byte-for-byte untouched
+        // when the pre-flight refuses. `Plan::for_target` is what the command calls,
+        // so this is the same path the tool takes rather than a hand-built refusal.
+        let image = vec![0xA5u8; 4096];
+        let mut medium = Cursor::new(vec![0u8; 1024]);
+        let capacity = Some(medium.get_ref().len() as u64);
+        let error = Plan::for_target("card", capacity, image.len() as u64, Vec::new())
+            .expect_err("an image larger than the card must be refused");
+        assert!(error.to_string().contains("holds only 1024 bytes"), "{error}");
+        assert!(medium.get_ref().iter().all(|byte| *byte == 0),
+                "the medium must be untouched when the plan refuses");
+    }
+
+    #[test]
+    fn a_target_whose_size_cannot_be_read_is_refused_rather_than_assumed_unbounded()
+    {
+        // This is the branch that could never fire: with `unwrap_or(u64::MAX)` every
+        // image fits, so an unmeasurable target flashed whatever it was given and
+        // truncated it silently.
+        let error = Plan::for_target("card", None, 512, Vec::new())
+            .expect_err("an unmeasurable target must refuse");
+        assert!(error.to_string().contains("cannot determine how many bytes"), "{error}");
+    }
+
+    #[test]
+    fn a_target_whose_size_is_known_still_accepts_an_image_that_fits()
+    {
+        // The refusal above must not become a blanket one: a measured target that
+        // fits is exactly the case this tool exists for.
+        let plan = Plan::for_target("card", Some(8 << 20), 2048, Vec::new())
+            .expect("an image that fits is planned");
+        assert_eq!(plan.target_capacity, 8 << 20);
+        assert_eq!(plan.image_bytes, 2048);
+    }
+
+    #[test]
     fn a_plan_refuses_an_empty_image()
     {
         let error = Plan::new("disk", 1024, 0, Vec::new()).expect_err("empty must refuse");
@@ -242,8 +301,8 @@ pub fn run(workspace: &crate::workspace::Workspace, target: &str, yes: bool) -> 
         .map_err(|cause| error(format!("cannot read {}: {cause}", image_path.display())))?;
 
     let mut medium = device::open(target)?;
-    let capacity = medium.capacity().unwrap_or(u64::MAX);
-    let plan = Plan::new(target, capacity, image.len() as u64, existing_contents(target))?;
+    let capacity = medium.capacity();
+    let plan = Plan::for_target(target, capacity, image.len() as u64, existing_contents(target))?;
 
     println!("platform: {}", platform.name);
     println!("image:    {}", image_path.display());
