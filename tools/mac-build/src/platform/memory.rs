@@ -4,6 +4,12 @@ use std::{fmt::Write, ops::Range};
 use serde::Deserialize;
 
 use crate::{Result, error};
+
+/// The console kinds a record may declare, as the shared boot contract names
+/// them. Not defined here: System reads the same values, and two definitions of
+/// one wire number is how a console silently stops being driven.
+use mac_abi::boot::console::{NONE as CONSOLE_KIND_NONE, PL011 as CONSOLE_KIND_PL011,
+                             UART_16550 as CONSOLE_KIND_16550};
 mod stacks;
 mod io;
 mod accounts;
@@ -529,7 +535,7 @@ impl Checked
     /// emitted as zero. Zero means "no such window", which is what makes shared
     /// device and memory code find nothing to act on - the truth for such a
     /// board - instead of needing a board or architecture test.
-    fn absent_bootstrap_io() -> [(&'static str, u64); 8]
+    fn absent_bootstrap_io() -> [(&'static str, u64); 9]
     {
         [("UART_BASE", 0),
          ("RTC_BASE", 0),
@@ -538,7 +544,8 @@ impl Checked
          ("VIRTIO_MMIO_BASE", 0),
          ("VIRTIO_MMIO_STRIDE", 0),
          ("VIRTIO_MMIO_SLOTS", 0),
-         ("VIRTIO_INTERRUPT_BASE", 0)]
+         ("VIRTIO_INTERRUPT_BASE", 0),
+         ("CONSOLE_KIND", CONSOLE_KIND_NONE)]
     }
 
     pub(super) fn system_constants(&self) -> String

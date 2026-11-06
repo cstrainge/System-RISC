@@ -138,6 +138,64 @@ pub(crate) fn prepare() -> Result<(), Error>
 
 /// Direct bounded UART output: no firmware callback, allocator, current-context
 /// lookup, trace, registry or service lock. It remains usable before kit setup.
+/// Whether the bootstrap console can accept a byte.
+///
+/// Selected from the console kind the record declares rather than from the
+/// architecture: a board of any architecture can carry either part, and polling
+/// the wrong status bit produces silence instead of an error, which is the worst
+/// way for a diagnostic path to fail.
+///
+/// The two parts do not agree on the sense of bit 0x20, which is the trap here.
+/// A 16550's line status bit 5 is *transmitter holding empty*, so it is ready
+/// when the bit is set. A PL011's flag register bit 5 is *transmit FIFO full*, so
+/// it is ready when the bit is clear. Reading one as the other yields a console
+/// that never reports ready, gives up after its bounded spin, and discards every
+/// diagnostic without a fault.
+fn console_ready() -> bool
+{
+    // SAFETY: the selected platform's permanently mapped bootstrap console.
+    // Volatile access creates no shared register borrow.
+    match crate::machine::memory::CONSOLE_KIND
+    {
+        mac_abi::boot::console::UART_16550 =>
+        {
+            let status = unsafe {
+                core::ptr::read_volatile((crate::machine::memory::UART_BASE + 5) as *const u8)
+            };
+            status & 0x20 != 0
+        }
+        mac_abi::boot::console::PL011 =>
+        {
+            let flags = unsafe {
+                core::ptr::read_volatile((crate::machine::memory::UART_BASE + 0x18) as *const u32)
+            };
+            flags & 0x20 == 0
+        }
+        _ => false
+    }
+}
+
+fn console_write(byte: u8)
+{
+    // SAFETY: as `console_ready`; the data register is word-wide on the PL011
+    // and byte-wide on a 16550.
+    unsafe {
+        match crate::machine::memory::CONSOLE_KIND
+        {
+            mac_abi::boot::console::UART_16550 =>
+            {
+                core::ptr::write_volatile(crate::machine::memory::UART_BASE as *mut u8, byte);
+            }
+            mac_abi::boot::console::PL011 =>
+            {
+                core::ptr::write_volatile(crate::machine::memory::UART_BASE as *mut u32,
+                                          u32::from(byte));
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(crate) fn serial(arguments: fmt::Arguments<'_>)
 {
     struct Uart;
@@ -150,12 +208,7 @@ pub(crate) fn serial(arguments: fmt::Arguments<'_>)
                 let mut ready = false;
                 for _ in 0..100_000
                 {
-                    // SAFETY: selected platform's permanently mapped bootstrap
-                    // UART. Volatile access creates no shared register borrow.
-                    if unsafe {
-                        core::ptr::read_volatile((crate::machine::memory::UART_BASE + 5) as *const u8)
-                    } & 0x20
-                       != 0
+                    if console_ready()
                     {
                         ready = true;
                         break;
@@ -166,9 +219,7 @@ pub(crate) fn serial(arguments: fmt::Arguments<'_>)
                 {
                     return Err(fmt::Error);
                 }
-                unsafe {
-                    core::ptr::write_volatile(crate::machine::memory::UART_BASE as *mut u8, byte);
-                }
+                console_write(byte);
             }
             Ok(())
         }

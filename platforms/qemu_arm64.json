@@ -41,6 +41,19 @@
       "bytes": "0x1000000"
     },
     "fdt_tail_bytes": "0x200000",
+    "bootstrap_io": {
+      "uart": {
+        "base": "0x9000000",
+        "bytes": "0x1000",
+        "kind": "pl011"
+      },
+      "virtio_mmio": {
+        "base": "0xa000000",
+        "stride": "0x1000",
+        "slots": 8,
+        "interrupt_base": 1
+      }
+    },
     "boot_stack_bytes": "0x40000",
     "monitor_stack_bytes": "0x1000",
     "system_heap_bytes": "0x20000000",

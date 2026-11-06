@@ -989,7 +989,7 @@ fn enter_system(memory: &memory::Memory,
     let info = BootInfo { header:                  Header::for_type::<BootInfo>(),
                           ram_base:                memory.ram[0].base,
                           ram_size:                memory.ram[0].length,
-                          log:                     None,
+                          log:                     Some(log),
                           storage_context:         (&mut context as *mut
                                                     mac_bootloader::volume::BootVolume).cast(),
                           disk_info:               Some(mac_bootloader::volume::disk_info),
@@ -1058,6 +1058,24 @@ fn enter_system(memory: &memory::Memory,
             options(noreturn)
         );
     }
+}
+
+/// System's console.
+///
+/// `serial!` inside System writes through `BootInfo.log` rather than to a UART of
+/// its own, so a bootstrap that passes `None` silently discards every diagnostic
+/// System emits - including the markers that say whether it booted. Passing a
+/// sink is not optional decoration; it is the only channel System has.
+unsafe extern "C" fn log(bytes: *const u8, length: usize) -> mac_abi::Status
+{
+    for index in 0..length
+    {
+        // SAFETY: the caller supplies a readable buffer of `length` bytes, and
+        // the console window is the one this bootstrap initialised.
+        let byte = unsafe { core::ptr::read_volatile(bytes.add(index)) };
+        putc(byte);
+    }
+    mac_abi::OK
 }
 
 fn halt() -> !
