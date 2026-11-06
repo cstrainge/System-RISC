@@ -483,6 +483,7 @@
         "kind": "storage",
         "model": "sdhci",
         "compatible": "brcm,bcm2835-mmc",
+        "note": "The board's own firmware tree puts a different function at this address and puts the card on the other controller, while the board's card answered here. See the storage section of docs/PI-HARDWARE-INVENTORY.md; the contradiction is recorded, not resolved.",
         "base": "0x3f300000",
         "bytes": "0x1000",
         "interrupt": 62
@@ -535,6 +536,8 @@
         "kind": "pwm",
         "model": "bcm2835-pwm",
         "compatible": "brcm,bcm2835-pwm",
+        "disposition": "declared",
+        "note": "the board carries the block, no driver claims it, and the firmware disables it unless a configuration asks for it",
         "base": "0x3f20c000",
         "bytes": "0x28"
       },
@@ -542,6 +545,8 @@
         "kind": "audio",
         "model": "bcm2835-i2s",
         "compatible": "brcm,bcm2835-i2s",
+        "disposition": "declared",
+        "note": "the board carries the block, no driver claims it, and the firmware disables it unless a configuration asks for it",
         "base": "0x3f203000",
         "bytes": "0x24"
       },
@@ -549,6 +554,8 @@
         "kind": "clock",
         "model": "bcm2835-cprman",
         "compatible": "brcm,bcm2835-cprman",
+        "disposition": "declared",
+        "note": "the board carries it, the resident clocks are driven from the power-management and mailbox paths, and nothing yet programs dividers through it",
         "base": "0x3f101000",
         "bytes": "0x2000"
       },
@@ -556,6 +563,8 @@
         "kind": "3d",
         "model": "bcm2835-v3d",
         "compatible": "brcm,vc4-v3d",
+        "disposition": "declared",
+        "note": "the board carries the 3D engine at bus 0x7EC00000 / ARM 0x3FC00000 with its own interrupt, no driver claims it yet, and the firmware leaves it disabled until something asks for it. Its clock and reset come from the cprman and pm blocks declared above",
         "base": "0x3fc00000",
         "bytes": "0x1000",
         "interrupt": 10

@@ -315,23 +315,46 @@ fn cross_check_tree(workspace: &Workspace) -> Result<()>
         return Ok(());
     }
     let blob = fs::read(&path)?;
-    let divergences = match mac_build::devicetree::compare(&workspace.platform, &blob)
+    let check = match mac_build::devicetree::compare(&workspace.platform, &blob)
     {
-        Ok(divergences) => divergences,
+        Ok(check) => check,
         Err(why) =>
         {
             println!("warning: cannot read the machine's device tree {name}: {why}");
             return Ok(());
         }
     };
-    if divergences.is_empty()
+    // Expected findings are printed too, and with the same detail. A check that
+    // quietly accepted the differences it had been told to expect would be a check
+    // nobody could audit; what changes is only that they are not warnings, because
+    // nobody can act on them.
+    if !check.expected.is_empty()
     {
-        println!("device tree cross-check: the record agrees with {name} on every device it \
-                  declares");
+        println!("device tree cross-check: {name}, differences the record accounts for \
+                  (pre-overlay):");
+        for expected in &check.expected
+        {
+            println!("  {}: {}", expected.model, expected.detail);
+        }
+    }
+    if check.warnings.is_empty()
+    {
+        println!("device tree cross-check: the record agrees with {name} on all {} device(s) it \
+                  declares{}",
+                 workspace.platform.declared_devices()?.len(),
+                 if check.agreed_without_interrupt.is_empty()
+                 {
+                     String::new()
+                 }
+                 else
+                 {
+                     format!(", {} of which declare no interrupt on either side",
+                             check.agreed_without_interrupt.len())
+                 });
         return Ok(());
     }
-    println!("warning: the record and the machine's tree {name} disagree (post-overlay):");
-    for divergence in &divergences
+    println!("warning: the record and the machine's tree {name} disagree (pre-overlay):");
+    for divergence in &check.warnings
     {
         println!("warning:   {}: {}", divergence.model, divergence.detail);
     }
