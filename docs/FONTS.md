@@ -198,6 +198,35 @@ mutations for app threads and future SMP. Include overhang in changed text damag
 without repainting unrelated window areas. Larger color/variable fonts cannot
 justify a full-scene redraw or unbounded startup memory growth.
 
+## Imported families and how selection is proved
+
+Families this project imports from the development disc are authored, not
+copied: `tools/mac-fonts` writes the `FOND` record — family identity, the
+size/style association table and the family name — and the faces come from the
+extract list as byte-identical payloads. Faces own IDs from 13000 and family
+records from 13400, so adding a family never renumbers a face. A face's size and
+style are read from the disc's own `FOND` association rather than retyped, which
+is what keeps the pairing correct; `mac-fonts verify` then reads a packaged fork
+and applies this module's admission rules to every family it declares.
+
+**Admission is not selection**, so selection is proved on the boot path instead
+of inferred. `crates/mac-toolbox/tests/fixtures/fonts-probe` is a guest
+application that replaces Finder on a cloned volume and asks for families the way
+an application does: `Fonts::id(name)` — the `FONT_ID` wire operation — then
+`Fonts::metrics(FontSelection { family, size, face })` — the `FONT_METRICS`
+operation the resident selection path uses. It asserts that the returned family
+answers with the requested name, that the face reports a real ascent, a
+non-positive descent and a width, and that two styles of one family resolve to
+different faces (a manager that ignored the style field would return identical
+measurements for both).
+
+The probe writes no family ID: an imported family's number is an allocation
+detail, so a probe that pinned one would fail on a renumbering no user could
+observe. The boot check asserts the probe's markers, which makes "this family is
+selectable by name at this style" a guest observation rather than a review
+conclusion.
+
+
 ## Delivery and acceptance
 
 1. **F1 — Installation/catalog:** disk builder creates Fonts; boot discovers

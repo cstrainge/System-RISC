@@ -48,7 +48,19 @@ pub struct ExtractEntry
     /// True when the disc's copy is taken by policy rather than by matching our
     /// key. Fonts are imported this way, so their IDs are the disc's, not ours.
     #[serde(skip_serializing_if = "is_false")]
-    pub taken:      bool
+    pub taken:      bool,
+    /// For a bitmap strike, the size and style the disc's own FOND associates it
+    /// with. A strike does not carry its point size, so the disc is the only
+    /// source for it; recording it here keeps the pairing derived rather than
+    /// retyped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size:       Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style:      Option<u16>,
+    /// The family name the disc's own FOND gives these faces. A strike is
+    /// unnamed; the FOND is what names the family it belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family:     Option<String>
 }
 
 fn is_false(value: &bool) -> bool
@@ -320,6 +332,11 @@ pub struct Classification
     pub name:       Option<Vec<u8>>,
     pub attributes: u8,
     pub form:       Form,
+    /// A bitmap strike's size and style, as the disc's own FOND declares them,
+    /// and the family name that FOND carries.
+    pub size:       Option<i16>,
+    pub style:      Option<u16>,
+    pub family:     Option<String>,
     /// The disc file this resource was matched in, when one matched.
     pub iso_source: Option<String>,
     /// True when the disc's copy is taken by policy rather than by matching
@@ -430,6 +447,9 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
                                                   name: ours.name.clone(),
                                                   attributes: ours.attributes,
                                                   form: ours.form,
+                                                  size: None,
+                                                  style: None,
+                                                  family: None,
                                                   iso_source,
                                                   taken: false,
                                                   verdict });
@@ -457,6 +477,8 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
 /// allocation starts at 13000; a later disc takes the next free numbers and
 /// nothing can silently collide with this range.
 pub const FIRST_ASSIGNED_FONT_ID: i16 = 13000;
+/// The face block ends where the family-record block begins.
+pub const FONT_FACE_RANGE_END: i16 = 13400;
 
 /// Import every instance of `types` the approved sources carry, regardless of
 /// whether our manifest uses that key.
@@ -468,9 +490,24 @@ pub const FIRST_ASSIGNED_FONT_ID: i16 = 13000;
 /// a unique ID from the range above; the disc's own ID is kept as `source_id`.
 /// A face that already exists in the package with identical bytes keeps its ID.
 pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, types: &[String],
-                form: Form)
+                form: Form, suppressed_by: Option<&str>)
 {
     let types: BTreeSet<&str> = types.iter().map(String::as_str).collect();
+    // Outline-first: a source that carries an outline contributes its outline
+    // only, so a bitmap strike that TTF supersedes is never taken. A source with
+    // no outline at all contributes its strikes, because there is nothing else.
+    let suppressed: BTreeSet<&str> = match suppressed_by
+    {
+        None => BTreeSet::new(),
+        Some(kind) =>
+        {
+            iso.iter()
+               .filter(|entry| !entry.held)
+               .filter(|entry| kind_str(&entry.resource.kind) == kind)
+               .map(|entry| entry.source.as_str())
+               .collect()
+        }
+    };
     let mut symbols: BTreeSet<String> =
         report.classifications.iter().map(|entry| entry.symbol.clone()).collect();
     let mut present: BTreeSet<(String, String, i16)> =
@@ -486,6 +523,7 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
     let mut candidates: Vec<&IsoResource> =
         iso.iter()
            .filter(|entry| !entry.held)
+           .filter(|entry| !suppressed.contains(entry.source.as_str()))
            .filter(|entry| types.contains(kind_str(&entry.resource.kind)))
            .filter(|entry| {
                present.insert((entry.source.clone(),
@@ -494,10 +532,29 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
            })
            .collect();
     candidates.sort_by(|a, b| (&a.source, a.resource.id).cmp(&(&b.source, b.resource.id)));
-    let mut used: BTreeSet<i16> = package.resources.iter().map(|resource| resource.id).collect();
+    let associations = fond_associations(iso);
+    // Faces own 13000-13399 and family records own 13400 upward, so neither
+    // allocation can push the other around. Only ids outside the face block are
+    // reserved from the package, which is what makes the numbering a function of
+    // the disc alone: a face keeps its number whatever the generated include
+    // currently holds. Ids handed out by an earlier call are reserved too, so
+    // outlines and bitmaps cannot collide.
+    let mut used: BTreeSet<i16> =
+        package.resources
+               .iter()
+               .map(|resource| resource.id)
+               .filter(|id| !(*id >= FIRST_ASSIGNED_FONT_ID && *id < FONT_FACE_RANGE_END))
+               .chain(report.classifications
+                            .iter()
+                            .filter(|entry| entry.taken)
+                            .map(|entry| entry.id))
+               .collect();
     for entry in candidates
     {
         let kind = kind_str(&entry.resource.kind).to_string();
+        let association = associations.get(&(entry.source.clone(), entry.resource.id)).cloned();
+        let (size, style) = association.as_ref().map(|(size, style, _)| (*size, *style)).unzip();
+        let family = association.and_then(|(_, _, family)| family);
         let base =
             format!("EXTRACTED_{}_{}",
                     kind.chars()
@@ -527,6 +584,9 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
                                                      name: entry.resource.name.clone(),
                                                      attributes: entry.resource.attributes,
                                                      form,
+                                                     size,
+                                                     style,
+                                                     family,
                                                      iso_source: Some(entry.source.clone()),
                                                      taken: true,
                                                      verdict: Verdict::Extract });
@@ -534,6 +594,40 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
     report.classifications.sort_by(|a, b| (&a.kind, a.id).cmp(&(&b.kind, b.id)));
 }
 
+
+/// What the disc's own FOND declares for each face ID, per source file: the
+/// size and style it associates the face with, and the family name it carries.
+/// A bitmap strike stores no point size and no name, so the FOND is the only
+/// statement of either; reading it here keeps the pairing derived from the
+/// source rather than retyped by hand, where a swap would go unnoticed.
+fn fond_associations(iso: &[IsoResource]) -> BTreeMap<(String, i16), (i16, u16, Option<String>)>
+{
+    let mut map = BTreeMap::new();
+    for entry in iso.iter().filter(|entry| !entry.held && entry.resource.kind == *b"FOND")
+    {
+        let data = &entry.resource.data;
+        let Some(count) =
+            data.get(52..54).map(|bytes| i16::from_be_bytes([bytes[0], bytes[1]]) as i32 + 1)
+        else
+        {
+            continue;
+        };
+        if count <= 0 || 54 + count as usize * 6 > data.len()
+        {
+            continue;
+        }
+        let family = entry.resource.name.as_deref().map(mac_formats::text::decode);
+        for index in 0..count as usize
+        {
+            let at = 54 + index * 6;
+            let size = i16::from_be_bytes([data[at], data[at + 1]]);
+            let style = u16::from_be_bytes([data[at + 2], data[at + 3]]);
+            let face = i16::from_be_bytes([data[at + 4], data[at + 5]]);
+            map.entry((entry.source.clone(), face)).or_insert((size, style, family.clone()));
+        }
+    }
+    map
+}
 
 /// Turn the extract verdicts into the package's checked-in extract list.
 ///
@@ -571,7 +665,10 @@ pub fn extract_list(description: &str, iso: &str, report: &Report, source_order:
                                                                .map(mac_formats::text::decode),
                                               attributes: entry.attributes,
                                               form:       entry.form.as_str().to_string(),
-                                              taken:      entry.taken });
+                                              taken:      entry.taken,
+                                              size:       entry.size,
+                                              style:      entry.style,
+                                              family:     entry.family.clone() });
     }
     sources.retain(|section| !section.resources.is_empty());
     ExtractList { description: description.to_string(),
@@ -801,6 +898,11 @@ pub fn unreferenced(report: &Report, usage: &Usage, package: &Package) -> BTreeS
     report.classifications
           .iter()
           .filter(|entry| entry.verdict == Verdict::Extract)
+          // A face taken by policy has no code reference by construction: the
+          // font catalog reaches it through its FOND association, which this
+          // scan cannot see. Excluding it here would drop the very resources
+          // the font ruling exists to import.
+          .filter(|entry| !entry.taken)
           .filter(|entry| usage.of(&entry.kind, entry.id).is_empty())
           .filter(|entry| !reachable.contains_key(&(entry.kind.clone(), entry.id)))
           .filter(|entry| !usage.dynamic_types.contains(&entry.kind))
