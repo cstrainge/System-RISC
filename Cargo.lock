@@ -1730,6 +1730,7 @@ dependencies = [
  "getrandom",
  "hfs-b",
  "mac-abi",
+ "mac-bootloader",
  "mac-build",
  "mac-entropy-interface",
  "mac-extract",
