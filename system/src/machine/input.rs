@@ -1,6 +1,5 @@
 //! Polling modern virtio-mmio input driver for QEMU virt, event queue zero.
-use core::{arch::asm,
-           marker::PhantomData,
+use core::{marker::PhantomData,
            ptr::{addr_of, addr_of_mut, read_volatile, write_volatile},
            sync::atomic::{AtomicU8, Ordering}};
 

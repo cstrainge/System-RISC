@@ -10,7 +10,7 @@ use super::super::*;
 use crate::machine::{monitor, paging::user::Error};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::machine::scheduler) enum Stage
+pub(in crate::machine::riscv64::scheduler) enum Stage
 {
     StackPublish,
     DescriptorPublish,
@@ -21,14 +21,14 @@ pub(in crate::machine::scheduler) enum Stage
 /// The original typed cause plus SAME-operation lifecycle quarantine evidence.
 /// A Busy monitor result after PTE writes is never mistaken for admission Busy.
 #[derive(Debug)]
-pub(in crate::machine::scheduler) struct Failure
+pub(in crate::machine::riscv64::scheduler) struct Failure
 {
     cause:      Error,
     quarantine: Option<crate::machine::paging::modules::CleanupCause>
 }
 impl Failure
 {
-    pub(in crate::machine::scheduler) fn mapping(cause: Error,
+    pub(in crate::machine::riscv64::scheduler) fn mapping(cause: Error,
                                                  mapping: &crate::machine::paging::user::Mapping)
                                                  -> Self
     {
@@ -36,13 +36,13 @@ impl Failure
                quarantine: mapping.quarantine_cause() }
     }
 
-    pub(in crate::machine::scheduler) fn rejected(status: Status) -> Self
+    pub(in crate::machine::riscv64::scheduler) fn rejected(status: Status) -> Self
     {
         Self { cause:      Error::Rejected(status),
                quarantine: None }
     }
 
-    pub(in crate::machine::scheduler) fn status(&self) -> Status
+    pub(in crate::machine::riscv64::scheduler) fn status(&self) -> Status
     {
         self.cause.status()
     }
@@ -75,7 +75,7 @@ fn permanent(core: &ThreadCore) -> bool
                                            .. }))
 }
 /// Only ABI projection returns Status; the actual owned cause stays on Core.
-pub(in crate::machine::scheduler) fn refuse(core: &ThreadCore, stage: Stage, cause: Failure)
+pub(in crate::machine::riscv64::scheduler) fn refuse(core: &ThreadCore, stage: Stage, cause: Failure)
                                             -> Status
 {
     let status = cause.status();
@@ -138,7 +138,7 @@ fn clear_retryable(core: &ThreadCore)
     drop(previous);
 }
 
-pub(in crate::machine::scheduler) fn publish(core: &ThreadCore) -> Result<(), Status>
+pub(in crate::machine::riscv64::scheduler) fn publish(core: &ThreadCore) -> Result<(), Status>
 {
     let stack = {
                     let backing = core.backing.lock();
@@ -265,7 +265,7 @@ fn quarantine(scheduler: &mut Scheduler, slot: usize, id: u64, core: &Arc<Thread
     }
 }
 
-pub(in crate::machine::scheduler) fn reclaim()
+pub(in crate::machine::riscv64::scheduler) fn reclaim()
 {
     if critical_active() || !RECLAIM_PENDING.swap(false, Ordering::AcqRel)
     {

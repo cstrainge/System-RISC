@@ -88,18 +88,9 @@ pub fn exit_returned(status: i64) -> !
     unsafe {
         core::arch::asm!("brk #0", options(noreturn, nostack));
     }
-    // The host builds this crate for the packaging tools, which embed guest
-    // binaries and never execute a guest terminal path. `ud2` is x86's
-    // deliberate invalid instruction, so the contract holds there too rather
-    // than the function quietly returning.
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("ud2", options(noreturn, nostack));
-    }
-    // A new architecture must state its deliberate fault rather than inherit
-    // whichever instruction happens to assemble: this is the same single-selection
-    // seam the machine layer uses, and it fails at build time with a reason.
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
-    compile_error!("exit_returned has no deliberate terminal fault for this architecture; add \
-                    one rather than letting the nonreturning contract become a silent return");
+    // Only a guest can reach this function. Pipelines that build this crate for
+    // the host (a probe fixture linking the ABI) have no terminal fault to
+    // emit, so the divergence is stated rather than left to fall off the end.
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    unreachable!("a terminal fault is emitted only for a guest architecture")
 }
