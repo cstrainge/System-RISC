@@ -491,13 +491,22 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
 /// `AccessDenied` and consumes nothing.
 fn connect(call: &mut wire::Call, owner: &OwnerRef, name: Name) -> Result<RequestAction, Status>
 {
+    call.writer = connect_named(owner,
+                                name.1.get(..name.0 as usize).ok_or(BAD_ARGUMENT)?,
+                                call.nonblocking == 0)?;
+    Ok(RequestAction::Return)
+}
+
+/// Take one connection slot on `name` and return its writer handle. Shared by
+/// the `CONNECT` operation and by the File Manager's open-as-connect, so both
+/// apply the same writer limit and the same endpoint ownership.
+fn connect_named(owner: &OwnerRef, name: &[u8], blocking: bool) -> Result<u64, Status>
+{
     let manager = manager()?;
     let mut manager = manager.lock();
     let Some((pipe, limit)) = manager.named
                                      .iter()
-                                     .find(|entry| {
-                                         same_name(named(entry), &name.1[..name.0 as usize])
-                                     })
+                                     .find(|entry| same_name(named(entry), name))
                                      .map(|entry| (entry.pipe, entry.writers))
     else
     {
@@ -518,7 +527,7 @@ fn connect(call: &mut wire::Call, owner: &OwnerRef, name: Name) -> Result<Reques
                         .insert(owner,
                                 Endpoint { pipe,
                                            reader: WRITER,
-                                           blocking: call.nonblocking == 0,
+                                           blocking,
                                            connected: true })
                         .map_err(status)?;
     let Some(state) = manager.pipes.get_mut(pipe)
@@ -529,8 +538,24 @@ fn connect(call: &mut wire::Call, owner: &OwnerRef, name: Name) -> Result<Reques
     };
     state.writers = writers;
     state.connections = connections;
-    call.writer = writer;
-    Ok(RequestAction::Return)
+    Ok(writer)
+}
+
+/// `connect` for an item the File Manager resolved by identity. The registry is
+/// consulted again here, so a pipe destroyed between a listing and the open is
+/// refused rather than joined to a name that no longer exists.
+pub(crate) fn connect_item(owner: &OwnerRef, cnid: u32, blocking: bool) -> Result<u64, Status>
+{
+    let manager = manager()?;
+    let name = {
+        let manager = manager.lock();
+        manager.named
+               .iter()
+               .find(|entry| entry.cnid == cnid)
+               .map(|entry| named(entry).to_vec())
+               .ok_or(NOT_FOUND)?
+    };
+    connect_named(owner, &name, blocking)
 }
 
 fn read(call: &mut wire::Call, owner: &OwnerRef, output: &mut [u8], identity: RequestIdentity,

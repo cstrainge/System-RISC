@@ -1202,6 +1202,7 @@ fn layout(number: u32, bytes: usize) -> Result<Layout, Status>
             select!(abi::files::FileCall,
                     abi::files::DataWriteCall,
                     abi::files::FileScanCall,
+                    abi::files::PipeOpenCall,
                     abi::files::ForkWriteCall,
                     abi::files::IconMoveCall,
                     abi::files::IconGroupCall,

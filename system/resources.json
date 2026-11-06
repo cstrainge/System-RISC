@@ -4120,8 +4120,8 @@
     {
       "type": "FOND",
       "id": 13404,
-      "symbol": "FOND_COURIER_13404",
-      "name": "Courier",
+      "symbol": "FOND_GILL_SANS_CONDENSED_BOLD_13404",
+      "name": "Gill Sans Condensed Bold",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4131,8 +4131,8 @@
     {
       "type": "FOND",
       "id": 13405,
-      "symbol": "FOND_GENEVA_13405",
-      "name": "Geneva",
+      "symbol": "FOND_KLANG_MT_13405",
+      "name": "Klang MT",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4142,8 +4142,8 @@
     {
       "type": "FOND",
       "id": 13406,
-      "symbol": "FOND_GILL_SANS_CONDENSED_BOLD_13406",
-      "name": "Gill Sans Condensed Bold",
+      "symbol": "FOND_NEW_BEROLINA_MT_13406",
+      "name": "New Berolina MT",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4153,8 +4153,8 @@
     {
       "type": "FOND",
       "id": 13407,
-      "symbol": "FOND_HELVETICA_13407",
-      "name": "Helvetica",
+      "symbol": "FOND_OLD_ENGLISH_TEXT_MT_13407",
+      "name": "Old English Text MT",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4164,8 +4164,8 @@
     {
       "type": "FOND",
       "id": 13408,
-      "symbol": "FOND_KLANG_MT_13408",
-      "name": "Klang MT",
+      "symbol": "FOND_SCRIPT_MT_BOLD_13408",
+      "name": "Script MT Bold",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4175,8 +4175,8 @@
     {
       "type": "FOND",
       "id": 13409,
-      "symbol": "FOND_MONACO_13409",
-      "name": "Monaco",
+      "symbol": "FOND_TTYFONT_13409",
+      "name": "TTYFont",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4186,8 +4186,8 @@
     {
       "type": "FOND",
       "id": 13410,
-      "symbol": "FOND_NEW_BEROLINA_MT_13410",
-      "name": "New Berolina MT",
+      "symbol": "FOND_VT100_13410",
+      "name": "VT100",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4197,8 +4197,8 @@
     {
       "type": "FOND",
       "id": 13411,
-      "symbol": "FOND_NEW_YORK_13411",
-      "name": "New York",
+      "symbol": "FOND_ESPY_SANS_13411",
+      "name": "Espy Sans",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4208,8 +4208,8 @@
     {
       "type": "FOND",
       "id": 13412,
-      "symbol": "FOND_OLD_ENGLISH_TEXT_MT_13412",
-      "name": "Old English Text MT",
+      "symbol": "FOND_ESPY_SANS_BOLD_13412",
+      "name": "Espy Sans Bold",
       "attributes": 0,
       "payload": {
         "format": "file",
@@ -4219,100 +4219,12 @@
     {
       "type": "FOND",
       "id": 13413,
-      "symbol": "FOND_PALATINO_13413",
-      "name": "Palatino",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13413.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13414,
-      "symbol": "FOND_SCRIPT_MT_BOLD_13414",
-      "name": "Script MT Bold",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13414.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13415,
-      "symbol": "FOND_SYMBOL_13415",
-      "name": "Symbol",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13415.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13416,
-      "symbol": "FOND_TTYFONT_13416",
-      "name": "TTYFont",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13416.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13417,
-      "symbol": "FOND_TIMES_13417",
-      "name": "Times",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13417.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13418,
-      "symbol": "FOND_VT100_13418",
-      "name": "VT100",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13418.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13419,
-      "symbol": "FOND_ESPY_SANS_13419",
-      "name": "Espy Sans",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13419.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13420,
-      "symbol": "FOND_ESPY_SANS_BOLD_13420",
-      "name": "Espy Sans Bold",
-      "attributes": 0,
-      "payload": {
-        "format": "file",
-        "path": "assets/fonts/FOND-13420.bin"
-      }
-    },
-    {
-      "type": "FOND",
-      "id": 13421,
-      "symbol": "FOND_EWORLD_TIGHT_13421",
+      "symbol": "FOND_EWORLD_TIGHT_13413",
       "name": "eWorld Tight",
       "attributes": 0,
       "payload": {
         "format": "file",
-        "path": "assets/fonts/FOND-13421.bin"
+        "path": "assets/fonts/FOND-13413.bin"
       }
     }
   ]
