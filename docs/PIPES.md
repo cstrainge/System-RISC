@@ -132,9 +132,14 @@ a property of any endpoint.
 - The limit does not count the creator's own writer handle. A limit of one
   therefore means one connecting owner at a time, and the creator still holds
   the writer it was given.
-- A limit larger than the endpoint population the System can hold is accepted
-  and behaves as unlimited; the registry's own limit decides when endpoints run
-  out.
+- The limit is a 32-bit count, and the public interface takes it as such, so only
+  a hand-built call can state a wider value. A stated limit that does not fit in
+  32 bits is refused with `BadArgument` before anything is created; it is **not**
+  clamped and **not** accepted as a synonym for unlimited, because a caller that
+  asks for a value the facility cannot represent has asked for something it is
+  not getting. A limit that does fit but is larger than the number of endpoints
+  the System can hold simply never binds: it is stored as stated and the
+  registry's own endpoint limit is what refuses `connect` when endpoints run out.
 
 ### 3.3 `connect`
 
@@ -277,10 +282,17 @@ one:
 
 - Bytes are delivered in the order they were written. There is no reordering, no
   prioritisation and no out-of-band path.
-- Waiters on the same condition are woken in the order they began waiting.
-- Wakeup order is the only ordering promised. Which woken writer or reader wins
-  the resulting race is not specified; a woken caller must re-check the condition
-  rather than assume the transfer is available.
+- A change of condition wakes **every** thread waiting on that condition at that
+  moment: a wake is a broadcast over the wait set, not a handoff to one waiter.
+  No eligible waiter is passed over.
+- The order in which woken threads *run* is not promised. It is not arrival order:
+  the implementation releases them in scheduler thread-slot order, which is an
+  allocation artefact and may change. Nothing in this contract makes "woken first"
+  observable, and a caller must not infer it.
+- Because waking is a broadcast, several woken callers may race for the same
+  newly available bytes or space. Which of them wins is not specified; a woken
+  caller must re-check the condition and must not assume the transfer is
+  available.
 - Multiple writers are permitted and receive no fairness guarantee: a writer that
   always has data may keep the ring full. There is no round-robin, no quota and
   no priority. A name's writer limit bounds how many writers there are; it does
@@ -367,10 +379,10 @@ refusal case — it is not an entry in that namespace at all.
 - An item's fields never reveal its source: a named pipe is a file-kind entry
   with the type and creator of section 9.3, the folder's volume and catalog node
   ID as its parent, and the pipe's name as its name.
-- The merged listing is a single cursor with a single revision. Registering or
-  removing a named pipe changes that revision, so an enumeration that spans the
-  change reports `ScanStale` rather than silently combining two snapshots. A
-  caller restarts the enumeration.
+- The merged listing is a single continuation with a single revision (section
+  9.6). Registering or removing a named pipe changes that revision, so an
+  enumeration that spans the change reports `ScanStale` rather than silently
+  combining two snapshots. A caller restarts the enumeration.
 - Lookup of a single name in this folder searches real children first, then named
   pipes. Path resolution uses the same lookup, so a path through the folder
   resolves both kinds.
@@ -450,8 +462,38 @@ synthetic identifier space that both sources agree on, and a merged cursor with
 one revision across two sources — remains a separate, larger change. It is not
 a prerequisite for pipes, and nothing in this contract depends on it.
 
-## 10. Launch paths, and the stubbed standard streams
+### 9.6 The enumeration continuation
 
+Merging two sources into one listing needs two things an ordinary directory scan
+does not have: the revision of the pipe registry the enumeration started against,
+and the number of registry rows already returned. The directory-scan continuation
+therefore carries two additional 32-bit fields.
+
+- **Registry revision.** Set when the scan starts and carried unchanged by every
+  continuation. For a scan of the `Pipes` folder it is the registry's revision at
+  the start of the enumeration; a registration or a destruction during the
+  enumeration changes that revision, and a continuation carrying the older value
+  is refused with `ScanStale`. A listing therefore never combines two snapshots,
+  and a caller that receives `ScanStale` restarts the enumeration. The field is
+  zero for every other directory.
+- **Registry row offset.** Zero while the folder's real catalog children are being
+  returned. Once the catalog portion is exhausted the scan continues into the
+  registry, and this field counts the rows already handed out. It is always zero
+  for every other directory.
+- **Which directories may carry them.** Only the `Pipes` folder. A scan request
+  for any other directory that arrives with either field nonzero is refused with
+  `BadArgument`, so a caller cannot carry registry state into a directory that has
+  no registry. A continuation naming a different volume or directory from the one
+  it was started on is likewise `BadArgument`, and a catalog revision that has
+  changed is `ScanStale`.
+- **Not an additive change.** This is a change of the request record's layout, not
+  a compatible extension of it: the record grew, and its length is how the service
+  identifies the request. There is no second decoder, no version field to select
+  one, and no tolerant reading of the older, shorter record. Callers are rebuilt
+  with the System, which is what this project's unreleased-ABI rule requires. A
+  caller built against the older layout is refused rather than misread.
+
+## 10. Launch paths, and the stubbed standard streams
 The GUI standard streams are deliberately stubbed, and this facility does not
 replace them:
 
@@ -617,8 +659,9 @@ Explicitly not promised, with the reason:
 - **Fairness among multiple writers.** Permitted, not promised. Nothing in v1
   prevents one writer from monopolising a pipe. A writer limit of one removes the
   case entirely rather than ordering it.
-- **Wakeup ordering beyond arrival order.** Waiters are woken in arrival order,
-  but the outcome of the resulting race is unspecified.
+- **Wakeup ordering.** No order is promised at all, not even arrival order. A
+  change wakes every waiter on the condition, and the order they run in is
+  scheduler slot order. A caller must re-check rather than rely on being first.
 - **Deadlines.** No v1 operation has one. "Blocking does not spin" is the whole
   guarantee; a caller wanting a limit uses non-blocking mode.
 - **Framing, message boundaries, record sizes.** Never part of pipes. The 512-byte
@@ -680,7 +723,9 @@ Two facts about the numbering:
 **Allocated by this facility: `0x1002f` = `PIPES`.** It is the first unoccupied
 number, it is not a Mac Roman variant, and it is additive: no existing number
 changes meaning. The native development ABI stays at version 1 because this is
-an additive service in an unreleased tree.
+an additive service in an unreleased tree. The additive claim is about this
+number only: a request record this facility extends keeps its identity in its
+length, and a record whose layout changes is not additive at all (section 9.6).
 
 Operation selectors inside the pipes call occupy the small-integer space of that
 call alone (0 through 6, in section 3 order). They are not trap numbers and share
