@@ -12,6 +12,7 @@ use core::panic::PanicInfo;
 use linked_list_allocator::LockedHeap;
 
 mod devicetree;
+mod memory;
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -422,6 +423,44 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
               minimum\n");
         return 0;
     }
+    // The account the kernel will validate: the machine's banks, and every
+    // extent this boot occupies. The tree itself is reserved where the machine
+    // put it, which on this machine is part way into RAM rather than in a tail.
+    let total = u32::from_be_bytes(bytes.get(4..8).unwrap_or(&[0; 4]).try_into().unwrap()) as u64;
+    let account = match memory::Memory::discover(&tree, tree_address as u64, total)
+    {
+        Ok(account) => account,
+        Err(cause) =>
+        {
+            puts("BOOT_AARCH64_MEMORY_REFUSED: ");
+            puts(match cause
+            {
+                memory::Error::NoRam => "the machine describes no RAM",
+                memory::Error::Unaligned => "a RAM bank is not page aligned",
+                memory::Error::Overlap => "two RAM banks overlap",
+                memory::Error::Reservation => "a reservation is empty, unaligned or outside RAM",
+                memory::Error::Duplicate => "two reservations overlap",
+                memory::Error::TreeOutsideRam => "the tree lies outside the RAM it describes",
+                memory::Error::Allocation => "allocation failed"
+            });
+            puts("\n");
+            return 0;
+        }
+    };
+    match account.checked(memory::PAGE_BYTES)
+    {
+        Ok(_) => {}
+        Err(_) =>
+        {
+            puts("BOOT_AARCH64_MEMORY_REFUSED: the account does not satisfy the kernel's checks\n");
+            return 0;
+        }
+    }
+    puts("BOOT_AARCH64_MEMORY_ACCOUNT: banks=");
+    puthex(account.ram.len() as u64);
+    puts(" reservations=");
+    puthex(account.reserved.len() as u64);
+    puts("\n");
     if counter == 0
     {
         puts("BOOT_AARCH64_COUNTER_REFUSED: the machine reports no counter frequency\n");
