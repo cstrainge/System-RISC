@@ -15,7 +15,8 @@ pub(in crate::toolbox::files) use resident::virtual_entry;
 mod resident
 {
     use super::*;
-    use crate::toolbox::{files::{MAX_VOLUMES, Manager, Mounted, utf8_name},
+    use crate::toolbox::{files::{BAD_ARGUMENT, MAX_VOLUMES, Manager, Mounted, NOT_FOUND, Status,
+                                 utf8_name},
                          pipes};
 
     /// Item name of the folder under the volume's blessed folder. The image
@@ -133,6 +134,35 @@ mod resident
         }
 
         /// Mutations inside the folder have no catalog object to act on, and a
+        /// Open a named pipe item, performing `connect` for the calling process.
+        /// The File Manager owns the item namespace, so it validates the volume
+        /// and the identity before the pipe facility takes a connection slot;
+        /// the pipe facility still owns the writer limit and the handle. This is
+        /// deliberately separate from `OPEN`: a pipe item has no fork, and the
+        /// generic open must keep refusing it.
+        pub(in crate::toolbox::files) fn pipes_open(&self, owner: u64,
+                                                    call: &mut mac_abi::files::PipeOpenCall)
+                                                    -> Result<(), Status>
+        {
+            let Some((volume, folder)) = self.pipes_folder
+            else
+            {
+                return Err(NOT_FOUND);
+            };
+            if call.volume != volume
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            // A destroyed pipe is not openable: the identity must still be live.
+            let row = pipes::row_of(call.cnid).ok_or(NOT_FOUND)?;
+            // The connection belongs to the requesting process, taken from the
+            // trap's trusted caller identity rather than the request record.
+            let owner = crate::toolbox::files::creation_authority(owner)?;
+            call.writer = pipes::connect_item(&owner, row.cnid, true)?;
+            call.folder = folder;
+            Ok(())
+        }
+
         /// virtual identity has no fork, name or Finder record to change. Both
         /// are refused before any volume is touched, so a File Manager delete
         /// can never reach the registry. A real catalog item whose CNID happens
@@ -268,6 +298,14 @@ mod resident
         pub(in crate::toolbox::files) fn pipes_refuses(&self, _: &FileCall) -> bool
         {
             false
+        }
+
+        /// No guest registry exists here, so nothing can be connected.
+        pub(in crate::toolbox::files) fn pipes_open(&self, _: u64,
+                                                    _: &mut mac_abi::files::PipeOpenCall)
+                                                    -> Result<(), Status>
+        {
+            Err(NOT_SUPPORTED)
         }
 
         pub(in crate::toolbox::files) fn pipes_note(&mut self, _: &FileCall, _: &str)

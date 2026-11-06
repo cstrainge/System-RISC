@@ -18,6 +18,13 @@ use crate::{cache,
             icon_view::{self, Caption, Drawing, Icon, Layout, State},
             selection::{CAPACITY, Selection}};
 
+/// How many consecutive `ScanStale` restarts a folder gets before the browser
+/// reports the enumeration as failed instead of restarting again. Staleness is
+/// ordinary and expected under mutation; a run of them with no entry accepted
+/// means the folder is changing faster than it can be read, which is a failure
+/// worth showing rather than a scan to repeat silently.
+const STALE_RESTART_LIMIT: u32 = 8;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Location
 {
@@ -808,12 +815,27 @@ impl Browser
                 {
                     Err(Error::ScanStale) =>
                     {
-                        cache::edit(slot, |folder| {
+                        // The continuation is stale, not empty: discard the
+                        // partial result and restart, as the scan contract
+                        // requires. Restarting is bounded because a folder that
+                        // is mutated faster than it can be read would otherwise
+                        // resean for ever and show nothing.
+                        let retries = cache::edit(slot, |folder| {
                             folder.cursor = None;
                             folder.count = 0;
                             folder.restored = Selection::EMPTY;
+                            folder.stale_retries = folder.stale_retries.saturating_add(1);
+                            folder.stale_retries
                         });
-                        return Ok(());
+                        if retries <= STALE_RESTART_LIMIT
+                        {
+                            return Ok(());
+                        }
+                        cache::edit(slot, |folder| folder.stale_retries = 0);
+                        // Recorded before returning so the caller sees a folder
+                        // failure with a retry, not an error dropped on the floor.
+                        self.failures[slot].set(Some(Error::ScanStale));
+                        return Err(Error::ScanStale);
                     }
                     Err(error) => return Err(error),
                     Ok(step) =>
@@ -961,6 +983,9 @@ impl Browser
                                                                    }),
                                       bounds: Rect::ZERO };
                     folder.count += 1;
+                    // Progress: the restart counter measures consecutive
+                    // restarts without an entry, not the folder's lifetime.
+                    folder.stale_retries = 0;
                 });
             }
             else
@@ -969,6 +994,7 @@ impl Browser
                 let restored = cache::edit(slot, |folder| {
                     folder.layout(bounds.right - bounds.left)?;
                     folder.ready = true;
+                    folder.stale_retries = 0;
                     Ok::<_, Error>(folder.restored)
                 })?;
                 self.windows[slot].as_mut().unwrap().selected = restored;
@@ -980,9 +1006,11 @@ impl Browser
                         let first = folder.items[0].icon_bounds;
                         let frame = folder.frame;
                         let _ = writeln!(&mut layout,
-                                         "FINDER_FOLDER_LAYOUT window={} first={},{},{},{} \
-                                          frame={},{},{},{} count={}",
+                                         "FINDER_FOLDER_LAYOUT window={} volume={} folder={} \
+                                          first={},{},{},{} frame={},{},{},{} count={}",
                                          window.window,
+                                         folder.location.volume.0,
+                                         folder.location.folder.0,
                                          first.left,
                                          first.top,
                                          first.right,
@@ -1191,6 +1219,14 @@ impl Browser
             else if entry.file_type == TypeCode::new(*b"APPL")
             {
                 system.processes().launch(entry.volume, entry.id)?;
+            }
+            else if crate::named_pipe::candidate(entry)
+            {
+                // A named pipe is opened by connecting, never by launching an
+                // application: it has no fork, so no document association can
+                // claim it. The File Manager performs the connect, so the writer
+                // limit and endpoint ownership stay the resident ones.
+                crate::named_pipe::open(system, entry)?;
             }
             else if !crate::font_suitcase::candidate(entry)
                       && let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
