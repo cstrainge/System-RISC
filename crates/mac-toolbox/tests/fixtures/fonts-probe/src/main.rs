@@ -122,11 +122,11 @@ fn run(system: &System<'_>) -> Result<(), Line>
     // 9-point strikes share an ascent of 9, a descent of 2 and a width of 6
     // while differing in content. So metrics cannot distinguish the two faces,
     // and comparing them would prove nothing either way. What the style field
-    // must do is be interpreted: face bits outside 0..=0x7f are refused rather
-    // than silently treated as plain, which a resolver that dropped the field
-    // would not do. Routing to the exact style match is the resolver's first
+    // must do is be interpreted: classic face bits are 0 through 6, so bit 7 is
+    // refused rather than silently treated as plain, which a resolver that
+    // dropped the field would not do. Routing to the exact style match is the resolver's first
     // scoring key, which the two strikes above cannot observe.
-    let refused = fonts.metrics(FontSelection { family: vt100, size: 9, face: 0x40 });
+    let refused = fonts.metrics(FontSelection { family: vt100, size: 9, face: 0x80 });
     check(refused.is_err(), "an impossible style was accepted")?;
     let mut line = Line::new();
     let _ = writeln!(line, "FONTS_PROBE_STYLE_OK refused={:?}", refused.err());
