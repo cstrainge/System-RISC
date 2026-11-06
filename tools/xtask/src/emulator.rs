@@ -100,7 +100,11 @@ pub enum Media<'a>
     /// The disks the platform record attaches.
     Declared,
     /// Exactly these disks, in order, replacing the record's attachments.
-    Given(&'a [PathBuf])
+    Given(&'a [PathBuf]),
+    /// The same, attached writable. A case that must observe the guest writing
+    /// to its own disk states this instead of relying on the record's shipping
+    /// read-only policy, which exists so a check cannot damage the real medium.
+    GivenWritable(&'a [PathBuf])
 }
 
 pub fn invocation(platform: &Platform, root: &Path, dist: &Path, media: Media<'_>, mode: Mode,
@@ -308,10 +312,11 @@ fn attach_disks(definition: &Definition, platform: &Platform, dist: &Path, media
     // The record's attachments are the machine's own. A caller that names media
     // is describing a different machine for one run, so it replaces them rather
     // than adding to them.
-    let (given, declared): (&[PathBuf], Vec<(&str, Option<u32>)>) = match media
+    let (given, declared, writable): (&[PathBuf], Vec<(&str, Option<u32>)>, bool) = match media
     {
-        Media::Declared => (&[], definition.attachments().collect()),
-        Media::Given(paths) => (paths, Vec::new())
+        Media::Declared => (&[], definition.attachments().collect(), false),
+        Media::Given(paths) => (paths, Vec::new(), false),
+        Media::GivenWritable(paths) => (paths, Vec::new(), true)
     };
     let Some(disks) = &definition.disks
     else
@@ -382,7 +387,7 @@ fn attach_disks(definition: &Definition, platform: &Platform, dist: &Path, media
         push(args,
              "-drive",
              format!("if=none,id={drive},readonly={},format={},file={}",
-                     if disks.readonly() { "on" } else { "off" },
+                     if !writable && disks.readonly() { "on" } else { "off" },
                      format,
                      path.display()));
         match disks.transport()

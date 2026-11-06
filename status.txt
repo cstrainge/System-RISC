@@ -1063,3 +1063,81 @@ unchanged.
 
 Evidence: documentation only. The code is identical to the 18-of-18 boot-check tip
 verified immediately before this edit; the gate was not rerun for a prose change.
+
+Pipes folder is created at boot (gate now 19/19)
+================================================
+[Pipes / facilities agent] 2026-11-05
+
+Implemented: System Folder/Pipes is created by the System during boot, before any
+application starts, and the identity it records is proved against the catalog.
+
+Where it runs
+-------------
+`system/src/toolbox/files/pipes.rs`: `ensure_folder()` uses only ordinary File
+Manager operations. It reads the startup volume and its blessed folder from mount
+information, answers a read-only volume from that information alone, otherwise
+LOOKUPs the name and, when absent, performs NEW_FOLDER under the blessed folder.
+The result is compared with the identity the mount recorded (`agree`); a cache
+and catalog that disagree log PIPES_FOLDER_MISMATCH and refuse, and an
+unrecorded folder logs PIPES_FOLDER_UNRECORDED and refuses. Nothing is patched
+over.
+
+It is called from the existing boot pass that already resolves the blessed
+folder — `system/src/toolbox/files/installed_fonts.rs::pump()` — not from a new
+pass. `PENDING`/`RETRY`/`DONE`/`REFUSED` state means one success or refusal per
+boot; a SERVICE_BUSY retry is spaced 300 ticks so it cannot thrash.
+
+Finding that mattered, and a correction to my first reading of it: the first
+version looked the name up before checking read-only, so every read-only medium
+did a volume mount and catalog walk inside the boot panel's wait. That is
+unnecessary and stays fixed — a volume that cannot hold a folder is answered from
+its own header, and an existing folder there was already recorded at mount.
+
+But it was not the cause of the timeout I then chased. With the lookup gone,
+`system-resource-fork-over-4mib` still failed: the same image booted in 49 s and
+then 132 s on two consecutive runs. The cause is in that case's own fixture.
+`altered_system` removed the System and re-imported a 9 MiB resource fork in
+64 KiB chunks, so its extents landed in whatever free space existed at the time;
+the boot panel then read that file slowly and with high variance. A 432-byte
+System growth from this work was enough to move the case from just inside its
+60 s readiness budget to over it.
+
+The fixture now grows the existing System fork in place for the "large-fork"
+alteration: `write_fork` reuses every allocated page and allocates only for the
+bytes the growth needs, so the file keeps its identity, its CNID and its run. The
+assertion is unchanged — the same resource is added, the fork is now 9,078,642
+bytes against 9,013,055 — and the boot is 17 to 18 seconds on repeated runs
+instead of 49 to 132. The other alterations still remove and re-import, because
+they change payload bytes rather than length and are not affected.
+
+Verification
+------------
+  cargo xtask build --platform qemu_riscv      exit 0, 500 MiB HFS-B image
+  cargo xtask boot-check --platform qemu_riscv 19 of 19 passed
+
+New case `pipes-folder-boot`: a writable clone of the built image with the probe
+installed as Finder and **no** Pipes folder in it. Serial:
+  PIPES_FOLDER_READY volume=66113 cnid=45 created=1     (System, mount record)
+  PIPES_FOLDER_PRESENT volume=66113 blessed=17 cnid=45  (probe, catalog lookup)
+  PIPES_FOLDER_LIST_OK items=1 / LOOKUP_OK / STABLE_OK / ANON_ABSENT_OK /
+  REFUSED_OK refusals=11 / PIPES_PROBE_PASS cases=5
+The two identities agree (45), and the parent is the blessed folder (17).
+
+Read-only media now assert the skip instead:
+  raw-hfs-b, system-resource-fork-over-4mib: PIPES_FOLDER_SKIPPED volume=66113
+  reason=readonly
+
+Harness changes: `emulator::Media::GivenWritable` attaches the stated disks
+writable for one case; `run_case`/`writable_case` keep every other step identical
+to `case`. `pipes_probe_image` takes a `seed_folder` flag: true for the read-only
+probe case, false for the writable one so the guest itself must create it. The
+probe no longer creates the folder as a fallback — absence is now a failure, and
+it logs PIPES_FOLDER_PRESENT with the identity it found.
+
+`large-system-fork.hfsb` is now built by growing the existing System fork in
+place (see the finding above). That is the only change to a pre-existing case,
+its assertion is unchanged, and its read pattern no longer depends on the free
+space layout at fixture-build time.
+
+Still open: Finder open-as-connect; icon families -30002/-30003 with the
+allowlist extension.
