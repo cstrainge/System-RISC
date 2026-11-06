@@ -9,19 +9,18 @@
 #![forbid(unsafe_code)]
 use mac_abi::files::*;
 use mac_filesystem::CatalogEntry;
-pub(in crate::toolbox::files) use resident::{Boot, ensure_folder, virtual_entry};
+pub(in crate::toolbox::files) use resident::virtual_entry;
 
 #[cfg(target_arch = "riscv64")]
 mod resident
 {
-    use mac_abi::{ALREADY_EXISTS, BAD_ABI, NOT_FOUND, Status};
-
     use super::*;
     use crate::toolbox::{files::{MAX_VOLUMES, Manager, Mounted, utf8_name},
                          pipes};
 
-    /// Item name of the folder under the volume's blessed folder.
-    const NAME: &str = "Pipes";
+    /// Item name of the folder under the volume's blessed folder. The image
+    /// builder creates it, so this is the same spelling that created it.
+    const NAME: &str = mac_abi::files::PIPES_FOLDER_NAME;
     /// Reserved item type and creator for a named pipe (section 9.3). Nothing
     /// else in the system claims this pair.
     const PIPE_TYPE: [u8; 4] = *b"PIPE";
@@ -227,152 +226,6 @@ mod resident
             None
         }
     }
-
-    /// The startup volume and its blessed folder, from mount information only.
-    fn blessed() -> Result<(u32, u32, u16), Status>
-    {
-        files(|manager| {
-            let volume = manager.volumes
-                                .iter()
-                                .filter_map(|(_, mounted)| mounted.info())
-                                .find(|info| info.startup != 0)
-                                .ok_or(NOT_FOUND)?;
-            if volume.blessed_folder < ROOT_ID
-            {
-                return Err(NOT_FOUND);
-            }
-            Ok((volume.id, volume.blessed_folder, volume.read_only))
-        })
-    }
-
-    fn files<R>(operation: impl FnOnce(&mut Manager) -> Result<R, Status>) -> Result<R, Status>
-    {
-        crate::kernel::with_files(operation).map_err(crate::state::AccessError::status)?
-    }
-
-    /// `LOOKUP` a name under a directory, returning its identity.
-    fn lookup(volume: u32, parent: u32, name: &str) -> Result<Option<u32>, Status>
-    {
-        let mut call = FileCall { operation: LOOKUP,
-                                  volume,
-                                  cnid: parent,
-                                  ..Default::default() };
-        match files(|manager| manager.request(&mut call, name, &mut []))
-        {
-            Ok(()) => Ok(Some(call.entry.id)),
-            Err(NOT_FOUND) => Ok(None),
-            Err(status) => Err(status)
-        }
-    }
-
-    /// Outcome of the boot ensure, for the caller's serial marker.
-    pub(in crate::toolbox::files) enum Boot
-    {
-        /// The folder was already there; its identity came from the mount.
-        Present
-        {
-            volume: u32, cnid: u32
-        },
-        /// The folder did not exist and this call created it.
-        Created
-        {
-            volume: u32, cnid: u32
-        },
-        /// The startup volume cannot hold one; names still register without it.
-        ReadOnly
-        {
-            volume: u32
-        }
-    }
-
-    /// The identity the mount recorded, which is what the folder merge reads.
-    fn recorded(volume: u32) -> Option<u32>
-    {
-        files(|manager| Ok(manager.pipes_folder())).ok()
-                                                   .flatten()
-                                                   .filter(|(owner, _)| *owner == volume)
-                                                   .map(|(_, cnid)| cnid)
-    }
-
-    /// The folder's identity as the mount records it, or a reported mismatch.
-    /// The merge enumerates through this same cache, so a folder whose catalog
-    /// identity differs from the recorded one is a defect to report, never a
-    /// value to overwrite here.
-    fn agree(volume: u32, blessed: u32) -> Result<u32, Status>
-    {
-        let cache = recorded(volume);
-        let actual = lookup(volume, blessed, NAME)?;
-        match (cache, actual)
-        {
-            (Some(cache), Some(actual)) if cache == actual => Ok(cache),
-            (Some(cache), Some(actual)) =>
-            {
-                serial!("PIPES_FOLDER_MISMATCH volume={} recorded={} catalog={}", volume, cache,
-                        actual);
-                Err(BAD_ABI)
-            }
-            (Some(cache), None) =>
-            {
-                serial!("PIPES_FOLDER_MISMATCH volume={} recorded={} catalog=absent", volume,
-                        cache);
-                Err(NOT_FOUND)
-            }
-            (None, Some(actual)) =>
-            {
-                serial!("PIPES_FOLDER_UNRECORDED volume={} catalog={}", volume, actual);
-                Err(NOT_FOUND)
-            }
-            (None, None) => Err(NOT_FOUND)
-        }
-    }
-
-    /// Create `System Folder/Pipes` when the startup volume can hold it, using
-    /// ordinary File Manager operations. An already-present folder is success,
-    /// never an error. The returned identity is the one the mount recorded, and
-    /// it is proved against the catalog rather than assumed.
-    pub(in crate::toolbox::files) fn ensure_folder() -> Result<Boot, Status>
-    {
-        let (volume, blessed, read_only) = blessed()?;
-        // A volume that cannot hold the folder is answered from its mount
-        // information alone. Reading the catalog first would put a full mount
-        // and B-tree walk on the boot path of every read-only medium for an
-        // answer the header already gives, and an existing folder there is
-        // already recorded by `pipes_discover` at mount time.
-        if read_only != 0
-        {
-            return Ok(Boot::ReadOnly { volume });
-        }
-        if lookup(volume, blessed, NAME)?.is_some()
-        {
-            return Ok(Boot::Present { volume,
-                                      cnid: agree(volume, blessed)? });
-        }
-        let when = crate::machine::clock::now()?.mac_microseconds().ok_or(BAD_ABI)?;
-        let mut call = FileCall { operation: NEW_FOLDER,
-                                  volume,
-                                  cnid: blessed,
-                                  position: when,
-                                  ..Default::default() };
-        let created = match files(|manager| manager.request(&mut call, NAME, &mut []))
-        {
-            Ok(()) => true,
-            // Another creator won the race. The folder exists, which is all
-            // this call promises; resolve it below rather than fail.
-            Err(ALREADY_EXISTS) => false,
-            Err(status) => return Err(status)
-        };
-        let cnid = agree(volume, blessed)?;
-        Ok(if created
-           {
-               Boot::Created { volume,
-                               cnid }
-           }
-           else
-           {
-               Boot::Present { volume,
-                               cnid }
-           })
-    }
 }
 
 #[cfg(not(target_arch = "riscv64"))]
@@ -382,17 +235,6 @@ mod resident
     //! state, so nothing on this configuration can be a virtual catalog item.
     use super::*;
     use crate::toolbox::files::Manager;
-
-    /// No guest registry exists here, so there is no folder to create.
-    pub(in crate::toolbox::files) enum Boot
-    {
-        ReadOnly
-    }
-
-    pub(in crate::toolbox::files) fn ensure_folder() -> Result<Boot, Status>
-    {
-        Ok(Boot::ReadOnly)
-    }
 
     pub(in crate::toolbox::files) fn virtual_entry(_: u32, _: &[u8]) -> Option<CatalogEntry>
     {
