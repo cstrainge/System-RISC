@@ -22,7 +22,7 @@
     },
     "images": {
       "base": "0x40930000",
-      "bytes": "0x10000000"
+      "bytes": "0x3000000"
     },
     "display_scratch": {
       "base": "0x50930000",

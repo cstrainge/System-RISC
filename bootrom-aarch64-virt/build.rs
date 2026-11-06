@@ -67,6 +67,10 @@ fn main()
     // hold it and the declared region is what the memory map is checked against.
     let heap_base = memory["firmware_heap"]["base"].as_str().expect("memory.firmware_heap.base");
     let heap_bytes = memory["firmware_heap"]["bytes"].as_str().expect("memory.firmware_heap.bytes");
+    let scratch_base = memory["display_scratch"]["base"].as_str()
+                              .expect("memory.display_scratch.base");
+    let scratch_bytes = memory["display_scratch"]["bytes"].as_str()
+                               .expect("memory.display_scratch.bytes");
     fs::write(out.join("platform-memory.rs"),
               format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
                        pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
@@ -90,7 +94,11 @@ fn main()
                        // states a larger size is refused rather than read past its end.\n\
                        pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n\
                        pub const FW_HEAP_BASE: u64 = {heap_base};\n\
-                       pub const FW_HEAP_BYTES: u64 = {heap_bytes};\n",
+                       pub const FW_HEAP_BYTES: u64 = {heap_bytes};\n\
+                       pub const BOOT_BASE: u64 = {boot_base};\n\
+                       pub const BOOT_BYTES: u64 = {bytes};\n\
+                       pub const DISPLAY_SCRATCH_BASE: u64 = {scratch_base};\n\
+                       pub const DISPLAY_SCRATCH_BYTES: u64 = {scratch_bytes};\n",
               format!("{ram_base}u64 + 0x1000"),
               format!("{ram_base}u64 + 0x2000"),
               format!("{ram_base}u64 + 0x3000"),
