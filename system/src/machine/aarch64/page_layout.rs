@@ -20,10 +20,6 @@ use mac_kernel_model::policy::AddressRange;
 /// record fixes 4 KiB for this port, which is what the geometry below encodes.
 const PAGE_BYTES: u64 = 4096;
 
-/// 1 GiB, 2 MiB and 4 KiB: the level-1, level-2 and level-3 leaves of a 39-bit
-/// walk at a 4 KiB granule.
-const LEAF_BYTES: &[u64] = &[1 << 30, 1 << 21, 1 << 12];
-
 /// The top of the lower half. A 39-bit space sign-extends from bit 38.
 const LOWER_END: u64 = 0x0000_0080_0000_0000;
 /// The bottom of the upper half.

@@ -39,8 +39,15 @@ const SOFTWARE_MASK: u64 = 0b11 << SOFTWARE_SHIFT;
 
 /// The base page this format is built on.
 pub const PAGE_BYTES: u64 = 4096;
-/// The leaves, finest first: 4 KiB page, 2 MiB block, 1 GiB block.
-pub const LEAF_BYTES: &[u64] = &[1 << 12, 1 << 21, 1 << 30];
+/// The leaves, coarsest first: 1 GiB block, 2 MiB block, 4 KiB page.
+///
+/// The order is part of the contract, not a presentation choice:
+/// `MappingPlan::new` requires a strictly descending list whose last entry is the
+/// base page, so that a span is split by taking the largest leaf that fits. This
+/// list was finest-first, which made every mapping fail with `InvalidGeometry` -
+/// and the correct order was sitting beside it in a dead constant that nothing
+/// read. There is now one list, and a test in this crate pins the order.
+pub const LEAF_BYTES: &[u64] = &[1 << 30, 1 << 21, 1 << 12];
 /// The top of the lower half of a 39-bit space.
 const LOWER_END: u64 = 0x0000_0080_0000_0000;
 /// The bottom of the upper half.
@@ -373,5 +380,40 @@ impl mac_kernel_model::pages::Descriptor for Entry
                                                            ownership }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+    #[test]
+    fn the_leaf_list_is_coarsest_first_so_a_span_can_be_split()
+    {
+        // `MappingPlan::new` requires a strictly descending list ending at the
+        // base page: it splits a span by taking the largest leaf that fits, and
+        // it rejects any other order outright. This list was once finest-first,
+        // which made every mapping on this architecture fail with
+        // `InvalidGeometry` before the plan iterator ever ran - so the order is
+        // asserted against the consumer's own rule rather than against a copy of
+        // the expectation.
+        let plan = mac_kernel_model::pages::MappingPlan::new(
+            mac_kernel_model::pages::PhysicalAddress(0x4000_0000),
+            mac_kernel_model::pages::VirtualAddress(0xffff_ffe0_0000_0000),
+            2 << 30,
+            geometry(),
+            leaf_sizes());
+        assert!(plan.is_ok(), "the declared leaf order must satisfy the mapping plan");
+        // And a finest-first list must be refused, so this test would fail if the
+        // order were ever flipped back.
+        let mut reversed = LEAF_BYTES.to_vec();
+        reversed.reverse();
+        assert!(mac_kernel_model::pages::MappingPlan::new(
+                    mac_kernel_model::pages::PhysicalAddress(0x4000_0000),
+                    mac_kernel_model::pages::VirtualAddress(0xffff_ffe0_0000_0000),
+                    2 << 30,
+                    geometry(),
+                    &reversed).is_err());
     }
 }
