@@ -7,7 +7,7 @@ use std::{env, fs, path::Path};
 fn main()
 {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let name = env::var("SR_PLATFORM").unwrap_or_else(|_| "qemu_arm64".to_string());
+    let name = env::var("SR_PLATFORM").unwrap_or_else(|_| "raspi3b".to_string());
     let record_path = root.join("../platforms").join(format!("{name}.json"));
     println!("cargo:rerun-if-env-changed=SR_PLATFORM");
     println!("cargo:rerun-if-changed={}", record_path.display());

@@ -426,7 +426,7 @@ mod tests
     /// platform selection, so the suite gives the same answer on any checkout.
     fn generated() -> (Vec<u8>, Platform)
     {
-        let platform = platform::load("qemu_arm64").expect("the arm64 record must load");
+        let platform = platform::load("raspi3b").expect("the arm64 record must load");
         let blob = generate_for(&platform).expect("generated tree");
         (blob, platform)
     }
@@ -434,7 +434,7 @@ mod tests
     #[test]
     fn a_platform_that_does_not_declare_a_generated_tree_is_refused()
     {
-        let generated = platform::load("qemu_arm64").expect("arm64 record");
+        let generated = platform::load("raspi3b").expect("arm64 record");
         assert!(require_generated(&generated).is_ok(),
                 "the arm64 record declares a generated tree");
         let firmware = platform::load("qemu_riscv").expect("riscv record");

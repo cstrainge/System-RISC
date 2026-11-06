@@ -1113,18 +1113,22 @@ impl Platform
     {
         let scheduling = self.scheduling.as_ref().ok_or_else(|| missing(self, "scheduling"))?;
         // The policy caps how many harts may schedule at once, so the check
-        // needs the machine's hart count. A platform that declares no emulation
-        // has no emulated hart count to compare against, and a cap that cannot
-        // be compared is not a cap: the number is still required to be nonzero,
-        // and the record is told to declare its machine rather than have the
+        // needs the machine's hart count. Either side of the record may state
+        // it: an emulator states the count of the virtual machine it supplies,
+        // a board states its own. A platform that states neither has no count
+        // to compare against, and a cap that cannot be compared is not a cap —
+        // so the record is told to declare its machine rather than have the
         // comparison silently skipped.
-        let harts =
-            self.emulation().map(|emulation| emulation.harts).ok_or_else(|| {
-                error(format!("platform '{}' declares scheduling limits but no emulation, so \
-                              scheduling.maximum_active_harts has no machine hart count to \
-                              validate against",
-                             self.name))
-            })?;
+        let harts = self.emulation()
+                        .map(|emulation| emulation.harts)
+                        .or_else(|| self.hardware().and_then(|hardware| hardware.harts))
+                        .ok_or_else(|| {
+                            error(format!("platform '{}' declares scheduling limits but neither \
+                                           its emulation nor its hardware states how many harts \
+                                           the machine has, so scheduling.maximum_active_harts \
+                                           has nothing to validate against",
+                                          self.name))
+                        })?;
         scheduling.check(harts)
     }
 
@@ -1164,6 +1168,13 @@ impl Platform
     pub fn emulation(&self) -> Option<&emulation::Definition>
     {
         self.emulation.as_ref()
+    }
+
+    /// The board this platform is built for, when it names one. Absent means
+    /// the platform is supplied by an emulator and names no board.
+    pub fn hardware(&self) -> Option<&hardware::Definition>
+    {
+        self.hardware.as_ref()
     }
 
     /// The emulation description, or an actionable refusal. A platform that
@@ -1335,8 +1346,13 @@ mod artifact_tests
             assert!(load(name).err().unwrap().to_string().contains("platform name must contain"));
         }
         let error = load("NoSuchBoard").err().unwrap().to_string();
+        // The message must name the platforms a caller could have meant. It
+        // does not promise an order, and pinning one would make the test fail
+        // on nothing more meaningful than how the directory is sorted.
         assert!(error.contains("cannot select platform 'NoSuchBoard'")
-                && error.contains("known platforms: qemu_arm64, qemu_riscv"));
+                && error.contains("qemu_riscv")
+                && error.contains("raspi3b"),
+                "an unknown platform must report the known ones: {error}");
         for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234", "0x80000000"]
         {
             let mut bad = load("qemu_riscv").unwrap();
@@ -1360,7 +1376,7 @@ mod artifact_tests
     #[test]
     fn a_peripheral_window_and_the_page_a_driver_claims_cannot_describe_different_devices()
     {
-        let platform = load("qemu_arm64").unwrap();
+        let platform = load("raspi3b").unwrap();
         platform.check_peripheral_windows().unwrap();
         // The mailbox registers start part way into the ARM control page the
         // record claims, so one device is declared at two granularities on
@@ -1372,7 +1388,7 @@ mod artifact_tests
                               .expect("the record declares the mailbox window");
         assert_eq!((mailbox.base, mailbox.bytes), (0x3f00b880, 0x40));
         // A window moved out of the page that claims it is refused.
-        let mut drifted = load("qemu_arm64").unwrap();
+        let mut drifted = load("raspi3b").unwrap();
         drifted.hardware
                .as_mut()
                .unwrap()
@@ -1386,7 +1402,7 @@ mod artifact_tests
         assert!(error.contains("outside every declared MMIO range"), "{error}");
         // A claimed page moved away from the window it is supposed to hold is
         // refused in the same way.
-        let mut drifted = load("qemu_arm64").unwrap();
+        let mut drifted = load("raspi3b").unwrap();
         drifted.mmio_devices
                .iter_mut()
                .find(|device| device.id == "bcm2835-mbox")
@@ -1396,7 +1412,7 @@ mod artifact_tests
         assert!(error.contains("outside every declared MMIO range"), "{error}");
         // Two windows in one claimed page would make a single claim cover two
         // devices, which is the same defect in the other direction.
-        let mut crowded = load("qemu_arm64").unwrap();
+        let mut crowded = load("raspi3b").unwrap();
         crowded.hardware
                .as_mut()
                .unwrap()

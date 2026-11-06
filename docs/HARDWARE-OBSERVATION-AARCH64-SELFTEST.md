@@ -42,7 +42,7 @@ The self-test called `Disk::probe(SDHCI_BASE, ...)` and then read sector zero.
 `SDHCI_BASE` is the base of the platform record's storage device:
 
 ```
-platforms/qemu_arm64.json
+platforms/raspi3b.json
   hardware.devices[kind = "storage", model = "sdhci"].base = 0x3f300000
 ```
 
