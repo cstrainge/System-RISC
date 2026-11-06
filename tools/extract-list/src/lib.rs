@@ -158,7 +158,10 @@ pub struct OursResource
     pub name:       Option<Vec<u8>>,
     pub attributes: u8,
     pub form:       Form,
-    pub classic:    Option<Vec<u8>>
+    pub classic:    Option<Vec<u8>>,
+    /// True for a resource that came in through the generated include rather
+    /// than from the manifest's own entries.
+    pub generated:  bool
 }
 
 /// A resource of ours that does not resolve to classic bytes, with the reason.
@@ -224,6 +227,15 @@ pub fn read_package(source: &str, path: &Path) -> Result<Package>
                 }
             }
         };
+        // Extraction writes its assets under `extracted_assets/`, so a payload
+        // there is a generated face rather than one this package authors.
+        let generated = matches!(&definition.payload,
+        Payload::File { path }
+            if path.components()
+                   .next()
+                   .is_some_and(|part| {
+                       part.as_os_str() == "extracted_assets"
+                   }));
         resources.push(OursResource { source: source.to_string(),
                                       kind: definition.kind.clone(),
                                       id: definition.id,
@@ -231,7 +243,8 @@ pub fn read_package(source: &str, path: &Path) -> Result<Package>
                                       name,
                                       attributes: definition.attributes,
                                       form,
-                                      classic });
+                                      classic,
+                                      generated });
     }
     Ok(Package { source: source.to_string(),
                  path: path.to_path_buf(),
@@ -342,6 +355,9 @@ pub struct Classification
     /// True when the disc's copy is taken by policy rather than by matching
     /// our key: fonts are imported by enumeration, not by ID lookup.
     pub taken:      bool,
+    /// True when the entry came in through the generated include rather than
+    /// from the manifest's own entries.
+    pub generated:  bool,
     pub verdict:    Verdict
 }
 
@@ -352,7 +368,10 @@ pub struct Report
     /// Resources read from the disc, across every source file.
     pub disc:            usize,
     /// ISO-side resources we do not use. Spec §7.2: ignored, never taken.
-    pub ignored:         usize
+    pub ignored:         usize,
+    /// Faces the disc offers that the package already carries byte for byte,
+    /// described as they were found. They are not taken: the package has them.
+    pub font_duplicates: Vec<String>
 }
 
 /// A3: compare every resolved resource with its disc counterpart at classic
@@ -452,6 +471,7 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
                                                   family: None,
                                                   iso_source,
                                                   taken: false,
+                                                  generated: ours.generated,
                                                   verdict });
         }
     }
@@ -462,7 +482,8 @@ pub fn classify(packages: &[Package], iso: &[IsoResource]) -> Report
            .count();
     Report { classifications,
              disc: iso.len(),
-             ignored }
+             ignored,
+             font_duplicates: Vec::new() }
 }
 
 /// Import every instance of `types` the approved sources carry, regardless of
@@ -520,11 +541,28 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
                        .map(|source| (source.clone(), entry.kind.clone(), entry.id))
               })
               .collect();
+    // A face the package already carries byte for byte is not taken. Taking it
+    // would add a second family answering to one name and a second copy of the
+    // same face, so the resolution for a duplicate is "the package has it".
+    // Comparing bytes rather than names keeps the decision about the payload,
+    // not about how a family happens to be spelled.
+    // Only what the package authors counts as carried. The generated include
+    // holds what an earlier run of this step took, so treating it as carried
+    // would make every run conclude that everything is already present and take
+    // nothing at all — the list would oscillate instead of settling.
+    let carried: BTreeSet<Vec<u8>> =
+        package.resources
+               .iter()
+               .filter(|resource| !resource.generated)
+               .filter(|resource| matches!(resource.kind.as_str(), "sfnt" | "NFNT" | "FONT"))
+               .filter_map(|resource| resource.classic.clone())
+               .collect();
     let mut candidates: Vec<&IsoResource> =
         iso.iter()
            .filter(|entry| !entry.held)
            .filter(|entry| !suppressed.contains(entry.source.as_str()))
            .filter(|entry| types.contains(kind_str(&entry.resource.kind)))
+           .filter(|entry| !carried.contains(&entry.resource.data))
            .filter(|entry| {
                present.insert((entry.source.clone(),
                                kind_str(&entry.resource.kind).to_string(),
@@ -589,11 +627,30 @@ pub fn take_all(report: &mut Report, iso: &[IsoResource], package: &Package, typ
                                                      family,
                                                      iso_source: Some(entry.source.clone()),
                                                      taken: true,
+                                                     generated: false,
                                                      verdict: Verdict::Extract });
     }
     report.classifications.sort_by(|a, b| (&a.kind, a.id).cmp(&(&b.kind, b.id)));
+    // Record what was declined for being a duplicate, so the report can say why
+    // a family the disc carries is absent from the list.
+    for entry in iso.iter()
+                    .filter(|entry| !entry.held)
+                    .filter(|entry| !suppressed.contains(entry.source.as_str()))
+                    .filter(|entry| types.contains(kind_str(&entry.resource.kind)))
+                    .filter(|entry| carried.contains(&entry.resource.data))
+    {
+        let suit = entry.source.rsplit('/').next().unwrap_or_default();
+        let family = associations.get(&(entry.source.clone(), entry.resource.id))
+                                 .and_then(|(_, _, family)| family.clone());
+        report.font_duplicates.push(format!("{} {} from {} ({})",
+                                            kind_str(&entry.resource.kind),
+                                            entry.resource.id,
+                                            suit,
+                                            family.as_deref().unwrap_or("unnamed")));
+    }
+    report.font_duplicates.sort();
+    report.font_duplicates.dedup();
 }
-
 
 /// What the disc's own FOND declares for each face ID, per source file: the
 /// size and style it associates the face with, and the family name it carries.
@@ -933,6 +990,18 @@ fn write_fonts(text: &mut String, report: &Report)
     }
     let _ = writeln!(text, "\nfonts — outlines imported by enumeration, not by ID lookup");
     let _ = writeln!(text, "  taken: {} faces from {} families", taken.len(), families.len());
+    if !report.font_duplicates.is_empty()
+    {
+        let _ = writeln!(text,
+                         "  not taken: {} faces the package already carries byte for byte — a \
+                          duplicate would be a second family answering to one name and a second \
+                          copy of the same face, so the family stays the one we have",
+                         report.font_duplicates.len());
+        for duplicate in &report.font_duplicates
+        {
+            let _ = writeln!(text, "    {duplicate}");
+        }
+    }
     for (family, faces) in &families
     {
         let ids: Vec<String> = faces.iter().map(|face| face.id.to_string()).collect();
@@ -942,10 +1011,16 @@ fn write_fonts(text: &mut String, report: &Report)
                      face.name.as_deref().map_or_else(String::new, mac_formats::text::decode)
                  })
                  .collect();
+        let kinds: Vec<&str> = faces.iter()
+                                    .map(|face| face.kind.as_str())
+                                    .collect::<BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect();
         let _ = writeln!(text,
-                         "    {:<26} {} face(s)  sfnt {}  [{}]",
+                         "    {:<26} {} face(s)  {} {}  [{}]",
                          family,
                          faces.len(),
+                         kinds.join("/"),
                          ids.join(", "),
                          names.join(", "));
     }
@@ -961,22 +1036,32 @@ fn write_fonts(text: &mut String, report: &Report)
                                    .filter(|(_, users)| users.len() > 1)
                                    .map(|(id, users)| format!("{id} ({})", users.join(", ")))
                                    .collect();
+    if shared.is_empty()
+    {
+        let _ = writeln!(text,
+                         "  numbering: every imported face is assigned a unique ID from {} \
+                          upward, with the disc's own ID kept beside it as source_id.",
+                         FIRST_ASSIGNED_FONT_ID);
+    }
+    else
+    {
+        let _ = writeln!(text,
+                         "  numbering: the disc reuses IDs across families — {}, so its \
+                          numbering is per file and cannot be imported as-is. Every imported \
+                          face is assigned a unique ID from {} upward, with the disc's own ID \
+                          kept beside it as source_id.",
+                         shared.join("; "),
+                         FIRST_ASSIGNED_FONT_ID);
+    }
     let _ = writeln!(text,
-                     "  numbering: the disc reuses sfnt IDs across families — {}, so its \
-                      numbering is per file and cannot be imported as-is. Every imported face is \
-                      assigned a unique ID from {} upward; a face we already carry \
-                      byte-identically keeps its ID, and the disc's ID stays beside it as \
-                      source_id.",
-                     shared.join("; "),
-                     FIRST_ASSIGNED_FONT_ID);
-    let _ = writeln!(text,
-                     "  bitmaps: the disc's font files also carry NFNT bitmaps (IDs 1025+ per \
-                      family). This list takes the outlines only, so every family above ends \
-                      with an outline and no bitmap from the disc.");
+                     "  bitmaps: where a family has an outline on the disc, the outline is taken \
+                      and its strikes are not; a family with no outline is taken as strikes.");
     let absent_nfnt =
         report.classifications
               .iter()
-              .filter(|entry| entry.kind == "NFNT" && entry.verdict == Verdict::OursOnly)
+              .filter(|entry| {
+                  entry.kind == "NFNT" && entry.verdict == Verdict::OursOnly && !entry.generated
+              })
               .count();
     let absent_font =
         report.classifications
@@ -992,10 +1077,11 @@ fn write_fonts(text: &mut String, report: &Report)
     if !fondonly.is_empty()
     {
         let _ = writeln!(text,
-                         "  FOND: all {} are ours and are not extracted; they are the tables to \
-                          regenerate. Source: system/assets/fonts/FOND-*.bin, referenced from \
-                          system/resources.json (symbols FONT_BUNDLE_FOND_*). Each must be \
-                          rewritten to the font IDs the package actually installs.",
+                         "  FOND: {} family records, all ours and none extracted. The nine \
+                          bundled ones stay exactly as they are: their associations name the IDs \
+                          we already install, and a face imported from the disc is the same \
+                          bytes as the one they name. The imported families get a record \
+                          authored by tools/mac-fonts from this list.",
                          fondonly.len());
         for entry in fondonly
         {

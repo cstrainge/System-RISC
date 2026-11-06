@@ -641,7 +641,8 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                       "FONTS_PROBE_SELECT name=\"Espy Sans\"",
                       "FONTS_PROBE_SELECT name=\"VT100\" size=9 style=1",
                       "FONTS_PROBE_SELECT name=\"American Heritage\"",
-                      "FONTS_PROBE_STYLE_UNPROVEN refused=", "FONTS_PROBE_PASS cases=5"],
+                      "FONTS_PROBE_STYLE plain=", "FONTS_PROBE_STYLE_OK",
+                      "FONTS_PROBE_PASS cases=5"],
                     true)?);
     let probe_image = directory.join("pipes-probe.hfsb");
     pipes_probe_image(workspace, &probe_image)?;
