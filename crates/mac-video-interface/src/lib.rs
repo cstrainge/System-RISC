@@ -185,8 +185,8 @@ impl Size
     }
 }
 
-/// SERVICE input: the framebuffer rectangle System changed since the last
-/// call. An empty rectangle (zero width or height) means nothing to present.
+/// SERVICE input is a packed list of up to MAX_RECTS framebuffer rectangles.
+/// A zero-length payload polls the host without presenting pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Damage
 {
@@ -198,6 +198,7 @@ pub struct Damage
 impl Damage
 {
     pub const BYTES: usize = 16;
+    pub const MAX_RECTS: usize = 32;
 
     pub fn encode(&self) -> [u8; Self::BYTES]
     {
