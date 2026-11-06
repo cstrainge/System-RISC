@@ -4,7 +4,7 @@
 use mac_abi::{ACCESS_DENIED, SERVICE_BUSY, Status};
 use mac_object_table::domain::DomainKind;
 
-use crate::machine::SCHEDULER;
+use super::super::SCHEDULER;
 
 pub(crate) struct SourceQuiescence<'a>
 {

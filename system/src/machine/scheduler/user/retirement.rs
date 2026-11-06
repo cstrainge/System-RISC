@@ -6,7 +6,7 @@ use core::sync::atomic::Ordering;
 
 use mac_abi::{BAD_ABI, SERVICE_BUSY, Status};
 
-use crate::machine::*;
+use super::super::*;
 use crate::machine::{monitor, paging::user::Error};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -84,12 +84,12 @@ pub(crate) fn permitted<R>(kind: Operation, operation: impl FnOnce() -> R) -> Op
 
 fn deny_selected(operation: Operation) -> bool
 {
-    let Some(local) = crate::machine::selected_local()
+    let Some(local) = super::super::selected_local()
     else
     {
-        if crate::machine::REGISTRY.get().is_some() || crate::machine::COLD.get().is_some()
+        if super::super::REGISTRY.get().is_some() || super::super::COLD.get().is_some()
         {
-            crate::machine::unadmitted();
+            super::super::unadmitted();
         }
         // No policy call exists before initial native entry admission.
         return false;

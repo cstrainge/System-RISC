@@ -1307,15 +1307,15 @@ pub(crate) unsafe fn copy_aliases(source: usize, destination: usize, bytes: usiz
         {
             // SAFETY: the caller owns both spans; the alignment test above
             // selects the word path only where a word access is valid.
-            let value = unsafe { crate::machine::mmu::read_word(source + offset) };
-            unsafe { crate::machine::mmu::write_word(destination + offset, value) };
+            let value = unsafe { super::super::mmu::read_word(source + offset) };
+            unsafe { super::super::mmu::write_word(destination + offset, value) };
             offset += 8;
         }
         else
         {
             // SAFETY: as above; the byte path is valid at any alignment.
-            let value = unsafe { crate::machine::mmu::read_byte(source + offset) };
-            unsafe { crate::machine::mmu::write_byte(destination + offset, value) };
+            let value = unsafe { super::super::mmu::read_byte(source + offset) };
+            unsafe { super::super::mmu::write_byte(destination + offset, value) };
             offset += 1;
         }
     }
@@ -1331,13 +1331,13 @@ pub(crate) unsafe fn zero_alias(destination: usize, bytes: usize)
         if (destination + offset).is_multiple_of(8) && bytes - offset >= 8
         {
             // SAFETY: the caller owns the span; alignment is checked above.
-            unsafe { crate::machine::mmu::zero_word(destination + offset) };
+            unsafe { super::super::mmu::zero_word(destination + offset) };
             offset += 8;
         }
         else
         {
             // SAFETY: as above; a byte store is valid at any alignment.
-            unsafe { crate::machine::mmu::zero_byte(destination + offset) };
+            unsafe { super::super::mmu::zero_byte(destination + offset) };
             offset += 1;
         }
     }

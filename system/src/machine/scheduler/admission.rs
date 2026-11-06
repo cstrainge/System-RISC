@@ -75,7 +75,7 @@ impl Buffers
 {
     pub(super) fn prepare() -> Result<Self, Error>
     {
-        let (thread_capacity, waiter_capacity) = crate::machine::interrupts::with_masked(|| {
+        let (thread_capacity, waiter_capacity) = super::super::interrupts::with_masked(|| {
             let scheduler = SCHEDULER.lock();
             let needs_slot = !scheduler.threads.iter().any(Option::is_none);
             let required = scheduler.threads
@@ -133,7 +133,7 @@ pub(super) fn thread_permit(owner: &OwnerRef) -> Result<PublicationPermit<Invoca
 {
     loop
     {
-        let plan = crate::machine::interrupts::with_masked(|| {
+        let plan = super::super::interrupts::with_masked(|| {
             let scheduler = SCHEDULER.lock();
             scheduler.records
                      .as_ref()
@@ -143,7 +143,7 @@ pub(super) fn thread_permit(owner: &OwnerRef) -> Result<PublicationPermit<Invoca
                      .map_err(Error::Pool)
         })?;
         let preparation = plan.prepare()?;
-        let result = crate::machine::interrupts::with_masked(|| {
+        let result = super::super::interrupts::with_masked(|| {
             let mut scheduler = SCHEDULER.lock();
             match scheduler.records.as_mut()
             {
@@ -212,7 +212,7 @@ fn publish_selected(prepared: &PreparedThread, runnable: bool) -> Result<Publish
     loop
     {
         let mut buffers = Buffers::prepare()?;
-        let result = crate::machine::interrupts::with_masked(|| {
+        let result = super::super::interrupts::with_masked(|| {
             let mut scheduler = SCHEDULER.lock();
             match buffers.install(&mut scheduler)
             {

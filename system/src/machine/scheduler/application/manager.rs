@@ -21,7 +21,7 @@ fn with<R>(action: impl FnOnce(&mut Manager) -> R) -> Result<R, Error>
 {
     let manager = MANAGER.get().ok_or(Error::Admission { status: mac_abi::BAD_ABI,
                                                           stage:  "join manager initialization" })?;
-    Ok(crate::machine::super::interrupts::with_masked(|| action(&mut manager.lock())))
+    Ok(super::super::super::interrupts::with_masked(|| action(&mut manager.lock())))
 }
 pub(crate) fn specification(storage: bool) -> Specification<'static>
 {
@@ -123,7 +123,7 @@ pub(super) fn publish(permit: PublicationPermit<InvocationGate>, right: Arc<Righ
         return Err(Error::Admission { status: mac_abi::BAD_ABI,
                                       stage:  "join manager" });
     };
-    match crate::machine::super::interrupts::with_masked(|| {
+    match super::super::super::interrupts::with_masked(|| {
               manager.lock().rights.publish_prepared(permit, right)
           })
     {
@@ -170,7 +170,7 @@ pub(super) fn consume_read(read: &RightRead, id: u64) -> Result<(), Error>
 {
     let manager = MANAGER.get().ok_or(Error::Admission { status: mac_abi::BAD_ABI,
                                                           stage:  "join manager" })?;
-    let result = crate::machine::super::interrupts::with_masked(|| {
+    let result = super::super::super::interrupts::with_masked(|| {
         let mut manager = manager.lock();
         let live = manager.rights.get(id).is_some_and(|actual| Arc::ptr_eq(actual, &read.right));
         if !live
@@ -238,7 +238,7 @@ pub(crate) fn pump_rights()
     {
         return;
     };
-    let mut list = crate::machine::super::interrupts::with_masked(|| manager.lock().retiring.take());
+    let mut list = super::super::super::interrupts::with_masked(|| manager.lock().retiring.take());
     while let Some(mut node) = list
     {
         list = node.next.take();
@@ -248,7 +248,7 @@ pub(crate) fn pump_rights()
         }
         else
         {
-            crate::machine::super::interrupts::with_masked(|| {
+            super::super::super::interrupts::with_masked(|| {
                 let mut manager = manager.lock();
                 node.next = manager.retiring.take();
                 manager.retiring = Some(node);
@@ -274,7 +274,7 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
         };
         if self.0
         {
-            let released = crate::machine::super::interrupts::with_masked(|| {
+            let released = super::super::super::interrupts::with_masked(|| {
                 let mut manager = manager.lock();
                 let preparing = manager.rights.publication_preparations(ticket.key().owner());
                 if preparing != 0
@@ -286,7 +286,7 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
             drop(released);
             return Ok(());
         }
-        let right = crate::machine::super::interrupts::with_masked(|| {
+        let right = super::super::super::interrupts::with_masked(|| {
             manager.lock().rights.releasing(&ticket).cloned()
         });
         let Some(right) = right
@@ -299,7 +299,7 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
         {
             return Err(Failure::native_join(ticket, readers.saturating_sub(2), 0));
         }
-        let removed = crate::machine::super::interrupts::with_masked(|| {
+        let removed = super::super::super::interrupts::with_masked(|| {
             manager.lock().rights.release_with_backing(ticket)
         });
         drop(right);
