@@ -82,7 +82,11 @@ fn select(system: &System<'_>, fonts: Fonts<'_>, name: &str, size: i16, face: u1
     let metrics = fonts.metrics(FontSelection { family, size, face })
                        .map_err(|error| failed("metrics", error))?;
     check(metrics.ascent > 0, "the selected face reported no ascent")?;
-    check(metrics.descent <= 0, "the selected face reported a positive descent")?;
+    // A real face reports ink above and below the baseline, and a width. The
+    // descent is the magnitude below the baseline in this API, not a signed
+    // offset, so the sanity check is that it is no larger than the ascent.
+    check(metrics.descent >= 0 && metrics.descent <= metrics.ascent,
+          "the selected face reported an implausible descent")?;
     check(metrics.max_width > 0, "the selected face reported no width")?;
     let mut line = Line::new();
     let _ = writeln!(line,
