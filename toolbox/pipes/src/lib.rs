@@ -67,6 +67,35 @@ impl<'a> Pipes<'a>
                         active: true })
     }
 
+    /// Take ownership of a reader handle this process already holds, such as one
+    /// a parent thread created. Endpoint ownership is per process, so another
+    /// thread of the same application may read through it. A zero handle is
+    /// refused.
+    pub fn adopt_reader(self, handle: u64) -> Result<PipeReader<'a>>
+    {
+        if handle == 0
+        {
+            return Err(Error::BadArgument);
+        }
+        Ok(PipeReader { client: self.client,
+                        handle,
+                        active: true })
+    }
+
+    /// Take ownership of a writer handle this process already holds. Endpoint
+    /// ownership is per process, so another thread of the same application may
+    /// write through it. A zero handle is refused.
+    pub fn adopt_writer(self, handle: u64) -> Result<PipeWriter<'a>>
+    {
+        if handle == 0
+        {
+            return Err(Error::BadArgument);
+        }
+        Ok(PipeWriter { client: self.client,
+                        handle,
+                        active: true })
+    }
+
     fn pair(self, operation: u32, name: &str, capacity: usize, writers: u64)
             -> Result<(PipeReader<'a>, PipeWriter<'a>)>
     {
@@ -100,6 +129,14 @@ fn name_into(call: &mut wire::Call, name: &str) -> Result<()>
 
 impl PipeReader<'_>
 {
+    /// The handle this reader owns. Passing it to `Pipes::adopt_reader` lets
+    /// another thread of the same process read through it; the handle stays
+    /// owned by the process either way.
+    pub const fn raw(&self) -> u64
+    {
+        self.handle
+    }
+
     /// Remove up to `output.len()` bytes. Zero is returned only when no writer
     /// remains and no buffered bytes remain.
     pub fn read(&mut self, output: &mut [u8]) -> Result<usize>
