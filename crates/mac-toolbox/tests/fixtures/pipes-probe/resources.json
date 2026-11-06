@@ -1,0 +1,9 @@
+{
+  "name": "Finder",
+  "file_type": "FNDR",
+  "creator": "MACS",
+  "role": "application",
+  "abi_version": 1,
+  "description": "Guest pipe transport probe",
+  "resources": []
+}

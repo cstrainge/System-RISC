@@ -1,6 +1,7 @@
 //! Frontbuffer overlays. The retained scene is always read-only.
 #![forbid(unsafe_code)]
-use mac_abi::{geometry::{Point, Rect}, quickdraw::MonoCursor};
+use mac_abi::{geometry::{Point, Rect},
+              quickdraw::MonoCursor};
 
 use super::feedback::Feedback;
 
@@ -287,6 +288,7 @@ pub(crate) enum PresentEvent
     CopyStarted,
     Copied(Rect),
     OutlineStarted,
+    FeedbackDamage(Rect),
     OutlineChanged(usize)
 }
 
@@ -345,7 +347,9 @@ pub(crate) fn present_frame(scene: &[u32], front: &mut [u32], width: usize, heig
     {
         observe(PresentEvent::OutlineStarted);
         let clip = Rect::new(0, 0, width as i16, height as i16);
-        changed = current.transition(previous, scene, front, width, clip);
+        changed = current.transition(previous, scene, front, width, clip, |rect| {
+                             observe(PresentEvent::FeedbackDamage(rect));
+                         });
         observe(PresentEvent::OutlineChanged(changed));
     }
     if let Some(cursor) = overlays.cursor

@@ -145,7 +145,8 @@ impl DragFrame
                                                         observed_changes = pixels
                                                     }
                                                     PresentEvent::CopyStarted
-                                                    | PresentEvent::OutlineStarted => ()
+                                                    | PresentEvent::OutlineStarted
+                                                    | PresentEvent::FeedbackDamage(_) => ()
                                                 }
                                             })?;
                           assert_eq!(changed, observed_changes);

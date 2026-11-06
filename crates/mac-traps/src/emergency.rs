@@ -88,4 +88,9 @@ pub fn exit_returned(status: i64) -> !
     unsafe {
         core::arch::asm!("brk #0", options(noreturn, nostack));
     }
+    // Only a guest can reach this function. Pipelines that build this crate for
+    // the host (a probe fixture linking the ABI) have no terminal fault to
+    // emit, so the divergence is stated rather than left to fall off the end.
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    unreachable!("a terminal fault is emitted only for a guest architecture")
 }

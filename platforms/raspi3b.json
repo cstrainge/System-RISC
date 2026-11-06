@@ -10,7 +10,7 @@
   "install": {
     "description": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
     "set": "none",
-    "reason": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path. The declared storage image is written to a card with 'cargo xtask flash TARGET --yes', which erases the card.",
+    "reason": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
     "applications": [],
     "modules": []
   },
@@ -254,116 +254,10 @@
       }
     }
   },
-  "emulation": {
-    "description": "BCM2837-class SoC machine. QEMU's raspi3b models a subset of the board and supplies no device tree of its own, so this profile states the devices it does model, measured under -machine raspi3b by the project self-test (PL011, sdhci, mailbox and firmware framebuffer, system timer, RNG, SPI0 and DMA) and omits what it does not (data cache, HVS, V3D). The tree generated from this list is handed to the emulator with -dtb and reaches the bootloader in x0. The board's own devices are declared separately in hardware.devices and describe different hardware: a tree built from that list would name devices this machine does not have.",
-    "family": "qemu",
-    "binary": "qemu-system-aarch64",
-    "machine": "raspi3b",
-    "ram": "1G",
-    "harts": 4,
-    "generate_device_tree": true,
-    "devices": [
-      {
-        "kind": "uart",
-        "model": "pl011",
-        "base": "0x3f201000",
-        "bytes": "0x1000",
-        "interrupt": 57
-      },
-      {
-        "kind": "storage",
-        "model": "sdhci",
-        "base": "0x3f300000",
-        "bytes": "0x1000",
-        "interrupt": 62
-      },
-      {
-        "kind": "gpio-mailbox",
-        "model": "bcm2835-mailbox",
-        "base": "0x3f00b880",
-        "bytes": "0x40",
-        "interrupt": 1
-      },
-      {
-        "kind": "timer",
-        "model": "bcm2835-systimer",
-        "base": "0x3f003000",
-        "bytes": "0x1000"
-      },
-      {
-        "kind": "entropy",
-        "model": "bcm2835-rng",
-        "base": "0x3f104000",
-        "bytes": "0x10",
-        "interrupt": 61
-      },
-      {
-        "kind": "network",
-        "model": "bcm2835-spi0",
-        "base": "0x3f204000",
-        "bytes": "0x1000",
-        "interrupt": 54
-      },
-      {
-        "kind": "storage",
-        "model": "bcm2835-dma",
-        "base": "0x3f007000",
-        "bytes": "0x1000",
-        "interrupt": 16
-      }
-    ],
-    "firmware": "none",
-    "boot_medium": {
-      "kind": "sd"
-    },
-    "disks": {
-      "transport": "sdhci",
-      "format": "raw",
-      "readonly": true,
-      "attach": [
-        {
-          "image": "sd-card",
-          "boot": true
-        }
-      ]
-    },
-    "display": {
-      "kind": "videocore-mailbox",
-      "framebuffer": "videocore-mailbox"
-    },
-    "entropy": {
-      "kind": "bcm2835-rng"
-    },
-    "network": {
-      "kind": "none"
-    },
-    "screen": {
-      "interactive": "window",
-      "headless": "none"
-    },
-    "console": {
-      "interactive": "stdio",
-      "headless": "file"
-    },
-    "readiness": {
-      "timeout_seconds": 60,
-      "booted": [
-        "DESKTOP_READY:",
-        "BOOT_NO_SYSTEM:"
-      ],
-      "failed": [
-        "BOOT_TRAP:",
-        "BOOT_PANIC:",
-        "BOOT_ALLOCATION_FAILED:",
-        "SYSTEM_PANIC:",
-        "SYSTEM_ALLOCATION_FAILED:",
-        "SYSTEM_STARTUP_FAILED:"
-      ]
-    }
-  },
   "hardware": {
-    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware. It generates its device tree rather than consuming the one that firmware hands over: the board is described by this record, so the bootloader and the kernel read the same declared hardware instead of whatever the firmware happened to build. That divergence from real hardware is deliberate and is not a bug to fix.",
+    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware",
     "board": "bcm2837-class",
+    "harts": 4,
     "soc": "bcm2837",
     "boot": {
       "medium": {
@@ -416,7 +310,7 @@
       }
     ],
     "tooling": [
-      "cargo xtask flash"
+      "dd"
     ],
     "unused": [
       {

@@ -1113,18 +1113,22 @@ impl Platform
     {
         let scheduling = self.scheduling.as_ref().ok_or_else(|| missing(self, "scheduling"))?;
         // The policy caps how many harts may schedule at once, so the check
-        // needs the machine's hart count. A platform that declares no emulation
-        // has no emulated hart count to compare against, and a cap that cannot
-        // be compared is not a cap: the number is still required to be nonzero,
-        // and the record is told to declare its machine rather than have the
+        // needs the machine's hart count. Either side of the record may state
+        // it: an emulator states the count of the virtual machine it supplies,
+        // a board states its own. A platform that states neither has no count
+        // to compare against, and a cap that cannot be compared is not a cap —
+        // so the record is told to declare its machine rather than have the
         // comparison silently skipped.
-        let harts =
-            self.emulation().map(|emulation| emulation.harts).ok_or_else(|| {
-                error(format!("platform '{}' declares scheduling limits but no emulation, so \
-                              scheduling.maximum_active_harts has no machine hart count to \
-                              validate against",
-                             self.name))
-            })?;
+        let harts = self.emulation()
+                        .map(|emulation| emulation.harts)
+                        .or_else(|| self.hardware().and_then(|hardware| hardware.harts))
+                        .ok_or_else(|| {
+                            error(format!("platform '{}' declares scheduling limits but neither \
+                                           its emulation nor its hardware states how many harts \
+                                           the machine has, so scheduling.maximum_active_harts \
+                                           has nothing to validate against",
+                                          self.name))
+                        })?;
         scheduling.check(harts)
     }
 
@@ -1172,6 +1176,13 @@ impl Platform
     pub fn emulation(&self) -> Option<&emulation::Definition>
     {
         self.emulation.as_ref()
+    }
+
+    /// The board this platform is built for, when it names one. Absent means
+    /// the platform is supplied by an emulator and names no board.
+    pub fn hardware(&self) -> Option<&hardware::Definition>
+    {
+        self.hardware.as_ref()
     }
 
     /// The emulation description, or an actionable refusal. A platform that
@@ -1343,8 +1354,13 @@ mod artifact_tests
             assert!(load(name).err().unwrap().to_string().contains("platform name must contain"));
         }
         let error = load("NoSuchBoard").err().unwrap().to_string();
+        // The message must name the platforms a caller could have meant. It
+        // does not promise an order, and pinning one would make the test fail
+        // on nothing more meaningful than how the directory is sorted.
         assert!(error.contains("cannot select platform 'NoSuchBoard'")
-                && error.contains("known platforms: qemu_arm64, qemu_riscv, raspi3b"));
+                && error.contains("qemu_riscv")
+                && error.contains("raspi3b"),
+                "an unknown platform must report the known ones: {error}");
         for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234", "0x80000000"]
         {
             let mut bad = load("qemu_riscv").unwrap();

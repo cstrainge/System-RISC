@@ -329,6 +329,10 @@ pub const CORRUPT_DATA: Status = -18;
 /// A mounted provider's backing device/export is no longer available.
 pub const STORAGE_UNAVAILABLE: Status = -19;
 pub const INVALID_NAME: Status = -20;
+/// Retry condition: the pipe could not proceed without blocking.
+pub const WOULD_BLOCK: Status = -21;
+/// The pipe's readers are gone; a write cannot be accepted.
+pub const BROKEN_PIPE: Status = -22;
 
 pub mod archive;
 pub mod inspection;
@@ -654,7 +658,7 @@ pub mod controls;
 pub mod dialogs;
 
 pub mod processes;
-
+pub mod pipes;
 pub mod standard_file;
 
 pub mod scrollbox;
