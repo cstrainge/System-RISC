@@ -4,6 +4,25 @@ pub mod execution;
 pub mod topology;
 pub mod monitor;
 
+/// How a bootstrap console is driven, as the platform record declares it.
+///
+/// A console is written to before any device tree can be read, so this cannot be
+/// discovered at runtime; and an architecture does not decide it, because a board
+/// of any architecture can carry either part. The record states the protocol and
+/// this is the wire value it becomes, so the selection is a comparison against a
+/// declared fact rather than a build-time guess. Polling the wrong status bit
+/// produces silence instead of an error, which is the worst way for a diagnostic
+/// path to fail.
+pub mod console
+{
+    /// No console: every write is discarded rather than aimed at address zero.
+    pub const NONE: u64 = 0;
+    /// A 16550-compatible UART: status at offset 5, byte-wide data register.
+    pub const UART_16550: u64 = 1;
+    /// An ARM PrimeCell PL011: flag register at 0x18, word-wide data register.
+    pub const PL011: u64 = 2;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryError
 {

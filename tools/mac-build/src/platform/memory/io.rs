@@ -18,19 +18,49 @@ struct Virtio
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct Uart
+{
+    base:  String,
+    bytes: String,
+    /// The register protocol this window speaks.
+    ///
+    /// A bootstrap console is written to before any device tree can be read, so
+    /// this cannot come from the machine. It is stated rather than inferred: an
+    /// architecture does not decide it, because a board of any architecture can
+    /// carry either part, and polling the wrong status bit produces silence
+    /// rather than an error.
+    kind:  ConsoleKind
+}
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Debug)]
+pub(super) enum ConsoleKind
+{
+    /// A 16550-compatible UART: line status at offset 5, transmitter empty at 0x20.
+    #[serde(rename = "16550")]
+    Uart16550,
+    /// An ARM PrimeCell PL011: flag register at 0x18, transmit FIFO not full at 0x20.
+    #[serde(rename = "pl011")]
+    Pl011
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Definition
 {
-    uart:        Region,
-    rtc:         Region,
-    clint:       Region,
+    uart:        Uart,
+    /// Absent on a machine that has no such controller, which is encoded as a
+    /// zero window rather than as a separate schema for that machine.
+    #[serde(default)]
+    rtc:         Option<Region>,
+    #[serde(default)]
+    clint:       Option<Region>,
     virtio_mmio: Virtio
 }
 #[derive(Debug)]
 pub(super) struct Checked
 {
     uart:           Range<u64>,
-    rtc:            Range<u64>,
-    clint:          Range<u64>,
+    rtc:            Option<Range<u64>>,
+    clint:          Option<Range<u64>>,
+    console:        ConsoleKind,
     virtio:         Range<u64>,
     stride:         u64,
     slots:          u32,
@@ -42,10 +72,14 @@ impl Definition
                         fw_cfg: Option<&Range<u64>>)
                         -> Result<Checked>
     {
-        let uart = region("bootstrap_io.uart", &self.uart, page)?;
-        let rtc = region("bootstrap_io.rtc", &self.rtc, page)?;
-        let clint = region("bootstrap_io.clint", &self.clint, page)?;
-        if clint.end - clint.start != 0x10000
+        let uart = region("bootstrap_io.uart",
+                          &Region { base:  self.uart.base.clone(),
+                                    bytes: self.uart.bytes.clone() },
+                          page)?;
+        let rtc = self.rtc.as_ref().map(|r| region("bootstrap_io.rtc", r, page)).transpose()?;
+        let clint =
+            self.clint.as_ref().map(|c| region("bootstrap_io.clint", c, page)).transpose()?;
+        if clint.as_ref().is_some_and(|clint| clint.end - clint.start != 0x10000)
         {
             return Err(error("selected legacy CLINT window must cover exactly its 64 KiB \
                               binding"));
@@ -73,7 +107,7 @@ impl Definition
         {
             windows.push(fw_cfg);
         }
-        windows.extend([&uart, &rtc, &virtio, &clint]);
+        windows.extend([Some(&uart), rtc.as_ref(), Some(&virtio), clint.as_ref()].into_iter().flatten());
         for (index, range) in windows.iter().enumerate()
         {
             if range.end > 1 << 56
@@ -95,6 +129,7 @@ impl Definition
         Ok(Checked { uart,
                      rtc,
                      clint,
+                     console: self.uart.kind,
                      virtio,
                      stride,
                      slots,
@@ -105,14 +140,21 @@ impl Checked
 {
     pub(super) fn constants(&self) -> impl Iterator<Item = (&'static str, u64)>
     {
+        // A window this machine does not have is emitted as zero, which is what
+        // makes shared code find nothing to act on rather than needing a test.
         [("UART_BASE", self.uart.start),
-         ("RTC_BASE", self.rtc.start),
-         ("CLINT_BASE", self.clint.start),
-         ("CLINT_BYTES", self.clint.end - self.clint.start),
+         ("RTC_BASE", self.rtc.as_ref().map_or(0, |rtc| rtc.start)),
+         ("CLINT_BASE", self.clint.as_ref().map_or(0, |clint| clint.start)),
+         ("CLINT_BYTES", self.clint.as_ref().map_or(0, |clint| clint.end - clint.start)),
          ("VIRTIO_MMIO_BASE", self.virtio.start),
          ("VIRTIO_MMIO_STRIDE", self.stride),
          ("VIRTIO_MMIO_SLOTS", u64::from(self.slots)),
-         ("VIRTIO_INTERRUPT_BASE", u64::from(self.interrupt_base))].into_iter()
+         ("VIRTIO_INTERRUPT_BASE", u64::from(self.interrupt_base)),
+         ("CONSOLE_KIND", match self.console
+         {
+             ConsoleKind::Uart16550 => super::CONSOLE_KIND_16550,
+             ConsoleKind::Pl011 => super::CONSOLE_KIND_PL011
+         })].into_iter()
     }
 
     pub(super) fn ranges_source(&self, fw_cfg: Option<&Range<u64>>) -> String
@@ -123,7 +165,9 @@ impl Checked
         {
             windows.push(fw_cfg);
         }
-        windows.extend([&self.uart, &self.rtc, &self.virtio, &self.clint]);
+        windows.extend([Some(&self.uart), self.rtc.as_ref(), Some(&self.virtio), self.clint.as_ref()]
+                           .into_iter()
+                           .flatten());
         for range in windows
         {
             writeln!(output, "({:#x},{:#x}),", range.start, range.end).unwrap();
