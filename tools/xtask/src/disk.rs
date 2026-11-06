@@ -383,21 +383,24 @@ struct Claimed
 /// Every artifact a report claims it embedded, whichever layout it describes.
 ///
 /// A partitioned Medium nests them under `partitions[].system7.files`; a bare System7
-/// volume records the same fields at the top level. Reading only one shape is what
-/// made `verify` produce no verdict for a bare image.
+/// volume records the same fields at the top level. Exactly one of those shapes
+/// applies, and this reads exactly one: collecting from both would count every
+/// artifact twice if a report ever carried both keys, and a doubled list is a doubled
+/// verdict.
 fn claimed(report: &Value) -> Vec<Claimed>
 {
     let mut claims = Vec::new();
-    if let Some(partitions) = report["partitions"].as_array()
+    match report["partitions"].as_array()
     {
-        for partition in partitions
+        Some(partitions) =>
         {
-            collect(&partition["system7"], &mut claims);
+            for partition in partitions
+            {
+                collect(&partition["system7"], &mut claims);
+            }
         }
+        None => collect(report, &mut claims)
     }
-    // A bare volume: the same fields, one level up. A partitioned report has no
-    // top-level `files`, so this adds nothing to one.
-    collect(report, &mut claims);
     claims
 }
 
@@ -869,6 +872,21 @@ mod tests
         assert!(stale[0].contains("System.bin"), "{stale:?}");
     }
 
+    #[test]
+    fn one_shape_is_read_and_never_both()
+    {
+        // A report carrying both keys must not have its artifacts counted twice: a
+        // doubled list would double every verdict built on it.
+        let both = serde_json::json!({
+            "partitions": [ { "system7": { "files": [
+                { "path": "System Folder/System", "artifact": "System.bin",
+                  "artifact_sha256": "dddd" } ] } } ],
+            "files": [ { "path": "System Folder/Finder", "artifact": "Finder.bin",
+                         "artifact_sha256": "aaaa" } ]
+        });
+        let (checked, _) = stale_claims(&both, |_| "zzzz".to_string());
+        assert_eq!(checked, 1, "the partitioned shape wins and the other is not also read");
+    }
     #[test]
     fn an_image_whose_artifacts_all_agree_is_not_reported_stale()
     {
