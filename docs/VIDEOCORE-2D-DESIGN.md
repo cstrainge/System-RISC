@@ -6,9 +6,9 @@ which parts of it this OS can use, and records the conflict between what the
 primary documentation says and what working software actually does. It contains
 no code, no pseudo-code and no proposed data structures; those are designed from
 this description at implementation time.
-
-Scope is the `qemu_arm64` platform (`platforms/qemu_arm64.json`, QEMU machine
-`raspi3b`) and the physical part it models: a BCM2837-class SoC with four
+Scope is the `raspi3b` platform (`platforms/raspi3b.json`) - the Raspberry Pi 3
+board, which QEMU's `raspi3b` machine supplies when run under emulation - and the
+physical part it models: a BCM2837-class SoC with four
 Cortex-A53 cores, 1 GiB of RAM and a VideoCore IV VPU. The question it answers
 is how much of QuickDraw's work can be moved off the CPU, with the minimum
 acceptable outcome being hardware composition of the desktop rather than
@@ -1047,7 +1047,7 @@ The order is dictated by the verification split, not by ambition: the part that
 can be tested in this environment comes first, and the part that needs silicon
 is designed so that everything except the register writes is already proven.
 
-**Phase 1 — mailbox scan-out on `qemu_arm64`.** A video driver that obtains the
+**Phase 1 — mailbox scan-out on `raspi3b`.** A video driver that obtains the
 framebuffer and mode over the property channel, reports geometry and pitch, and
 presents damage by copying the damaged rows from its own allocation into the
 firmware's buffer and cleaning that range. The copy is not optional here
@@ -1232,7 +1232,7 @@ Each of these is specific, and each names what would resolve it.
 
 **This repository**
 
-* `platforms/qemu_arm64.json` — machine, RAM, peripheral declarations, display
+* `platforms/raspi3b.json` — machine, RAM, peripheral declarations, display
   geometry and the reserved display memory regions.
 * `drivers/virtio-gpu/module.json`, `drivers/virtio-gpu/src/lib.rs` — the
   external-driver shape and the scan-out lifecycle this design extends.
