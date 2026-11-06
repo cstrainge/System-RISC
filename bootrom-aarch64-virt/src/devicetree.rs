@@ -7,6 +7,18 @@
 //! nodes are skipped rather than rejected, so a future platform's extras are
 //! data rather than a bootloader change.
 
+/// Whether a `compatible` property names `wanted`.
+///
+/// The property is a list of NUL-separated strings and a node may carry several,
+/// most specific first. A machine's own tree uses the standard names —
+/// `arm,pl011` rather than a record's `pl011` — so a consumer asks in that
+/// vocabulary and this matches any entry rather than only the first.
+fn compatible_matches(value: &[u8], wanted: &str) -> bool
+{
+    value.split(|byte| *byte == 0)
+         .any(|entry| entry == wanted.as_bytes())
+}
+
 const MAGIC: u32 = 0xd00d_feed;
 const BEGIN_NODE: u32 = 1;
 const END_NODE: u32 = 2;
@@ -92,8 +104,7 @@ impl<'a> Tree<'a>
                     if name == "compatible"
                     {
                         let value = &self.structure[start..start + length];
-                        let end = value.iter().position(|byte| *byte == 0).unwrap_or(length);
-                        matches = value.get(..end) == Some(compatible.as_bytes());
+                        matches = compatible_matches(value, compatible);
                     }
                     else if name == "reg" && length == 16
                     {

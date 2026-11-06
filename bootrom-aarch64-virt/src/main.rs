@@ -324,12 +324,12 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
             return 0;
         }
     };
-    let (pl011, _) = match tree.window("pl011")
+    let (pl011, _) = match tree.window("arm,pl011")
     {
         Some(window) => window,
         None =>
         {
-            puts("BOOT_AARCH64_DT_REFUSED: no pl011 window in the tree\n");
+            puts("BOOT_AARCH64_DT_REFUSED: no arm,pl011 window in the tree\n");
             return 0;
         }
     };
@@ -353,6 +353,22 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     puts("BOOT_AARCH64_DT_VIRTIO: base=");
     puthex(virtio);
     puts("\n");
+    // AArch64 states its counter frequency in a system register rather than in
+    // the tree, which is why the machine's tree has no timebase-frequency and
+    // the 24 MHz clock it does declare belongs to the peripheral bus. Reading
+    // the register is the authoritative answer and needs no record field; a
+    // machine that leaves it zero is refused rather than given a guessed rate.
+    let counter: u64;
+    // SAFETY: reading an identification register has no side effects.
+    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) counter, options(nomem, nostack)) };
+    puts("BOOT_AARCH64_COUNTER: hz=");
+    puthex(counter);
+    puts("\n");
+    if counter == 0
+    {
+        puts("BOOT_AARCH64_COUNTER_REFUSED: the machine reports no counter frequency\n");
+        return 0;
+    }
     // Every peripheral address comes from the machine's tree. The loader holds
     // no address of its own, so the record is a declaration to be checked
     // rather than the runtime source of truth.
