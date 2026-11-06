@@ -692,6 +692,31 @@ fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volu
     puts(" load_limit=");
     puthex(descriptor.load_limit);
     puts("\n");
+    // The translation window `mmu_init` installed already points at
+    // `IMAGE_BASE`, so writing here is what makes that window resolve to System
+    // rather than to whatever the machine left in RAM. The window is mapped in
+    // 4 KiB pages because its virtual and physical bases are not congruent
+    // modulo a 2 MiB block, which no block descriptor can express.
+    //
+    // SAFETY: `IMAGE_BASE` names the reserved physical image window the record
+    // declares and the boot translation maps writable, `plan.length()` is the
+    // decoded extent that window was sized for, and no reference into this
+    // region exists yet.
+    let output = unsafe { core::slice::from_raw_parts_mut(IMAGE_BASE as *mut u8, plan.length()) };
+    if plan.write(output).is_err()
+    {
+        puts("BOOT_AARCH64_IMAGE_REFUSED: the decoded plan does not fit its window\n");
+        return;
+    }
+    // Read back through the window rather than trusting the write: the point of
+    // this step is that the *virtual* address resolves to the loaded image, and
+    // only a read at that address tests the translation rather than the copy.
+    let entry_word = unsafe { core::ptr::read_volatile(plan.entry() as *const u32) };
+    puts("BOOT_AARCH64_IMAGE_LOADED: bytes=");
+    puthex(plan.length() as u64);
+    puts(" entry_word=");
+    puthex(u64::from(entry_word));
+    puts("\n");
 }
 
 /// Locates the blessed System Folder on the card. The partition table, the
