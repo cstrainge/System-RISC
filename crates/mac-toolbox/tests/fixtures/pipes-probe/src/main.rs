@@ -270,17 +270,16 @@ fn writer_limit(system: &System<'_>) -> Result<(), Line>
 {
     const OWNED: &str = "OwnedPipe";
     let (reader, writer) = system.pipes()
-                                  .create_named(OWNED, wire::MIN_CAPACITY, 1)
-                                  .map_err(|error| failed("create exclusive", error))?;
+                                 .create_named(OWNED, wire::MIN_CAPACITY, 1)
+                                 .map_err(|error| failed("create exclusive", error))?;
     let owner = system.pipes().connect(OWNED).map_err(|error| failed("first connect", error))?;
     note(system, "PIPES_WRITER_FIRST_OK\n");
     check(matches!(system.pipes().connect(OWNED), Err(Error::AccessDenied)),
           "a second connect was not refused")?;
     note(system, "PIPES_WRITER_SECOND_REFUSED\n");
     drop(owner);
-    let again = system.pipes()
-                      .connect(OWNED)
-                      .map_err(|error| failed("connect after release", error))?;
+    let again =
+        system.pipes().connect(OWNED).map_err(|error| failed("connect after release", error))?;
     note(system, "PIPES_WRITER_RELEASE_OK\n");
     drop(again);
     drop(writer);
@@ -299,8 +298,8 @@ struct Listing
 
 /// Enumerate the folder through the same resident scan the Finder uses. One
 /// step is one item, so the count is exactly what a folder window would show.
-fn listing(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid,
-           name: &str) -> Result<Listing, Line>
+fn listing(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid, name: &str)
+           -> Result<Listing, Line>
 {
     let mut cursor = files::DirectoryCursor::default();
     let mut items = 0;
@@ -311,7 +310,8 @@ fn listing(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid
     {
         match files.scan_directory(volume, folder, &mut cursor)
         {
-            Ok(files::ScanStep::Entry { catalog, .. }) =>
+            Ok(files::ScanStep::Entry { catalog,
+                                        .. }) =>
             {
                 items += 1;
                 if catalog.name() == name
@@ -320,7 +320,11 @@ fn listing(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid
                 }
             }
             Ok(files::ScanStep::Pending) => (),
-            Ok(files::ScanStep::Done) => return Ok(Listing { items, found }),
+            Ok(files::ScanStep::Done) =>
+            {
+                return Ok(Listing { items,
+                                    found });
+            }
             Err(error) => return Err(failed("folder scan", error))
         }
     }
@@ -347,22 +351,29 @@ fn folder(system: &System<'_>) -> Result<(), Line>
     };
     let blessed = volume.blessed_folder;
     check(blessed.0 >= files::ROOT_ID.0, "the startup volume has no blessed folder")?;
-    // This probe replaces Finder, so it may be the run that creates the folder.
+    // The folder is the System's to create, not the probe's: this replaces
+    // Finder, so if it had to create the folder the boot step would be
+    // untested. Its absence is a failure, not a fallback.
     let folder = match files.lookup(volume.id, blessed, "Pipes")
     {
         Ok(entry) => entry,
         Err(Error::NotFound) =>
         {
-            files.new_folder(volume.id, blessed, "Pipes")
-                 .map_err(|error| failed("create Pipes", error))?
+            return Err(fault("System Folder/Pipes was absent at application start"));
         }
         Err(error) => return Err(failed("lookup Pipes", error))
     };
     check(folder.is_directory(), "Pipes is not a folder")?;
+    let mut present = Line::new();
+    let _ = writeln!(present,
+                     "PIPES_FOLDER_PRESENT volume={} blessed={} cnid={}",
+                     volume.id.0, blessed.0, folder.id.0);
+    note(system, present.text());
+    note(system, "\n");
 
     let (reader, writer) = system.pipes()
-                                  .create_named(PIPE, wire::MIN_CAPACITY, 0)
-                                  .map_err(|error| failed("create folder pipe", error))?;
+                                 .create_named(PIPE, wire::MIN_CAPACITY, 0)
+                                 .map_err(|error| failed("create folder pipe", error))?;
     let first = listing(files, volume.id, folder.id, PIPE)?;
     check(first.items == 1, "the folder does not hold exactly one named pipe")?;
     let Some(cnid) = first.found
@@ -408,7 +419,8 @@ fn folder(system: &System<'_>) -> Result<(), Line>
                                            .map_err(|error| failed("create anonymous", error))?;
     let with_anon = listing(files, volume.id, folder.id, PIPE2)?;
     check(with_anon.items == fresh.items, "an anonymous pipe entered the folder")?;
-    check(with_anon.found == Some(fresh_cnid), "the named item moved when an anonymous pipe existed")?;
+    check(with_anon.found == Some(fresh_cnid),
+          "the named item moved when an anonymous pipe existed")?;
     drop(anon_writer);
     drop(anon_reader);
     note(system, "PIPES_FOLDER_ANON_ABSENT_OK\n");
@@ -419,10 +431,10 @@ fn folder(system: &System<'_>) -> Result<(), Line>
     refusal("set_stationery", files.set_stationery(volume.id, fresh_cnid, true))?;
     refusal("set_comment", files.set_comment(volume.id, fresh_cnid, "x"))?;
     refusal("set_icon_location",
-            files.set_icon_location(volume.id, fresh_cnid, Some(mac_toolbox::abi::geometry::Point {
-                v: 10,
-                h: 10
-            })))?;
+            files.set_icon_location(volume.id,
+                                    fresh_cnid,
+                                    Some(mac_toolbox::abi::geometry::Point { v: 10,
+                                                                             h: 10 })))?;
     refusal("set_properties",
             files.set_properties(volume.id,
                                  fresh_cnid,

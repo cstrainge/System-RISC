@@ -76,6 +76,10 @@ pub const RESOLVE_PATH: u32 = 48;
 pub const OPEN_PATH: u32 = 49;
 /// Query the actual executable alias; output/transferred contain UTF-8 bytes.
 pub const CURRENT_EXECUTABLE_PATH: u32 = 50;
+/// Item name of the named-pipe folder under the volume's blessed folder. One
+/// spelling shared by the image builder, which creates it, and the resident
+/// File Manager, which enumerates it and records its identity.
+pub const PIPES_FOLDER_NAME: &str = "Pipes";
 pub const OPEN_READ: u32 = 1;
 pub const OPEN_WRITE: u32 = 2;
 pub const OPEN_APPEND: u32 = 4;

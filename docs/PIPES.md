@@ -1,14 +1,15 @@
 # Pipes
 
-Status: core, the writer limit and the merged `Pipes` folder listing implemented;
-folder creation-at-boot, Finder open-as-connect and the icon families not.
+Status: core, the writer limit, the merged `Pipes` folder listing and the
+image-built folder implemented; Finder open-as-connect and the icon families not.
 Baseline: `2f6d8e93`, 2026-11-05.
 
 The resident byte-transport facility, its blocking wait, the per-name writer
-limit, the public SDK and the File Manager's merged listing of the `Pipes` folder
-are implemented and the guest builds and boots. Boot-time folder ensure, Finder
-open-as-connect and the two icon families are not implemented; section 15 records
-the exact state.
+limit, the public SDK, the File Manager's merged listing of the `Pipes` folder and
+the folder itself are implemented and the guest builds and boots. Finder
+open-as-connect and the two icon families are not; both are Finder affordances
+and neither blocks a Terminal session. Section 15 records the exact state,
+including two failure modes that are written but never executed.
 
 This document is the contract for anonymous and named pipes in System RISC. It
 states what a pipe is, what each operation means, which refusals are distinct,
@@ -321,10 +322,13 @@ one:
 ### 9.1 The directory
 
 - `System Folder/Pipes` is a real directory on the startup volume, with a real
-  HFS catalog node ID, created if absent. It uses the File Manager's existing
-  create-if-absent folder service, the same mechanism that finds and creates the
-  blessed System Folder's `Fonts` folder. No new trap or new volume concept is
-  introduced for it.
+  HFS catalog node ID. It is created **when the image is built**, as part of the
+  platform's installed folder layout, in the same list that creates
+  `System Folder/Fonts`, `Control Panels` and `Preferences`. The name is one
+  shared constant, so the builder that creates it and the File Manager that
+  enumerates it cannot disagree about the spelling. Nothing creates it at boot:
+  a boot step would write to user data on every start, need a read-only skip, and
+  give one folder two creators.
 - The folder is ordinary storage. It can be opened, moved, renamed, trashed and
   recreated by ordinary File Manager operations, subject to the ordinary
   protections. The facility records its catalog node ID when the volume is
@@ -332,12 +336,14 @@ one:
   blessed folder; the merged listing follows the folder while that node ID is
   live. A mutation that removes, renames or moves the folder re-resolves the
   identity, so a stale node ID is never followed.
-- Boot-time ensure is not implemented yet. Today the folder exists only once
-  something creates it — a boot that finds it, or an application that creates it
-  — and the listing is present from that moment.
-- If the startup volume is read-only, no folder is created or expected. Named
-  pipes still register and still connect by name; they have no Finder
-  presentation. The folder is presentation, not authority.
+- On a volume this project did not build — an original System 7 disk, say — the
+  folder is simply absent, exactly as `Fonts`, `Control Panels` and `Extensions`
+  are absent there. Nothing creates any of them at boot; an application that asks
+  for one gets "not there". `Pipes` needs no special case, and its absence is not
+  an error: named pipes still register and still connect by name, they just have
+  no Finder item, because the folder is presentation and not authority.
+- The same applies to a read-only startup volume: no folder is created, and the
+  absence has the same cost.
 - If the folder is deleted while pipes are registered, the pipes are unaffected
   and remain reachable by name until their handles close.
 
@@ -544,20 +550,30 @@ The ordinary last-close consequences already follow from this contract: when the
 child exits, its ends close, Terminal's reads see end-of-stream and its writes
 fail with broken pipe.
 
-**Gates on the Terminal/`CLAP` project, not on this facility.** Two behaviours
-must be closed before the execute path depends on pipes, because a blocked
-process that is never woken is a hang, not a wrong byte, and a hang in a terminal
-looks like a dead machine:
+**Two known open risks, not blockers.** The transport contract itself is
+executed in the guest (section 15). Two failure modes are not, and the Terminal
+project is starting on top of them with that stated rather than assumed:
 
-- **No lost wake under load.** Blocking and waking must be exercised with
-  concurrent readers, writers and closes under sustained pressure, beyond the
-  single-writer scenario the transport probe covers.
-- **Cancellation of a blocked caller by process exit.** The cleanup path exists
-  and is exactly what a crashed child will exercise; it must be executed, not
-  merely written.
+- **A lost wake under load is unexercised.** Waking is exercised for one blocked
+  writer woken by a reader. It is not exercised with many waiters, concurrent
+  closes and sustained pressure.
+- **Cancellation of a blocked caller by process exit is written but never
+  executed.** The cleanup path exists and is exactly what a crashed child
+  exercises; no run has driven it.
 
-These are recorded as gates on that dependent work so they cannot be forgotten as
-a footnote to this one.
+**What that costs a consumer, and what to do about it.** Either failure shows up
+as a *hang*, not a wrong byte: a peer that is never woken, or a reader still
+parked after the process that fed it has gone. A Terminal must therefore not
+block indefinitely on a pipe. Use a bounded wait — non-blocking mode plus a
+retry on an idle/event tick, or a deadline the session owns — so a lost wake
+surfaces as a session that stops making progress and can be reported and torn
+down, rather than as a session that appears alive and never responds. Treat
+"blocked longer than the bound" as a defect to investigate, not as normal
+backpressure.
+
+These are recorded here so a consumer can design around them. They are not
+evidence that the facility is finished: the transport contract is proven, and
+these two failure modes are not.
 
 **Named dependency, not part of this facility.** The execute-handler chain —
 extensions registering for first pass on execution, the association of `CLAP`
@@ -815,6 +831,9 @@ Implemented and built into the guest, with the guest booting:
   the folder or on an item is refused with `NotSupported`. The folder identity is
   recorded at mount and again when a `Pipes` folder is created under the blessed
   folder.
+- The folder itself, created by the image builder as part of the platform's
+  installed folder layout, beside `Fonts` and `Control Panels`. No guest step
+  creates it, and the probe proves the built folder reaches the mount record.
 
 Verified by execution in the guest, not only by compilation: a probe
 application replaces Finder on a cloned disk and runs five cases — echo,
@@ -823,26 +842,36 @@ versus end-of-stream, broken pipe, and name removal — followed by the writer-l
 and folder markers. The probe is
 `crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
 it and runs it as the single `pipes-probe` case, so the marker set is part of the
-gate (18 of 18). The writer-limit markers assert that a one-writer name accepts
-one `connect`, refuses the second with `AccessDenied`, accepts a new connection
-once the first closes, and still disappears with its last handle. The folder
-markers assert one item per named pipe, identical identity by name and by CNID,
-`NotFound` for an unknown name, identity stability across two enumerations and
-non-reuse after destruction, that an anonymous pipe does not appear, and eleven
-refused mutations. `scripts/capture_pipes_probe.py` boots the same artifact
-standalone and records the QEMU command and the serial hash.
+gate (18 of 18). The folder markers assert that the folder is present with the
+identity the mount recorded (`PIPES_FOLDER_PRESENT volume=66113 blessed=17
+cnid=26`, the same CNID the built image carries), one item per named pipe,
+identical identity by name and by CNID, `NotFound` for an unknown name, identity
+stability across two enumerations and non-reuse after destruction, that an
+anonymous pipe does not appear, and eleven refused mutations. The writer-limit
+markers assert that a one-writer name accepts one `connect`, refuses the second
+with `AccessDenied`, accepts a new connection once the first closes, and still
+disappears with its last handle. `scripts/capture_pipes_probe.py` boots the same
+artifact standalone and records the QEMU command and the serial hash.
 
-Not implemented:
+Not implemented, and neither blocks a Terminal session:
 
-- Boot-time creation of the folder. It exists once something creates it.
-- Finder open-as-connect.
+- Finder open-as-connect. Double-clicking a named pipe currently falls through to
+  the document path rather than connecting; the facility is reachable by name
+  through the SDK, which is what a Terminal uses.
 - The folder icon family, the `PIPE`/`PIPE` document family and its bundle, and
   the corresponding extension of the canonical icon-reservation allowlist. The
   type pair is reported today; the icons that would use it are not.
 
-The probe covers the transport contract and the writer limit. It does not cover
-multiple concurrent writers interleaving under load, or stale and foreign handle
-refusals, which are refinements. Lost wake
-under load and cancellation of a blocked caller by process exit are recorded in
-section 10.1 as gates on the Terminal/`CLAP` project, not as footnotes: a hang
-there is the failure that project cannot absorb.
+Both are Finder affordances — how the folder and its items look and what a
+double-click does — and **neither blocks a Terminal session**: a Terminal reaches
+a pipe by name through the SDK, which is exactly what is proven. They come after
+the Terminal work.
+
+**Not covered, stated as cost.** The probe covers the transport contract, the
+writer limit and the folder. It does not cover multiple concurrent writers
+interleaving under load, or stale and foreign handle refusals; those are
+refinements whose failure mode is a wrong arrangement of bytes, not a hang. Two
+failures are worse and are also uncovered: a **lost wake under load**, and
+**cancellation of a blocked caller by process exit**. Both are written, neither
+is executed, and both would hang rather than fail. Section 10.1 says what a
+consumer should do about that: bounded waits, so the failure is visible.
