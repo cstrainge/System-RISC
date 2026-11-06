@@ -218,6 +218,7 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
     tree.end_node();
     Ok(tree.finish(0))
 }
+
 const fn high(value: u64) -> u32
 {
     (value >> 32) as u32
