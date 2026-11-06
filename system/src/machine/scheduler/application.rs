@@ -393,12 +393,12 @@ impl core::fmt::Display for RuntimeAdmissionError
 pub(crate) struct RuntimeTurn
 {
     _scheduler:  spinning_top::SpinlockGuard<'static, Scheduler>,
-    _interrupts: super::super::interrupts::InterruptMask
+    _interrupts: crate::machine::interrupts::InterruptMask
 }
 pub(crate) fn runtime_turn(admission: &crate::toolbox::native_threads::RuntimeAdmission)
                            -> Result<RuntimeTurn, RuntimeAdmissionError>
 {
-    let interrupts = super::super::interrupts::mask();
+    let interrupts = crate::machine::interrupts::mask();
     let scheduler = SCHEDULER.lock();
     if !admission.accepting()
     {

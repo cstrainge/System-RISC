@@ -196,17 +196,17 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           // can identify the actual row whose wake we acknowledge.
                           let capture = hart::captured_outer(frame);
                           let key = capture.hart();
-                          match super::monitor::acknowledge_wake(key)
+                          match crate::machine::monitor::acknowledge_wake(key)
                           {
                               Ok(true) => crate::machine::scheduler::wake::acknowledged(key),
                               Ok(false) => (), // Empty/already-ACKed SSIP advances nothing.
-                              Err(super::monitor::Error::Stopping) =>
+                              Err(crate::machine::monitor::Error::Stopping) =>
                               {
                                   // This retains the pinned capture, posts no
                                   // ACK and cannot resume an author. The monitor
                                   // owns its bounded higher-privilege stop wait
                                   // and independent terminal failure reporting.
-                                  super::monitor::wait_for_terminal_stop(key)
+                                  crate::machine::monitor::wait_for_terminal_stop(key)
                               }
                               Err(error) =>
                               {
@@ -354,7 +354,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     if scope.depth > physical_depth
     {
         serial!("SYSTEM_TRAP_ACCOUNTING_LOST: logical={} physical={physical_depth}", scope.depth);
-        super::power::fatal_shutdown();
+        crate::machine::power::fatal_shutdown();
     }
     if depth == 2 && !thread.traps.nesting_reported()
     {
@@ -693,14 +693,14 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
             }
             worker::MONOTONIC =>
             {
-                call.microseconds = super::monitor::ticks_to_microseconds(crate::platform::ticks())
+                call.microseconds = crate::machine::monitor::ticks_to_microseconds(crate::platform::ticks())
                     .map_err(|_| BAD_ABI)?;
                 Ok(false)
             }
             worker::PARK_FOR =>
             {
-                let duration = super::monitor::microseconds_to_ticks_ceil(call.microseconds)
-                    .map_err(|cause| if matches!(cause, super::monitor::Error::ClockOverflow)
+                let duration = crate::machine::monitor::microseconds_to_ticks_ceil(call.microseconds)
+                    .map_err(|cause| if matches!(cause, crate::machine::monitor::Error::ClockOverflow)
                              { BAD_ARGUMENT } else { BAD_ABI })?;
                 let deadline =
                     crate::platform::ticks().checked_add(duration).ok_or(BAD_ARGUMENT)?;
@@ -1021,7 +1021,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         CLOCK =>
         {
             let call = read_request!(dates::ClockCall);
-            match super::clock::now()
+            match crate::machine::clock::now()
             {
                 Ok(now) =>
                 {
@@ -1036,7 +1036,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         MONOTONIC_CLOCK =>
         {
             let call = read_request!(events::MonotonicCall);
-            call.nanoseconds = match super::monitor::ticks_to_nanoseconds(crate::platform::ticks())
+            call.nanoseconds = match crate::machine::monitor::ticks_to_nanoseconds(crate::platform::ticks())
             {
                 Ok(value) => value,
                 Err(_) => return BAD_ABI as i64

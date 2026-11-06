@@ -756,7 +756,7 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, source: Backi
     }
     let (root, charge) = tables.take_root(physical).map_err(Error::Tables)?;
     let owner=AddressSpace::<SelectedLayout, PagingBacking>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
-    let (register, register_aux) = super::super::page_layout::encode_roots(physical.0, 0);
+    let (register, register_aux) = crate::machine::page_layout::encode_roots(physical.0, 0);
     Ok(Space { owner,
                tables,
                register,
