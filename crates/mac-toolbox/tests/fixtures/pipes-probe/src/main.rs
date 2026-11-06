@@ -69,17 +69,19 @@ fn check(condition: bool, cause: &str) -> Result<(), Line>
     Err(line)
 }
 
-fn run(system: &System<'_>) -> Result<(), Line>
+/// Run every case in order and report how many actually ran, so the marker
+/// cannot claim a count the run did not reach.
+fn run(system: &System<'_>) -> Result<u32, Line>
 {
-    echo(system)?;
-    block(system)?;
-    reader_park(system)?;
-    eof(system)?;
-    broken(system)?;
-    named(system)?;
-    writer_limit(system)?;
-    folder(system)?;
-    Ok(())
+    let cases: [fn(&System<'_>) -> Result<(), Line>; 9] = [echo, block, reader_park, eof, broken,
+                                                            named, writer_limit, folder, pipe_open];
+    let mut completed = 0;
+    for case in cases
+    {
+        case(system)?;
+        completed += 1;
+    }
+    Ok(completed)
 }
 
 fn echo(system: &System<'_>) -> Result<(), Line>
@@ -593,14 +595,97 @@ fn folder(system: &System<'_>) -> Result<(), Line>
     Ok(())
 }
 
+fn startup_volume(files: files::Files<'_>) -> Result<files::VolumeInfo, Line>
+{
+    for index in 0..files.volume_count().map_err(|error| failed("volume count", error))?
+    {
+        let volume = files.volume_at(index).map_err(|error| failed("volume", error))?;
+        if volume.startup
+        {
+            return Ok(volume);
+        }
+    }
+    Err(fault("no startup volume"))
+}
+
+/// Opening a pipe item is `connect`, and the item's reserved type and creator
+/// keep it away from application launch. The witness for "no application was
+/// launched" is the process count across the open: the item carries no fork, so
+/// the File Manager resolves it and the pipe facility attaches a writer.
+///
+/// The writer comes back bound to the pipe the creator holds, which the data
+/// path proves: bytes written through the adopted handle are read by the
+/// creator's reader. The declared writer limit is exercised in the same open,
+/// because a handle that did not pass the connection accounting would not
+/// consume the limit a second open then collides with.
+fn pipe_open(system: &System<'_>) -> Result<(), Line>
+{
+    const OPENED: &str = "OpenPipe";
+    let files = system.files();
+    let volume = startup_volume(files)?;
+    let folder = files.lookup(volume.id, volume.blessed_folder, "Pipes")
+                      .map_err(|error| failed("lookup Pipes", error))?;
+    let (mut creator, keeper) = system.pipes()
+                                      .create_named(OPENED, wire::MIN_CAPACITY, 1)
+                                      .map_err(|error| failed("create open pipe", error))?;
+    let Some(cnid) = listing(files, volume.id, folder.id, OPENED)?.found
+    else
+    {
+        return Err(fault("the named pipe is absent from the folder"));
+    };
+
+    let before = system.processes().count().map_err(|error| failed("process count", error))?;
+    let handle =
+        files.open_pipe(volume.id, cnid).map_err(|error| failed("open pipe item", error))?;
+    check(handle != 0, "the open produced no writer")?;
+    let after = system.processes().count().map_err(|error| failed("process count", error))?;
+    check(after == before, "opening a pipe item launched an application")?;
+    let adopted = system.pipes().adopt_writer(handle).map_err(|error| failed("adopt", error))?;
+    let mut launched = Line::new();
+    let _ = writeln!(launched,
+                     "PIPES_OPEN_NO_LAUNCH_OK processes_before={before} processes_after={after}");
+    note(system, launched.text());
+    note(system, "\n");
+
+    // The handle is a real connection: it consumes the one declared writer.
+    check(matches!(files.open_pipe(volume.id, cnid), Err(Error::AccessDenied)),
+          "the open did not pass the writer limit")?;
+    note(system, "PIPES_OPEN_LIMIT_OK\n");
+
+    let mut adopted = adopted;
+    let sent = [0x5au8, 0xa5, 0x01, 0x02];
+    check(adopted.write(&sent).map_err(|error| failed("open write", error))? == sent.len(),
+          "the opened writer wrote short")?;
+    let mut back = [0u8; 4];
+    check(creator.read(&mut back).map_err(|error| failed("open read", error))? == sent.len(),
+          "the creator did not receive the opened writer's bytes")?;
+    check(back == sent, "the opened writer's bytes changed")?;
+    note(system, "PIPES_OPEN_DATA_OK bytes=4\n");
+
+    // A destroyed identity is not-found rather than a fresh pipe. The name is
+    // removed with the last handle, so the identity must go with it.
+    drop(adopted);
+    drop(keeper);
+    drop(creator);
+    check(listing(files, volume.id, folder.id, OPENED)?.found.is_none(),
+          "the destroyed pipe is still listed")?;
+    check(matches!(files.open_pipe(volume.id, cnid), Err(Error::NotFound)),
+          "opening a destroyed identity did not refuse")?;
+    note(system, "PIPES_OPEN_GONE_OK\n");
+    Ok(())
+}
+
 
 fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
 {
     match run(system)
     {
-        Ok(()) =>
+        Ok(cases) =>
         {
-            system.log("PIPES_PROBE_PASS cases=6\n")?;
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_PASS cases={cases}");
+            system.log(line.text())?;
+            system.log("\n")?;
             // The boot check stops reading at the platform's readiness line, so
             // it must follow every outcome marker, never precede them.
             system.log("DESKTOP_READY: pipes probe pass\n")?;

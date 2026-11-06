@@ -406,6 +406,14 @@ association.
   File Manager operation is defined for `PIPE`/`PIPE`. The File Manager's generic
   open operations refuse these items; opening is the pipe facility's operation,
   performed on the item's name.
+- The open is a request of its own, not a reinterpretation of the File Manager's
+  ordinary open. It carries a volume and an identity and returns a writer handle,
+  so it is a *different request record* from every other File Manager request,
+  and its length is one no other File Manager request uses. That matters because
+  the `FILE` trap identifies a request by its length alone: two requests of equal
+  length cannot be told apart, and a shared length would deliver this one to
+  another operation's validation. A colliding length is therefore refused at
+  build time rather than at run time.
 
 ### 9.5 Why the merge is File Manager enumeration and not a mounted volume
 
@@ -784,6 +792,12 @@ ambiguity is resolved by namespace and by handle type, not by renaming:
 - The pipe endpoint type is distinct from every other handle type. Passing a pipe
   handle where a file handle is expected is a type error in the Rust interface
   and a kind mismatch in the native call.
+- The File Manager gains one operation code for opening a pipe item. It is the
+  next free value in the File Manager's own operation space, not a trap number,
+  and it is carried by its own request record. No existing File Manager operation
+  code changes meaning, and the generic open operations still refuse these items.
+  The selector is an operation *inside* the existing `FILE` service, so this file's
+  trap allocation above is unaffected.
 
 ## 14. Acceptance
 
@@ -809,7 +823,7 @@ against the shipping artifacts rather than a host substitute:
 - Double-clicking a named pipe connects and does not launch an application.
 - The folder shows its own icon and a named pipe shows the `PIPE`/`PIPE` icon.
 - The GUI standard streams still behave exactly as section 10 describes.
-- The boot check remains 18 of 18 and the canonical public-SDK suite still
+- The boot check remains 19 of 19 and the canonical public-SDK suite still
   passes.
 
 Section 15 records which of these have actually been executed.
@@ -834,15 +848,23 @@ Implemented and built into the guest, with the guest booting:
 - The folder itself, created by the image builder as part of the platform's
   installed folder layout, beside `Fonts` and `Control Panels`. No guest step
   creates it, and the probe proves the built folder reaches the mount record.
+- Opening an item is `connect`, through the File Manager. The Finder's
+  double-click reaches the same operation: a `PIPE`/`PIPE` item is recognised
+  before any document association, the open returns the writer the caller would
+  have obtained from `connect` by name, and nothing is launched. A destroyed
+  identity is `NotFound` and a full writer limit is `AccessDenied`, so a refused
+  open is a reportable failure rather than a different item or a launch.
 
 Verified by execution in the guest, not only by compilation: a probe
-application replaces Finder on a cloned disk and runs five cases — echo,
-a 512-byte atomic write into a full pipe that must wait for a reader, would-block
-versus end-of-stream, broken pipe, and name removal — followed by the writer-limit
-and folder markers. The probe is
+application replaces Finder on a cloned disk and runs its cases in order — echo,
+a 512-byte atomic write into a full pipe that must wait for a reader, a parked
+reader resumed by a writer, would-block versus end-of-stream, broken pipe, name
+removal, the writer limit, the folder, and opening an item — and reports how many
+actually ran (`PIPES_PROBE_PASS cases=9`, counted from the cases executed rather
+than written down). The probe is
 `crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
 it and runs it as the single `pipes-probe` case, so the marker set is part of the
-gate (18 of 18). The folder markers assert that the folder is present with the
+gate (19 of 19). The folder markers assert that the folder is present with the
 identity the mount recorded (`PIPES_FOLDER_PRESENT volume=66113 blessed=17
 cnid=26`, the same CNID the built image carries), one item per named pipe,
 identical identity by name and by CNID, `NotFound` for an unknown name, identity
@@ -850,22 +872,33 @@ stability across two enumerations and non-reuse after destruction, that an
 anonymous pipe does not appear, and eleven refused mutations. The writer-limit
 markers assert that a one-writer name accepts one `connect`, refuses the second
 with `AccessDenied`, accepts a new connection once the first closes, and still
-disappears with its last handle. `scripts/capture_pipes_probe.py` boots the same
-artifact standalone and records the QEMU command and the serial hash.
+disappears with its last handle. The open markers assert that opening the item
+returns a writer while the process count is unchanged
+(`PIPES_OPEN_NO_LAUNCH_OK processes_before=1 processes_after=1`), that the open
+consumed the name's one writer so a second open is `AccessDenied`
+(`PIPES_OPEN_LIMIT_OK`), that the adopted writer's bytes reach the creator's
+reader (`PIPES_OPEN_DATA_OK bytes=4`), and that a destroyed identity is
+`NotFound` (`PIPES_OPEN_GONE_OK`). `scripts/capture_pipes_probe.py` boots the
+same artifact standalone and records the QEMU command and the serial hash.
 
-Not implemented, and neither blocks a Terminal session:
+**What the open markers do not prove.** They drive the File Manager open route
+from a guest application, which is the operation a double-click invokes and the
+only part of the gesture with a refusable outcome; they do not synthesise a
+mouse double-click in the Finder's own window, so the Finder's hit test and
+dispatch to that route are covered by reading, not by this run. The process count
+is the witness that nothing was launched, and it is measured across the open
+only: it does not prove that no application started earlier in the session.
 
-- Finder open-as-connect. Double-clicking a named pipe currently falls through to
-  the document path rather than connecting; the facility is reachable by name
-  through the SDK, which is what a Terminal uses.
-- The folder icon family, the `PIPE`/`PIPE` document family and its bundle, and
-  the corresponding extension of the canonical icon-reservation allowlist. The
-  type pair is reported today; the icons that would use it are not.
+Not implemented:
 
-Both are Finder affordances — how the folder and its items look and what a
-double-click does — and **neither blocks a Terminal session**: a Terminal reaches
-a pipe by name through the SDK, which is exactly what is proven. They come after
-the Terminal work.
+- The folder icon family and the `PIPE`/`PIPE` document family and its bundle,
+  and the corresponding extension of the canonical icon-reservation allowlist.
+  The type pair is reported today and open-as-connect honours it; the icons that
+  would use it are not drawn.
+
+This is a Finder affordance — how the folder and its items look — and it **does
+not block a Terminal session**: a Terminal reaches a pipe by name through the
+SDK, which is exactly what is proven. It comes after the Terminal work.
 
 **Not covered, stated as cost.** The probe covers the transport contract, the
 writer limit and the folder. It does not cover multiple concurrent writers

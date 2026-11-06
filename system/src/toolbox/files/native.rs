@@ -177,6 +177,10 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
     {
         return Some(unsafe { dispatch_scan_async(owner, pointer, size) });
     }
+    if size == size_of::<files::PipeOpenCall>()
+    {
+        return Some(unsafe { dispatch_pipe_open_async(owner, pointer, size) });
+    }
     if pointer.is_null()
        || size != size_of::<FileCall>()
        || !(pointer as usize).is_multiple_of(align_of::<FileCall>())
@@ -763,12 +767,36 @@ unsafe fn dispatch_scan_async(owner: u64, pointer: *mut (), size: usize) -> i64
         Err(error) => error.status() as i64
     }
 }
+
+/// Open a named pipe item: the File Manager performs `connect` for the calling
+/// process. `owner` is trusted execution context captured before this dispatch,
+/// never a value the request can choose.
+unsafe fn dispatch_pipe_open_async(owner: u64, pointer: *mut (), size: usize) -> i64
+{
+    if pointer.is_null()
+       || size != size_of::<files::PipeOpenCall>()
+       || !(pointer as usize).is_multiple_of(align_of::<files::PipeOpenCall>())
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let call = unsafe { &mut *pointer.cast::<files::PipeOpenCall>() };
+    if call.operation != files::OPEN_PIPE
+       || call.reserved != 0
+       || call.reserved2 != 0
+       || call.reserved3 != 0
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    crate::kernel::with_files(|manager| manager.pipes_open(owner, call))
+        .map_or_else(|error| error.status() as i64, |result| {
+            result.map_or_else(|status| status as i64, |()| OK as i64)
+        })
+}
 /// # Safety
 /// Request and nested buffers must be live exclusive borrows for their sizes.
 /// `owner` and any watch authority must be captured from trusted execution
 /// context before I/O handoff; a scalar is insufficient for watch operations.
-pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, pointer: *mut (),
-                                    size: usize, watch: Option<&super::Caller>)
+pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, pointer: *mut (),                                    size: usize, watch: Option<&super::Caller>)
                                     -> i64
 {
     if size == size_of::<files::IconGroupCall>()

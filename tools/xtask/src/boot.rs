@@ -662,7 +662,12 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                       "PIPES_WRITER_CLOSED_OK", "PIPES_FOLDER_PRESENT volume=",
                       "PIPES_FOLDER_LIST_OK items=1", "PIPES_FOLDER_LOOKUP_OK",
                       "PIPES_FOLDER_STABLE_OK", "PIPES_FOLDER_ANON_ABSENT_OK",
-                      "PIPES_FOLDER_REFUSED_OK refusals=11", "PIPES_PROBE_PASS cases=6"],
+                      "PIPES_FOLDER_REFUSED_OK refusals=11",
+                      // Opening an item is `connect` and launches nothing: the
+                      // process count across the open is the witness.
+                      "PIPES_OPEN_NO_LAUNCH_OK processes_before=", "PIPES_OPEN_LIMIT_OK",
+                      "PIPES_OPEN_DATA_OK bytes=4", "PIPES_OPEN_GONE_OK",
+                      "PIPES_PROBE_PASS cases=9"],
                     true)?);
     if converted.is_some()
     {
