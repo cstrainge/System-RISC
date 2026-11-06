@@ -13,6 +13,7 @@ use linked_list_allocator::LockedHeap;
 
 mod devicetree;
 mod memory;
+mod monitor;
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -460,6 +461,62 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     puthex(account.ram.len() as u64);
     puts(" reservations=");
     puthex(account.reserved.len() as u64);
+    puts("\n");
+    // The interrupt controller the monitor signals through, from the machine's
+    // tree. A machine that declares none cannot be admitted: the kernel needs a
+    // route it can publish and check, and inventing one would be a claim about
+    // hardware this platform may not have.
+    let mut controller = (0u64, 0u64);
+    tree.for_each_node(|node| {
+          if controller.1 == 0
+             && node.compatible.is_some_and(|name| {
+                 name == "arm,cortex-a15-gic" || name == "arm,gic-400"
+                 || name == "arm,gic-v3"
+             })
+             && let Some((base, bytes)) = node.window()
+          {
+              controller = (base, bytes);
+          }
+      });
+    puts("BOOT_AARCH64_CONTROLLER: base=");
+    puthex(controller.0);
+    puts(" bytes=");
+    puthex(controller.1);
+    puts("\n");
+    // Sorted enabled harts, as the kernel's topology check requires.
+    let mut cpus: alloc::vec::Vec<mac_abi::boot::topology::Cpu> = alloc::vec::Vec::new();
+    tree.cpus(|hart| cpus.push(mac_abi::boot::topology::Cpu { hart }));
+    cpus.sort_unstable_by_key(|cpu| cpu.hart);
+    if mac_abi::boot::topology::Topology::checked(&cpus, primary_hart).is_err()
+    {
+        puts("BOOT_AARCH64_CPUS_REFUSED: the machine's topology is not admissible\n");
+        return 0;
+    }
+    let monitor = match monitor::prepare(&account, &cpus,
+                                         mac_abi::BootMemoryRange { base:   controller.0,
+                                                                    length: controller.1 },
+                                         counter)
+    {
+        Ok(monitor) => monitor,
+        Err(cause) =>
+        {
+            puts("BOOT_AARCH64_MONITOR_REFUSED: ");
+            puts(match cause
+            {
+                monitor::Error::NoController => "the machine declares no interrupt controller",
+                monitor::Error::Allocation => "monitor storage could not be allocated",
+                monitor::Error::Directory => "the directory fails the kernel's admission checks"
+            });
+            puts("\n");
+            return 0;
+        }
+    };
+    puts("BOOT_AARCH64_MONITOR_READY: harts=");
+    puthex(monitor.directory.count as u64);
+    puts(" stack=");
+    puthex(monitor.directory.stack_bytes);
+    puts(" timebase=");
+    puthex(monitor.directory.timebase_hz);
     puts("\n");
     if counter == 0
     {
