@@ -73,8 +73,8 @@ fn check(condition: bool, cause: &str) -> Result<(), Line>
 /// cannot claim a count the run did not reach.
 fn run(system: &System<'_>) -> Result<u32, Line>
 {
-    let cases: [fn(&System<'_>) -> Result<(), Line>; 9] = [echo, block, reader_park, eof, broken,
-                                                            named, writer_limit, folder, pipe_open];
+    let cases: [fn(&System<'_>) -> Result<(), Line>; 10] =
+        [echo, block, reader_park, eof, broken, named, writer_limit, folder, scan, pipe_open];
     let mut completed = 0;
     for case in cases
     {
@@ -606,6 +606,99 @@ fn startup_volume(files: files::Files<'_>) -> Result<files::VolumeInfo, Line>
         }
     }
     Err(fault("no startup volume"))
+}
+
+/// Enumerate the `Pipes` folder the way the Finder's browser window does: one
+/// bounded continuation step at a time, restarting from a fresh cursor only when
+/// the continuation is refused as stale.
+///
+/// A stale scan is provoked deliberately here rather than waited for: the folder
+/// has two sources, so registering a pipe between two steps changes the registry
+/// revision and the next step must be `ScanStale` instead of rows that no longer
+/// mean the same items. Without the provocation nothing in this probe would see
+/// one, so this is coverage of the contract, not of an accident.
+fn scan(system: &System<'_>) -> Result<(), Line>
+{
+    const FIRST: &str = "ScanPipeA";
+    const SECOND: &str = "ScanPipeB";
+    let files = system.files();
+    let volume = startup_volume(files)?;
+    let folder = files.lookup(volume.id, volume.blessed_folder, "Pipes")
+                      .map_err(|error| failed("lookup Pipes", error))?;
+    let (mut reader, writer) = system.pipes()
+                                     .create_named(FIRST, wire::MIN_CAPACITY, 0)
+                                     .map_err(|error| failed("create scanned pipe", error))?;
+
+    // The whole folder through one continuation, counting the steps it takes.
+    // More than one step is the point: the listing is read incrementally, not
+    // handed back as an array.
+    let (entries, steps) = drain(files, volume.id, folder.id)?;
+    check(entries == 1, "the folder did not hold exactly one named pipe")?;
+    let mut line = Line::new();
+    let _ =
+        writeln!(line, "PIPES_SCAN_OK directory={} entries={entries} steps={steps}", folder.id.0);
+    note(system, line.text());
+    note(system, "\n");
+
+    // One step, then a registration between steps, then the same continuation.
+    let mut cursor = files::DirectoryCursor::default();
+    match files.scan_directory(volume.id, folder.id, &mut cursor)
+    {
+        Ok(files::ScanStep::Entry { .. }) => (),
+        Ok(_) => return Err(fault("the first scan step was not an entry")),
+        Err(error) => return Err(failed("first scan step", error))
+    }
+    let (second_reader, second_writer) =
+        system.pipes().create_named(SECOND, wire::MIN_CAPACITY, 0).map_err(|error| {
+                                                                       failed("create second \
+                                                                               scanned pipe",
+                                                                              error)
+                                                                   })?;
+    match files.scan_directory(volume.id, folder.id, &mut cursor)
+    {
+        Ok(_) => return Err(fault("a registration did not invalidate the continuation")),
+        Err(Error::ScanStale) => (),
+        Err(error) => return Err(failed("expected a stale continuation", error))
+    }
+    note(system, "PIPES_SCAN_STALE_OK\n");
+
+    // A stale continuation is discarded, not completed: the restarted scan sees
+    // both pipes, which is what a caller must do with the refusal.
+    let (restarted, restarted_steps) = drain(files, volume.id, folder.id)?;
+    check(restarted == 2, "the restarted scan did not see both named pipes")?;
+    let mut line = Line::new();
+    let _ = writeln!(line, "PIPES_SCAN_RESTART_OK entries={restarted} steps={restarted_steps}");
+    note(system, line.text());
+    note(system, "\n");
+
+    drop(second_writer);
+    drop(second_reader);
+    drop(writer);
+    drop(reader);
+    Ok(())
+}
+
+/// Count the entries of one folder through a single continuation, and how many
+/// steps it took. Bounded so a scan that never reports `Done` fails the probe
+/// instead of hanging the guest before its readiness line.
+fn drain(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid)
+         -> Result<(u32, u32), Line>
+{
+    let mut cursor = files::DirectoryCursor::default();
+    let mut entries = 0;
+    let mut steps = 0;
+    for _ in 0..2048
+    {
+        steps += 1;
+        match files.scan_directory(volume, folder, &mut cursor)
+        {
+            Ok(files::ScanStep::Entry { .. }) => entries += 1,
+            Ok(files::ScanStep::Pending) => (),
+            Ok(files::ScanStep::Done) => return Ok((entries, steps)),
+            Err(error) => return Err(failed("folder scan", error))
+        }
+    }
+    Err(fault("the folder scan never finished"))
 }
 
 /// Opening a pipe item is `connect`, and the item's reserved type and creator
