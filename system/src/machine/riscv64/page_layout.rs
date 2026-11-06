@@ -99,3 +99,29 @@ pub(crate) fn admission_interrupts_clear(status: usize) -> bool
 {
     status & 2 == 0
 }
+
+/// Whether `status` reports interrupts enabled. See the AArch64 definition for
+/// why this is a predicate rather than a bit test at the call site.
+pub(crate) fn interrupts_enabled(status: usize) -> bool
+{
+    status & 2 != 0
+}
+
+/// The ISA profile this kernel requires the bootstrap to have sealed.
+///
+/// Written out here rather than imported from the shared contract. The bootstrap
+/// seals its own statement of the profile, and the kernel compares against this
+/// one: if both sides read a single constant the comparison cannot fail, which is
+/// the shape of a check without being one. These are the same RVA23S64 major
+/// families - the shared constant is where the numbers are documented, not where
+/// this side's copy comes from.
+pub(crate) const REQUIRED_ISA: u64 = (1 << 8)
+                                    | (1 << 12)
+                                    | (1 << 0)
+                                    | (1 << 5)
+                                    | (1 << 3)
+                                    | (1 << 2)
+                                    | (1 << 21)
+                                    | (1 << 7)
+                                    | (1 << 18)
+                                    | (1 << 20);

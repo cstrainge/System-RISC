@@ -170,7 +170,13 @@ impl Execution
                        -> Result<Checked<'a>, Error>
     {
         let page = memory.page_bytes();
-        end(flash, page).map_err(Error::Memory)?;
+        // A zero window is a machine without flash, not an empty extent to
+        // validate. Both encodings come from the same record convention, so this
+        // is the absence case rather than a special one.
+        if flash.length != 0
+        {
+            end(flash, page).map_err(Error::Memory)?;
+        }
         if !self.root_physical.is_multiple_of(page)
            || !memory.reserved(BootMemoryRange { base:   self.root_physical,
                                                  length: page })

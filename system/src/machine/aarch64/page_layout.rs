@@ -149,3 +149,27 @@ pub(crate) fn admission_interrupts_clear(status: usize) -> bool
 {
     status & (1 << 7) != 0
 }
+
+/// Whether `status` reports interrupts enabled.
+///
+/// The status word is the architecture's own: RISC-V's `sstatus` carries SIE in
+/// bit 1, and AArch64's `DAIF` carries the IRQ mask in bit 7 with the opposite
+/// sense. Shared code asks this question rather than testing a bit, so the bit
+/// cannot be read with the wrong architecture's meaning.
+pub(crate) fn interrupts_enabled(status: usize) -> bool
+{
+    status & (1 << 7) == 0
+}
+
+/// The ISA profile this kernel requires the bootstrap to have sealed.
+///
+/// Stated here, in the architecture adapter, rather than taken from the shared
+/// ABI: the shared constant that used to hold it was RISC-V MISA bits, which no
+/// other architecture can satisfy. The bootstrap seals its own statement of the
+/// same profile, so this comparison is a check rather than a formality - if the
+/// two disagree, the boot is refused.
+///
+/// AArch64 has no MISA. These bits state what this kernel's code actually
+/// assumes: EL1 with a 4 KiB granule, the floating-point and NEON unit (the
+/// compiler emits vector copies), and the generic timer as the clock source.
+pub(crate) const REQUIRED_ISA: u64 = (1 << 0) | (1 << 1) | (1 << 2);

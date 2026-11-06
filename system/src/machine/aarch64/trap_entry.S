@@ -127,11 +127,74 @@ __system_restore_frame:
     eret
 
 // No per-CPU state: there is no frame to record and no way to report through the
-// shared path. Halt rather than dereference a null control block.
+// shared path. Write the fault registers straight to the bootstrap console and
+// halt.
+//
+// This path must not be silent. It is reached precisely when System has installed
+// its vector table but has not yet published a per-hart control block, so it is
+// the fault path for every failure during admission - the one window where no
+// other diagnostic channel exists. A spin here is indistinguishable from a hang,
+// and a fault that says nothing costs a build cycle per guess. The console is
+// written directly rather than through the shared serial path for the same
+// reason: that path needs state this path does not have.
 __system_trap_no_control:
     msr daifset, #2
+    mrs x19, esr_el1
+    mrs x20, elr_el1
+    mrs x21, far_el1
+    ldr x0, =no_control_text
+    bl no_control_puts
+    mov x0, x19
+    bl no_control_hex
+    ldr x0, =no_control_elr_text
+    bl no_control_puts
+    mov x0, x20
+    bl no_control_hex
+    ldr x0, =no_control_far_text
+    bl no_control_puts
+    mov x0, x21
+    bl no_control_hex
+    ldr x0, =no_control_nl
+    bl no_control_puts
 2:  wfi
     b 2b
+
+// x0 = byte. Polls the PL011 flag register until the transmit FIFO has room.
+no_control_putc:
+    ldr x1, ={uart}
+3:  ldr w2, [x1, #0x18]
+    tbnz w2, #5, 3b
+    str w0, [x1]
+    ret
+
+// x0 = NUL-terminated string.
+no_control_puts:
+    stp x29, x30, [sp, #-16]!
+    mov x3, x0
+4:  ldrb w0, [x3], #1
+    cbz w0, 5f
+    bl no_control_putc
+    b 4b
+5:  ldp x29, x30, [sp], #16
+    ret
+
+// x0 = value, printed as sixteen lower-case hexadecimal digits.
+no_control_hex:
+    stp x29, x30, [sp, #-16]!
+    mov x4, x0
+    mov x5, #60
+6:  lsr x0, x4, x5
+    and x0, x0, #0xf
+    cmp x0, #10
+    b.lo 7f
+    add x0, x0, #('a' - 10)
+    b 8f
+7:  add x0, x0, #'0'
+8:  bl no_control_putc
+    subs x5, x5, #4
+    b.pl 6b
+    ldp x29, x30, [sp], #16
+    ret
 
 // Enter a freshly built frame rather than returning to an interrupted context.
 // The frame carries the stack pointer the new context must run on, so unlike an
@@ -151,3 +214,13 @@ __system_trap_gateway:
     mov x1, x2
     svc #0
     ret
+
+.section .rodata
+no_control_text:
+    .asciz "SYSTEM_TRAP_NO_CONTROL ESR="
+no_control_elr_text:
+    .asciz " ELR="
+no_control_far_text:
+    .asciz " FAR="
+no_control_nl:
+    .asciz "\n"

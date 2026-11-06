@@ -376,29 +376,16 @@ pub(crate) fn memory() -> Result<(CheckedMemory<'static>, DirectMap<'static>), E
     Ok((boot.memory, boot.ram))
 }
 /// Terminal admission reporting needs no heap, firmware callback or root switch.
-/// The bootstrap root declares this checked board UART window before entry.
+///
+/// It delegates to the one console implementation rather than carrying its own.
+/// It previously wrote the register protocol inline, which meant this path - the
+/// one that reports why admission failed - polled a 16550 status register on a
+/// machine whose console is a PL011. The poll never became ready, so the refusal
+/// was never printed: the failure looked exactly like a hang, and the reason for
+/// it was the code that was supposed to explain it.
 pub(crate) fn report_refusal(error: &impl fmt::Display)
 {
-    use core::fmt::Write;
-    struct Serial;
-    impl Write for Serial
-    {
-        fn write_str(&mut self, s: &str) -> fmt::Result
-        {
-            for &byte in s.as_bytes()
-            {
-                unsafe {
-                    while ptr::read_volatile((UART_BASE + 5) as *const u8) & 0x20 == 0
-                    {
-                        core::hint::spin_loop();
-                    }
-                    ptr::write_volatile(UART_BASE as *mut u8, byte);
-                }
-            }
-            Ok(())
-        }
-    }
-    let _ = writeln!(Serial, "BOOT_SUPERVISOR_REJECTED: {error}");
+    crate::machine::emergency::serial(format_args!("BOOT_SUPERVISOR_REJECTED: {error}"));
 }
 #[derive(Debug)]
 pub(crate) enum FrameError

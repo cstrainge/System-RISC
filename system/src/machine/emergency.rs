@@ -235,6 +235,24 @@ fn stop(reason: fmt::Arguments<'_>) -> !
     super::power::fatal_shutdown()
 }
 
+/// Report a bootstrap refusal once, then stop where it is.
+///
+/// Deliberately not [`stop`]: that asks the board to reset, and a machine whose
+/// bootstrap refuses would re-enter the same refusal forever, turning one
+/// reported cause into an unreadable stream. Admission cannot be retried over
+/// partially published state, so the machine stops and keeps the one message.
+pub(crate) fn refuse(reason: fmt::Arguments<'_>) -> !
+{
+    serial(reason);
+    loop
+    {
+        // SAFETY: nothing below can make progress. `wfi` is a low-power wait on
+        // every architecture this kernel runs on, so a refusal does not spin a
+        // core at full speed while an operator reads the cause.
+        unsafe { core::arch::asm!("wfi", options(nomem, nostack)) };
+    }
+}
+
 struct Invocation<'a>
 {
     kind:      Kind,
