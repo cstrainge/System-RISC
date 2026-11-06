@@ -66,6 +66,7 @@ pub fn stage(workspace: &Workspace, name: &str) -> Result<()>
             require_stage_output(workspace, "apps", &packages)?;
             sdk::applications(workspace, &apps)?;
         }
+        "extract" => extract(workspace)?,
         "package" => package_all(workspace)?,
         "image" =>
         {
@@ -76,6 +77,33 @@ pub fn stage(workspace: &Workspace, name: &str) -> Result<()>
     let stamps = workspace.dist().join("ninja").join("stamps");
     fs::create_dir_all(&stamps)?;
     crate::stamp(&stamps.join(name), workspace.dist())
+}
+
+/// Build the resources each package takes from the disc.
+///
+/// A package that has an `extract-list.json` beside its `resources.json` takes
+/// resources from the disc that list names, so it also has a generated
+/// `extracted_resources.json` that its manifest includes. Producing it here is
+/// what keeps a fresh checkout buildable: the include is a build product, so the
+/// build makes it. Nothing names System or Finder — a package is a manifest, a
+/// list and the outputs beside them.
+fn extract(workspace: &Workspace) -> Result<()>
+{
+    let crates = Crates::read(workspace)?;
+    let mut packages: Vec<&crate::crates::Crate> =
+        crates.packages_with_extract_list().into_iter().collect();
+    packages.sort_by(|left, right| left.relative.cmp(&right.relative));
+    for entry in packages
+    {
+        let list = entry.directory.join("extract-list.json");
+        println!("Extracting resources for {} from {}", entry.name, list.display());
+        // The extractor's inputs are the list and the disc it names. Whether a
+        // resource is the right one to take was settled when the list was
+        // authored against our bytes and reviewed, so there is no third check
+        // here and no parity failure of its own to turn into a build error.
+        mac_extract::extract(&list, false)?;
+    }
+    Ok(())
 }
 
 /// Refuse a stage whose selected package set is empty.

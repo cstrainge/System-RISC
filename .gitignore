@@ -1,5 +1,6 @@
 # Generated Rust and native image artifacts (including standalone test fixtures).
 **/target/
+/selftest-aarch64/kernel8.img
 /build/
 /dist/
 /results/
@@ -20,6 +21,19 @@
 # with the licence travelling alongside, so it is build input and never
 # repository content. The image carries it; the checkout does not.
 /firmware/
+# Extracted Apple resources: generated from the System 7.5.1 ISO by the
+# extraction build, never checked in. `extract-list.json` is the reviewed
+# metadata that says what we take, and stays tracked.
+/system/extracted_resources.json
+/system/extracted_assets/
+/apps/finder/extracted_resources.json
+/apps/finder/extracted_assets/
+# Disc images the extraction reads. They are inputs supplied by the developer,
+# never repo content: a committed ISO is in history forever.
+/iso/
+# Local status scratch. The project keeps this file on disk; it is not tracked,
+# and nothing in it is evidence about any build.
+/status.txt
 # Editor, Python and OS caches.
 .vscode/
 __pycache__/

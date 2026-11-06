@@ -211,6 +211,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "extract-list"
+version = "0.1.0"
+dependencies = [
+ "hfs-b",
+ "mac-build",
+ "mac-formats",
+ "mac-hfs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -512,6 +524,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-extract"
+version = "0.1.0"
+dependencies = [
+ "hfs-b",
+ "mac-formats",
+ "mac-hfs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mac-file-source-interface"
 version = "0.1.0"
 dependencies = [
@@ -548,6 +571,15 @@ dependencies = [
  "mac-toolbox",
  "spinning_top",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "mac-fonts"
+version = "0.1.0"
+dependencies = [
+ "mac-formats",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -765,6 +797,7 @@ dependencies = [
  "toolbox-inspection",
  "toolbox-memory",
  "toolbox-menus",
+ "toolbox-pipes",
  "toolbox-power",
  "toolbox-processes",
  "toolbox-quickdraw",
@@ -1396,6 +1429,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "toolbox-pipes"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+]
+
+[[package]]
 name = "toolbox-power"
 version = "0.1.0"
 dependencies = [
@@ -1706,6 +1747,7 @@ dependencies = [
  "mac-abi",
  "mac-build",
  "mac-entropy-interface",
+ "mac-extract",
  "mac-file-types",
  "mac-formats",
  "mac-hfs-b",
