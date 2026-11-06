@@ -522,7 +522,7 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     let monitor = match monitor::prepare(&account, &cpus,
                                          mac_abi::BootMemoryRange { base:   controller.0,
                                                                     length: controller.1 },
-                                         counter)
+                                         counter, primary_hart)
     {
         Ok(monitor) => monitor,
         Err(cause) =>
@@ -1033,6 +1033,29 @@ fn enter_system(memory: &memory::Memory,
                           monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT,
                           device_tree:             tree_address as *const u8,
                           device_tree_bytes:       tree.total_size() };
+    // Seal the profile System checks against its own architecture adapter. The
+    // kernel compares this against a constant it holds rather than against
+    // anything this bootstrap said, so the two statements agreeing is the check:
+    // a loader built for a different profile is refused, not admitted on its own
+    // word. The seal is written last, because an unsealed profile is refused.
+    let vector = vector_address();
+    let image = monitor.image();
+    image.required_isa
+         .store(REQUIRED_ISA, core::sync::atomic::Ordering::Release);
+    image.entry.store(loaded.entry, core::sync::atomic::Ordering::Release);
+    image.image_base.store(loaded.load_base, core::sync::atomic::Ordering::Release);
+    image.image_bytes.store(loaded.extent, core::sync::atomic::Ordering::Release);
+    image.physical_limit
+         .store(physical_limit(memory, tree), core::sync::atomic::Ordering::Release);
+    image.vector_bytes.store(VECTOR_BYTES, core::sync::atomic::Ordering::Release);
+    image.hardware_tag_mask.store(0xffff, core::sync::atomic::Ordering::Release);
+    // Both stubs are this bootstrap's own trap vector: it receives a fault taken
+    // by System, and it is what an unexpected return lands on. The kernel
+    // requires only that they are instruction-aligned and inside firmware, which
+    // the boot window is declared to be.
+    image.fault_entry.store(vector, core::sync::atomic::Ordering::Release);
+    image.returned_entry.store(vector, core::sync::atomic::Ordering::Release);
+    image.sealed.store(1, core::sync::atomic::Ordering::Release);
     // System reads the record through the physmap, not through the identity map:
     // the kernel half is where its own address space lives, and the identity map
     // is firmware's. Both aliases name the same bytes, and the record is left on
@@ -1045,9 +1068,7 @@ fn enter_system(memory: &memory::Memory,
     // SAFETY: reading the stack pointer has no side effects.
     unsafe { core::arch::asm!("mov {}, sp", out(reg) stack, options(nomem, nostack)) };
     let stack_virtual = physical(stack);
-    puts("BOOT_AARCH64_HANDOFF: entry=");
-    puthex(loaded.entry);
-    puts(" info=");
+    puts("BOOT_AARCH64_HANDOFF: entry=");    puthex(loaded.entry);    puts(" info=");
     puthex(info_virtual);
     puts(" stack=");
     puthex(stack_virtual);
@@ -1093,6 +1114,64 @@ unsafe extern "C" fn log(bytes: *const u8, length: usize) -> mac_abi::Status
         putc(byte);
     }
     mac_abi::OK
+}
+
+/// The ISA profile this bootstrap states it provides.
+///
+/// Written here independently of the kernel's constant on purpose. The kernel
+/// compares the sealed value against its own architecture adapter's statement,
+/// so two independent statements agreeing is the check; reading one source on
+/// both sides would make the comparison vacuous and admit a loader built for a
+/// different profile.
+///
+/// AArch64 has no MISA. These bits state what System's code assumes: EL1 with a
+/// 4 KiB granule, the floating-point and NEON unit, and the generic timer.
+const REQUIRED_ISA: u64 = (1 << 0) | (1 << 1) | (1 << 2);
+
+/// The exception vector table: sixteen slots of 128 bytes.
+const VECTOR_BYTES: u64 = 2048;
+
+/// The address of this bootstrap's trap vector.
+fn vector_address() -> u64
+{
+    unsafe extern "C" {
+        fn vectors();
+    }
+    // SAFETY: taking the address of a defined symbol has no effect.
+    vectors as *const () as u64
+}
+
+/// The exclusive maximum of admitted RAM and every peripheral window this
+/// machine declares.
+///
+/// System computes the same quantity from the same inputs and compares, so a
+/// bootstrap that described a smaller machine than it mapped is refused rather
+/// than trusted. The windows come from the machine's tree rather than from a
+/// compiled list, and the walk takes the highest end over every node of each
+/// kind, so a machine that models one node per slot and one that models a single
+/// bank are both answered.
+fn physical_limit(memory: &memory::Memory, tree: &mac_devicetree::Tree<'_>) -> u64
+{
+    let mut end = 0u64;
+    for bank in &memory.ram
+    {
+        end = end.max(bank.base.saturating_add(bank.length));
+    }
+    let _ = tree.for_each_node(|node| {
+          if !node.enabled()
+          {
+              return;
+          }
+          let named = node.compatible_list.is_some_and(|list| {
+                          list.split(|&byte| byte == 0)
+                              .any(|entry| entry == b"arm,pl011" || entry == b"virtio,mmio")
+                      });
+          if named && let Some((base, bytes)) = node.window()
+          {
+              end = end.max(base.saturating_add(bytes));
+          }
+      });
+    end
 }
 
 fn halt() -> !

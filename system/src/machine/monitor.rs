@@ -151,7 +151,7 @@ pub(crate) fn prepare_primary_wake() -> Result<PrimaryWake, WakeError>
     unsafe {
         status = crate::machine::mmu::status();
     }
-    if status & 2 != 0
+    if crate::machine::page_layout::interrupts_enabled(status)
     {
         return Err(WakeError::ReceiverEnabled { hart: key.number() as u64 });
     }
@@ -429,25 +429,71 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
     let entry = image.entry.load(Ordering::Acquire);
     let vector = image.vector_bytes.load(Ordering::Acquire);
     let mask = image.hardware_tag_mask.load(Ordering::Acquire);
+    // Each condition is reported by name. A single "disagrees with the actual
+    // native boot" for eleven different checks sends a reader back to this
+    // function with no idea which one refused, and that is the same
+    // unactionable shape as a diagnostic that repeats without stopping.
+    let mut refuse = |what: &str| {
+        crate::machine::emergency::serial(format_args!("BOOT_MONITOR_IMAGE_REJECTED: {what}"));
+        Error::Image
+    };
     if image_base != execution.virtual_image.base
-       || image_bytes != execution.virtual_image.length
-       || image_base.checked_add(image_bytes).is_none_or(|end| entry < image_base || entry >= end)
-       || entry & 1 != 0
-       || image.required_isa.load(Ordering::Acquire) != monitor::REQUIRED_ISA_BITS
-       || vector < 16
-       || vector > 8192
-       || !vector.is_power_of_two()
-       || mask != execution.hardware_tag_mask
-       || mask > 0xffff
-       || !(mask + 1).is_power_of_two()
-       || image.physical_limit.load(Ordering::Acquire) != physical_limit(memory)?
     {
-        return Err(Error::Image);
+        return Err(refuse("image base differs from the execution record"));
     }
+    if image_bytes != execution.virtual_image.length
+    {
+        return Err(refuse("image bytes differ from the execution record"));
+    }
+    if image_base.checked_add(image_bytes).is_none_or(|end| entry < image_base || entry >= end)
+    {
+        return Err(refuse("entry is outside the sealed image"));
+    }
+    if entry & 1 != 0
+    {
+        return Err(refuse("entry is not instruction aligned"));
+    }
+    if image.required_isa.load(Ordering::Acquire) != crate::machine::page_layout::REQUIRED_ISA
+    {
+        return Err(refuse("sealed ISA profile differs from this kernel's"));
+    }
+    if vector < 16 || vector > 8192 || !vector.is_power_of_two()
+    {
+        return Err(refuse("vector size is not a valid power of two"));
+    }
+    if mask != execution.hardware_tag_mask
+    {
+        return Err(refuse("tag mask differs from the execution record"));
+    }
+    if mask > 0xffff || !(mask + 1).is_power_of_two()
+    {
+        return Err(refuse("tag mask is not a power-of-two span"));
+    }
+    if image.physical_limit.load(Ordering::Acquire) != physical_limit(memory)?
+    {
+        return Err(refuse("sealed physical limit differs from the boot's own"));
+    }
+    // The bootstrap's fault and return stubs must live in firmware, which is
+    // what this has always meant. It used to test the flash window, which
+    // assumed firmware is flash: a machine with no flash states a zero window,
+    // so no address could satisfy it. The execution record already names the
+    // firmware extents, and the bootstrap already marks its own window with
+    // FIRMWARE_ONLY, so the rule is stated in terms of what it actually requires.
+    let firmware = unsafe {
+        crate::machine::memory::primary_slice(info, execution.regions, execution.region_count)
+    }.map_err(Error::Memory)?;
+    let in_firmware = |address: u64| {
+        firmware.iter()
+                .any(|region| {
+                    region.flags & mac_abi::boot::execution::FIRMWARE_ONLY != 0
+                    && region.physical.base <= address
+                    && address - region.physical.base < region.physical.length
+                })
+    };
     for address in
         [image.fault_entry.load(Ordering::Acquire), image.returned_entry.load(Ordering::Acquire)]
     {
-        if address & 1 != 0 || address < FLASH_BASE || address >= FLASH_BASE + FLASH_BYTES
+        if address & 1 != 0 || !in_firmware(address)
         {
             return Err(Error::Image);
         }

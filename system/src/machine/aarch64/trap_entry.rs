@@ -31,7 +31,8 @@ global_asm!(include_str!("trap_entry.S"),
     ctl_frames=const core::mem::offset_of!(hart::Control,frames),
     ctl_top=const core::mem::offset_of!(hart::Control,top),
     ctl_sp=const core::mem::offset_of!(hart::Control,interrupted_sp),
-    cpu_slots=const CPU_SLOTS);
+    cpu_slots=const CPU_SLOTS,
+    uart=const crate::machine::memory::UART_BASE);
 
 /// The vector table this module installs.
 pub(crate) fn vector() -> usize

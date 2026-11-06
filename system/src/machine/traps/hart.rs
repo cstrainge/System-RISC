@@ -281,7 +281,7 @@ pub(crate) fn admit_bootstrap(admitted: usize) -> Result<(), Error>
     unsafe {
         status = crate::machine::mmu::status();
     }
-    if status & 2 != 0
+    if crate::machine::page_layout::interrupts_enabled(status)
     {
         return Err(Error::InterruptsEnabled { status });
     }
@@ -379,7 +379,7 @@ pub(crate) fn prepare(stack: &'static Stack) -> Result<PreparedEntry, Error>
     unsafe {
         status = crate::machine::mmu::status();
     }
-    if status & 2 != 0
+    if crate::machine::page_layout::interrupts_enabled(status)
     {
         return Err(Error::InterruptsEnabled { status });
     }
@@ -542,7 +542,7 @@ pub(crate) unsafe fn captured_outer(frame: *mut TrapFrame) -> OuterCapture
     let valid = unsafe {
         status = crate::machine::mmu::status();
         let control = hart.control as *const Control;
-        status & 2 == 0
+        !crate::machine::page_layout::interrupts_enabled(status)
         && ptr::addr_of!((*control).entering).read_volatile() == 0
         && ptr::addr_of!((*control).depth).read_volatile() == 1
         && ptr::addr_of!((*control).base_depth).read_volatile() == 0
@@ -604,7 +604,7 @@ impl PreparedEntry
         unsafe {
             status = crate::machine::mmu::status();
         }
-        if status & 2 != 0
+        if crate::machine::page_layout::interrupts_enabled(status)
         {
             unadmitted();
         }
@@ -945,7 +945,7 @@ impl StartingHart
             enabled = crate::machine::cpu::interrupt_enables();
             stack = crate::machine::cpu::stack_pointer();
         }
-        if status & 2 != 0 || enabled != 0
+        if crate::machine::page_layout::interrupts_enabled(status) || enabled != 0
         {
             return Err(Error::Secondary("warm entry must have SIE and all local S interrupt \
                                          sources masked"));

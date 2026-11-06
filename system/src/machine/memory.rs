@@ -53,8 +53,15 @@ pub(crate) unsafe fn validate_boot(
     {
         memory.checked(PAGE_BYTES, primary)?
     };
-    memory = memory.exclude_mmio(mac_abi::BootMemoryRange { base:   FLASH_BASE,
-                                                            length: FLASH_BYTES })?;
+    // A machine with no flash states a zero window, and that is absence rather
+    // than an empty extent: excluding it would describe nothing and the account
+    // rightly refuses. The encoding is the same one `absent_bootstrap_io` uses,
+    // so a board without flash needs no test here.
+    if FLASH_BYTES != 0
+    {
+        memory = memory.exclude_mmio(mac_abi::BootMemoryRange { base:   FLASH_BASE,
+                                                                length: FLASH_BYTES })?;
+    }
     for &(base, limit) in BOOT_MMIO_REGIONS
     {
         memory = memory.exclude_mmio(mac_abi::BootMemoryRange { base,

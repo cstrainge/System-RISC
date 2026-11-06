@@ -160,6 +160,7 @@ uart_puthex:
     ret
 
 .balign 2048
+.global vectors
 vectors:
     .rept 16
     .balign 0x80

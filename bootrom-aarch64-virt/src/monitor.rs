@@ -10,8 +10,10 @@ use alloc::{alloc::{Layout, alloc_zeroed},
             boxed::Box,
             vec::Vec};
 
+use core::sync::atomic::Ordering;
+
 use mac_abi::{BootMemoryRange,
-              boot::monitor::{BootImage, Control, Directory, Entry, Signalling}};
+              boot::monitor::{self, BootImage, Control, Directory, Entry, Signalling}};
 
 use crate::memory::{Memory, PAGE_BYTES};
 
@@ -42,6 +44,20 @@ pub struct Published
     _entries:      Box<[Entry]>
 }
 
+impl Published
+{
+    /// The sealed image profile, written once the image is loaded.
+    ///
+    /// Sealing happens where the image is, not here: the directory is built
+    /// before System's code is decoded, so this is the cell the handoff fills in
+    /// and then seals. The kernel refuses an unsealed profile, which is why the
+    /// seal is the last write.
+    pub fn image(&self) -> &BootImage
+    {
+        &self._image
+    }
+}
+
 /// Allocates page-aligned zeroed storage, or reports why it could not.
 fn block(bytes: u64) -> Option<*mut u8>
 {
@@ -61,7 +77,7 @@ fn block(bytes: u64) -> Option<*mut u8>
 /// is why the kernel can check that it was stated and is not shared, but not
 /// what it means.
 pub fn prepare(memory: &Memory, cpus: &[mac_abi::boot::topology::Cpu],
-               controller: BootMemoryRange, timebase_hz: u64)
+               controller: BootMemoryRange, timebase_hz: u64, primary: u64)
                -> Result<Published, Error>
 {
     if controller.length == 0
@@ -80,6 +96,16 @@ pub fn prepare(memory: &Memory, cpus: &[mac_abi::boot::topology::Cpu],
         // every field is written.
         unsafe {
             (base as *mut Control).write(Control::new(cpu.hart, signal(cpu.hart)));
+        }
+        // The kernel requires each row to state the state it is actually in:
+        // the primary has joined as primary, and every other hart is parked -
+        // which is the truth here, because the peers are waiting in this
+        // bootstrap's own idle loop and are not running anything. A row that
+        // claimed otherwise would be an authority this bootstrap cannot confer.
+        unsafe {
+            let control = base as *mut Control;
+            let joined = if cpu.hart == primary { monitor::JOIN_PRIMARY } else { monitor::JOIN_PARKED };
+            (*control).joined.store(joined, Ordering::Release);
         }
         storage.push(base);
         entries.push(Entry { hart:    cpu.hart,

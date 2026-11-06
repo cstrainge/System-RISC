@@ -60,8 +60,13 @@ pub(crate) unsafe fn activate(value: usize)
 pub(crate) fn status() -> usize
 {
     let value;
-    // SAFETY: reading SPSR_EL1 has no side effects.
-    unsafe { asm!("mrs {}, spsr_el1", out(reg) value) };
+    // SAFETY: reading DAIF has no side effects.
+    //
+    // DAIF, not SPSR_EL1. SPSR_EL1 only holds a meaningful status during an
+    // exception return; outside one it is whatever was last written, which here
+    // is zero. Every caller asks whether interrupts are currently masked, and
+    // that is PSTATE.DAIF - bit 7 is the IRQ mask.
+    unsafe { asm!("mrs {}, daif", out(reg) value) };
     value
 }
 

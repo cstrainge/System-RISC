@@ -1400,6 +1400,13 @@ pub(crate) fn finish_initial_finder(finder_admission: &mut crate::toolbox::proce
 /// # Safety
 /// Bootstrap supplies a valid header and compatible BootInfo for this call.
 /// Startup callbacks/context remain valid while System or Finder is running.
+///
+/// The linker script puts `.text.entry` first and the image's entry is read from
+/// the ELF, so naming this section is what states the entry rather than leaving
+/// it to whatever the linker happens to order first in `.text`. Without it the
+/// entry was `kernel::log` on one architecture and `kernel::start` on another,
+/// which is a difference no reader would predict.
+#[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn start(payload: *const (), bytes: usize, role: u64)
                                -> *const SystemServices
 {
@@ -1425,20 +1432,22 @@ pub unsafe extern "C" fn start(payload: *const (), bytes: usize, role: u64)
     let info = payload.cast::<BootInfo>();
     if info.is_null()
     {
-        return ptr::null();
+        crate::machine::emergency::refuse(format_args!("BOOT_SUPERVISOR_REJECTED: the bootstrap \
+                                                        supplied no boot record"));
     }
     let header = unsafe { &*info.cast::<Header>() };
     if !header.supports::<BootInfo>() || header.size as usize != size_of::<BootInfo>()
     {
-        crate::machine::paging::report_refusal(&format_args!("native BootInfo layout is \
-                                                              incompatible: version {} size {}, \
-                                                              expected version {} size {}; \
-                                                              rebuild ROM and System together",
-                                                             header.version,
-                                                             header.size,
-                                                             ABI_VERSION,
-                                                             size_of::<BootInfo>()));
-        return ptr::null();
+        // Terminal rather than returning: the caller does not exist, so a return
+        // re-enters the same refusal and buries the one message that says why.
+        crate::machine::emergency::refuse(format_args!("BOOT_SUPERVISOR_REJECTED: native BootInfo \
+                                                        layout is incompatible: version {} size \
+                                                        {}, expected version {} size {}; rebuild \
+                                                        ROM and System together",
+                                                       header.version,
+                                                       header.size,
+                                                       ABI_VERSION,
+                                                       size_of::<BootInfo>()));
     }
     let info: &'static BootInfo = unsafe { &*info };
     if info.flags & !mac_abi::BOOT_GRAPHICAL != 0
@@ -1455,8 +1464,10 @@ pub unsafe extern "C" fn start(payload: *const (), bytes: usize, role: u64)
     }
     if let Err(error) = unsafe { crate::machine::paging::admit(info) }
     {
-        crate::machine::paging::report_refusal(&error);
-        return ptr::null();
+        // Terminal, and it was not: returning went to an address the loader never
+        // set, so one refusal became 358,000 identical lines and the gate reported
+        // only that a marker had not arrived.
+        crate::machine::emergency::refuse(format_args!("BOOT_SUPERVISOR_REJECTED: {error}"));
     }
     if STARTED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err()
     {
