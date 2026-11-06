@@ -19,6 +19,7 @@ pub(crate) mod input;
 pub(crate) mod io;
 pub(crate) mod memory;
 pub(crate) mod pages;
+pub(crate) mod platform_devices;
 pub(crate) mod power_shutdown;
 pub(crate) mod smp;
 pub(crate) use smp::eligible_harts;

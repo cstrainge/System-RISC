@@ -113,6 +113,19 @@ that finds a malformed header must report it; a tree that parses but describes n
 devices is the failure mode with the worst diagnosis cost, because it presents as
 a machine with nothing attached.
 
+The kernel's inventory is the first such consumer, and it is what makes the tree
+load-bearing rather than decorative. The platform record declares *which*
+peripherals a platform carries, as identities - a bus and a compatible string.
+The machine's tree is the authority for *where* they are. Admission resolves each
+declared identity through the tree and publishes the result once; the kernel is
+not compiled with any device address. A declared peripheral the tree does not
+describe is refused by name, and there is no fallback array to reach for, because
+a window the kernel maps but the machine does not implement faults a long way
+from its cause.
+
+The bootloader resolves the same identities through the same tree, so the two
+agree by construction rather than by both being edited together.
+
 The bootloader initialises its console from the record before the tree can be
 parsed, since a bad tree has to be reported somewhere. It then compares the
 discovered console window against the one in use and fails by name on a
@@ -180,9 +193,16 @@ parser repeating the mistake.
 
 ## Remaining gates
 
-- The kernel-side consumer is not implemented for `aarch64`. The bootloader
-  consumes the tree today; the kernel port is what makes the second consumer
-  real, and until it exists the tree is decorative on that platform.
+- The kernel-side consumer is implemented and is the same code on every
+  architecture: `machine::platform_devices` resolves each declared peripheral
+  identity through the machine's tree at admission. What remains unverified is
+  its `aarch64` half: no bootable `aarch64` machine is installed here, so that
+  path is compiled but has never run.
+- The kernel resolves a peripheral's interrupt by finding the controller its
+  `interrupts` specifiers are written for and reading that controller's
+  `#interrupt-cells`. On `qemu_riscv` the one declared peripheral declares no
+  interrupts, so the resolution runs but the phandle path it contains is not
+  exercised by any boot.
 - `-machine raspi3b` accepts a `-dtb` and that path is wired, but the generated
   blob is not yet produced as a `dist/` artifact for the invocation to name, so
   the emulated run of that machine is not yet exercised end to end.
@@ -190,5 +210,10 @@ parser repeating the mistake.
   emulated tree contains no HVS, no V3D and no real DMA pacing, so no boot-check
   on that platform can validate them.
 - The record declares both `hardware.devices` and `mmio_devices`. The generator
-  reads `emulation.devices`; the kernel's MMIO inventory reads `mmio_devices`.
-  The cross-check above is what will tie them together.
+  reads `emulation.devices`; the kernel's inventory reads the identities from
+  `mmio_devices` and every address, size, interrupt and flag from the tree.
+- A numeric disagreement between a record's declared address and the machine's
+  tree is not detected at runtime, because the declared address is no longer
+  compiled in. `devices::check` validates it at build time, and the tree is the
+  runtime authority; the build-time cross-check against a real tree is what
+  would close the gap, and it is not implemented.

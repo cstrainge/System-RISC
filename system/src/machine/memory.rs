@@ -9,13 +9,31 @@ pub(crate) fn application_region(base: u64, limit: u64) -> bool
     base < limit && base >= VM_APPLICATION_START && limit <= VM_APPLICATION_END
 }
 
+/// Why a boot description was refused. The two causes are kept apart because
+/// "the machine's memory is inconsistent" and "the machine's tree does not
+/// describe a peripheral the record declares" are different defects, and a boot
+/// log that flattens them wastes the one chance to say which happened.
+pub(crate) enum BootError
+{
+    Memory(mac_abi::boot::MemoryError),
+    Devices(super::platform_devices::Refusal)
+}
+
+impl From<mac_abi::boot::MemoryError> for BootError
+{
+    fn from(cause: mac_abi::boot::MemoryError) -> Self
+    {
+        BootError::Memory(cause)
+    }
+}
+
 /// # Safety
 /// The trusted bootstrap lends valid arrays for the whole System lifetime.
 /// This boundary checks lengths before creating slices; all extent validation
 /// then runs in shared safe code, before any reservation is used.
 pub(crate) unsafe fn validate_boot(
     info: &mac_abi::BootInfo)
-    -> Result<mac_abi::boot::CheckedMemory<'static>, mac_abi::boot::MemoryError>
+    -> Result<mac_abi::boot::CheckedMemory<'static>, BootError>
 {
     let ram = unsafe { primary_slice(info, info.ram_regions, info.ram_region_count) }?;
     let reservations = unsafe { primary_slice(info, info.reservations, info.reservation_count) }?;
@@ -42,10 +60,15 @@ pub(crate) unsafe fn validate_boot(
         memory = memory.exclude_mmio(mac_abi::BootMemoryRange { base,
                                                                 length: limit - base })?;
     }
-    for &(_, _, base, length, _, _) in super::power::platform::PLATFORM_MMIO_DEVICES
+    // The machine's tree is the authority for where its peripherals are, so the
+    // inventory is resolved before any window is excluded from the pool.
+    unsafe { super::platform_devices::admit(info) }.map_err(BootError::Devices)?;
+    for index in 0..super::platform_devices::SLOTS
     {
-        memory = memory.exclude_mmio(mac_abi::BootMemoryRange { base,
-                                                                length })?;
+        let device = super::platform_devices::get(index).ok_or(BootError::Devices(
+            super::platform_devices::Refusal::unresolved(index)))?;
+        memory = memory.exclude_mmio(mac_abi::BootMemoryRange { base:   device.registers,
+                                                                length: device.register_bytes })?;
     }
     // Every entry mode protects the same build-defined firmware/platform
     // owners before a pool can allocate. Graphical only adds the scratch loan.

@@ -725,6 +725,7 @@ dependencies = [
  "mac-build",
  "mac-definition",
  "mac-device-interface",
+ "mac-devicetree",
  "mac-driver",
  "mac-entropy-interface",
  "mac-file-source-interface",

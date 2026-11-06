@@ -428,9 +428,47 @@ entry_from!(Translation, bootrom_riscv::translation::Error);
 entry_from!(Physical, mac_kernel_model::pages::physical::Error);
 entry_from!(Supervisor, supervisor::Error);
 
+/// The register windows of every peripheral the platform record declares,
+/// resolved through the tree the machine supplied.
+///
+/// The record states which peripherals this platform carries and the machine's
+/// tree states where they are, so the two are tied here rather than by a
+/// compiled-in address. A declared peripheral the tree does not describe is
+/// refused by name: mapping an address the machine does not implement faults
+/// far from its cause.
+fn declared_windows(tree: &bootrom_riscv::devicetree::Tree<'_>)
+                    -> core::result::Result<[(u64, u64); platform::DECLARED_DEVICES.len()],
+                                             mac_formats::Error>
+{
+    let mut windows = [(0u64, 0u64); platform::DECLARED_DEVICES.len()];
+    for (slot, &(_, key)) in windows.iter_mut().zip(platform::DECLARED_DEVICES)
+    {
+        let end = key.iter().position(|&byte| byte == 0).unwrap_or(key.len());
+        let name = core::str::from_utf8(&key[..end]).map_err(|_| {
+                                                         mac_formats::Error::Malformed("a \
+                                                                                        declared \
+                                                                                        peripheral \
+                                                                                        identity \
+                                                                                        is not \
+                                                                                        text")
+                                                     })?;
+        let Some(window) = tree.window(name).map_err(bootrom_riscv::devicetree::envelope)?
+        else
+        {
+            serial!("BOOT_DEVICE_REJECTED: the machine's device tree does not describe `{}`",
+                    name);
+            return Err(mac_formats::Error::Malformed("the machine's device tree does not \
+                                                      describe a declared peripheral"));
+        };
+        *slot = window;
+    }
+    Ok(windows)
+}
+
 fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_index: usize,
          partition: Partition, memory: &mut memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
-         monitor: &monitor::Published)
+         monitor: &monitor::Published, tree: &bootrom_riscv::devicetree::Tree<'_>,
+         tree_address: u64)
          -> core::result::Result<(), EntryError>
 {
     use bootrom_riscv::translation;
@@ -439,6 +477,11 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
     use mac_kernel_model::{pages::{Access, Permissions, PhysicalAddress, VirtualAddress},
                            policy::AddressRange};
     use virtual_memory::*;
+    // The record says which peripherals this platform carries; the machine's
+    // tree says where they are. Resolving once, here, means the bootloader and
+    // the kernel map the same windows, and a declared peripheral the tree does
+    // not describe is refused by name instead of given a compiled-in address.
+    let windows = declared_windows(tree)?;
     let descriptor = &startup.descriptor;
     let plan = image::LoadPlan::new(&startup.code, descriptor, None, descriptor.load_base)?;
     memory.reserve(memory::IMAGE_BASE..memory::IMAGE_LIMIT)?;
@@ -459,10 +502,10 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
         account.exclude_mmio(BootMemoryRange { base,
                                                length: end - base })?;
     }
-    for &(_, _, base, length, _, _) in platform::PLATFORM_MMIO_DEVICES
+    for &(base, bytes) in &windows
     {
         account.exclude_mmio(BootMemoryRange { base,
-                                               length })?;
+                                               length: bytes })?;
     }
     let mut regions = translation::system_regions(&startup.image,
                                                   descriptor,
@@ -513,9 +556,7 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
     };
     let fixed = [identity(memory::APPLICATION_PRIMARY_BASE, memory::IMAGE_LIMIT, true)];
     let io = memory::BOOT_MMIO_REGIONS.iter().map(|&(base, end)| identity(base, end, false));
-    let devices = platform::PLATFORM_MMIO_DEVICES.iter().map(|&(_, _, base, bytes, _, _)| {
-                                                            identity(base, base + bytes, false)
-                                                        });
+    let devices = windows.iter().map(|&(base, bytes)| identity(base, base + bytes, false));
     let root=translation::Prepared::new(account,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END)
         .map_err(|_|mac_formats::Error::Malformed("invalid checked physmap range"))?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE),
         regions.iter().map(region).chain(fixed).chain(io).chain(devices))?;
@@ -535,7 +576,7 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
     {
         physical_limit = physical_limit.max(end);
     }
-    for &(_, _, base, bytes, _, _) in platform::PLATFORM_MMIO_DEVICES
+    for &(base, bytes) in &windows
     {
         physical_limit =
             physical_limit.max(base.checked_add(bytes)
@@ -587,7 +628,9 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
                           cpus:                    cpus.as_ptr(),
                           cpu_count:               cpus.len(),
                           monitor:                 &monitor.directory,
-                          monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT };
+                          monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT,
+                          device_tree:             tree_address as *const u8,
+                          device_tree_bytes:       tree.total_size() };
     let info_virtual = root.cpu_address(PhysicalAddress((&info as *const BootInfo) as u64),
                                         size_of::<BootInfo>() as u64)?
                            .0;
@@ -775,7 +818,8 @@ extern "C" fn boot_main(tree_address: usize) -> !
             match result.map_err(EntryError::Format).and_then(|startup| {
                                                         enter(startup, &mut disks, disk_index,
                                                               partition, &mut memory, &cpus,
-                                                              &monitor)
+                                                              &monitor, &tree,
+                                                              tree_address as u64)
                                                     })
             {
                 Ok(()) =>

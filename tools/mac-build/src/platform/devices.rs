@@ -12,7 +12,6 @@ pub struct Definition
     pub key:       String,
     pub address:   String,
     pub bytes:     u64,
-    pub interrupt: u32,
     pub flags:     u32
 }
 pub struct Checked
@@ -22,7 +21,6 @@ pub struct Checked
     pub key:       [u8; 16],
     pub address:   u64,
     pub bytes:     u64,
-    pub interrupt: u32,
     pub flags:     u32
 }
 pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Result<Vec<Checked>>
@@ -86,19 +84,24 @@ pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Res
                                key,
                                address,
                                bytes: d.bytes,
-                               interrupt: d.interrupt,
                                flags: d.flags });
     }
     Ok(checked)
 }
+/// The declared peripheral identities, which is all the kernel is compiled with.
+///
+/// The addresses, sizes and flags in the record are build-time declarations:
+/// `check` validates them, and the machine's own device tree is the runtime
+/// authority for them, including each peripheral's interrupt. Compiling them in
+/// as well would create a second source that could disagree with the machine,
+/// and a consumer that read it would be reading a claim rather than the
+/// hardware.
 pub fn constants(devices: &[Checked]) -> String
 {
-    let mut result = String::from("\npub const PLATFORM_MMIO_DEVICES: \
-                                   &[([u8;4],[u8;16],u64,u64,u32,u32)] = &[\n");
+    let mut result = String::from("\npub const DECLARED_DEVICES: &[([u8;4],[u8;16])] = &[\n");
     for d in devices
     {
-        result.push_str(&format!("({:?},{:?},{},{},{},{}),\n",
-                                 d.bus, d.key, d.address, d.bytes, d.interrupt, d.flags));
+        result.push_str(&format!("({:?},{:?}),\n", d.bus, d.key));
     }
     result.push_str("];\n");
     result

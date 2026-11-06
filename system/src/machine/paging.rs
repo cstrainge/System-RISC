@@ -168,6 +168,7 @@ struct Bootstrap
 pub(crate) enum Error
 {
     Memory(MemoryError),
+    Devices(super::platform_devices::Refusal),
     Execution(execution::Error),
     Topology(topology::Error),
     Monitor(super::monitor::Error),
@@ -219,6 +220,7 @@ impl fmt::Display for Error
                         {observed:#x}")
             }
             Self::Memory(e) => e.fmt(f),
+            Self::Devices(e) => e.fmt(f),
             Self::Execution(e) => e.fmt(f),
             Self::Topology(e) => e.fmt(f),
             Self::Monitor(e) => e.fmt(f),
@@ -293,7 +295,13 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
     {
         return Err(Error::AlreadyActive);
     }
-    let memory = unsafe { crate::machine::memory::validate_boot(info) }.map_err(Error::Memory)?;
+    let memory = unsafe { crate::machine::memory::validate_boot(info) }.map_err(|error| {
+                                                                       match error
+                                                                       {
+                                                                           crate::machine::memory::BootError::Memory(cause) => Error::Memory(cause),
+                                                                           crate::machine::memory::BootError::Devices(cause) => Error::Devices(cause)
+                                                                       }
+                                                                   })?;
     let record = unsafe { crate::machine::memory::execution(info) }.map_err(Error::Memory)?;
     // validate_boot checked the whole physical array's reservation before this
     // mapped view is formed. Discovery metadata never selects the current hart.
@@ -826,9 +834,14 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     {
         leaves += map(&mut mapper, base, base, end - base, READ | WRITE, true)?;
     }
-    for &(_, _, base, bytes, _, _) in super::power::platform::PLATFORM_MMIO_DEVICES
+    // Every window comes from the machine's tree; admission resolved them all
+    // before this root existed, so a missing one is an inconsistency rather
+    // than a machine with no peripherals.
+    for index in 0..super::platform_devices::SLOTS
     {
-        leaves += map(&mut mapper, base, base, bytes, READ | WRITE, true)?;
+        let device = super::platform_devices::get(index).ok_or(Error::Devices(
+            super::platform_devices::Refusal::unresolved(index)))?;
+        leaves += map(&mut mapper, device.registers, device.registers, device.register_bytes, READ | WRITE, true)?;
     }
     let (physical, mut tables) = mapper.into_tables();
     let (root, root_charge) = tables.take_root(physical)?;

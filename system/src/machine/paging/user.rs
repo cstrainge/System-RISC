@@ -479,12 +479,19 @@ impl Mapping
                             next = next.max(limit as usize);
                         }
                     }
-                    for &(_, _, start, bytes, _, _) in
-                        crate::machine::power::platform::PLATFORM_MMIO_DEVICES
+                    for index in 0..crate::machine::platform_devices::SLOTS
                     {
-                        if overlap(start as usize, (start + bytes) as usize)
+                        let Some(device) = crate::machine::platform_devices::get(index)
+                        else
                         {
-                            next = next.max((start + bytes) as usize);
+                            continue;
+                        };
+                        let (start, end) =
+                            (device.registers as usize,
+                             (device.registers + device.register_bytes) as usize);
+                        if overlap(start, end)
+                        {
+                            next = next.max(end);
                         }
                     }
                     if let Some(boot) = super::BOOT.get()

@@ -771,10 +771,11 @@ fn keep_low(base: u64, end: u64, overlap: bool) -> bool
     };
     keep(DEFINITION_BASE, DEFINITION_LIMIT)
     || BOOT_MMIO_REGIONS.iter().any(|&(start, limit)| keep(start, limit))
-    || crate::machine::power::platform::PLATFORM_MMIO_DEVICES.iter()
-                                                             .any(|&(_, _, start, bytes, _, _)| {
-                                                                 keep(start, start + bytes)
-                                                             })
+    || (0..crate::machine::platform_devices::SLOTS).filter_map(crate::machine::platform_devices::get)
+                                                  .any(|device| {
+                                                      keep(device.registers,
+                                                           device.registers + device.register_bytes)
+                                                  })
     || BOOT.get().is_some_and(|b| {
                      b.regions.iter().any(|r| {
                                          r.flags & FIRMWARE_ONLY == 0
