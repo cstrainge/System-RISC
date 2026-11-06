@@ -1,0 +1,27 @@
+[package]
+name = "bcm2835-rng"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+guest = []
+
+[[bin]]
+name = "Bcm2835Rng"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+bench = false
+
+[dependencies]
+mac-abi.workspace = true
+mac-driver = { path = "../../crates/mac-driver" }
+mac-entropy-interface.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+spinning_top = "=0.2.5"
+
+[build-dependencies]
+mac-build.workspace = true
+serde_json.workspace = true
