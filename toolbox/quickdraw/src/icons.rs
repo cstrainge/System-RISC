@@ -196,7 +196,44 @@ pub mod standard
     pub const DRIVERS_FOLDER: i16 = -30000;
     /// Default native driver document: extension puzzle with the Drivers chip.
     pub const DRIVER: i16 = -30001;
+    /// System RISC's Pipes folder: the standard folder with a pipe across its
+    /// body, so it is its own glyph rather than a second folder.
+    pub const PIPES_FOLDER: i16 = -30002;
+    /// A named pipe, shown as a document carrying the same pipe motif. The
+    /// `PIPE`/`PIPE` type pair resolves here through the System's type bundle.
+    pub const NAMED_PIPE: i16 = -30003;
     pub const EXTENSION: i16 = -16415;
+
+    /// The icon for a folder that sits directly inside the volume's blessed
+    /// folder, chosen by the folder's name. These are the System's own folders:
+    /// the platform's installed layout names them, so the name is the identity.
+    /// Anything else is an ordinary folder. One table, so a caller cannot pick a
+    /// different icon for the same folder than the System does.
+    ///
+    /// Only `Pipes` has a declared name constant; the other seven are literals
+    /// here and again at the creation site in `tools/xtask/src/disk.rs`, so those
+    /// seven pairs must agree by inspection rather than by compiler.
+    pub fn for_blessed_folder(name: &str) -> Option<i16>
+    {
+        Some(if name == mac_abi::files::PIPES_FOLDER_NAME
+             {
+                 PIPES_FOLDER
+             }
+             else
+             {
+                 match name
+                 {
+                     "Drivers" => DRIVERS_FOLDER,
+                     "Fonts" => FONTS_FOLDER,
+                     "Extensions" => EXTENSIONS_FOLDER,
+                     "Control Panels" => CONTROL_PANELS_FOLDER,
+                     "Preferences" => PREFERENCES_FOLDER,
+                     "Startup Items" => STARTUP_FOLDER,
+                     "Apple Menu Items" => APPLE_MENU_FOLDER,
+                     _ => return None
+                 }
+             })
+    }
 }
 
 impl crate::graphics::GraphicsPort<'_>
