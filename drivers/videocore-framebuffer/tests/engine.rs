@@ -505,3 +505,56 @@ fn engine_abort_after_a_refused_surface_restores_the_mode()
     assert_eq!(device.platform().acquired.last().map(|mode| mode.0), Some(SURFACE));
     assert_eq!(device.platform().freed, [surface.allocation]);
 }
+
+
+/// Quiesce ends the module, so every surface storage it opened must be handed
+/// back. A dropped record leaves the allocation on the Device service's books
+/// with no owner — the leak this pins.
+#[test]
+fn shutdown_frees_the_active_and_prepared_allocations_and_restores_the_mode()
+{
+    let mut device = attached(Firmware::qemu());
+    let active = device.holds_geometry(SURFACE).expect("attached");
+    device.prepare(WIDE, 2).expect("within bounds");
+    let candidate = device.holds_geometry(WIDE).expect("prepared");
+    assert!(device.platform().holds(active) && device.platform().holds(candidate));
+
+    device.shutdown().expect("every allocation is handed back");
+
+    assert!(device.platform().allocations.is_empty(), "no storage is left owned by nothing");
+    assert_eq!(device.platform().freed, [candidate, active]);
+    assert_eq!(device.platform().acquired.last().map(|mode| mode.0),
+               Some(SURFACE),
+               "the firmware is put back in the mode it was displaying");
+    assert_eq!(device.holds(active), None);
+    assert_eq!(device.holds(candidate), None);
+    assert_eq!(device.active_geometry(), None);
+}
+
+#[test]
+fn shutdown_frees_the_surface_a_commit_left_retired()
+{
+    let mut device = attached(Firmware::qemu());
+    let previous = device.holds_geometry(SURFACE).expect("attached");
+    device.prepare(WIDE, 2).expect("within bounds");
+    let candidate = device.holds_geometry(WIDE).expect("prepared");
+    device.commit(candidate, 2).expect("the candidate is the prepared one");
+    assert!(device.holds(previous).is_some() && device.holds(candidate).is_some());
+
+    device.shutdown().expect("every allocation is handed back");
+
+    assert!(device.platform().allocations.is_empty(), "no storage is left owned by nothing");
+    assert_eq!(device.platform().freed, [previous, candidate]);
+    assert_eq!(device.holds(previous), None);
+    assert_eq!(device.holds(candidate), None);
+}
+
+#[test]
+fn a_second_shutdown_has_nothing_left_to_free()
+{
+    let mut device = attached(Firmware::qemu());
+    device.shutdown().expect("the first shutdown frees the surface");
+    device.shutdown().expect("nothing is held, so nothing is refused");
+
+    assert_eq!(device.platform().freed.len(), 1);
+}
