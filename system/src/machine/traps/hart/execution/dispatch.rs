@@ -16,9 +16,9 @@ pub(crate) fn check(ready: &ReadyHart) -> Result<(), Status>
        || ready.sequence() == 0
        || ready.wake_epoch() == 0
        || !matches!(row.phase.load(Ordering::Acquire),
-                    super::super::ADMITTED_IDLE
-                    | super::super::DISPATCH_ELIGIBLE
-                    | super::super::DRAINING)
+                    crate::machine::ADMITTED_IDLE
+                    | crate::machine::DISPATCH_ELIGIBLE
+                    | crate::machine::DRAINING)
        || !super::idle_prepared(&row.local)
     {
         return Err(BAD_ABI);
@@ -37,7 +37,7 @@ pub(crate) fn check(ready: &ReadyHart) -> Result<(), Status>
 /// foreign callback follows an edit in the caller's serialized publication.
 pub(crate) fn admit(ready: &ReadyHart)
 {
-    ready.binding().0.phase.store(super::super::DISPATCH_ELIGIBLE, Ordering::Release);
+    ready.binding().0.phase.store(crate::machine::DISPATCH_ELIGIBLE, Ordering::Release);
 }
 
 /// Only the target may finish a drain. The issuer withdraws eligibility and
@@ -45,20 +45,20 @@ pub(crate) fn admit(ready: &ReadyHart)
 pub(crate) fn withdraw(ready: &ReadyHart)
 {
     let row = ready.binding().0;
-    if row.phase.load(Ordering::Acquire) == super::super::DISPATCH_ELIGIBLE
+    if row.phase.load(Ordering::Acquire) == crate::machine::DISPATCH_ELIGIBLE
     {
-        row.phase.store(super::super::DRAINING, Ordering::Release);
+        row.phase.store(crate::machine::DRAINING, Ordering::Release);
     }
 }
 
 pub(crate) fn eligible(ready: &ReadyHart) -> bool
 {
-    ready.binding().0.phase.load(Ordering::Acquire) == super::super::DISPATCH_ELIGIBLE
+    ready.binding().0.phase.load(Ordering::Acquire) == crate::machine::DISPATCH_ELIGIBLE
 }
 
 pub(crate) fn drained(ready: &ReadyHart) -> bool
 {
-    ready.binding().0.phase.load(Ordering::Acquire) == super::super::ADMITTED_IDLE
+    ready.binding().0.phase.load(Ordering::Acquire) == crate::machine::ADMITTED_IDLE
 }
 
 /// Called after actual idle selection and old THRD claim release, still in
@@ -67,7 +67,7 @@ pub(crate) fn drained(ready: &ReadyHart) -> bool
 pub(crate) fn idle_committed(hart: HartKey, frame: *mut TrapFrame)
 {
     let row = hart.0;
-    if row.phase.load(Ordering::Acquire) != super::super::DRAINING
+    if row.phase.load(Ordering::Acquire) != crate::machine::DRAINING
     {
         return;
     }
@@ -75,9 +75,9 @@ pub(crate) fn idle_committed(hart: HartKey, frame: *mut TrapFrame)
        || super::current() != IDLE
        || !super::admitted_idle_capture(&row.local, frame)
     {
-        super::super::super::entry_lost("CPU drain lacks its actual affine idle/frame commitment");
+        crate::machine::super::entry_lost("CPU drain lacks its actual affine idle/frame commitment");
     }
-    row.phase.store(super::super::ADMITTED_IDLE, Ordering::Release);
+    row.phase.store(crate::machine::ADMITTED_IDLE, Ordering::Release);
     // Actual ownership completion, rather than a monitor IRQ ACK, wakes the
     // primary's retirement walk. It retains every original policy/code owner.
     crate::drivers::scheduler::cleanup_progress();

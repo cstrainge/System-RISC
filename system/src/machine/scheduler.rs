@@ -155,8 +155,8 @@ impl SystemThreadBinding
 
 pub(crate) enum StartError
 {
-    Clock(super::monitor::Error),
-    Wake(super::monitor::WakeError),
+    Clock(crate::machine::monitor::Error),
+    Wake(crate::machine::monitor::WakeError),
     Load(crate::loader::LoadError),
     Idle(crate::machine::traps::execution::IdlePreparationFailure),
     Cpus(crate::machine::smp::Error)
@@ -244,7 +244,7 @@ pub(super) enum RunFactsError
         ready:  u64,
         now:    u64
     },
-    Clock(super::monitor::Error)
+    Clock(crate::machine::monitor::Error)
 }
 impl RunFactsError
 {
@@ -404,7 +404,7 @@ impl Thread
                                .filter(|_| state.ready())
                                .ok_or(RunFactsError::NotReady { thread: self.id })?;
         let ready =
-            super::monitor::ticks_to_microseconds(ready_ticks).map_err(RunFactsError::Clock)?;
+            crate::machine::monitor::ticks_to_microseconds(ready_ticks).map_err(RunFactsError::Clock)?;
         if ready > now_microseconds
         {
             return Err(RunFactsError::FutureReady { thread: self.id,
@@ -507,7 +507,7 @@ pub(crate) fn initialize_records() -> Result<(), mac_abi::Status>
         Some(crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
                  Store::owned_prepared(objects, backing).map_err(lifetime::pool_status)
              })?);
-    let result = super::interrupts::with_masked(|| {
+    let result = crate::machine::interrupts::with_masked(|| {
         let mut scheduler = SCHEDULER.lock();
         if scheduler.records.is_some()
         {
@@ -926,7 +926,7 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                 Err(status) =>
                 {
                     disposition = SpawnRefusal::TerminalBinding;
-                    let removed = super::interrupts::with_masked(|| {
+                    let removed = crate::machine::interrupts::with_masked(|| {
                         let mut scheduler = SCHEDULER.lock();
                         let slot = scheduler.iter().find_map(|(slot, thread)| {
                                                        (thread.id == publication.id).then_some(slot)
@@ -1045,7 +1045,7 @@ fn arm_ticks(interval: u64)
     let deadline = crate::platform::ticks().wrapping_add(interval);
     // The timer is a CPU primitive: programming a deadline and enabling its
     // interrupt differ per architecture, the scheduling policy above does not.
-    super::cpu::set_timer_deadline(deadline);
+    crate::machine::cpu::set_timer_deadline(deadline);
 }
 
 fn prepare_system_idle(target: crate::machine::traps::execution::IdleTarget)
@@ -1091,7 +1091,7 @@ fn prepare_system_idle(target: crate::machine::traps::execution::IdleTarget)
             loop
             {
                 let result =
-                    super::interrupts::with_masked(|| {
+                    crate::machine::interrupts::with_masked(|| {
                         let mut scheduler = SCHEDULER.lock();
                         let published = match scheduler.records.as_mut()
                         {
@@ -1162,7 +1162,7 @@ fn prepare_system_idle(target: crate::machine::traps::execution::IdleTarget)
 pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingStartup>)
                     -> Result<(), StartError>
 {
-    let interval = super::monitor::microseconds_to_ticks_ceil(QUANTUM_MICROSECONDS)
+    let interval = crate::machine::monitor::microseconds_to_ticks_ceil(QUANTUM_MICROSECONDS)
         .map_err(StartError::Clock)?;
     TIMER_INTERVAL.compare_exchange(0, interval, Ordering::AcqRel, Ordering::Acquire)
                   .map_err(|_| {
@@ -1177,7 +1177,7 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
     // interrupt ACK before any scheduled-position lock or author execution.
     // Peers remain AdmittedIdle; this grants no dispatch policy permission.
     crate::machine::smp::initialize().map_err(StartError::Cpus)?;
-    let wake_receiver = super::monitor::prepare_primary_wake().map_err(StartError::Wake)?;
+    let wake_receiver = crate::machine::monitor::prepare_primary_wake().map_err(StartError::Wake)?;
     if let Some(token) = pending
     {
         // Only the actual installed initial Finder flight authorizes this
@@ -1256,7 +1256,7 @@ extern "C" fn idle() -> !
     {
         // No application is runnable. Only this dedicated stack executes the
         // wait; an application can never suspend while holding a resident guard.
-        super::cpu::wait_for_interrupt();
+        crate::machine::cpu::wait_for_interrupt();
     }
 }
 
@@ -1270,8 +1270,8 @@ pub fn wait_current(mask: u16, timeout_ticks: u32) -> Result<(), mac_abi::Status
     {
         return Ok(());
     }
-    let duration = super::monitor::event_ticks_to_ticks(timeout_ticks).map_err(|cause| {
-                       if matches!(cause, super::monitor::Error::ClockOverflow)
+    let duration = crate::machine::monitor::event_ticks_to_ticks(timeout_ticks).map_err(|cause| {
+                       if matches!(cause, crate::machine::monitor::Error::ClockOverflow)
                        {
                            mac_abi::BAD_ARGUMENT
                        }
@@ -1584,7 +1584,7 @@ pub(crate) fn active_harts() -> u32
 pub(crate) fn set_policy_harts(pin: &crate::drivers::scheduler::PolicyPin, count: u32)
                                -> Result<(), mac_abi::Status>
 {
-    super::interrupts::with_masked(|| {
+    crate::machine::interrupts::with_masked(|| {
         let scheduler = SCHEDULER.lock();
         let result = crate::drivers::scheduler::with_active_policy(pin, pin.generation(), || {
                          crate::machine::smp::apply_harts(pin.generation(), count)
@@ -1598,7 +1598,7 @@ pub(crate) fn set_policy_harts(pin: &crate::drivers::scheduler::PolicyPin, count
 /// path. A true result follows each target's own idle-frame/claim commitment.
 pub(crate) fn drain_policy_harts() -> bool
 {
-    super::interrupts::with_masked(|| {
+    crate::machine::interrupts::with_masked(|| {
         let scheduler = SCHEDULER.lock();
         let drained = crate::machine::smp::withdraw_harts();
         drop(scheduler);
@@ -1732,7 +1732,7 @@ pub(super) fn schedule(capture: crate::machine::traps::OuterCapture) -> *mut Tra
         // Idle peers have no local author quantum. Primary maintenance owns
         // global wait deadlines/input; genuine readiness posts a target wake.
         // A drained peer likewise retains its admission interrupt source.
-        super::cpu::disable_timer_interrupt();
+        crate::machine::cpu::disable_timer_interrupt();
     }
     hart.resume_activity(idle);
     next

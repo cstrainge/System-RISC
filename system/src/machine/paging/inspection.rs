@@ -133,7 +133,7 @@ fn kind(base: u64, span: Span, heap: (u64, u64)) -> u32
     else if (APPLICATION_PRIMARY_BASE..IMAGE_LIMIT).contains(&base) { wire::TRUSTED_APPLICATION_ARENA }
     else if (VM_MODULE_START..VM_MODULE_END).contains(&base) { wire::TRUSTED_MODULE_ARENA }
     else if super::BOOT_MMIO_REGIONS.iter().any(|&(start,end)| (start..end).contains(&base))
-        || super::super::power::platform::PLATFORM_MMIO_DEVICES.iter().any(|&(_,_,start,bytes,_,_)| base >= start && base - start < bytes) { wire::DEVICE }
+        || crate::machine::power::platform::PLATFORM_MMIO_DEVICES.iter().any(|&(_,_,start,bytes,_,_)| base >= start && base - start < bytes) { wire::DEVICE }
     else { wire::OTHER }
 }
 fn build_inventory() -> Result<Vec<wire::Region>, Error>

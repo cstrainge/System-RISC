@@ -6,17 +6,13 @@ pub(crate) mod cpu;
 pub(crate) mod display;
 pub(crate) mod interrupts;
 pub(crate) mod mmu;
-pub(crate) mod monitor;
 pub(crate) mod page_layout;
-pub(crate) mod paging;
 pub(crate) mod power;
 pub(crate) mod primary_service;
-pub(crate) mod scheduler;
 pub(crate) mod trap_entry;
-pub(crate) mod traps;
 
 /// Bootstrap hardware identity only; never an application or OS-thread identity.
 pub(crate) fn hart_id() -> usize
 {
-    traps::execution::hart_id().unwrap_or(usize::MAX)
+    crate::machine::traps::execution::hart_id().unwrap_or(usize::MAX)
 }

@@ -35,7 +35,7 @@ struct MappingSlot
 
 impl Runtime
 {
-    pub(in crate::machine::riscv64::scheduler) fn prepare(owner: &OwnerRef,
+    pub(in crate::machine::scheduler) fn prepare(owner: &OwnerRef,
                                                  image: &crate::kernel::LoadedImage,
                                                  space: &process::Pin)
                                                  -> Result<Arc<Self>, Status>
@@ -63,27 +63,27 @@ impl Runtime
 
     /// Called in the same canonical scheduler turn that installs the original
     /// prepaid fault record and parks siblings. It is never reset or reused.
-    pub(in crate::machine::riscv64::scheduler) fn claim_fault(&self) -> bool
+    pub(in crate::machine::scheduler) fn claim_fault(&self) -> bool
     {
         !self.fault_claimed.swap(true, Ordering::AcqRel)
     }
 
-    pub(in crate::machine::riscv64::scheduler) fn matches(&self, owner: &OwnerRef, image: Binding) -> bool
+    pub(in crate::machine::scheduler) fn matches(&self, owner: &OwnerRef, image: Binding) -> bool
     {
         self.owner == owner.owner() && self.image == image
     }
 
-    pub(in crate::machine::riscv64::scheduler) fn descriptor(&self) -> usize
+    pub(in crate::machine::scheduler) fn descriptor(&self) -> usize
     {
         self.descriptor
     }
 
-    pub(in crate::machine::riscv64::scheduler) fn callback_loop(&self) -> usize
+    pub(in crate::machine::scheduler) fn callback_loop(&self) -> usize
     {
         self.entries.callback_loop as usize
     }
 
-    pub(in crate::machine::riscv64::scheduler) fn thread_return(&self) -> usize
+    pub(in crate::machine::scheduler) fn thread_return(&self) -> usize
     {
         self.entries.thread_return as usize
     }
@@ -126,12 +126,12 @@ impl Runtime
         result
     }
 
-    pub(in crate::machine::riscv64::scheduler) fn publish(&self) -> Result<(), super::retirement::Failure>
+    pub(in crate::machine::scheduler) fn publish(&self) -> Result<(), super::retirement::Failure>
     {
         self.mapping_turn(|mapping| mapping.publish())
     }
 
-    pub(in crate::machine::riscv64::scheduler) fn retire_if_last(runtime: &Arc<Self>)
+    pub(in crate::machine::scheduler) fn retire_if_last(runtime: &Arc<Self>)
                                                         -> Result<(), super::retirement::Failure>
     {
         // New threads clone only a live canonical Process thread's binding.

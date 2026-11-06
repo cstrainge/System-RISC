@@ -67,17 +67,17 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
                                    drop(slots);
                                    Error::Tls(cause)
                                })?;
-    let runtime = super::super::user::runtime_for_executor(executor).map_err(|status| {
+    let runtime = crate::machine::user::runtime_for_executor(executor).map_err(|status| {
                       Error::Admission { status,
                                          stage: "child shared user runtime" }
                   })?;
-    let space = super::super::application_space(executor).map_err(|status| {
+    let space = crate::machine::application_space(executor).map_err(|status| {
                     Error::Admission { status,
                                        stage: "child canonical Process space" }
                 })?;
     let (stack, mut cpu, allocation) =
         charges.allocate(executor.owner(), |_| TrapFrame::default()).map_err(Error::Accounting)?;
-    let stack = super::super::stack::StackBacking::prepare_user(executor.owner(), stack, &space)
+    let stack = crate::machine::stack::StackBacking::prepare_user(executor.owner(), stack, &space)
         .map_err(|status| Error::Admission { status, stage: "child guarded user stack" })?;
     let top = stack.user_top().map_err(|status| {
                                    Error::Admission { status,
@@ -107,7 +107,7 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
 fn publish_inert(prepared: PreparedThread) -> Result<InertChild, Error>
 {
     let published =
-        super::super::admission::publish(&prepared, false).map_err(Error::ThreadAdmission)?;
+        crate::machine::admission::publish(&prepared, false).map_err(Error::ThreadAdmission)?;
     let guard = InertChild { id:     published.id,
                              right:  0,
                              owner:  prepared.owner.clone(),

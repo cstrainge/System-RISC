@@ -24,6 +24,15 @@ pub(crate) mod smp;
 pub(crate) use smp::eligible_harts;
 pub(crate) mod video;
 
+// Mechanism-free trees. These describe how System schedules, admits a trap,
+// owns an address space and tracks a hart; none of them names an instruction, so
+// every architecture compiles them. A machine-specific fact they need comes from
+// the adapters below through a function, never from a cfg at the call site.
+pub(crate) mod monitor;
+pub(crate) mod paging;
+pub(crate) mod scheduler;
+pub(crate) mod traps;
+
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 #[cfg(target_arch = "riscv64")]

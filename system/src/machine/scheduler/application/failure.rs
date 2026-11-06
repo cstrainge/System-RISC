@@ -10,7 +10,7 @@ pub(crate) fn fail_owner(admission: &crate::toolbox::native_threads::RuntimeAdmi
     }
     let owner = admission.owner().owner().incarnation();
     let count = {
-        let _interrupts = super::super::super::interrupts::mask();
+        let _interrupts = crate::machine::super::interrupts::mask();
         let scheduler = SCHEDULER.lock();
         admission.close();
         for (_, thread) in scheduler.iter().filter(|(_, thread)| {
@@ -34,7 +34,7 @@ pub(crate) fn fail_owner(admission: &crate::toolbox::native_threads::RuntimeAdmi
     for slot in 0..count
     {
         let id = {
-            let _interrupts = super::super::super::interrupts::mask();
+            let _interrupts = crate::machine::super::interrupts::mask();
             let scheduler = SCHEDULER.lock();
             scheduler.thread(slot)
                      .filter(|thread| {
@@ -57,7 +57,7 @@ pub(crate) fn failure_quiescent(owner: &OwnerRef) -> Result<bool, Status>
     {
         return Err(mac_abi::ACCESS_DENIED);
     }
-    let _interrupts = super::super::super::interrupts::mask();
+    let _interrupts = crate::machine::super::interrupts::mask();
     let scheduler = SCHEDULER.lock();
     for (_, thread) in scheduler.iter().filter(|(_, thread)| {
                                            thread.core.binding.owner()
