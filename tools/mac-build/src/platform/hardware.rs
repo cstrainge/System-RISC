@@ -175,9 +175,9 @@ pub struct Unused
 #[serde(deny_unknown_fields)]
 pub struct Peripheral
 {
-    pub kind:       PeripheralKind,
+    pub kind:        PeripheralKind,
     /// The part's own name, e.g. `pl011`, `sdhci`, `genet`.
-    pub model:      String,
+    pub model:       String,
     /// The device tree's `compatible` string for this device, when it differs
     /// from `model`.
     ///
@@ -189,13 +189,47 @@ pub struct Peripheral
     /// comparison that guessed would report every device absent — which is
     /// exactly what the first run did.
     #[serde(default)]
-    pub compatible: Option<String>,
+    pub compatible:  Option<String>,
+    /// What the record claims this device is for, which decides how a difference
+    /// against the machine's own configuration is read.
+    ///
+    /// `active` is the default and the strict reading: the platform expects to
+    /// drive this device, so any difference from the machine's tree is a warning.
+    /// `declared` says the record names the block because the board carries it and
+    /// nothing drives it — a tailored tree, where a probe that finds no driver
+    /// loads nothing — so a `status` the firmware itself sets is its own choice and
+    /// not a mismatch with us.
     #[serde(default)]
-    pub base:       Option<String>,
+    pub disposition: Disposition,
+    /// Why the record names this device, in the record's own words. Printed
+    /// beside a difference the record already accounts for, so that the difference
+    /// is justified where a reader meets it instead of in a document elsewhere.
     #[serde(default)]
-    pub bytes:      Option<String>,
+    pub note:        Option<String>,
     #[serde(default)]
-    pub interrupt:  Option<u32>
+    pub base:        Option<String>,
+    #[serde(default)]
+    pub bytes:       Option<String>,
+    #[serde(default)]
+    pub interrupt:   Option<u32>
+}
+
+/// What the record claims a declared peripheral is for.
+///
+/// This exists so the check against a machine's own tree can distinguish an
+/// unexplained difference from one the record already accounts for, without the
+/// check being able to silence anything by itself: only a record that says
+/// `declared` and carries its reason changes the reading, and the finding is still
+/// printed.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Disposition
+{
+    /// The platform expects to drive this device. Strictest reading.
+    #[default]
+    Active,
+    /// Named because the board carries it, with nothing driving it.
+    Declared
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,6 +308,20 @@ impl Definition
         }
         for (index, device) in self.devices.iter().enumerate()
         {
+            // A declaration of intent is a claim the check reports beside a
+            // difference, so it has to carry the reason it will be reported with.
+            // Without this, `disposition: declared` would be a way to stop a
+            // difference being discussed, which is exactly what the check exists to
+            // prevent.
+            if device.disposition == Disposition::Declared
+               && device.note.as_deref().is_none_or(|note| note.trim().is_empty())
+            {
+                return Err(reject(&format!("devices[{index}].note"),
+                                  "a device with disposition 'declared' must state why the \
+                                   record names it, because that reason is printed beside any \
+                                   difference the machine's tree shows"
+                                                                       .to_string()));
+            }
             if let Some(compatible) = &device.compatible
             {
                 let compatible = compatible.trim();

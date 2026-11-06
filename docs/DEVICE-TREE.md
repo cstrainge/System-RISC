@@ -47,8 +47,13 @@ It is a **warning, not a refusal**: it is a new check against a source this
 project has not yet validated, and a hard failure on first contact would block
 work on a false positive. It reports both values so a difference can be resolved.
 
-It compares the machine's tree **post-overlay**, because that is also what the
-kernel sees, so a peripheral an overlay disables appears as an expected finding.
+It compares the machine's tree **pre-overlay**, and that is a limitation worth
+stating because it is easy to get backwards. The file in the boot partition is the
+*base* tree the firmware publishes; `start.elf` applies the `config.txt` overlays to
+a copy in memory and hands the result to whatever it starts. So the file on the card
+is the machine before its configuration and the tree the kernel walks is the machine
+after it. Comparing the file still checks what matters — addresses, lengths and
+interrupts do not change under an overlay, only `status` does.
 
 Two translations make the comparison meaningful, and both were found by running it
 rather than by reasoning about it:
@@ -67,47 +72,96 @@ record's window: the record states the page a driver claims and the tree states 
 register block inside it, so the record is normally the larger, and only the other
 direction means the record under-declares a device.
 
-Interrupt **presence** is compared; interrupt **numbers** are not. The record states
-a flat number from the SoC's peripheral interrupt list and a tree states an `armctrl`
-`<bank bit>` pair, so they are not the same quantity. A translation between them
-would have to come from the interrupt controller's own bank layout — deriving it
-from the two sources being checked would make the check agree with itself and prove
-nothing. The board's tree and this record do happen to line up three ways
-(`<1 10>` for the 3D block against a declared 10, `<1 16>` for DMA against 16,
-`<2 29>` for the RNG against 61), but that correspondence is an observation to be
-explained by later work, not a rule this check is entitled to assume.
+Interrupts are compared where the form can be read as a number, and left alone where
+it cannot. The record states a flat ARM interrupt number; a tree states an `armctrl`
+`<bank bit>` pair, and only the controller's bank 2 has a rule this project has
+calibrated: a node there raises ARM interrupt `bit + 32`. Four points establish it —
+`<2 17>` is GPIO, ARM 49; `<2 25>` the PL011, ARM 57, which the record declares from
+the datasheet; `<2 29>` the RNG, ARM 61; `<2 30>` the SD controller, ARM 62. Banks 0
+and 1 state a different numbering, so the pair is reported for a human to read rather
+than decoded by guesswork. The rule caught a fourth record error on its first run:
+the inventory's sdhost interrupt, which is 56 and was written as 30.
 
-A node the firmware marks with a `status` other than `okay` is reported too: the
-block is in the tree but the firmware does not bring it up, so a record that
-declares it as the platform's device disagrees with the machine's configuration.
+An interrupt is looked for in the node *and in the nodes inside the window the
+record claims*, because a record claims a page and states one line for it while a
+tree states interrupts per functional node. The auxiliary block claims a page and
+states no interrupt itself; its UART and SPI ports sit at `0x7E215040` and above,
+inside the same page, and state `<1 29>`.
 
-## What it found on the board's own tree, 2026-11-05
+A tree this build generates states the flat number under a platform-owned
+`platform,arm-interrupt`, never under `interrupts`. The standard property means "as
+this node's interrupt parent spells it", and a tree with no interrupt controller node
+has no parent whose encoding could be written there — so writing the number under it
+would be a claim about a binding that is not in the file.
 
-Run against `bcm2710-rpi-3-b.dtb` from the firmware on a real card, post-overlay.
-Ten of the eleven declared devices agree on address after translation — including
-the 3D engine at bus `0x7EC00000` / ARM `0x3FC00000`, which independently confirms
-the corrected figure. The findings:
+`status` is treated as the machine's configuration of software it would itself run,
+not as a statement about hardware, and a difference is therefore never a warning:
+a peripheral the firmware does not enable is one no Linux driver would probe, while
+its registers sit where the record says and a bare-metal driver configures it
+directly. Those findings are printed, in a section of their own, with the record's
+own note beside each — and a record cannot mark a device `declared` without stating
+why, so the section cannot become a place where differences are filed and forgotten.
+
+## What it found on the board's own tree — 2026-11-05, and again after the fixes
+
+Run against `bcm2710-rpi-3-b.dtb` from the firmware on a real card, pre-overlay, by
+`cargo xtask image --platform raspi3b`. Eleven declared devices; **one warning and
+five accounted-for differences**. Before the work below it was eight warnings that
+looked like eight unexplained mismatches.
+
+### The three that were the checker's fault, not the record's
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `pl011` reported absent from a tree that contains it | The node's `compatible` is the list `"arm,pl011-axi", "arm,pl011", "arm,primecell"`, and the reader kept only the first string. | The reader keeps every string, and matches on any of them. |
+| Every window reported as a divergence | The board states the bus view, the record the ARM view. | `bus_to_arm` translates before comparing. |
+| `bcm2835-aux` reported as claiming an interrupt the tree lacks | The interrupt is on the nodes inside the page, not on the node the record names: the mux at `0x7E215000` is 8 bytes and its UART/SPI ports at `0x7E215040`+ state `<1 29>`. | The interrupt is looked for across the window the record claims. |
+
+A fourth reader defect contributed to all of the above: a node record was created when
+`compatible` appeared, so a property written before it attached to the previous node,
+and several devices came back with a window of `0x0`. A node is now created when it
+opens, and a property lands on the node that is open.
+
+### The one warning that remains, and why it is not silenced
 
 | Device | Finding |
 |---|---|
-| `pl011` | The tree has **no** `arm,pl011` node at all. The only node at `0x7E201000` is `bluetooth`, and the console on this board is reached through the firmware's own configuration of UART0, not through a node a kernel can find by this compatible. Our generated tree carries the node, so this divergence is ours to resolve — but not by deleting the device. |
-| `sdhci` | The tree has `brcm,bcm2835-mmc` at `0x7E300000` with `status = "disabled"`, and `brcm,bcm2835-sdhost` at `0x7E202000` with `status = "okay"`. **The recorded hardware run read the card through the Arasan block.** Both are evidence and neither is dismissed; see `docs/PI-HARDWARE-INVENTORY.md`. |
-| `spi0`, `pwm`, `i2s`, `v3d` | Marked `status = "disabled"` by the firmware — the configured state of a board whose `config.txt` does not enable them. Not a hardware claim. |
-| `bcm2835-aux` | The record declares interrupt 29; the tree's aux node states none. The number appears one level down, on `brcm,bcm2835-aux-spi@7e215080` as `<1 29>`. |
-| `pwm`, `i2s`, `cprman` | Neither source declares an interrupt, which is what the record claims, so there is nothing to compare. Listed so the absence is visible. |
+| `sdhci` | The tree disables `mmc@7e300000` and enables **`mmcnr@7e300000`** — the same address, the same `compatible` — as a non-removable host with a `brcm,bcm4329-fmac` wireless child. The machine's own description therefore assigns these registers to the wireless module, and puts the card on `sdhost@7e202000`, which it marks `okay`. |
 
-The `status` findings are the reason this check earns its place: the discrepancy
-between the two SD controllers is exactly the kind of thing that would otherwise
-have been discovered by a driver failing on a board.
+Against that stands a recorded board run: a self-test binary on this board read the
+user's microSD card's master boot record through `0x3F300000`, and the partition
+offsets prove the bytes came from the real card rather than from our own image
+(`docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md`). Two pieces of evidence that cannot
+both be right about the same silicon, and nothing in this repository decides between
+them. The record still selects sdhci because it is the only path with a driver and the
+only path with positive evidence; the warning stays because the disagreement is real
+and unresolved. What would settle it is a board run probing both controllers and
+reporting which one returns the card's sector zero.
 
-The check exists because the record has been wrong three times in one day — an
-SPI interrupt, three I2C controllers sharing one, a DMA channel set — and every
-one was found by a person re-reading a datasheet. Arithmetic would have found all
-three.
+### The five accounted-for differences
 
-**It already found a fourth:** the tree this build writes carries `compatible` and
-`reg` and no `interrupts` property, so a kernel walking our own generated tree
-cannot learn a device's interrupt.
+Printed with the record's own words beside each, in a section that is not the warning
+block:
+
+| Device | Why it is expected |
+|---|---|
+| `spi0`, `pwm`, `i2s`, `v3d` | The firmware disables a peripheral it is not using, unless `config.txt` asks for it. Its `status` is a statement about the drivers it would run, not about register files that are present and reachable — our driver configures the block and its pins itself. `pwm`, `i2s` and `v3d` additionally carry `disposition: declared`: the record names them because the board carries them and nothing claims them, which is the tailored-tree rule, and the record has to say so to use it. |
+| `sdhci` | Also in this section for its `status` alone, with the record's note pointing at the contradiction above. |
+
+`pwm`, `i2s` and `cprman` declare no interrupt in the record and none is stated for
+them in the tree, so there is nothing to compare; the count is reported in the
+success line rather than as a finding, so the agreement is visible without looking
+like a difference.
+
+### Why the check earns its place
+
+It was built because the record had been wrong three times in one day — an SPI
+interrupt, three I2C controllers sharing one, a DMA channel set — and every one was
+found by a person re-reading a datasheet. On its first honest run it found a fourth:
+the inventory's sdhost interrupt is **56**, not 30, derived from the tree's `<2 24>`
+under the calibrated bank-2 rule. It also found that our own generated tree carried no
+interrupts at all, so a kernel walking it could not have learned one; the generator
+now states them.
 
 ## Flow (the generated path)
 

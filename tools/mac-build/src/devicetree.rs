@@ -10,7 +10,7 @@
 //! reservation block, a structure block and a strings block. Property and node
 //! order is stable so the emitted bytes are reproducible.
 use crate::{Result,
-            platform::{self, Platform}};
+            platform::{self, Platform, hardware::Disposition}};
 
 const MAGIC: u32 = 0xd00d_feed;
 const VERSION: u32 = 17;
@@ -120,6 +120,17 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
                             low(device.base),
                             high(device.bytes),
                             low(device.bytes)]);
+        // The record states a flat ARM interrupt number, and the standard
+        // `interrupts` property means "as this node's interrupt parent spells it".
+        // This tree has no interrupt controller node, so it has no parent whose
+        // encoding could be written there — spelling the number under `interrupts`
+        // would be a claim about a binding that is not in the file. The number goes
+        // in a platform-owned property instead: it is our statement, in the form we
+        // actually have it, and a machine's own tree will carry the encoded form.
+        if let Some(interrupt) = device.interrupt
+        {
+            tree.property_u32("platform,arm-interrupt", &[interrupt]);
+        }
         tree.end_node();
     }
     tree.end_node();
@@ -253,19 +264,112 @@ fn find_name(strings: &[u8], name: &str) -> Option<u32>
     None
 }
 
+/// What a node states about its interrupt, in whichever form the tree uses.
+///
+/// The two forms are not interchangeable: a controller binding encodes a bank and a
+/// bit that only the controller's own layout can decode, while a tree this build
+/// generated states the flat ARM number the record holds. Keeping them apart is what
+/// stops a comparison from reading one as the other.
+#[derive(Clone, Copy, Debug)]
+pub enum StatedInterrupt
+{
+    /// An `interrupts` property, as its interrupt parent spells it.
+    Encoded
+    {
+        bank: u32, bit: u32
+    },
+    /// A flat ARM interrupt number, from a tree this build generated.
+    Arm(u32)
+}
+
+impl StatedInterrupt
+{
+    /// The ARM interrupt number, when the form can be read as one.
+    ///
+    /// Only the controller's bank 2 has a rule this project has calibrated: a node
+    /// there raises ARM interrupt `bit + 32`, confirmed by four points — `<2 17>`
+    /// is GPIO, ARM 49; `<2 25>` the PL011, ARM 57; `<2 29>` the RNG, ARM 61;
+    /// `<2 30>` the SD controller, ARM 62. Banks 0 and 1 state a different
+    /// numbering, and guessing at it would put a number in a driver that nothing
+    /// had established.
+    pub fn arm_number(&self) -> Option<u32>
+    {
+        match self
+        {
+            StatedInterrupt::Arm(number) => Some(*number),
+            StatedInterrupt::Encoded { bank: 2,
+                                       bit } => Some(bit + 32),
+            StatedInterrupt::Encoded { .. } => None
+        }
+    }
+}
+
 /// One node of a tree this build did not produce, reduced to the facts the
 /// record also states.
 pub struct Observed
 {
-    pub path:       String,
-    pub compatible: Option<String>,
-    pub base:       Option<u64>,
-    pub bytes:      Option<u64>,
-    /// The controller's bank-and-bit pair, as the tree spells it.
-    pub interrupt:  Option<(u32, u32)>,
+    pub path:        String,
+    /// Every string in the node's `compatible`, in the order the tree lists them.
+    ///
+    /// All of them, not the first: a node lists its most specific identity first
+    /// and progressively more generic ones after it, and a consumer is entitled to
+    /// match any of them. The board's own firmware names its console
+    /// `arm,pl011-axi` and lists `arm,pl011` beside it; a reader that kept only the
+    /// first reported the record's `arm,pl011` absent while the node was in front of
+    /// it.
+    pub compatibles: Vec<String>,
+    pub base:        Option<u64>,
+    pub bytes:       Option<u64>,
+    /// What the node states about its interrupt, in whichever form it states it.
+    pub interrupt:   Option<StatedInterrupt>,
     /// The node's `status`, when it states one. Absence means the tree states no
     /// opinion, which convention reads as usable.
-    pub status:     Option<String>
+    pub status:      Option<String>
+}
+
+impl Observed
+{
+    /// Whether this node answers to a `compatible`, anywhere in its list.
+    pub fn answers_to(&self, compatible: &str) -> bool
+    {
+        self.compatibles.iter().any(|value| value == compatible)
+    }
+
+    /// The node's most specific identity, for a diagnostic.
+    pub fn identity(&self) -> &str
+    {
+        self.compatibles.first().map(String::as_str).unwrap_or(&self.path)
+    }
+
+    /// Whether one of the nodes inside an address window states an interrupt.
+    ///
+    /// A record claims a page and states one interrupt for it, while a tree states
+    /// interrupts per functional node: the auxiliary block at `0x7F215000` claims
+    /// the page and states no interrupt of its own, while the auxiliary UART and
+    /// SPI ports that raise the shared line sit at `0x7F215040` and above, inside
+    /// the same page. Looking only at the node the record names would call a device
+    /// with an interrupt one that has none. The window searched is the one the
+    /// record claims, not the smaller extent the node's own `reg` states.
+    pub fn interrupt_in_window(&self, all: &[Observed], base: u64, bytes: u64)
+                               -> Option<StatedInterrupt>
+    {
+        self.interrupt.or_else(|| {
+                          all.iter()
+                             .filter(|node| node.path != self.path)
+                             .filter_map(|node| {
+                                 let at = bus_to_arm(node.base?);
+                                 if at >= base && at < base.checked_add(bytes)?
+                                 {
+                                     node.interrupt
+                                 }
+                                 else
+                                 {
+                                     None
+                                 }
+                             })
+                             .next()
+                      })
+    }
 }
 
 /// Where the record and a machine's own tree disagree about one device.
@@ -360,13 +464,21 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
     };
     let mut path: Vec<String> = Vec::new();
     let mut nodes: Vec<Observed> = Vec::new();
+    // Each open node remembers what it inherits, so closing it restores the
+    // parent's scope. `current` is the node properties currently land on: a node
+    // is created when it opens, not when its `compatible` appears, because a tree
+    // is free to spell its properties in any order and one that reads `reg` before
+    // `compatible` would otherwise attribute the window to its parent.
+    let mut open: Vec<(Option<usize>, usize, usize, bool)> = Vec::new();
+    let mut current: Option<usize> = None;
     // A `reg` is spelled with the cell counts its parent declares. They are
-    // inherited and scoped, so they follow the node stack; a tree that declares
-    // none — the board's own firmware does not — is read by inferring from the
-    // property's length instead, which is the only information the file carries.
-    let mut cells_declared = true;
-    let mut address_cells = 2usize;
-    let mut size_cells = 2usize;
+    // inherited and scoped, so they follow the node stack; a node that declares
+    // none anywhere above it — the board's own firmware declares none — is read by
+    // inferring from the property's length instead, which is the only information
+    // the file then carries.
+    let mut cells_declared = false;
+    let mut address_cells = 1usize;
+    let mut size_cells = 1usize;
     loop
     {
         let token = cursor.u32()?;
@@ -376,10 +488,29 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
             {
                 let name = cursor.name()?;
                 path.push(name);
+                open.push((current, address_cells, size_cells, cells_declared));
+                nodes.push(Observed { path:        path.iter()
+                                                       .filter(|segment| !segment.is_empty())
+                                                       .cloned()
+                                                       .collect::<Vec<_>>()
+                                                       .join("/"),
+                                      compatibles: Vec::new(),
+                                      base:        None,
+                                      bytes:       None,
+                                      interrupt:   None,
+                                      status:      None });
+                current = Some(nodes.len() - 1);
             }
             END_NODE =>
             {
                 path.pop();
+                if let Some((parent, addresses, sizes, declared)) = open.pop()
+                {
+                    current = parent;
+                    address_cells = addresses;
+                    size_cells = sizes;
+                    cells_declared = declared;
+                }
             }
             PROP =>
             {
@@ -405,18 +536,27 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
                 {
                     "compatible" =>
                     {
-                        let end = data.iter().position(|byte| *byte == 0).unwrap_or(data.len());
-                        nodes.push(Observed { path: path.iter()
-                                                       .filter(|segment| !segment.is_empty())
-                                                       .cloned()
-                                                       .collect::<Vec<_>>()
-                                                       .join("/"),
-                                              compatible: Some(String::from_utf8_lossy(&data[..end])
-                                                                   .into_owned()),
-                                              base: None,
-                                              bytes: None,
-                                              interrupt: None,
-                                              status: None });
+                        // A string list: every NUL-terminated run is one identity,
+                        // most specific first. Trailing padding is not a name.
+                        let mut compatibles = Vec::new();
+                        let mut start = 0;
+                        for (index, byte) in data.iter().enumerate()
+                        {
+                            if *byte != 0
+                            {
+                                continue;
+                            }
+                            if index > start
+                            {
+                                compatibles.push(String::from_utf8_lossy(&data[start..index])
+                                                    .into_owned());
+                            }
+                            start = index + 1;
+                        }
+                        if let Some(index) = current
+                        {
+                            nodes[index].compatibles = compatibles;
+                        }
                     }
                     "reg" =>
                     {
@@ -425,7 +565,7 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
                         // evidence: one address cell and one size cell is eight
                         // bytes, two of each is sixteen, and a bare one-cell
                         // address with no size is four.
-                        let (address_cells, size_cells) = if cells_declared
+                        let (addresses, sizes) = if cells_declared
                         {
                             (address_cells, size_cells)
                         }
@@ -439,16 +579,15 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
                                 _ => (2, 2)
                             }
                         };
-                        if let Some(node) = nodes.last_mut()
+                        if let Some(node) = current.map(|index| &mut nodes[index])
                         {
-                            if numbers.len() >= address_cells + size_cells
+                            if numbers.len() >= addresses + sizes
                             {
-                                let base =
-                                    numbers[..address_cells].iter()
-                                                            .fold(0u64, |acc, cell| {
-                                                                (acc << 32) | u64::from(*cell)
-                                                            });
-                                let bytes = numbers[address_cells..address_cells + size_cells]
+                                let base = numbers[..addresses].iter()
+                                                               .fold(0u64, |acc, cell| {
+                                                                   (acc << 32) | u64::from(*cell)
+                                                               });
+                                let bytes = numbers[addresses..addresses + sizes]
                                     .iter()
                                     .fold(0u64, |acc, cell| (acc << 32) | u64::from(*cell));
                                 node.base = Some(base);
@@ -459,9 +598,25 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
                     "interrupts" =>
                     {
                         let numbers = cells();
-                        if let (Some(node), Some(first)) = (nodes.last_mut(), numbers.first())
+                        if let (Some(node), Some(first)) =
+                            (current.map(|index| &mut nodes[index]), numbers.first())
                         {
-                            node.interrupt = Some((*first, numbers.get(1).copied().unwrap_or(0)));
+                            node.interrupt =
+                                Some(StatedInterrupt::Encoded { bank: *first,
+                                                                bit:  numbers.get(1)
+                                                                             .copied()
+                                                                             .unwrap_or(0) });
+                        }
+                    }
+                    "platform,arm-interrupt" =>
+                    {
+                        // This build's own statement, in the form the record holds
+                        // it. A machine's tree never carries it, so it cannot be
+                        // confused with the encoded form above.
+                        if let (Some(node), Some(number)) =
+                            (current.map(|index| &mut nodes[index]), cells().first().copied())
+                        {
+                            node.interrupt = Some(StatedInterrupt::Arm(number));
                         }
                     }
                     "status" =>
@@ -474,19 +629,19 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
                         // `disabled` while marking the other SD controller `okay`,
                         // and a comparison that ignored `status` could not show it.
                         let end = data.iter().position(|byte| *byte == 0).unwrap_or(data.len());
-                        if let Some(node) = nodes.last_mut()
+                        if let Some(node) = current.map(|index| &mut nodes[index])
                         {
                             node.status = Some(String::from_utf8_lossy(&data[..end]).into_owned());
                         }
                     }
                     "#address-cells" =>
                     {
-                        address_cells = cells().first().copied().unwrap_or(2) as usize;
+                        address_cells = cells().first().copied().unwrap_or(1) as usize;
                         cells_declared = true;
                     }
                     "#size-cells" =>
                     {
-                        size_cells = cells().first().copied().unwrap_or(2) as usize;
+                        size_cells = cells().first().copied().unwrap_or(1) as usize;
                         cells_declared = true;
                     }
                     _ =>
@@ -527,17 +682,38 @@ pub fn bus_to_arm(address: u64) -> u64
     }
 }
 
+/// The outcome of checking the record against a machine's own tree.
+pub struct CrossCheck
+{
+    /// Findings that mean the record or this platform is wrong, or that nobody has
+    /// explained yet.
+    pub warnings:                 Vec<Divergence>,
+    /// Findings that are expected, each carrying the record's own statement of why.
+    /// They are still printed — a check that silently accepted differences would
+    /// not be a check — but they are not warnings, because an expected difference
+    /// is not something anyone can act on.
+    pub expected:                 Vec<Divergence>,
+    /// Devices for which the record declares no interrupt and the tree states none
+    /// either. That is agreement, so it is counted rather than reported, but it is
+    /// counted out loud: an interrupt comparison that quietly skipped these would be
+    /// indistinguishable from one that never ran.
+    pub agreed_without_interrupt: Vec<String>
+}
+
 /// Compare every peripheral the record declares against a machine's own tree.
 ///
 /// This validates the *record*, not the machine: the tree is what is actually in
-/// front of the kernel, and the record is a declaration used for module
-/// selection. A divergence is reported with both values so it can be resolved
-/// rather than silently preferred.
+/// front of the kernel, and the record is a declaration used for module selection.
+/// A divergence is reported with both values so it can be resolved rather than
+/// silently preferred.
 ///
-/// The tree is compared **post-overlay** — whatever the machine actually has —
-/// because that is also what the kernel will walk. An overlay that disables a
-/// peripheral therefore shows up as an expected finding rather than an error,
-/// and is labelled as such.
+/// **The comparison is pre-overlay.** A board's published DTB is the base tree;
+/// `start.elf` applies the `config.txt` overlays to a copy in memory and hands the
+/// result to whatever it starts. The file on the card is therefore the machine
+/// before its configuration, and the tree the kernel walks is the machine after it.
+/// Comparing the file is still worth doing, because addresses and interrupts do not
+/// change under an overlay — only `status` does — but a `status` difference here may
+/// simply be an overlay this build does not apply, and is treated accordingly.
 ///
 /// Interrupt **presence** is compared, not interrupt numbers. The record states a
 /// flat number from the SoC's peripheral interrupt list, and a tree states an
@@ -548,167 +724,298 @@ pub fn bus_to_arm(address: u64) -> u64
 /// therefore left to be read side by side and resolved by later work; what this
 /// reports is a record that claims an interrupt the machine's tree does not
 /// corroborate at all.
-pub fn compare(platform: &Platform, blob: &[u8]) -> Result<Vec<Divergence>>
+pub fn compare(platform: &Platform, blob: &[u8]) -> Result<CrossCheck>
 {
     let observed = read(blob)?;
-    let mut divergences = Vec::new();
+    let mut check = CrossCheck { warnings:                 Vec::new(),
+                                 expected:                 Vec::new(),
+                                 agreed_without_interrupt: Vec::new() };
     let mut without_interrupt: Vec<String> = Vec::new();
     for device in platform.declared_devices()?
     {
-        let node = observed.iter().find(|node| {
-                                      node.compatible
-                                          .as_deref()
-                                          .is_some_and(|value| value == device.compatible)
-                                  });
+        // A node answers to any string in its `compatible` list; a consumer that
+        // matched only the first would miss `arm,pl011` on a node listing
+        // `arm,pl011-axi` ahead of it.
+        let node = observed.iter().find(|node| node.answers_to(&device.compatible));
         let Some(node) = node
         else
         {
-            divergences.push(Divergence { model:  device.model.clone(),
-                                          detail: format!("the machine's tree has no node \
-                                                           compatible with '{}', so the record \
-                                                           declares a device this machine does \
-                                                           not describe",
-                                                          device.compatible) });
+            check.warnings.push(Divergence { model:  device.model.clone(),
+                                             detail: format!("the machine's tree has no node \
+                                                              compatible with '{}', so the \
+                                                              record declares a device this \
+                                                              machine does not describe",
+                                                             device.compatible) });
             continue;
         };
         // The board's tree states peripherals in the VideoCore's bus view, and the
         // record in the ARM view of the same registers. Comparing them without
-        // translating would report every device as a divergence — which is the
-        // same class of mistake as comparing the wrong vocabulary, and it is what
-        // the first corrected run did.
+        // translating would report every device as a divergence — which is the same
+        // class of mistake as comparing the wrong vocabulary, and it is what the
+        // first corrected run did.
         let base = node.base.map(bus_to_arm);
         if base != Some(device.base)
         {
-            divergences.push(Divergence { model:  device.model.clone(),
-                                          detail: format!("record says {:#x}, the tree says {}",
-                                                          device.base,
-                                                          match (node.base, base)
-                                                          {
-                                                              (Some(raw), Some(arm)) =>
-                                                              {
-                                                                  format!("{raw:#x} in the bus \
-                                                                           view, {arm:#x} in the \
-                                                                           ARM view")
-                                                              }
-                                                              _ => "no reg property".into()
-                                                          }) });
+            check.warnings.push(Divergence { model:  device.model.clone(),
+                                             detail: format!("record says {:#x}, the tree says {}",
+                                                             device.base,
+                                                             match (node.base, base)
+                                                             {
+                                                                 (Some(raw), Some(arm)) =>
+                                                                 {
+                                                                     format!("{raw:#x} in the bus \
+                                                                              view, {arm:#x} in \
+                                                                              the ARM view")
+                                                                 }
+                                                                 _ => "no reg property".into()
+                                                             }) });
         }
-        // A size difference is only interesting in one direction. The record
-        // states the page a driver claims and the tree states the register block
-        // inside it, so the record is normally the larger of the two; a tree that
-        // is larger means the record under-declares the device, which is a real
-        // defect.
+        // A size difference is only interesting in one direction. The record states
+        // the page a driver claims and the tree states the register block inside it,
+        // so the record is normally the larger of the two; a tree that is larger
+        // means the record under-declares the device, which is a real defect.
         if let Some(bytes) = node.bytes
         {
             if bytes > device.bytes
             {
-                divergences.push(Divergence { model:  device.model.clone(),
-                                              detail: format!("the record declares {:#x} bytes \
-                                                               but the tree gives {bytes:#x}",
-                                                              device.bytes) });
+                check.warnings.push(Divergence { model:  device.model.clone(),
+                                                 detail: format!("the record declares {:#x} \
+                                                                  bytes but the tree gives \
+                                                                  {bytes:#x}",
+                                                                 device.bytes) });
             }
         }
-        // A node the firmware has disabled is present in the tree but not brought
-        // up by it, so the record declaring the same block as the platform's
-        // device is a disagreement worth naming. It is not an error to resolve
-        // here: the board observation and the firmware's configuration disagree on
-        // this SoC's two SD controllers, and both are evidence.
+        // `status` is the machine's configuration of software it would itself run,
+        // not a statement about the hardware: a peripheral the firmware does not
+        // enable is one no Linux driver would probe, while its registers sit at the
+        // address the record gives and a bare-metal driver configures it directly.
+        // A difference here is therefore always an accounted-for finding rather than
+        // a warning — and the record has to supply the reason it appears beside, so
+        // this cannot become a place where differences go to be forgotten.
         if let Some(status) = &node.status
         {
             if status != "okay" && status != "ok"
             {
-                divergences.push(Divergence { model:  device.model.clone(),
-                                              detail: format!("the record declares this device, \
-                                                               and the machine's tree marks it \
-                                                               status = '{status}'") });
-            }
-        }
-        if node.interrupt.is_none()
-        {
-            match device.interrupt
-            {
-                // The record declares an interrupt and the machine's tree does not
-                // state one on this node. That is a real divergence, reported per
-                // device with the number the record claims.
-                Some(number) =>
+                let driven = match device.disposition
                 {
-                    divergences.push(Divergence { model:  device.model.clone(),
-                                       detail: format!("the record declares interrupt {number} \
-                                                        and the machine's tree states none on \
-                                                        this node") });
-                }
-                // Neither side claims one, so there is nothing to compare; counted
-                // for the aggregate line so the absence stays visible.
-                None => without_interrupt.push(device.model.clone())
+                    Disposition::Active => "the platform drives this block itself",
+                    Disposition::Declared =>
+                    {
+                        "nothing drives this block, so the firmware's configuration of it is its \
+                         own choice"
+                    }
+                };
+                let detail = format!("the machine's tree marks it status = '{status}'; {driven}");
+                let detail = match &device.note
+                {
+                    Some(note) => format!("{detail} ({note})"),
+                    None => detail
+                };
+                check.expected.push(Divergence { model: device.model.clone(),
+                                                 detail })
             }
         }
+        // The interrupt may be stated on a node the window contains rather than on
+        // the node itself: the auxiliary block is a mux whose three children share
+        // one line, and the record, which claims the block, states the line once.
+        let interrupt = node.interrupt_in_window(&observed, device.base, device.bytes);
+        match (interrupt, device.interrupt)
+        {
+            (None, Some(number)) =>
+            {
+                check.warnings.push(Divergence { model:  device.model.clone(),
+                                                 detail: format!("the record declares interrupt \
+                                                                  {number} and neither this node \
+                                                                  nor any node in the window \
+                                                                  states one") });
+            }
+            (None, None) => without_interrupt.push(device.model.clone()),
+            (Some(stated), Some(number)) =>
+            {
+                // Reported only where the form can be read as an ARM number. Where
+                // it cannot — the controller's banks 0 and 1 state a different
+                // numbering — the pair is left for a later reader instead of being
+                // decoded by guesswork.
+                if let Some(arm) = stated.arm_number()
+                {
+                    if arm != number
+                    {
+                        check.warnings
+                             .push(Divergence { model:  device.model.clone(),
+                                                detail: format!("the record declares interrupt \
+                                                                 {number}, and the tree states one \
+                                                                 that reads as {arm}") });
+                    }
+                }
+            }
+            (Some(_), None) =>
+            {} /* Neither the record's claim to make nor ours to check. */
+        }
     }
-    // Reported once rather than per device, because it is one observation about
-    // the whole set rather than N findings: these are the devices for which the
-    // record itself declares no interrupt, so a tree that also states none agrees
-    // with it. Listed rather than omitted so the absence is visible instead of
-    // looking like the comparison never looked.
-    if !without_interrupt.is_empty()
+    // A node the machine's configuration disables is one thing; two nodes at the
+    // same address, only one of them enabled, is another — the machine is saying
+    // that address belongs to a different function. That is what the board's own
+    // tree says about the Arasan SD controller: `mmc@7e300000` is `disabled` and
+    // `mmcnr@7e300000`, the same registers under the same compatible, is `okay`
+    // with a wireless child. Reported separately because it cannot be resolved by
+    // reading either source harder.
+    for device in platform.declared_devices()?
     {
-        divergences.push(Divergence { model:  "interrupt properties".into(),
-                                      detail: format!("{} declared device(s) state no interrupt \
-                                                       in the record and have no `interrupts` \
-                                                       node property either: {}",
-                                                      without_interrupt.len(),
-                                                      without_interrupt.join(", ")) });
+        let Some(node) = observed.iter().find(|node| node.answers_to(&device.compatible))
+        else
+        {
+            continue;
+        };
+        if node.status.as_deref().is_none_or(|status| status == "okay" || status == "ok")
+        {
+            continue;
+        }
+        let also_at_this_address: Vec<&Observed> =
+            observed.iter()
+                    .filter(|other| {
+                        other.path != node.path
+                        && other.base == node.base
+                        && other.status.as_deref().is_some_and(|status| status != "disabled")
+                    })
+                    .collect();
+        for other in also_at_this_address
+        {
+            let detail = format!("the tree disables this node and enables {} at the same address \
+                                  ({}), so the machine's own description assigns these registers \
+                                  to a different function",
+                                 other.path,
+                                 other.compatibles.join(", "));
+            let detail = match &device.note
+            {
+                Some(note) => format!("{detail} ({note})"),
+                None => detail
+            };
+            check.warnings.push(Divergence { model: device.model.clone(),
+                                             detail });
+        }
     }
-    Ok(divergences)
+    // Devices for which the record declares no interrupt are counted rather than
+    // reported as a finding: that is the record and the tree agreeing, not a
+    // difference. The count is surfaced so the agreement is visible instead of
+    // looking like the comparison never looked at interrupts at all.
+    check.agreed_without_interrupt = without_interrupt;
+    Ok(check)
 }
 
 #[cfg(test)]
 mod cross_check_tests
 {
-    use super::{compare, generate_for, read};
+    use super::{HEADER_BYTES, MAGIC, compare, generate_for, read};
 
     /// The reader and the comparator, exercised on real bytes: a tree this build
-    /// produced is walked back with the foreign-tree reader and must agree with
-    /// the record that produced it on every window.
+    /// produced is walked back with the foreign-tree reader and must agree with the
+    /// record that produced it — every window, every interrupt, every compatible.
     ///
-    /// The expected findings are all about interrupts, and they are real: the tree
-    /// this build writes carries `compatible` and `reg` and no `interrupts`, so a
-    /// kernel walking it cannot learn a device's interrupt. Two different claims
-    /// therefore fail differently, and the test states both so neither can be
-    /// flattened into the other: every device the record gives an interrupt is
-    /// reported by name, and the devices the record itself leaves without one are
-    /// counted in one line.
+    /// This is what makes the comparison trustworthy in the other direction. If our
+    /// own tree and the record it came from cannot agree, a difference found against
+    /// a real machine's tree means nothing.
     #[test]
-    fn the_record_and_its_own_generated_tree_agree_on_windows()
+    fn the_record_and_its_own_generated_tree_agree_on_everything()
     {
         // A record that declares no board section describes no peripherals, so
         // the check needs the hardware section this comparison exists for.
         let platform = super::super::platform::load("raspi3b").expect("record loads");
         let devices = platform.declared_devices().expect("record declares devices");
-        let declares_interrupt = devices.iter().filter(|d| d.interrupt.is_some()).count();
-        let declares_none = devices.len() - declares_interrupt;
+        assert!(!devices.is_empty(), "the record declares no devices to compare");
+        assert!(devices.iter().any(|device| device.interrupt.is_some()),
+                "the record declares no interrupts, so the interrupt half is untested");
         let blob = generate_for(&platform).expect("tree generates");
         let nodes = read(&blob).expect("the foreign-tree reader parses our own tree");
         assert!(!nodes.is_empty(), "the reader found no nodes");
-        let divergences = compare(&platform, &blob).expect("comparison runs");
-        let windows: Vec<&crate::devicetree::Divergence> =
-            divergences.iter().filter(|d| d.model != "interrupt properties").collect();
-        assert_eq!(windows.len(),
-                   declares_interrupt,
-                   "every device the record gives an interrupt is reported against a tree that \
-                    states none, and nothing else: {}",
-                   windows.iter()
-                          .map(|d| format!("{}: {}", d.model, d.detail))
-                          .collect::<Vec<_>>()
-                          .join("; "));
-        assert!(windows.iter().all(|d| d.detail.contains("states none on this node")),
-                "{}",
-                windows.iter().map(|d| d.detail.clone()).collect::<Vec<_>>().join("; "));
-        let interrupts: Vec<&crate::devicetree::Divergence> =
-            divergences.iter().filter(|d| d.model == "interrupt properties").collect();
-        assert_eq!(interrupts.len(), 1, "the no-interrupt observation is reported once");
-        assert!(interrupts[0].detail.contains("state no interrupt in the record")
-                && interrupts[0].detail.contains(&format!("{declares_none} declared device(s)")),
-                "{}",
-                interrupts[0].detail);
+        for device in &devices
+        {
+            let node = nodes.iter()
+                            .find(|node| node.answers_to(&device.compatible))
+                            .unwrap_or_else(|| panic!("no node for {}", device.describe()));
+            assert_eq!(node.base, Some(device.base), "{}", device.describe());
+            assert_eq!(node.interrupt.and_then(|stated| stated.arm_number()),
+                       device.interrupt,
+                       "{}",
+                       device.describe());
+        }
+        let check = compare(&platform, &blob).expect("comparison runs");
+        let report = |findings: &[crate::devicetree::Divergence]| {
+            findings.iter()
+                    .map(|d| format!("{}: {}", d.model, d.detail))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+        };
+        assert!(check.warnings.is_empty(), "{}", report(&check.warnings));
+        assert!(check.expected.is_empty(), "{}", report(&check.expected));
+    }
+
+    /// A node's `compatible` is a list, most specific first, and a consumer may
+    /// match any of its strings. Reading only the first is what made this check
+    /// report the PL011 absent while the node sat in the tree in front of it: the
+    /// board's firmware names its console `arm,pl011-axi` and lists `arm,pl011`
+    /// beside it.
+    #[test]
+    fn every_compatible_string_is_read_not_just_the_first()
+    {
+        // A tree with one node whose compatible is a two-string list, built here so
+        // the test states the property directly rather than depending on whatever
+        // some other generator happens to emit.
+        const BEGIN_NODE: u32 = 1;
+        const END_NODE: u32 = 2;
+        const PROP: u32 = 3;
+        const END: u32 = 9;
+        let strings = b"compatible\0";
+        let mut structure = Vec::new();
+        let mut node_name = |structure: &mut Vec<u8>, name: &str| {
+            structure.extend_from_slice(&BEGIN_NODE.to_be_bytes());
+            structure.extend_from_slice(name.as_bytes());
+            structure.push(0);
+            while structure.len() % 4 != 0
+            {
+                structure.push(0);
+            }
+        };
+        node_name(&mut structure, "");
+        node_name(&mut structure, "soc");
+        let compatible = b"arm,pl011-axi\0arm,pl011\0";
+        structure.extend_from_slice(&PROP.to_be_bytes());
+        structure.extend_from_slice(&(compatible.len() as u32).to_be_bytes());
+        structure.extend_from_slice(&0u32.to_be_bytes());
+        structure.extend_from_slice(compatible);
+        while structure.len() % 4 != 0
+        {
+            structure.push(0);
+        }
+        structure.extend_from_slice(&END_NODE.to_be_bytes());
+        structure.extend_from_slice(&END_NODE.to_be_bytes());
+        structure.extend_from_slice(&END.to_be_bytes());
+        let structure_at = HEADER_BYTES as u32;
+        let strings_at = structure_at + structure.len() as u32;
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&MAGIC.to_be_bytes());
+        blob.extend_from_slice(&(strings_at + strings.len() as u32).to_be_bytes());
+        blob.extend_from_slice(&structure_at.to_be_bytes());
+        blob.extend_from_slice(&strings_at.to_be_bytes());
+        blob.extend_from_slice(&0u32.to_be_bytes()); /* no memory reservations */
+        blob.extend_from_slice(&17u32.to_be_bytes()); /* version */
+        blob.extend_from_slice(&16u32.to_be_bytes()); /* last compatible version */
+        blob.extend_from_slice(&0u32.to_be_bytes()); /* boot cpu */
+        blob.extend_from_slice(&(strings.len() as u32).to_be_bytes());
+        blob.extend_from_slice(&(structure_at + structure.len() as u32
+                                 - structure_at).to_be_bytes());
+        while blob.len() < HEADER_BYTES
+        {
+            blob.push(0);
+        }
+        blob.extend_from_slice(&structure);
+        blob.extend_from_slice(strings);
+        let nodes = read(&blob).expect("the synthetic tree parses");
+        let soc = nodes.iter().find(|node| node.path == "soc").expect("the node is found");
+        assert_eq!(soc.compatibles, vec!["arm,pl011-axi".to_string(), "arm,pl011".to_string()]);
+        assert!(soc.answers_to("arm,pl011"),
+                "the second string must be matchable: a consumer asking for the generic identity \
+                 is entitled to find this node");
+        assert!(!soc.answers_to("arm,primecell"), "a string the node does not list");
     }
 }
 

@@ -6,6 +6,7 @@ use std::{collections::BTreeSet,
           process::Command,
           sync::LazyLock};
 
+use hardware::Disposition;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -537,17 +538,21 @@ pub struct DeclaredDevice
 {
     /// The record's own identity for the part, which is what a module matches and
     /// what a diagnostic should name.
-    pub model:      String,
+    pub model:       String,
     /// The device tree's `compatible`, which is what a node is found by.
-    pub compatible: String,
-    pub base:       u64,
-    pub bytes:      u64,
+    pub compatible:  String,
+    pub base:        u64,
+    pub bytes:       u64,
     /// The interrupt the record declares, when it declares one at all. A record
     /// that states no interrupt is making a claim too — that the device raises
     /// none the ARM sees — so the difference between "declares none" and "declares
     /// one the machine's tree does not corroborate" has to survive into the
     /// comparison rather than being flattened to `None`.
-    pub interrupt:  Option<u32>
+    pub interrupt:   Option<u32>,
+    /// What the record claims this device is for; see [`Disposition`].
+    pub disposition: Disposition,
+    /// Why the record names it, when a difference needs the record's own words.
+    pub note:        Option<String>
 }
 
 impl DeclaredDevice
@@ -639,7 +644,9 @@ impl Platform
                                                                 }),
                                           base,
                                           bytes,
-                                          interrupt: peripheral.interrupt });
+                                          interrupt: peripheral.interrupt,
+                                          disposition: peripheral.disposition,
+                                          note: peripheral.note.clone() });
         }
         Ok(devices)
     }
