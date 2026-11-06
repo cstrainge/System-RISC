@@ -208,7 +208,9 @@ pub extern "C" fn sdhci_probe() -> u64
             return 0;
         }
     };
-    let sdhci = match tree.window("sdhci")
+    // Looked up by the tree's own `compatible`, which is the device tree's
+    // vocabulary rather than this platform's inventory name for the part.
+    let sdhci = match tree.window("brcm,bcm2835-mmc")
     {
         Some((base, bytes)) =>
         {
@@ -225,7 +227,7 @@ pub extern "C" fn sdhci_probe() -> u64
             return 0;
         }
     };
-    match tree.window("pl011")
+    match tree.window("arm,pl011")
     {
         Some((base, _)) =>
         {

@@ -535,9 +535,37 @@ pub fn current() -> &'static Platform
 /// so a consumer asks for `sdhci` or `pl011` rather than an address.
 pub struct DeclaredDevice
 {
+    /// The record's own identity for the part, which is what a module matches and
+    /// what a diagnostic should name.
+    pub model:      String,
+    /// The device tree's `compatible`, which is what a node is found by.
     pub compatible: String,
     pub base:       u64,
-    pub bytes:      u64
+    pub bytes:      u64,
+    /// The interrupt the record declares, when it declares one at all. A record
+    /// that states no interrupt is making a claim too — that the device raises
+    /// none the ARM sees — so the difference between "declares none" and "declares
+    /// one the machine's tree does not corroborate" has to survive into the
+    /// comparison rather than being flattened to `None`.
+    pub interrupt:  Option<u32>
+}
+
+impl DeclaredDevice
+{
+    /// How a diagnostic names this device: the record's own identity, because
+    /// that is what a reader searches `hardware.devices` for, and the tree's
+    /// compatible beside it when the two differ.
+    pub fn describe(&self) -> String
+    {
+        if self.model == self.compatible
+        {
+            self.model.clone()
+        }
+        else
+        {
+            format!("{} (tree compatible {})", self.model, self.compatible)
+        }
+    }
 }
 
 impl Platform
@@ -566,13 +594,15 @@ impl Platform
         {
             let base = match peripheral.base.as_deref()
             {
-                Some(text) => Some(parse_hex(text).ok_or_else(|| {
-                                                       crate::error(format!("platform '{}' \
-                                                                             peripheral {} states an \
-                                                                             unreadable base {text:?}",
-                                                                            self.name,
-                                                                            peripheral.model))
-                                                   })?),
+                Some(text) =>
+                {
+                    Some(parse_hex(text).ok_or_else(|| {
+                                            crate::error(format!("platform '{}' peripheral {} \
+                                                                  states an unreadable base \
+                                                                  {text:?}",
+                                                                 self.name, peripheral.model))
+                                        })?)
+                }
                 None => None
             };
             let base = match base
@@ -582,24 +612,34 @@ impl Platform
             };
             let bytes = match peripheral.bytes.as_deref()
             {
-                Some(text) => parse_hex(text).ok_or_else(|| {
-                                                 crate::error(format!("platform '{}' peripheral {} \
-                                                                       states an unreadable size \
-                                                                       {text:?}",
-                                                                      self.name,
-                                                                      peripheral.model))
-                                             })?,
+                Some(text) =>
+                {
+                    parse_hex(text).ok_or_else(|| {
+                                       crate::error(format!("platform '{}' peripheral {} states \
+                                                             an unreadable size {text:?}",
+                                                            self.name, peripheral.model))
+                                   })?
+                }
                 None =>
                 {
-                    return Err(crate::error(format!("platform '{}' peripheral {} states a base but \
-                                                     no size, so its window is not fully declared",
-                                                    self.name,
-                                                    peripheral.model)));
+                    return Err(crate::error(format!("platform '{}' peripheral {} states a \
+                                                     base but no size, so its window is not \
+                                                     fully declared",
+                                                    self.name, peripheral.model)));
                 }
             };
-            devices.push(DeclaredDevice { compatible: peripheral.model.clone(),
+            // A tree names a device by `compatible`; the record's `model` is this
+            // platform's inventory identity. Where they differ the record states
+            // the tree's string, because that is what a node is found by.
+            devices.push(DeclaredDevice { model: peripheral.model.clone(),
+                                          compatible: peripheral.compatible
+                                                                .clone()
+                                                                .unwrap_or_else(|| {
+                                                                    peripheral.model.clone()
+                                                                }),
                                           base,
-                                          bytes });
+                                          bytes,
+                                          interrupt: peripheral.interrupt });
         }
         Ok(devices)
     }
@@ -629,7 +669,7 @@ impl Platform
                            .ok_or_else(|| {
                                crate::error(format!("platform '{}' peripheral {} window \
                                                      0x{:x}+0x{:x} overflows the address space",
-                                                    self.name, window.compatible, window.base,
+                                                    self.name, window.describe(), window.base,
                                                     window.bytes))
                            })?;
             // A device window must be covered by declared MMIO ranges, and a
@@ -647,10 +687,10 @@ impl Platform
             if covering.is_empty()
             {
                 return Err(crate::error(format!("platform '{}' peripheral {} window \
-                                                 0x{:x}+0x{:x} lies outside every declared MMIO \
-                                                 range, so no module can claim it",
+                                                 0x{:x}+0x{:x} lies outside every declared \
+                                                 MMIO range, so no module can claim it",
                                                 self.name,
-                                                window.compatible,
+                                                window.describe(),
                                                 window.base,
                                                 window.bytes)));
             }
@@ -660,11 +700,11 @@ impl Platform
                 if range.address > cursor
                 {
                     return Err(crate::error(format!("platform '{}' peripheral {} window \
-                                                     0x{:x}+0x{:x} is not covered at 0x{:x}: the \
-                                                     declared MMIO ranges leave a gap, so part of \
-                                                     the device could not be claimed",
+                                                     0x{:x}+0x{:x} is not covered at 0x{:x}: \
+                                                     the declared MMIO ranges leave a gap, so \
+                                                     part of the device could not be claimed",
                                                     self.name,
-                                                    window.compatible,
+                                                    window.describe(),
                                                     window.base,
                                                     window.bytes,
                                                     cursor)));
@@ -680,9 +720,9 @@ impl Platform
                 if occupants > 1
                 {
                     return Err(crate::error(format!("platform '{}' MMIO range {} \
-                                                     0x{:x}+0x{:x} contains {occupants} declared \
-                                                     peripheral windows; one claim would cover \
-                                                     more than one device",
+                                                     0x{:x}+0x{:x} contains {occupants} \
+                                                     declared peripheral windows; one claim \
+                                                     would cover more than one device",
                                                     self.name,
                                                     range.id,
                                                     range.address,
@@ -692,10 +732,10 @@ impl Platform
             if cursor < end
             {
                 return Err(crate::error(format!("platform '{}' peripheral {} window \
-                                                 0x{:x}+0x{:x} runs past its last declared MMIO \
-                                                 range at 0x{:x}",
+                                                 0x{:x}+0x{:x} runs past its last declared \
+                                                 MMIO range at 0x{:x}",
                                                 self.name,
-                                                window.compatible,
+                                                window.describe(),
                                                 window.base,
                                                 window.bytes,
                                                 cursor)));
@@ -726,8 +766,8 @@ pub fn module_target() -> Result<mac_module::Target>
         "aarch64-unknown-none" => Ok(mac_module::Target::AARCH64),
         target =>
         {
-            Err(error(format!("platform '{}' declares rust_target {target:?}, which has no module \
-                               contract target; add its architecture to \
+            Err(error(format!("platform '{}' declares rust_target {target:?}, which has no \
+                               module contract target; add its architecture to \
                                mac_module::Target",
                               platform.name)))
         }
@@ -740,10 +780,10 @@ pub fn module_target() -> Result<mac_module::Target>
 pub fn module_target_constants() -> Result<String>
 {
     let target = module_target()?;
-    Ok(format!("// Generated from the platform record's module contract target.\n\
-                pub(crate) const MODULE_TARGET: mac_module::Target = mac_module::Target {{ \
-                architecture: {architecture}, pointer_bits: {pointer_bits}, endian: {endian}, \
-                convention: {convention}, features: {features} }};\n",
+    Ok(format!("// Generated from the platform record's module contract target.\npub(crate) \
+                const MODULE_TARGET: mac_module::Target = mac_module::Target {{ architecture: \
+                {architecture}, pointer_bits: {pointer_bits}, endian: {endian}, convention: \
+                {convention}, features: {features} }};\n",
                architecture = target.architecture,
                pointer_bits = target.pointer_bits,
                endian = target.endian,
@@ -1011,11 +1051,8 @@ mod tests
         let set = features(&text);
         let actual = set.iter().copied().collect::<Vec<_>>().join(",");
         validate_guest(&p.rust_target, &actual).unwrap();
-        let narrowed = set.iter()
-                          .copied()
-                          .filter(|&s| s != p.llvm_profile)
-                          .collect::<Vec<_>>()
-                          .join(",");
+        let narrowed =
+            set.iter().copied().filter(|&s| s != p.llvm_profile).collect::<Vec<_>>().join(",");
         let error = validate_guest(&p.rust_target, &narrowed).unwrap_err().to_string();
         assert!(error.contains(&format!("missing [\"{}\"]", p.llvm_profile))
                 && error.contains("rebuild with cargo xtask image"));
@@ -1162,8 +1199,8 @@ impl Platform
             // reports its windows, so the finisher path can report the gap
             // instead of writing to an address that does not exist.
             let absent = "pub const FATAL_FINISHER_ADDRESS: u64 = 0;\npub const \
-                          FATAL_FINISHER_FAILURE: u32 = 0;\npub const FATAL_FINISHER_RESTART: u32 = \
-                          0;\n";
+                          FATAL_FINISHER_FAILURE: u32 = 0;\npub const FATAL_FINISHER_RESTART: u32 \
+                          = 0;\n";
             return Ok((format!("{absent}{}", devices::constants(&devices)), String::new()));
         };
         let (mut rust, linker) = artifacts_for(fatal_shutdown, &devices, include_restart)?;
@@ -1389,10 +1426,13 @@ mod artifact_tests
         // The mailbox registers start part way into the ARM control page the
         // record claims, so one device is declared at two granularities on
         // purpose: the window in the tree, the page in the inventory.
+        // Found by the record's own identity for the part; the tree's
+        // `compatible` is a different vocabulary and the mailbox is the pair that
+        // shows it — `bcm2835-mailbox` here, `brcm,bcm2835-mbox` in a tree.
         let mailbox = platform.declared_devices()
                               .unwrap()
                               .into_iter()
-                              .find(|device| device.compatible == "bcm2835-mailbox")
+                              .find(|device| device.model == "bcm2835-mailbox")
                               .expect("the record declares the mailbox window");
         assert_eq!((mailbox.base, mailbox.bytes), (0x3f00b880, 0x40));
         // A window moved out of the page that claims it is refused.

@@ -30,22 +30,20 @@ const END: u32 = 9;
 /// depending on which platform the environment selects.
 pub fn require_generated(platform: &Platform) -> Result<()>
 {
-    let declared = platform.hardware
-                           .as_ref()
-                           .and_then(|hardware| hardware.device_tree.as_ref());
+    let declared = platform.hardware.as_ref().and_then(|hardware| hardware.device_tree.as_ref());
     match declared
     {
         Some(platform::hardware::DeviceTree::Generated) => Ok(()),
         Some(other) =>
         {
-            Err(crate::error(format!("platform '{}' declares device_tree {other:?}, so it does not \
-                                      take a generated tree",
+            Err(crate::error(format!("platform '{}' declares device_tree {other:?}, so it does \
+                                      not take a generated tree",
                                      platform.name)))
         }
         None =>
         {
-            Err(crate::error(format!("platform '{}' declares no device_tree; a generated tree must \
-                                      be declared rather than assumed",
+            Err(crate::error(format!("platform '{}' declares no device_tree; a generated tree \
+                                      must be declared rather than assumed",
                                      platform.name)))
         }
     }
@@ -76,10 +74,10 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
     tree.property_string("compatible", &platform.name);
 
     let memory = platform.memory().map_err(|error| {
-                                            crate::error(format!("platform '{}' declares no \
-                                                                  usable memory section: {error}",
-                                                                 platform.name))
-                                        })?;
+                                       crate::error(format!("platform '{}' declares no usable \
+                                                             memory section: {error}",
+                                                            platform.name))
+                                   })?;
     let ram_base = memory.ram_base();
     let ram_bytes = memory.minimum_ram_bytes();
     tree.begin_node(&format!("memory@{ram_base:x}"));
@@ -118,7 +116,9 @@ pub fn generate_for(platform: &Platform) -> Result<Vec<u8>>
         tree.begin_node(&format!("{}@{:x}", device.compatible, device.base));
         tree.property_string("compatible", &device.compatible);
         tree.property_u32("reg",
-                          &[high(device.base), low(device.base), high(device.bytes),
+                          &[high(device.base),
+                            low(device.base),
+                            high(device.bytes),
                             low(device.bytes)]);
         tree.end_node();
     }
@@ -262,7 +262,10 @@ pub struct Observed
     pub base:       Option<u64>,
     pub bytes:      Option<u64>,
     /// The controller's bank-and-bit pair, as the tree spells it.
-    pub interrupt:  Option<(u32, u32)>
+    pub interrupt:  Option<(u32, u32)>,
+    /// The node's `status`, when it states one. Absence means the tree states no
+    /// opinion, which convention reads as usable.
+    pub status:     Option<String>
 }
 
 /// Where the record and a machine's own tree disagree about one device.
@@ -303,7 +306,8 @@ impl<'a> Cursor<'a>
         let rest = self.bytes
                        .get(self.position..)
                        .ok_or_else(|| crate::error("device tree ends inside a node name"))?;
-        let length = rest.iter().position(|byte| *byte == 0)
+        let length = rest.iter()
+                         .position(|byte| *byte == 0)
                          .ok_or_else(|| crate::error("device tree node name is unterminated"))?;
         self.position += length + 1;
         // Names are padded to a four-byte boundary.
@@ -327,9 +331,7 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
     {
         return Err(crate::error("device tree is shorter than its header"));
     }
-    let word = |at: usize| {
-        u32::from_be_bytes(blob[at..at + 4].try_into().unwrap())
-    };
+    let word = |at: usize| u32::from_be_bytes(blob[at..at + 4].try_into().unwrap());
     if word(0) != MAGIC
     {
         return Err(crate::error("device tree has no valid header"));
@@ -347,18 +349,22 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
     let mut cursor = Cursor { bytes:    &blob[..total],
                               position: structure_at };
     let property_name = |offset: usize| -> Result<String> {
-        let rest = strings.get(offset..)
-                          .ok_or_else(|| crate::error("device tree property name is out of \
-                                                       bounds"))?;
-        let length = rest.iter()
-                         .position(|byte| *byte == 0)
-                         .ok_or_else(|| crate::error("device tree property name is \
-                                                      unterminated"))?;
+        let rest =
+            strings.get(offset..)
+                   .ok_or_else(|| crate::error("device tree property name is out of bounds"))?;
+        let length =
+            rest.iter()
+                .position(|byte| *byte == 0)
+                .ok_or_else(|| crate::error("device tree property name is unterminated"))?;
         Ok(String::from_utf8_lossy(&rest[..length]).into_owned())
     };
     let mut path: Vec<String> = Vec::new();
     let mut nodes: Vec<Observed> = Vec::new();
-    // The root's cell counts decide how `reg` is spelled in this tree.
+    // A `reg` is spelled with the cell counts its parent declares. They are
+    // inherited and scoped, so they follow the node stack; a tree that declares
+    // none — the board's own firmware does not — is read by inferring from the
+    // property's length instead, which is the only information the file carries.
+    let mut cells_declared = true;
     let mut address_cells = 2usize;
     let mut size_cells = 2usize;
     loop
@@ -379,11 +385,11 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
             {
                 let length = cursor.u32()? as usize;
                 let name = property_name(cursor.u32()? as usize)?;
-                let data = cursor.bytes
-                                 .get(cursor.position..cursor.position + length)
-                                 .ok_or_else(|| crate::error("device tree property is out of \
-                                                              bounds"))?
-                                 .to_vec();
+                let data =
+                    cursor.bytes
+                          .get(cursor.position..cursor.position + length)
+                          .ok_or_else(|| crate::error("device tree property is out of bounds"))?
+                          .to_vec();
                 cursor.skip(length)?;
                 while cursor.position % 4 != 0
                 {
@@ -409,18 +415,39 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
                                                                    .into_owned()),
                                               base: None,
                                               bytes: None,
-                                              interrupt: None });
+                                              interrupt: None,
+                                              status: None });
                     }
                     "reg" =>
                     {
                         let numbers = cells();
+                        // With no declaration to follow, the length is the
+                        // evidence: one address cell and one size cell is eight
+                        // bytes, two of each is sixteen, and a bare one-cell
+                        // address with no size is four.
+                        let (address_cells, size_cells) = if cells_declared
+                        {
+                            (address_cells, size_cells)
+                        }
+                        else
+                        {
+                            match numbers.len()
+                            {
+                                0 | 1 => (numbers.len(), 0),
+                                2 => (1, 1),
+                                3 => (1, 2),
+                                _ => (2, 2)
+                            }
+                        };
                         if let Some(node) = nodes.last_mut()
                         {
                             if numbers.len() >= address_cells + size_cells
                             {
-                                let base = numbers[..address_cells].iter().fold(0u64, |acc, cell| {
-                                                                        (acc << 32) | u64::from(*cell)
-                                                                    });
+                                let base =
+                                    numbers[..address_cells].iter()
+                                                            .fold(0u64, |acc, cell| {
+                                                                (acc << 32) | u64::from(*cell)
+                                                            });
                                 let bytes = numbers[address_cells..address_cells + size_cells]
                                     .iter()
                                     .fold(0u64, |acc, cell| (acc << 32) | u64::from(*cell));
@@ -437,13 +464,30 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
                             node.interrupt = Some((*first, numbers.get(1).copied().unwrap_or(0)));
                         }
                     }
+                    "status" =>
+                    {
+                        // A tree states a node's usability, and `disabled` is how
+                        // the firmware says it will not bring the block up. It is
+                        // not part of a node's identity but it is part of what the
+                        // machine is configured to do, so it is carried rather than
+                        // dropped — the board's own tree marks the Arasan block
+                        // `disabled` while marking the other SD controller `okay`,
+                        // and a comparison that ignored `status` could not show it.
+                        let end = data.iter().position(|byte| *byte == 0).unwrap_or(data.len());
+                        if let Some(node) = nodes.last_mut()
+                        {
+                            node.status = Some(String::from_utf8_lossy(&data[..end]).into_owned());
+                        }
+                    }
                     "#address-cells" =>
                     {
                         address_cells = cells().first().copied().unwrap_or(2) as usize;
+                        cells_declared = true;
                     }
                     "#size-cells" =>
                     {
                         size_cells = cells().first().copied().unwrap_or(2) as usize;
+                        cells_declared = true;
                     }
                     _ =>
                     {}
@@ -462,6 +506,27 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
     Ok(nodes)
 }
 
+/// Translate a VideoCore bus address into the ARM view of the same registers.
+///
+/// The peripheral aperture is at `0x7E000000` for the VideoCore and `0x3F000000`
+/// for the ARM cores, with the same offset inside it, so one translation serves
+/// every peripheral. Addresses outside the aperture — a `reg` that already names
+/// memory — are returned unchanged.
+pub fn bus_to_arm(address: u64) -> u64
+{
+    const BUS_BASE: u64 = 0x7e00_0000;
+    const ARM_BASE: u64 = 0x3f00_0000;
+    const APERTURE: u64 = 0x0200_0000;
+    if address >= BUS_BASE && address - BUS_BASE < APERTURE
+    {
+        ARM_BASE + (address - BUS_BASE)
+    }
+    else
+    {
+        address
+    }
+}
+
 /// Compare every peripheral the record declares against a machine's own tree.
 ///
 /// This validates the *record*, not the machine: the tree is what is actually in
@@ -473,6 +538,16 @@ pub fn read(blob: &[u8]) -> Result<Vec<Observed>>
 /// because that is also what the kernel will walk. An overlay that disables a
 /// peripheral therefore shows up as an expected finding rather than an error,
 /// and is labelled as such.
+///
+/// Interrupt **presence** is compared, not interrupt numbers. The record states a
+/// flat number from the SoC's peripheral interrupt list, and a tree states an
+/// `armctrl` `<bank bit>` pair, so the two are not the same quantity and a
+/// translation between them would have to be derived from the interrupt
+/// controller's own layout rather than from the pair of sources being checked —
+/// deriving it from those would make the check agree with itself. Numbers are
+/// therefore left to be read side by side and resolved by later work; what this
+/// reports is a record that claims an interrupt the machine's tree does not
+/// corroborate at all.
 pub fn compare(platform: &Platform, blob: &[u8]) -> Result<Vec<Divergence>>
 {
     let observed = read(blob)?;
@@ -481,51 +556,104 @@ pub fn compare(platform: &Platform, blob: &[u8]) -> Result<Vec<Divergence>>
     for device in platform.declared_devices()?
     {
         let node = observed.iter().find(|node| {
-                                       node.compatible
-                                           .as_deref()
-                                           .is_some_and(|value| value == device.compatible)
-                                   });
+                                      node.compatible
+                                          .as_deref()
+                                          .is_some_and(|value| value == device.compatible)
+                                  });
         let Some(node) = node
         else
         {
-            divergences.push(Divergence { model:  device.compatible.clone(),
-                                          detail: "the machine's tree has no node with this \
-                                                   compatible, so the record declares a device \
-                                                   this machine does not describe"
-                                                  .into() });
+            divergences.push(Divergence { model:  device.model.clone(),
+                                          detail: format!("the machine's tree has no node \
+                                                           compatible with '{}', so the record \
+                                                           declares a device this machine does \
+                                                           not describe",
+                                                          device.compatible) });
             continue;
         };
-        if node.base != Some(device.base) || node.bytes != Some(device.bytes)
+        // The board's tree states peripherals in the VideoCore's bus view, and the
+        // record in the ARM view of the same registers. Comparing them without
+        // translating would report every device as a divergence — which is the
+        // same class of mistake as comparing the wrong vocabulary, and it is what
+        // the first corrected run did.
+        let base = node.base.map(bus_to_arm);
+        if base != Some(device.base)
         {
-            divergences.push(Divergence { model:  device.compatible.clone(),
-                                          detail: format!("record says {:#x}+{:#x}, the tree \
-                                                           says {}",
+            divergences.push(Divergence { model:  device.model.clone(),
+                                          detail: format!("record says {:#x}, the tree says {}",
                                                           device.base,
-                                                          device.bytes,
-                                                          match (node.base, node.bytes)
+                                                          match (node.base, base)
                                                           {
-                                                              (Some(base), Some(bytes)) =>
+                                                              (Some(raw), Some(arm)) =>
                                                               {
-                                                                  format!("{base:#x}+{bytes:#x}")
+                                                                  format!("{raw:#x} in the bus \
+                                                                           view, {arm:#x} in the \
+                                                                           ARM view")
                                                               }
                                                               _ => "no reg property".into()
                                                           }) });
         }
+        // A size difference is only interesting in one direction. The record
+        // states the page a driver claims and the tree states the register block
+        // inside it, so the record is normally the larger of the two; a tree that
+        // is larger means the record under-declares the device, which is a real
+        // defect.
+        if let Some(bytes) = node.bytes
+        {
+            if bytes > device.bytes
+            {
+                divergences.push(Divergence { model:  device.model.clone(),
+                                              detail: format!("the record declares {:#x} bytes \
+                                                               but the tree gives {bytes:#x}",
+                                                              device.bytes) });
+            }
+        }
+        // A node the firmware has disabled is present in the tree but not brought
+        // up by it, so the record declaring the same block as the platform's
+        // device is a disagreement worth naming. It is not an error to resolve
+        // here: the board observation and the firmware's configuration disagree on
+        // this SoC's two SD controllers, and both are evidence.
+        if let Some(status) = &node.status
+        {
+            if status != "okay" && status != "ok"
+            {
+                divergences.push(Divergence { model:  device.model.clone(),
+                                              detail: format!("the record declares this device, \
+                                                               and the machine's tree marks it \
+                                                               status = '{status}'") });
+            }
+        }
         if node.interrupt.is_none()
         {
-            without_interrupt.push(device.compatible.clone());
+            match device.interrupt
+            {
+                // The record declares an interrupt and the machine's tree does not
+                // state one on this node. That is a real divergence, reported per
+                // device with the number the record claims.
+                Some(number) =>
+                {
+                    divergences.push(Divergence { model:  device.model.clone(),
+                                       detail: format!("the record declares interrupt {number} \
+                                                        and the machine's tree states none on \
+                                                        this node") });
+                }
+                // Neither side claims one, so there is nothing to compare; counted
+                // for the aggregate line so the absence stays visible.
+                None => without_interrupt.push(device.model.clone())
+            }
         }
     }
-    // Reported once rather than per device, because it is one finding about the
-    // tree rather than N findings about N devices. The tree this build writes
-    // carries `compatible` and `reg` only, so a kernel walking it cannot learn a
-    // device's interrupt — which matters now that the machine's own tree is what
-    // the kernel reads.
+    // Reported once rather than per device, because it is one observation about
+    // the whole set rather than N findings: these are the devices for which the
+    // record itself declares no interrupt, so a tree that also states none agrees
+    // with it. Listed rather than omitted so the absence is visible instead of
+    // looking like the comparison never looked.
     if !without_interrupt.is_empty()
     {
         divergences.push(Divergence { model:  "interrupt properties".into(),
-                                      detail: format!("{} declared device(s) have no `interrupts` \
-                                                       node property: {}",
+                                      detail: format!("{} declared device(s) state no interrupt \
+                                                       in the record and have no `interrupts` \
+                                                       node property either: {}",
                                                       without_interrupt.len(),
                                                       without_interrupt.join(", ")) });
     }
@@ -541,31 +669,44 @@ mod cross_check_tests
     /// produced is walked back with the foreign-tree reader and must agree with
     /// the record that produced it on every window.
     ///
-    /// Exactly one finding is expected and it is a real one: the tree this build
-    /// writes carries `compatible` and `reg` and no `interrupts`, so a kernel
-    /// walking it cannot learn a device's interrupt. Asserting the finding keeps
-    /// it visible instead of letting it pass as "no divergences".
+    /// The expected findings are all about interrupts, and they are real: the tree
+    /// this build writes carries `compatible` and `reg` and no `interrupts`, so a
+    /// kernel walking it cannot learn a device's interrupt. Two different claims
+    /// therefore fail differently, and the test states both so neither can be
+    /// flattened into the other: every device the record gives an interrupt is
+    /// reported by name, and the devices the record itself leaves without one are
+    /// counted in one line.
     #[test]
     fn the_record_and_its_own_generated_tree_agree_on_windows()
     {
         // A record that declares no board section describes no peripherals, so
         // the check needs the hardware section this comparison exists for.
         let platform = super::super::platform::load("raspi3b").expect("record loads");
+        let devices = platform.declared_devices().expect("record declares devices");
+        let declares_interrupt = devices.iter().filter(|d| d.interrupt.is_some()).count();
+        let declares_none = devices.len() - declares_interrupt;
         let blob = generate_for(&platform).expect("tree generates");
         let nodes = read(&blob).expect("the foreign-tree reader parses our own tree");
         assert!(!nodes.is_empty(), "the reader found no nodes");
         let divergences = compare(&platform, &blob).expect("comparison runs");
         let windows: Vec<&crate::devicetree::Divergence> =
             divergences.iter().filter(|d| d.model != "interrupt properties").collect();
-        assert!(windows.is_empty(),
+        assert_eq!(windows.len(),
+                   declares_interrupt,
+                   "every device the record gives an interrupt is reported against a tree that \
+                    states none, and nothing else: {}",
+                   windows.iter()
+                          .map(|d| format!("{}: {}", d.model, d.detail))
+                          .collect::<Vec<_>>()
+                          .join("; "));
+        assert!(windows.iter().all(|d| d.detail.contains("states none on this node")),
                 "{}",
-                windows.iter().map(|d| format!("{}: {}", d.model, d.detail))
-                      .collect::<Vec<_>>()
-                      .join("; "));
+                windows.iter().map(|d| d.detail.clone()).collect::<Vec<_>>().join("; "));
         let interrupts: Vec<&crate::devicetree::Divergence> =
             divergences.iter().filter(|d| d.model == "interrupt properties").collect();
-        assert_eq!(interrupts.len(), 1, "the missing-interrupt finding is reported once");
-        assert!(interrupts[0].detail.contains("no `interrupts` node property"),
+        assert_eq!(interrupts.len(), 1, "the no-interrupt observation is reported once");
+        assert!(interrupts[0].detail.contains("state no interrupt in the record")
+                && interrupts[0].detail.contains(&format!("{declares_none} declared device(s)")),
                 "{}",
                 interrupts[0].detail);
     }
@@ -596,15 +737,14 @@ mod tests
             let strings = u32::from_be_bytes(blob[12..16].try_into().unwrap()) as usize;
             let structure_bytes = u32::from_be_bytes(blob[36..40].try_into().unwrap()) as usize;
             Self { structure: &blob[structure..structure + structure_bytes],
-                   strings: &blob[strings..],
-                   cursor: 0 }
+                   strings:   &blob[strings..],
+                   cursor:    0 }
         }
 
         fn u32(&mut self) -> u32
         {
-            let value = u32::from_be_bytes(self.structure[self.cursor..self.cursor + 4]
-                                               .try_into()
-                                               .unwrap());
+            let value = u32::from_be_bytes(self.structure[self.cursor..self.cursor + 4].try_into()
+                                                                                       .unwrap());
             self.cursor += 4;
             value
         }
@@ -695,10 +835,12 @@ mod tests
                             // block, which only holds property names.
                             let text = if name == "compatible"
                             {
-                                let end = self.structure[start..start + length]
-                                          .iter()
-                                          .position(|byte| *byte == 0)
-                                          .unwrap_or(length);
+                                let end =
+                                    self.structure[start..start + length].iter()
+                                                                         .position(|byte| {
+                                                                             *byte == 0
+                                                                         })
+                                                                         .unwrap_or(length);
                                 Some(String::from_utf8(self.structure[start..start + end]
                                                            .to_vec())
                                      .unwrap())
@@ -707,8 +849,7 @@ mod tests
                             {
                                 None
                             };
-                            let entry = found.iter_mut()
-                                             .find(|(existing, _, _)| *existing == path);
+                            let entry = found.iter_mut().find(|(existing, _, _)| *existing == path);
                             match entry
                             {
                                 Some((_, compatible, reg)) =>
@@ -733,7 +874,7 @@ mod tests
                         self.skip(length);
                     }
                     FDT_END => break,
-                    other => panic!("unexpected token {other}"),
+                    other => panic!("unexpected token {other}")
                 }
             }
             found
@@ -805,10 +946,21 @@ mod tests
         let nodes = reader.nodes();
         let compatible: Vec<&str> =
             nodes.iter().filter_map(|(_, value, _)| value.as_deref()).collect();
-        for expected in ["pl011", "sdhci"]
+        // A consumer finds a device by the tree's `compatible`, so what must be
+        // present is the string the record declares for each device — not this
+        // platform's inventory name for the part, which is a different vocabulary
+        // and is what a first version of this check got wrong.
+        for expected in ["arm,pl011", "brcm,bcm2835-mmc"]
         {
             assert!(compatible.contains(&expected),
                     "a consumer looking up {expected:?} must find it; tree has {compatible:?}");
+        }
+        // And the inventory name must *not* be what a consumer has to know.
+        for internal in ["pl011", "sdhci", "bcm2835-mailbox"]
+        {
+            assert!(!compatible.contains(&internal),
+                    "{internal:?} is this platform's name for the part, not the tree's; a \
+                     consumer must not have to know it");
         }
     }
 
@@ -816,9 +968,7 @@ mod tests
     fn the_header_is_well_formed_and_every_offset_is_in_bounds()
     {
         let (blob, _) = generated();
-        let word = |offset: usize| {
-            u32::from_be_bytes(blob[offset..offset + 4].try_into().unwrap())
-        };
+        let word = |offset: usize| u32::from_be_bytes(blob[offset..offset + 4].try_into().unwrap());
         assert_eq!(word(0), MAGIC, "a consumer rejects a tree without the magic");
         assert_eq!(word(4) as usize, blob.len(), "totalsize must cover the whole blob");
         assert_eq!(word(20), VERSION, "version must be one consumers accept");

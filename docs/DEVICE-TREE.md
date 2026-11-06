@@ -50,6 +50,56 @@ work on a false positive. It reports both values so a difference can be resolved
 It compares the machine's tree **post-overlay**, because that is also what the
 kernel sees, so a peripheral an overlay disables appears as an expected finding.
 
+Two translations make the comparison meaningful, and both were found by running it
+rather than by reasoning about it:
+
+* **Vocabulary.** The record names a part as its own inventory identity
+  (`bcm2835-mailbox`); a tree names it by `compatible` (`brcm,bcm2835-mbox`). Each
+  peripheral therefore declares its tree `compatible`, defaulting to the inventory
+  name, and the comparison is between compatibles.
+* **Address view.** A board's tree states peripherals in the VideoCore's bus view
+  (`0x7E000000`) and the record states them in the ARM view (`0x3F000000`) of the
+  same registers. The comparison translates between the two, because comparing
+  them raw reports every device as a divergence.
+
+A size difference is reported only when the machine's block is **larger** than the
+record's window: the record states the page a driver claims and the tree states the
+register block inside it, so the record is normally the larger, and only the other
+direction means the record under-declares a device.
+
+Interrupt **presence** is compared; interrupt **numbers** are not. The record states
+a flat number from the SoC's peripheral interrupt list and a tree states an `armctrl`
+`<bank bit>` pair, so they are not the same quantity. A translation between them
+would have to come from the interrupt controller's own bank layout — deriving it
+from the two sources being checked would make the check agree with itself and prove
+nothing. The board's tree and this record do happen to line up three ways
+(`<1 10>` for the 3D block against a declared 10, `<1 16>` for DMA against 16,
+`<2 29>` for the RNG against 61), but that correspondence is an observation to be
+explained by later work, not a rule this check is entitled to assume.
+
+A node the firmware marks with a `status` other than `okay` is reported too: the
+block is in the tree but the firmware does not bring it up, so a record that
+declares it as the platform's device disagrees with the machine's configuration.
+
+## What it found on the board's own tree, 2026-11-05
+
+Run against `bcm2710-rpi-3-b.dtb` from the firmware on a real card, post-overlay.
+Ten of the eleven declared devices agree on address after translation — including
+the 3D engine at bus `0x7EC00000` / ARM `0x3FC00000`, which independently confirms
+the corrected figure. The findings:
+
+| Device | Finding |
+|---|---|
+| `pl011` | The tree has **no** `arm,pl011` node at all. The only node at `0x7E201000` is `bluetooth`, and the console on this board is reached through the firmware's own configuration of UART0, not through a node a kernel can find by this compatible. Our generated tree carries the node, so this divergence is ours to resolve — but not by deleting the device. |
+| `sdhci` | The tree has `brcm,bcm2835-mmc` at `0x7E300000` with `status = "disabled"`, and `brcm,bcm2835-sdhost` at `0x7E202000` with `status = "okay"`. **The recorded hardware run read the card through the Arasan block.** Both are evidence and neither is dismissed; see `docs/PI-HARDWARE-INVENTORY.md`. |
+| `spi0`, `pwm`, `i2s`, `v3d` | Marked `status = "disabled"` by the firmware — the configured state of a board whose `config.txt` does not enable them. Not a hardware claim. |
+| `bcm2835-aux` | The record declares interrupt 29; the tree's aux node states none. The number appears one level down, on `brcm,bcm2835-aux-spi@7e215080` as `<1 29>`. |
+| `pwm`, `i2s`, `cprman` | Neither source declares an interrupt, which is what the record claims, so there is nothing to compare. Listed so the absence is visible. |
+
+The `status` findings are the reason this check earns its place: the discrepancy
+between the two SD controllers is exactly the kind of thing that would otherwise
+have been discovered by a driver failing on a board.
+
 The check exists because the record has been wrong three times in one day — an
 SPI interrupt, three I2C controllers sharing one, a DMA channel set — and every
 one was found by a person re-reading a datasheet. Arithmetic would have found all

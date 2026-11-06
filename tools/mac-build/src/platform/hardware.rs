@@ -21,22 +21,22 @@ use crate::{Result, error};
 pub struct Definition
 {
     /// What this board is, in one line a newcomer can read.
-    pub description: String,
-    pub board:       String,
+    pub description:       String,
+    pub board:             String,
     /// The SoC, when the board name alone does not identify it.
     #[serde(default)]
-    pub soc:         Option<String>,
-    pub boot:        Boot,
+    pub soc:               Option<String>,
+    pub boot:              Boot,
     /// The medium this board is given, by the name of a `storage` image. The
     /// layout itself lives at the platform level so the same described medium
     /// can also be attached to an emulator; a board does not describe its own
     /// partition table.
     #[serde(default)]
-    pub boot_image:  Option<String>,
+    pub boot_image:        Option<String>,
     #[serde(default)]
-    pub console:     Option<Console>,
+    pub console:           Option<Console>,
     #[serde(default)]
-    pub device_tree: Option<DeviceTree>,
+    pub device_tree:       Option<DeviceTree>,
     /// The board device tree the board's own firmware loads during bring-up,
     /// named by the file the firmware distribution ships for this board variant.
     ///
@@ -52,19 +52,19 @@ pub struct Definition
     /// its DRAM. A SoC port reads it to place its payload; nothing in this
     /// workspace's builders consumes it yet.
     #[serde(default)]
-    pub ram:         Option<Region>,
+    pub ram:               Option<Region>,
     /// Integrated peripherals, by identity. Not emulator device kinds.
     #[serde(default)]
-    pub devices:     Vec<Peripheral>,
+    pub devices:           Vec<Peripheral>,
     /// Controllers this board carries that this platform deliberately does not
     /// use, with the reason. Several SoCs have two parts that could serve one
     /// function; recording the one that is not wired up stops a later reader
     /// from driving the wrong controller and debugging a silent absence.
     #[serde(default)]
-    pub unused:      Vec<Unused>,
+    pub unused:            Vec<Unused>,
     /// Programs needed to write the artifact to the medium.
     #[serde(default)]
-    pub tooling:     Vec<String>
+    pub tooling:           Vec<String>
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -174,15 +174,28 @@ pub struct Unused
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Peripheral
-{    pub kind:      PeripheralKind,
+{
+    pub kind:       PeripheralKind,
     /// The part's own name, e.g. `pl011`, `sdhci`, `genet`.
-    pub model:     String,
+    pub model:      String,
+    /// The device tree's `compatible` string for this device, when it differs
+    /// from `model`.
+    ///
+    /// `model` is this platform's inventory identity — the same vocabulary the
+    /// MMIO inventory and module matches use. A tree names a device by
+    /// `compatible`, and the two vocabularies are not the same: the mailbox is
+    /// `bcm2835-mailbox` here and `brcm,bcm2835-mbox` there. Checking the record
+    /// against a machine's own tree needs that mapping stated, because a
+    /// comparison that guessed would report every device absent — which is
+    /// exactly what the first run did.
     #[serde(default)]
-    pub base:      Option<String>,
+    pub compatible: Option<String>,
     #[serde(default)]
-    pub bytes:     Option<String>,
+    pub base:       Option<String>,
     #[serde(default)]
-    pub interrupt: Option<u32>
+    pub bytes:      Option<String>,
+    #[serde(default)]
+    pub interrupt:  Option<u32>
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +271,22 @@ impl Definition
                               "a board booted by vendor firmware must say where its device \
                                tree comes from"
                                                .into()));
+        }
+        for (index, device) in self.devices.iter().enumerate()
+        {
+            if let Some(compatible) = &device.compatible
+            {
+                let compatible = compatible.trim();
+                if compatible.is_empty()
+                   || compatible.contains(' ')
+                   || compatible.starts_with(',')
+                   || compatible.ends_with(',')
+                {
+                    return Err(reject(&format!("devices[{index}].compatible"),
+                                      format!("'{compatible}' must be a device tree \
+                                               compatible string such as 'brcm,bcm2835-mbox'")));
+                }
+            }
         }
         if let Some(tree) = &self.board_device_tree
         {
