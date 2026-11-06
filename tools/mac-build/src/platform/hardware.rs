@@ -112,8 +112,17 @@ pub enum FirstStage
 #[serde(deny_unknown_fields)]
 pub struct Console
 {
-    /// The UART model, e.g. `pl011`.
+    /// The UART model, e.g. `pl011`. This is the record's own identity for the
+    /// part and is what `hardware.devices` must name it by.
     pub kind:   String,
+    /// The `compatible` string the machine's device tree declares for this
+    /// console, when it differs from `kind`. A machine's tree uses the standard
+    /// vocabulary — `arm,pl011` — while a record names the part. Declaring
+    /// the mapping here is what stops the bootloader from having to guess it,
+    /// and what makes the console a stated fact rather than whichever device
+    /// happened to be first in a list.
+    #[serde(default)]
+    pub compatible: Option<String>,
     /// The device node a host sees it as, e.g. `ttyAMA0`.
     #[serde(default)]
     pub device: Option<String>,

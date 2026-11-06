@@ -34,12 +34,27 @@ fn main()
     // The console base is a build-time constant because the earliest output
     // happens before any tree can be read, and a malformed tree has to be
     // reportable somewhere. Everything else comes from the tree.
+    // The console is whichever device the record's console declaration names,
+    // not whichever device happens to be first. Two selection rules is the
+    // defect this replaces: the record states the part once, and both the early
+    // output address and the tree lookup derive from that one statement.
+    let console = &record["hardware"]["console"];
+    let console_kind = console["kind"].as_str().expect("hardware.console.kind");
     let devices = record["hardware"]["devices"].as_array().expect("hardware.devices");
-    let console_base = devices.iter()
-                              .find(|device| device["kind"] == "uart")
-                              .and_then(|device| device["base"].as_str())
-                              .expect("the record must declare a UART peripheral")
-                              .to_string();
+    let device = devices.iter()
+                        .find(|device| device["model"].as_str() == Some(console_kind))
+                        .expect("the record's console must appear in hardware.devices");
+    let console_base = device["base"].as_str()
+                             .expect("the console device must declare a base")
+                             .to_string();
+    // A machine's tree names the part by its standard compatible string, which
+    // is often not the record's own name for it. The mapping is declared, so
+    // the bootloader asks the tree a question with a stated answer rather than
+    // a guessed one.
+    let console_compatible = console["compatible"]
+        .as_str()
+        .unwrap_or(console_kind)
+        .to_string();
     fs::write(out.join("platform-hardware.inc"),
               format!(".equ PL011_BASE, {console_base}\n"))
         .expect("hardware include");
@@ -52,6 +67,7 @@ fn main()
                        pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
                        pub const PHYSMAP_BASE: u64 = {physmap_base};\n\
                        pub const PL011_BASE: u64 = {console_base};\n\
+                       pub const PL011_COMPATIBLE: &str = \"{console_compatible}\";\n\
                        // The boot page tables live in RAM below the loaded image. They are\
                        // derived from the record rather than fixed, because a machine whose\
                        // RAM does not start at zero has no usable low addresses at all.\n\
