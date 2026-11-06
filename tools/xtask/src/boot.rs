@@ -202,6 +202,22 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
         boots: bool)
         -> Result<Value>
 {
+    run_case(workspace, directory, name, media, expected, boots, false)
+}
+
+/// A case whose guest must write to its own medium. Only the medium's
+/// read-only policy changes; every other step is the ordinary check.
+fn writable_case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf],
+                 expected: &[&str], boots: bool)
+                 -> Result<Value>
+{
+    run_case(workspace, directory, name, media, expected, boots, true)
+}
+
+fn run_case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf],
+            expected: &[&str], boots: bool, writable: bool)
+            -> Result<Value>
+{
     let serial = directory.join(format!("{name}.serial.log"));
     let stderr = directory.join(format!("{name}.qemu.log"));
     // Each case states the disks it is about; the record's own medium is not
@@ -215,7 +231,14 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
     let invocation = emulator::invocation(&workspace.platform,
                                           &workspace.root,
                                           workspace.dist(),
-                                          emulator::Media::Given(media),
+                                          if writable
+                                          {
+                                              emulator::Media::GivenWritable(media)
+                                          }
+                                          else
+                                          {
+                                              emulator::Media::Given(media)
+                                          },
                                           emulator::Mode::Headless,
                                           &[])?;
     let mut command = invocation.command();
@@ -384,6 +407,24 @@ fn altered_system(workspace: &Workspace, image: &Path, alteration: &str) -> Resu
     disk::edit(image, |volume| {
         let folder = volume.blessed_folder()?.id;
         let old = volume.lookup(folder, "System")?;
+        if alteration == "large-fork"
+        {
+            // The System keeps its identity and its existing extents. Removing
+            // and re-importing a 9 MiB fork writes it in 64 KiB chunks into
+            // whatever free space happens to exist, and the resulting read
+            // pattern made this case's boot vary between 49 and 132 seconds —
+            // over the platform readiness budget on a cold host cache, which is
+            // a measurement of the disk layout rather than of the assertion.
+            // Growing the existing fork states the same property without that
+            // lottery: `write_fork` reuses every allocated page and allocates
+            // only for the bytes the growth actually needs.
+            hfs_b::write_stream(volume,
+                                old.id,
+                                mac_hfs_b::ForkKind::Resource,
+                                file.resources.as_slice(),
+                                hfs_b::now()?)?;
+            return Ok(());
+        }
         volume.remove(old.id, hfs_b::now()?)?;
         hfs_b::import_macbinary(volume, folder, &file)?;
         Ok(())
@@ -393,7 +434,7 @@ fn altered_system(workspace: &Workspace, image: &Path, alteration: &str) -> Resu
 /// Replace Finder with the pipe transport probe on a clone of the built image.
 /// The probe is built through the public SDK here so the gate cannot pass on a
 /// stale artifact.
-fn pipes_probe_image(workspace: &Workspace, destination: &Path) -> Result<()>
+fn pipes_probe_image(workspace: &Workspace, destination: &Path, seed_folder: bool) -> Result<()>
 {
     let manifest =
         workspace.root().join("crates/mac-toolbox/tests/fixtures/pipes-probe/Cargo.toml");
@@ -425,11 +466,13 @@ fn pipes_probe_image(workspace: &Workspace, destination: &Path) -> Result<()>
         let old = volume.lookup(folder, "Finder")?;
         volume.remove(old.id, hfs_b::now()?)?;
         hfs_b::import_macbinary(volume, folder, &probe)?;
-        // The boot-check medium is attached read-only, so the folder the probe
-        // enumerates has to exist already. It is the same directory the guest
-        // would create, and the probe still creates it when a writable volume
-        // lacks one.
-        volume.create(folder, "Pipes", true, hfs_b::now()?)?;
+        // A read-only case cannot let the guest create the folder, so the
+        // harness seeds it. The writable case deliberately does not seed it:
+        // there the guest's own boot step is what must create it.
+        if seed_folder
+        {
+            volume.create(folder, "Pipes", true, hfs_b::now()?)?;
+        }
         Ok(())
     })
 }
@@ -521,37 +564,45 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               &[raw.clone()],
                               // The catalog number is not asserted: it shifts whenever
                               // the volume's contents change, and what matters is that a
-                              // blessed System Folder was found at all.
+                              // blessed System Folder was found at all. The Pipes folder
+                              // is skipped here because this medium is attached
+                              // read-only; the writable case below proves creation.
                               &["System RISC Boot ROM v1 at 0x200",
                                 "blessed folder 'System Folder' CNID=",
-                                "System: native service table ready", "BOOT_SYSTEM_READY:"],
+                                "System: native service table ready",
+                                "PIPES_FOLDER_SKIPPED volume=", "BOOT_SYSTEM_READY:"],
                               true)?];
     let probe_image = directory.join("pipes-probe.hfsb");
-    pipes_probe_image(workspace, &probe_image)?;
+    pipes_probe_image(workspace, &probe_image, true)?;
     cases.push(case(workspace,
                     &directory,
                     "pipes-probe",
                     &[probe_image.clone()],
                     // The pipe transport and the Pipes folder are one guest
                     // case: the folder markers are the added coverage, not a
-                    // separate boot-check case.
-                    &["PIPES_PROBE_ECHO_OK",
-                      "PIPES_PROBE_BLOCK_OK",
-                      "PIPES_PROBE_WOULD_BLOCK_OK",
-                      "PIPES_PROBE_EOF_OK",
-                      "PIPES_PROBE_BROKEN_OK",
-                      "PIPES_PROBE_NAME_OK",
-                      "PIPES_WRITER_FIRST_OK",
-                      "PIPES_WRITER_SECOND_REFUSED",
-                      "PIPES_WRITER_RELEASE_OK",
-                      "PIPES_WRITER_CLOSED_OK",
-                      "PIPES_FOLDER_LIST_OK items=1",
-                      "PIPES_FOLDER_LOOKUP_OK",
-                      "PIPES_FOLDER_STABLE_OK",
-                      "PIPES_FOLDER_ANON_ABSENT_OK",
-                      "PIPES_FOLDER_REFUSED_OK refusals=11",
-                      "PIPES_PROBE_PASS cases=5"],
+                    // separate boot-check case. The medium is read-only here,
+                    // so the folder is seeded instead of created by the guest.
+                    &["PIPES_PROBE_ECHO_OK", "PIPES_PROBE_BLOCK_OK",
+                      "PIPES_PROBE_WOULD_BLOCK_OK", "PIPES_PROBE_EOF_OK",
+                      "PIPES_PROBE_BROKEN_OK", "PIPES_PROBE_NAME_OK", "PIPES_WRITER_FIRST_OK",
+                      "PIPES_WRITER_SECOND_REFUSED", "PIPES_WRITER_RELEASE_OK",
+                      "PIPES_WRITER_CLOSED_OK", "PIPES_FOLDER_PRESENT volume=",
+                      "PIPES_FOLDER_LIST_OK items=1", "PIPES_FOLDER_LOOKUP_OK",
+                      "PIPES_FOLDER_STABLE_OK", "PIPES_FOLDER_ANON_ABSENT_OK",
+                      "PIPES_FOLDER_REFUSED_OK refusals=11", "PIPES_PROBE_PASS cases=5"],
                     true)?);
+    // The boot step itself: a writable medium with no Pipes folder in it. The
+    // System must create the folder before any application starts, record the
+    // same identity the mount sees, and the probe must find it already there.
+    let boot_folder = directory.join("pipes-folder-boot.hfsb");
+    pipes_probe_image(workspace, &boot_folder, false)?;
+    cases.push(writable_case(workspace,
+                             &directory,
+                             "pipes-folder-boot",
+                             &[boot_folder.clone()],
+                             &["PIPES_FOLDER_READY volume=", "PIPES_FOLDER_PRESENT volume=",
+                               "PIPES_FOLDER_LIST_OK items=1", "PIPES_PROBE_PASS cases=5"],
+                             true)?);
     if converted.is_some()
     {
         cases.push(case(workspace,

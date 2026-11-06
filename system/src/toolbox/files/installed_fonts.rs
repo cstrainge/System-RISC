@@ -419,6 +419,74 @@ impl Refresh
     }
 }
 
+/// The Pipes folder ensure runs inside this boot pass rather than a new one: it
+/// is the pass that already resolves the startup volume's blessed folder before
+/// any application starts, and the folder must exist by the time one does.
+/// `PENDING` retries while the volume is busy, `REFUSED` logs once and stops so
+/// an unwritable or absent volume cannot repeat a message every pass.
+const PIPES_PENDING: u8 = 0;
+const PIPES_DONE: u8 = 1;
+const PIPES_RETRY: u8 = 2;
+const PIPES_REFUSED: u8 = 3;
+static PIPES_FOLDER: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(PIPES_PENDING);
+/// Earliest tick the next retry may run. Zero means "now".
+static PIPES_RETRY_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn ensure_pipes_folder()
+{
+    use core::sync::atomic::Ordering;
+
+    use crate::toolbox::files::pipes::{self, Boot};
+
+    let state = PIPES_FOLDER.load(Ordering::Acquire);
+    if !matches!(state, PIPES_PENDING | PIPES_RETRY)
+    {
+        return;
+    }
+    // An attempt costs a volume mount and a catalog walk, so a retry is spaced
+    // like the font refresh instead of running on every maintenance pass.
+    if state == PIPES_RETRY && crate::platform::ticks() < PIPES_RETRY_AT.load(Ordering::Acquire)
+    {
+        return;
+    }
+    match pipes::ensure_folder()
+    {
+        Ok(Boot::Present { volume,
+                           cnid }) =>
+        {
+            PIPES_FOLDER.store(PIPES_DONE, Ordering::Release);
+            serial!("PIPES_FOLDER_READY volume={} cnid={} created=0", volume, cnid);
+        }
+        Ok(Boot::Created { volume,
+                           cnid }) =>
+        {
+            PIPES_FOLDER.store(PIPES_DONE, Ordering::Release);
+            serial!("PIPES_FOLDER_READY volume={} cnid={} created=1", volume, cnid);
+        }
+        Ok(Boot::ReadOnly { volume }) =>
+        {
+            PIPES_FOLDER.store(PIPES_DONE, Ordering::Release);
+            serial!("PIPES_FOLDER_SKIPPED volume={} reason=readonly", volume);
+        }
+        Err(status) if status == SERVICE_BUSY =>
+        {
+            // A storage operation still owns the volume. Retry later rather
+            // than failing a folder that will exist shortly.
+            PIPES_RETRY_AT.store(crate::platform::ticks().saturating_add(300), Ordering::Release);
+            if PIPES_FOLDER.swap(PIPES_RETRY, Ordering::AcqRel) == PIPES_PENDING
+            {
+                serial!("PIPES_FOLDER_PENDING status={status}");
+            }
+        }
+        Err(status) =>
+        {
+            PIPES_FOLDER.store(PIPES_REFUSED, Ordering::Release);
+            serial!("PIPES_FOLDER_REFUSED status={status}");
+        }
+    }
+}
+
 pub(crate) fn pump()
 {
     let slot = crate::toolbox::handles::InvocationGate::run(|| {
@@ -429,6 +497,7 @@ pub(crate) fn pump()
     {
         return;
     };
+    ensure_pipes_folder();
     let now = crate::platform::ticks();
     if state.refresh.is_none() && now >= state.retry_at
     {

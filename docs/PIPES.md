@@ -332,9 +332,12 @@ one:
   blessed folder; the merged listing follows the folder while that node ID is
   live. A mutation that removes, renames or moves the folder re-resolves the
   identity, so a stale node ID is never followed.
-- Boot-time ensure is not implemented yet. Today the folder exists only once
-  something creates it — a boot that finds it, or an application that creates it
-  — and the listing is present from that moment.
+- Boot-time ensure is implemented. The pass that already resolves the startup
+  volume's blessed folder creates the folder when it is absent, before any
+  application starts, and logs the identity it recorded. A volume that cannot
+  hold the folder is answered from its mount information without reading the
+  catalog: the header already says it cannot hold one, and an existing folder
+  there is already recorded when the volume is mounted.
 - If the startup volume is read-only, no folder is created or expected. Named
   pipes still register and still connect by name; they have no Finder
   presentation. The folder is presentation, not authority.
@@ -815,6 +818,10 @@ Implemented and built into the guest, with the guest booting:
   the folder or on an item is refused with `NotSupported`. The folder identity is
   recorded at mount and again when a `Pipes` folder is created under the blessed
   folder.
+- Boot-time creation of the folder, from the boot pass that already resolves the
+  blessed folder, with the recorded identity proved against the catalog rather
+  than assumed. A read-only startup volume is skipped from mount information
+  alone.
 
 Verified by execution in the guest, not only by compilation: a probe
 application replaces Finder on a cloned disk and runs five cases — echo,
@@ -823,18 +830,22 @@ versus end-of-stream, broken pipe, and name removal — followed by the writer-l
 and folder markers. The probe is
 `crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
 it and runs it as the single `pipes-probe` case, so the marker set is part of the
-gate (18 of 18). The writer-limit markers assert that a one-writer name accepts
-one `connect`, refuses the second with `AccessDenied`, accepts a new connection
-once the first closes, and still disappears with its last handle. The folder
-markers assert one item per named pipe, identical identity by name and by CNID,
-`NotFound` for an unknown name, identity stability across two enumerations and
-non-reuse after destruction, that an anonymous pipe does not appear, and eleven
-refused mutations. `scripts/capture_pipes_probe.py` boots the same artifact
-standalone and records the QEMU command and the serial hash.
+gate. A second case, `pipes-folder-boot`, boots a writable clone that has no
+`Pipes` folder in it and asserts `PIPES_FOLDER_READY … created=1` before the
+probe finds the folder with the same identity by independent lookup; that is the
+boot-creation evidence, and it is why the gate is 19 of 19. The read-only cases
+assert `PIPES_FOLDER_SKIPPED … reason=readonly` instead. The writer-limit markers
+assert that a one-writer name accepts one `connect`, refuses the second with
+`AccessDenied`, accepts a new connection once the first closes, and still
+disappears with its last handle. The folder markers assert one item per named
+pipe, identical identity by name and by CNID, `NotFound` for an unknown name,
+identity stability across two enumerations and non-reuse after destruction, that
+an anonymous pipe does not appear, and eleven refused mutations.
+`scripts/capture_pipes_probe.py` boots the same artifact standalone and records
+the QEMU command and the serial hash.
 
 Not implemented:
 
-- Boot-time creation of the folder. It exists once something creates it.
 - Finder open-as-connect.
 - The folder icon family, the `PIPE`/`PIPE` document family and its bundle, and
   the corresponding extension of the canonical icon-reservation allowlist. The
