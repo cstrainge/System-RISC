@@ -1,10 +1,11 @@
 //! QEMU virt display and clock; System owns the framebuffers.
 use core::{arch::asm,
-           sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
+           sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 
 /// Live display geometry comes from `crate::display`; the platform record only
 /// fixes the default and the maximum the reservations are sized for.
 use crate::display::{height, pixels, width};
+use crate::toolbox::quickdraw::{Rect, geometry::union_rect};
 
 static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 // The complete physical display reservation remains build-owned and excluded
@@ -28,9 +29,9 @@ const BACK_CPU: usize = (super::memory::VM_PHYSMAP_START
 /// Scan-out memory System draws into: the platform reservation for ramfb, or
 /// the video driver's own framebuffer once one attaches.
 static FRONT: AtomicUsize = AtomicUsize::new(FRONT_CPU);
-/// Union of scan-out rectangles changed since the video driver last presented,
-/// packed as four i16 (left, top, right, bottom); zero is empty.
-static DIRTY: AtomicU64 = AtomicU64::new(0);
+/// Scan-out damage accumulated until the next video service call.
+static DIRTY: spinning_top::Spinlock<DamageRegion> =
+    spinning_top::Spinlock::new(DamageRegion::EMPTY);
 static VIDEO_ATTACHED: AtomicBool = AtomicBool::new(false);
 
 fn front_cpu() -> usize
@@ -64,6 +65,7 @@ pub(super) fn use_boot_front()
 {
     FRONT.store(FRONT_CPU, Ordering::Release);
     VIDEO_ATTACHED.store(false, Ordering::Release);
+    *DIRTY.lock() = DamageRegion::EMPTY;
 }
 
 pub(super) fn video_attached() -> bool
@@ -71,52 +73,121 @@ pub(super) fn video_attached() -> bool
     VIDEO_ATTACHED.load(Ordering::Acquire)
 }
 
-fn pack(rect: mac_abi::geometry::Rect) -> u64
+pub(super) struct DamageRegion
 {
-    u64::from(rect.left as u16)
-    | u64::from(rect.top as u16) << 16
-    | u64::from(rect.right as u16) << 32
-    | u64::from(rect.bottom as u16) << 48
+    rects: [Rect; mac_video_interface::Damage::MAX_RECTS],
+    len:   usize
 }
 
-pub(super) fn mark_dirty(rect: mac_abi::geometry::Rect)
+impl DamageRegion
 {
-    if rect.right <= rect.left || rect.bottom <= rect.top || !video_attached()
+    const EMPTY: Self = Self { rects: [Rect::ZERO; mac_video_interface::Damage::MAX_RECTS],
+                               len:   0 };
+
+    fn add(&mut self, mut rect: Rect)
+    {
+        rect = Rect::new(rect.left.max(0),
+                         rect.top.max(0),
+                         rect.right.min(width() as i16),
+                         rect.bottom.min(height() as i16));
+        if rect.is_empty()
+        {
+            return;
+        }
+
+        // Merge only when the union still describes exactly the same pixels.
+        let mut i = 0;
+        while i < self.len
+        {
+            let old = self.rects[i];
+            if old.left <= rect.left
+               && old.top <= rect.top
+               && old.right >= rect.right
+               && old.bottom >= rect.bottom
+            {
+                return;
+            }
+            let bounds = union_rect(old, rect);
+            if bounds == rect
+               || (old.left == rect.left
+                   && old.right == rect.right
+                   && old.top <= rect.bottom
+                   && rect.top <= old.bottom)
+               || (old.top == rect.top
+                   && old.bottom == rect.bottom
+                   && old.left <= rect.right
+                   && rect.left <= old.right)
+            {
+                rect = bounds;
+                self.len -= 1;
+                self.rects[i] = self.rects[self.len];
+                i = 0;
+            }
+            else
+            {
+                i += 1;
+            }
+        }
+        if self.len == self.rects.len()
+        {
+            // Bound the backlog if the display falls behind a complex scene.
+            // Keep all pending pixels covered, without forcing a mode-wide update.
+            rect = self.rects().iter().copied().fold(rect, union_rect);
+            self.len = 0;
+        }
+        self.rects[self.len] = rect;
+        self.len += 1;
+    }
+
+    pub(super) fn rects(&self) -> &[Rect]
+    {
+        &self.rects[..self.len]
+    }
+}
+
+pub(super) fn mark_dirty(rect: Rect)
+{
+    super::interrupts::with_masked(|| {
+        if video_attached()
+        {
+            DIRTY.lock().add(rect);
+        }
+    });
+}
+
+pub(super) fn restore_dirty(region: DamageRegion)
+{
+    if region.len == 0
     {
         return;
     }
-    let _ = DIRTY.try_update(Ordering::AcqRel, Ordering::Acquire, |old| {
-                     if old == 0
-                     {
-                         return Some(pack(rect));
-                     }
-                     let at = |shift: u32| (old >> shift) as u16 as i16;
-                     Some(pack(mac_abi::geometry::Rect::new(at(0).min(rect.left),
-                                                            at(16).min(rect.top),
-                                                            at(32).max(rect.right),
-                                                            at(48).max(rect.bottom))))
-                 });
+    super::interrupts::with_masked(|| {
+        if video_attached()
+        {
+            let mut dirty = DIRTY.lock();
+            if dirty.len == 0
+            {
+                *dirty = region;
+            }
+            else
+            {
+                for &rect in region.rects()
+                {
+                    dirty.add(rect);
+                }
+            }
+        }
+    });
 }
 
 pub(super) fn peek_dirty() -> bool
 {
-    DIRTY.load(Ordering::Acquire) != 0
+    super::interrupts::with_masked(|| DIRTY.lock().len != 0)
 }
 
-/// Takes the accumulated changed rectangle clipped to the live mode.
-pub(super) fn take_dirty() -> Option<mac_abi::geometry::Rect>
+pub(super) fn take_dirty() -> DamageRegion
 {
-    let packed = DIRTY.swap(0, Ordering::AcqRel);
-    if packed == 0
-    {
-        return None;
-    }
-    let at = |shift: u32| (packed >> shift) as u16 as i16;
-    let rect = mac_abi::geometry::Rect::new(at(0).max(0),
-                                            at(16).max(0),
-                                            at(32).min(width() as i16),
-                                            at(48).min(height() as i16));
-    (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
+    super::interrupts::with_masked(|| core::mem::replace(&mut *DIRTY.lock(), DamageRegion::EMPTY))
 }
 
 pub fn back_buffer() -> &'static mut [u32]
@@ -211,20 +282,8 @@ pub(crate) fn present_rects(back: &[u32],
     // The serialized compositor owns both buffers. This exclusive frontbuffer
     // slice cannot escape; the scene stays read-only for the entire transition.
     let front = unsafe { core::slice::from_raw_parts_mut(front_cpu() as *mut u32, pixels()) };
-    if video_attached()
-    {
-        // Overlays change the frontbuffer without scene damage. Cursor pixels
-        // are bounded; outline feedback is not, so it presents the whole mode.
-        mark_dirty(overlays.previous_cursor);
-        if let Some(cursor) = overlays.cursor
-        {
-            mark_dirty(cursor.bounds());
-        }
-        if overlays.feedback.is_some() || overlays.previous_feedback.is_some()
-        {
-            mark_dirty(mac_abi::geometry::Rect::new(0, 0, width() as i16, height() as i16));
-        }
-    }
+    let attached = video_attached();
+    let mut damage = DamageRegion::EMPTY;
     let mut started = 0;
     let owner = crate::context::current_thread_context().identity().app.0;
     present_frame(back, front, width(), height(), rects, overlays, |event| {
@@ -236,7 +295,10 @@ pub(crate) fn present_rects(back: &[u32],
             }
             PresentEvent::Copied(rect) =>
             {
-                mark_dirty(rect);
+                if attached
+                {
+                    damage.add(rect);
+                }
                 crate::trace::record(crate::trace::FRAME_COPY,
                                      owner,
                                      crate::trace::clock().wrapping_sub(started),
@@ -254,10 +316,18 @@ pub(crate) fn present_rects(back: &[u32],
                                      crate::trace::clock().wrapping_sub(started),
                                      0)
             }
+            PresentEvent::FeedbackDamage(rect) =>
+            {
+                if attached
+                {
+                    damage.add(rect);
+                }
+            }
             PresentEvent::OutlineChanged(_) => ()
         }
     });
     unsafe {
         asm!("fence iorw, iorw", options(nostack));
     }
+    restore_dirty(damage);
 }
