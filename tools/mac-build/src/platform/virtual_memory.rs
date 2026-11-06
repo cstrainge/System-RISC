@@ -15,11 +15,85 @@ struct Region
     start: String,
     end:   String
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Mode
 {
-    Sv39
+    Sv39,
+    /// A 39-bit, four-level aarch64 layout. The page-table format is aarch64's;
+    /// the virtual windows are the same OS policy the RISC-V record states.
+    Aarch64
+}
+
+/// One supported virtual layout. Each implementation names the architecture it
+/// belongs to and owns its canonical-range rules, so shared validation never
+/// compares a literal target string.
+trait Layout: PageLayout
+{
+    const NAME: &'static str;
+    const TARGET: &'static str;
+    const TARGET_DESCRIPTION: &'static str;
+    const ROOT_BYTES: u64;
+}
+
+use mac_riscv_pages::Sv39;
+
+struct Sv39Layout;
+impl PageLayout for Sv39Layout
+{
+    fn geometry() -> mac_kernel_model::pages::PageGeometry
+    {
+        Sv39::geometry()
+    }
+
+    fn leaf_sizes() -> &'static [u64]
+    {
+        Sv39::leaf_sizes()
+    }
+
+    fn valid_virtual_range(range: AddressRange) -> bool
+    {
+        Sv39::valid_virtual_range(range)
+    }
+}
+impl Layout for Sv39Layout
+{
+    const NAME: &'static str = "Sv39";
+    const ROOT_BYTES: u64 = 1 << 30;
+    const TARGET: &'static str = "riscv64imac-unknown-none-elf";
+    const TARGET_DESCRIPTION: &'static str = "RV64";
+}
+
+/// The aarch64 39-bit canonical address space. With a 4 KiB granule the walk
+/// starts at level 1, so the leaves are the 1 GiB block, 2 MiB block and 4 KiB
+/// page of that three-level format.
+struct Aarch64Layout;
+impl PageLayout for Aarch64Layout
+{
+    fn geometry() -> mac_kernel_model::pages::PageGeometry
+    {
+        mac_kernel_model::pages::PageGeometry::new(4096).expect("the aarch64 base page geometry \
+                                                                 is 4096 bytes")
+    }
+
+    fn leaf_sizes() -> &'static [u64]
+    {
+        &[1 << 30, 1 << 21, 1 << 12]
+    }
+
+    fn valid_virtual_range(range: AddressRange) -> bool
+    {
+        let (start, end) = (range.start(), range.end());
+        (start < 0x0000_0080_0000_0000 && end <= 0x0000_0080_0000_0000)
+        || start >= 0xffff_ff80_0000_0000
+    }
+}
+impl Layout for Aarch64Layout
+{
+    const NAME: &'static str = "aarch64";
+    const ROOT_BYTES: u64 = 1 << 30;
+    const TARGET: &'static str = "aarch64-unknown-none";
+    const TARGET_DESCRIPTION: &'static str = "aarch64";
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,13 +111,13 @@ pub(super) struct Definition
     system_stacks:          Region,
     physmap_physical_base:  String
 }
-use mac_riscv_pages::Sv39;
 fn address(field: &str, value: &str) -> Result<u64>
 {
     value.strip_prefix("0x").and_then(|v|u64::from_str_radix(v,16).ok())
         .ok_or_else(||error(format!("platform virtual_memory.{field} must be a u64 0x hexadecimal address")))
 }
-fn region(field: &str, value: &Region, page: u64) -> Result<AddressRange>
+fn region(field: &str, value: &Region, page: u64, valid: fn(AddressRange) -> bool, half: &str)
+          -> Result<AddressRange>
 {
     let start = address(&format!("{field}.start"), &value.start)?;
     let end = address(&format!("{field}.end"), &value.end)?;
@@ -51,10 +125,10 @@ fn region(field: &str, value: &Region, page: u64) -> Result<AddressRange>
                                                  error(format!("platform virtual_memory.{field}: \
                                                                 {cause}"))
                                              })?;
-    if !start.is_multiple_of(page) || !end.is_multiple_of(page) || !Sv39::valid_virtual_range(range)
+    if !start.is_multiple_of(page) || !end.is_multiple_of(page) || !valid(range)
     {
         return Err(error(format!("platform virtual_memory.{field} must be page aligned and \
-                                  stay inside one canonical Sv39 half; got \
+                                  stay inside one canonical {half} half; got \
                                   {start:#x}..{end:#x}")));
     }
     Ok(range)
@@ -73,36 +147,42 @@ impl Definition
 {
     pub(super) fn check(&self, target: &str, memory: &super::memory::Checked) -> Result<Checked>
     {
-        let page = memory.page_bytes;
         match self.mode
         {
-            Mode::Sv39 =>
-            {
-                if target != "riscv64imac-unknown-none-elf" || page != 4096
-                {
-                    return Err(error(format!("platform sv39 virtual_memory requires the RV64 \
-                                              target and 4096-byte pages; got \
-                                              {target},page_bytes={page}")));
-                }
-            }
+            Mode::Sv39 => self.check_layout::<Sv39Layout>(target, memory),
+            Mode::Aarch64 => self.check_layout::<Aarch64Layout>(target, memory)
         }
-        let app = region("application", &self.application, page)?;
-        let process = region("process_kernel", &self.process_kernel, page)?;
-        let modules = region("modules", &self.modules, page)?;
+    }
+
+    fn check_layout<L: Layout>(&self, target: &str, memory: &super::memory::Checked)
+                               -> Result<Checked>
+    {
+        let page = memory.page_bytes;
+        if target != L::TARGET || page != 4096
+        {
+            return Err(error(format!("platform {} virtual_memory requires the {} target and \
+                                      4096-byte pages; got {target},page_bytes={page}",
+                                     L::NAME,
+                                     L::TARGET_DESCRIPTION)));
+        }
+        let valid = L::valid_virtual_range as fn(AddressRange) -> bool;
+        let half = L::NAME;
+        let root_bytes = L::ROOT_BYTES;
+        let app = region("application", &self.application, page, valid, half)?;
+        let process = region("process_kernel", &self.process_kernel, page, valid, half)?;
+        let modules = region("modules", &self.modules, page, valid, half)?;
         // The initial dynamic module mapper owns dedicated root slots in both
         // System views. It never replaces an existing System/physmap subtree.
-        if !modules.start().is_multiple_of(Sv39::LEAF_BYTES[0])
-           || !modules.end().is_multiple_of(Sv39::LEAF_BYTES[0])
+        if !modules.start().is_multiple_of(root_bytes) || !modules.end().is_multiple_of(root_bytes)
         {
-            return Err(error("platform sv39 virtual_memory.modules must occupy whole 1 GiB \
-                              root slots; dynamic module branches cannot share a bootstrap \
-                              System subtree"));
+            return Err(error("platform virtual_memory.modules must occupy whole root slots; \
+                              dynamic module branches cannot share a bootstrap System subtree"));
         }
-        let system = region("system", &self.system, page)?;
-        let physmap = region("physmap", &self.physmap, page)?;
+        let system = region("system", &self.system, page, valid, half)?;
+        let physmap = region("physmap", &self.physmap, page, valid, half)?;
         let image = address("application_image_base", &self.application_image_base)?;
         let system_image = address("system_image_base", &self.system_image_base)?;
-        let system_stacks = region("system_stacks", &self.system_stacks, page)?;
+        let system_stacks = region("system_stacks", &self.system_stacks, page, valid, half)?;
         let system_heap_base = address("system_heap_base", &self.system_heap_base)?;
         let system_heap_limit = system_heap_base.checked_add(memory.system_heap_bytes)
                                                 .ok_or_else(|| {
@@ -113,10 +193,12 @@ impl Definition
         let system_heap = region("system_heap",
                                  &Region { start: format!("{system_heap_base:#x}"),
                                            end:   format!("{system_heap_limit:#x}") },
-                                 page)?;
+                                 page,
+                                 valid,
+                                 half)?;
         let layout=UniformLayout::new(app,process,modules,system,physmap,image)
             .map_err(|cause|error(format!("platform virtual_memory: {cause}")))?;
-        layout.validate_architecture::<Sv39>()
+        layout.validate_architecture::<L>()
               .map_err(|cause| error(format!("platform virtual_memory: {cause}")))?;
         if !(system.start()..system.end()).contains(&system_image)
            || (physmap.start()..physmap.end()).contains(&system_image)
@@ -144,7 +226,7 @@ impl Definition
         let image_range = AddressRange::new(system_image, system_image_limit).map_err(|cause| {
                               error(format!("platform virtual System image: {cause}"))
                           })?;
-        if !Sv39::valid_virtual_range(image_range)
+        if !valid(image_range)
            || image_range.end() > system.end()
            || overlaps(image_range, physmap)
            || system_stacks.start() < system.start()
@@ -176,7 +258,7 @@ impl Definition
         if !physmap_physical_base.is_multiple_of(page) || physical_end > 1 << 56
         {
             return Err(error("platform virtual_memory physmap physical extent must be page \
-                              aligned and fit Sv39 physical addresses"));
+                              aligned and fit the platform's physical address space"));
         }
         if physmap_physical_base > memory.ram.start || physical_end < memory.ram.end
         {
@@ -285,7 +367,7 @@ mod tests
     fn approved_layout_emits_identical_rust_and_linker_values()
     {
         let checked = definition().check("riscv64imac-unknown-none-elf",
-                                         &super::super::current().memory().unwrap())
+                                         &super::super::load("qemu_riscv").unwrap().memory().unwrap())
                                   .unwrap();
         for (name, value) in checked.symbols()
         {
@@ -311,7 +393,7 @@ mod tests
     #[test]
     fn heap_window_checks_full_reservations_canonicality_alignment_and_overflow()
     {
-        let memory = super::super::current().memory().unwrap();
+        let memory = super::super::load("qemu_riscv").unwrap().memory().unwrap();
         let check_error = |base: &str, word: &str| {
             let mut d = definition();
             d.system_heap_base = base.into();
@@ -344,7 +426,7 @@ mod tests
     {
         let target = "riscv64imac-unknown-none-elf";
         let check_error = |d: &Definition, word: &str| {
-            let error = d.check(target, &super::super::current().memory().unwrap())
+            let error = d.check(target, &super::super::load("qemu_riscv").unwrap().memory().unwrap())
                          .err()
                          .unwrap()
                          .to_string();
@@ -381,13 +463,13 @@ mod tests
         image.system_image_base = "0xfffffffffff00000".into();
         check_error(&image, "overflows");
         let d = definition();
-        assert!(d.check("aarch64-unknown-none", &super::super::current().memory().unwrap())
+        assert!(d.check("aarch64-unknown-none", &super::super::load("qemu_riscv").unwrap().memory().unwrap())
                  .err()
                  .unwrap()
                  .to_string()
                  .contains("requires the RV64 target"));
         assert!(d.check(target, &{
-                     let mut memory = super::super::current().memory().unwrap();
+                     let mut memory = super::super::load("qemu_riscv").unwrap().memory().unwrap();
                      memory.page_bytes = 65536;
                      memory
                  })

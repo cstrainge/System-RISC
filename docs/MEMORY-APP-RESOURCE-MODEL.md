@@ -569,11 +569,11 @@ retaining live-index validation. Existing queue and public event contracts pass.
 A subsequent fixed set measured first-key 1.010, 0.895 and 1.247 ms, so this
 bounded improvement does not close the cold-input qualification.
 
-Future Pi targets produce one whole-device image with a board boot partition
-(firmware and loader) and an HFS-B System RISC partition. The loader discovers
-the filesystem partition and blessed System Folder and selects native System
-code. The platform build packages both partitions; manual assembly is not the
-interface. Pi/ARM implementations remain future platform work.
+Future BCM2837-class targets produce one whole-device image with a board boot
+partition (firmware and loader) and an HFS-B System RISC partition. The loader
+discovers the filesystem partition and blessed System Folder and selects native
+System code. The platform build packages both partitions; manual assembly is not
+the interface. BCM2837-class/ARM implementations remain future platform work.
 
 Fat native bundles may carry RV64 and AR64 code slices, sharing non-code
 resources. ABI/relocation metadata must be associated with the selected slice;

@@ -6,7 +6,7 @@ use mac_object_table::domain::{CompletionError, ReleasedResource};
 use super::*;
 use crate::toolbox::handles::{InvocationGate, KindLease, OwnerRef};
 pub(super) mod storage;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(in crate::toolbox::files) mod prepared;
 use storage::{Backend, Guard, Id, Key};
 pub(super) trait Payload: Sized
@@ -14,7 +14,7 @@ pub(super) trait Payload: Sized
     type Storage: Backend<Self>;
     const WIRE: Option<Kind> = None;
     const KIND: crate::toolbox::handles::KindCode;
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
     {
         None
@@ -159,7 +159,7 @@ impl<T: Payload> Objects<T>
         Ok(wire)
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) fn io_subject(&self, id: Id<T>)
                              -> Result<crate::drivers::jobs::subjects::Subject, Status>
     {
@@ -286,12 +286,12 @@ impl<T: Payload> Objects<T>
             let owner_stopping = self.retiring[index].owner_stopping();
             drop(self.retiring.swap_remove(index));
             self.forget_completion(id);
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             if owner_stopping
             {
                 crate::toolbox::processes::retirement::resources_released();
             }
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(not(systemrisc))]
             let _ = owner_stopping;
             return Some(());
         }
@@ -307,12 +307,12 @@ impl<T: Payload> Objects<T>
             // destruction; this acknowledgement cannot consume its ticket.
             let key = &self.completions.iter().find(|(wire, _)| *wire == id)?.1;
             let file = self.objects.as_ref()?.completing(key)?;
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             if file.owner_stopping()
             {
                 crate::toolbox::processes::retirement::resources_released();
             }
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(not(systemrisc))]
             let _ = file;
         }
         Some(())
@@ -337,12 +337,12 @@ impl<T: Payload> Objects<T>
                     let stopping = mark.owner_stopping();
                     drop(mark);
                     self.forget_completion(wire);
-                    #[cfg(target_arch = "riscv64")]
+                    #[cfg(systemrisc)]
                     if stopping
                     {
                         crate::toolbox::processes::retirement::resources_released();
                     }
-                    #[cfg(not(target_arch = "riscv64"))]
+                    #[cfg(not(systemrisc))]
                     let _ = stopping;
                     continue;
                 }

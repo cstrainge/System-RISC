@@ -138,6 +138,15 @@ pub struct Target
 }
 impl Target
 {
+    /// AArch64 little-endian LP64 with the mandatory base instruction set. The
+    /// feature word names no optional extension, so a module built for the base
+    /// architecture is admitted by a base-architecture kernel.
+    pub const AARCH64: Self = Self { architecture: Self::AARCH64_ARCH,
+                                     pointer_bits: 64,
+                                     endian:       Self::LITTLE,
+                                     convention:   Self::C_ABI,
+                                     features:     0 };
+    pub const AARCH64_ARCH: u16 = 3;
     pub const BIG: u8 = 2;
     pub const C_ABI: u32 = 1;
     pub const LITTLE: u8 = 1;

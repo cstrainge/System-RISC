@@ -43,7 +43,7 @@ impl EventManager
     }
 
     /// Progress is advisory and coalesced by object, not by timer/input event.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn post_transfer(&mut self, event: Event)
     {
         if let Some(queued) =
@@ -81,7 +81,7 @@ impl EventManager
 
     /// Coalesce adjacent within notifications, preserving all enter/leave/drop
     /// ordering. Physical motion must not flood a receiver's bounded queue.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn post_drag(&mut self, event: Event, position: EventPosition)
     {
         if event.message & 0xff00_0000 == mac_abi::drag::WITHIN_EVENT && self.len != 0
@@ -117,14 +117,14 @@ impl EventManager
 
     /// Capture the validated owner before an object's disposal removes lookup.
     /// Application posting never gets access to this routing metadata.
-    #[cfg(any(target_arch = "riscv64", test))]
+    #[cfg(any(systemrisc, test))]
     pub(crate) fn post_system_for(&mut self, owner: u64, event: Event)
     {
         self.push(event, true);
         self.route_owners[self.len - 1] = owner;
     }
 
-    #[cfg(any(target_arch = "riscv64", test))]
+    #[cfg(any(systemrisc, test))]
     pub(crate) fn next_system(&mut self) -> Option<(Event, EventPosition, u64)>
     {
         let index = self.routed[..self.len].iter().position(|routed| *routed)?;
@@ -220,7 +220,7 @@ impl EventManager
         }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn position_last(&mut self, position: EventPosition)
     {
         if self.len != 0

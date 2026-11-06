@@ -157,11 +157,11 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     call.info = drawing.image.info;
                     if call.surface.is_null()
                     {
-                        #[cfg(target_arch = "riscv64")]
+                        #[cfg(systemrisc)]
                         return crate::kernel::with_toolbox(|toolbox| toolbox.image(call, drawing))
                             .unwrap_or_else(|error|Err(error.status()))
                             .map_err(|status| ImageError { status, kind: SERVICE_ERROR });
-                        #[cfg(not(target_arch = "riscv64"))]
+                        #[cfg(not(systemrisc))]
                         return Err(ImageError { status: NOT_SUPPORTED,
                                                 kind:   SERVICE_ERROR });
                     }
@@ -195,9 +195,9 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 let region = unsafe { input(call.region, call.region_length, 65535) }?;
                 if call.surface.is_null()
                 {
-                    #[cfg(target_arch="riscv64")]
+                    #[cfg(systemrisc)]
                     return crate::kernel::with_toolbox(|d|d.graphics(call,points,region)).unwrap_or_else(|error|Err(error.status()));
-                    #[cfg(not(target_arch = "riscv64"))]
+                    #[cfg(not(systemrisc))]
                     return Err(NOT_SUPPORTED);
                 }
                 let surface = unsafe {
@@ -221,9 +221,9 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 {
                     if call.surface.is_null()
                     {
-                        #[cfg(target_arch="riscv64")]
+                        #[cfg(systemrisc)]
                         return crate::kernel::with_toolbox(|d|d.font_draw(call,text,manager)).unwrap_or_else(|error|Err(error.status()));
-                        #[cfg(not(target_arch = "riscv64"))]
+                        #[cfg(not(systemrisc))]
                         return Err(NOT_SUPPORTED);
                     }
                     let surface = unsafe {
@@ -273,9 +273,9 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 let mask = unsafe { input(call.mask, call.mask_length, 65535) }?;
                 if call.surface.is_null()
                 {
-                    #[cfg(target_arch="riscv64")]
+                    #[cfg(systemrisc)]
                     return crate::kernel::with_toolbox(|d|d.copy_bits(call,data,palette,mask)).unwrap_or_else(|error|Err(error.status()));
-                    #[cfg(not(target_arch = "riscv64"))]
+                    #[cfg(not(systemrisc))]
                     return Err(NOT_SUPPORTED);
                 }
                 let surface = unsafe {
@@ -303,9 +303,9 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     }
                     unsafe { core::slice::from_raw_parts_mut(call.pixels, call.pixel_length) }
                 };
-                #[cfg(target_arch="riscv64")]
+                #[cfg(systemrisc)]
                 return crate::kernel::with_toolbox(|d|d.world(call,pixels)).unwrap_or_else(|error|Err(error.status()));
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 {
                     let _ = pixels;
                     Err(NOT_SUPPORTED)
@@ -316,10 +316,10 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 if size == core::mem::size_of::<CursorResourceCall>()
                 {
                     let call = unsafe { request::<CursorResourceCall>(pointer, size) }?;
-                    #[cfg(target_arch = "riscv64")]
+                    #[cfg(systemrisc)]
                     return crate::kernel::with_toolbox(|d| d.cursor_resource(call))
                         .unwrap_or_else(|error| Err(error.status()));
-                    #[cfg(not(target_arch = "riscv64"))]
+                    #[cfg(not(systemrisc))]
                     {
                         let _ = call;
                         return Err(NOT_SUPPORTED);
@@ -327,9 +327,9 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }
                 let call = unsafe { request::<CursorCall>(pointer, size) }?;
                 let colors = unsafe { input(call.colors, call.color_count, 256) }?;
-                #[cfg(target_arch="riscv64")]
+                #[cfg(systemrisc)]
                 return crate::kernel::with_toolbox(|d|d.cursor(call,colors)).unwrap_or_else(|error|Err(error.status()));
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 {
                     let _ = colors;
                     Err(NOT_SUPPORTED)
@@ -391,7 +391,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             }
             RESOURCE =>
             {
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 if size == size_of::<mac_abi::resources::FileResourceCall>()
                 {
                     let owner = crate::context::current_thread_context().identity().app.0;
@@ -400,7 +400,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     };
                     return if status == 0 { Ok(()) } else { Err(status as Status) };
                 }
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 if size == size_of::<mac_abi::resources::FileVersionCall>()
                 {
                     let status = crate::kernel::with_files(|files| unsafe {
@@ -408,7 +408,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                                  }).unwrap_or_else(|error| error.status() as i64);
                     return if status == 0 { Ok(()) } else { Err(status as Status) };
                 }
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 {
                     let call =
                         unsafe { request::<mac_abi::resources::ResourceCall>(pointer, size) }?;
@@ -418,7 +418,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                                  if status == 0 { Ok(()) } else { Err(status as Status) }
                              });
                 }
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 return Err(NOT_SUPPORTED);
             }
             PICTURE =>
@@ -441,7 +441,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                                                           service::Port::default(),
                                                           fonts)
                 };
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 let drawing = if call.operation == PICTURE_RESOURCE
                 {
                     crate::kernel::with_resources_in(call.scope, |resources| {
@@ -456,7 +456,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 {
                     decode(bytes)?
                 };
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 let drawing = decode(bytes)?;
                 call.bounds = drawing.picture.bounds;
                 call.command_count = drawing.picture.commands.len() as u32;
@@ -466,9 +466,9 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }
                 if call.surface.is_null()
                 {
-                    #[cfg(target_arch="riscv64")]
+                    #[cfg(systemrisc)]
                     return crate::kernel::with_toolbox(|d|d.picture(call,drawing,fonts)).unwrap_or_else(|error|Err(error.status()));
-                    #[cfg(not(target_arch = "riscv64"))]
+                    #[cfg(not(systemrisc))]
                     return Err(NOT_SUPPORTED);
                 }
                 let surface = unsafe {
@@ -490,20 +490,20 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     let drawing = unsafe { icon_bytes(call) }?;
                     if call.surface.is_null()
                     {
-                        #[cfg(target_arch = "riscv64")]
+                        #[cfg(systemrisc)]
                         return crate::kernel::with_toolbox(|d| {
                                    d.icon(&IconCall { target: call.target,
                                                       ..Default::default() },
                                           drawing)
                                }).unwrap_or_else(|e| Err(e.status()));
-                        #[cfg(not(target_arch = "riscv64"))]
+                        #[cfg(not(systemrisc))]
                         return Err(NOT_SUPPORTED);
                     }
                     let surface =
                         unsafe { request::<Surface>(call.surface.cast(), size_of::<Surface>()) }?;
                     return drawing.paint(&mut unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?);
                 }
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 if size == size_of::<DefaultFileIconCall>()
                 {
                     let call = unsafe { request::<DefaultFileIconCall>(pointer, size) }?;
@@ -538,7 +538,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                         unsafe { request::<Surface>(call.surface.cast(), size_of::<Surface>()) }?;
                     return drawing.paint(&mut unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?);
                 }
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 if size == size_of::<FileIconCall>()
                 {
                     let call = unsafe { request::<FileIconCall>(pointer, size) }?;
@@ -578,12 +578,12 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 {
                     let _ = call;
                     Err(NOT_SUPPORTED)
                 }
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 {
                     if call.operation == ICON_APPLE_MENU_FLAG
                     {

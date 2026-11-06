@@ -119,7 +119,7 @@ fn request(files: &mut crate::toolbox::files::Manager, owner: u64, call: &mut Fi
 }
 /// # Safety
 /// Request and its declared borrowed buffers must be initialized and exclusive.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -> i64
 {
     unsafe {
@@ -143,7 +143,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
 }
 /// # Safety
 /// Request and its declared borrowed buffers must be initialized and exclusive.
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(systemrisc))]
 pub(crate) unsafe fn dispatch(files: &mut crate::toolbox::files::Manager, owner: u64,
                               pointer: *mut (), size: usize)
                               -> i64

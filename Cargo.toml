@@ -36,9 +36,11 @@ members = [
     "crates/mac-text",
     "crates/mac-hfs",
     "crates/mac-block",
+    "crates/mac-sdhci",
     "crates/mac-hfs-b",
     "crates/mac-filesystem",
     "crates/mac-boot-screen",
+    "crates/mac-videocore-fb",
     "toolbox/*",
     "system",
     "apps/finder",
@@ -52,6 +54,7 @@ members = [
     "tools/risc-host",
     "tools/xtask",
     "bootrom-riscv",
+    "bootrom-aarch64",
     "definitions/*",
     "drivers/*",
     "extensions/*",
@@ -91,6 +94,7 @@ mac-toolbox = { path = "crates/mac-toolbox" }
 mac-formats = { path = "crates/mac-formats" }
 mac-hfs = { path = "crates/mac-hfs" }
 mac-block = { path = "crates/mac-block" }
+mac-sdhci = { path = "crates/mac-sdhci" }
 mac-hfs-b = { path = "crates/mac-hfs-b" }
 mac-filesystem = { path = "crates/mac-filesystem" }
 mac-boot-screen = { path = "crates/mac-boot-screen" }

@@ -128,9 +128,9 @@ fn cleanup_status_of(cause: crate::toolbox::handles::cleanup::Cause) -> Status
         {
             i32::try_from(reply).unwrap_or(BAD_ABI)
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         crate::toolbox::handles::cleanup::Cause::ProcessSpace(cause) => cause.status(),
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         crate::toolbox::handles::cleanup::Cause::ModuleMapping(cause) =>
         {
             match cause
@@ -139,7 +139,7 @@ fn cleanup_status_of(cause: crate::toolbox::handles::cleanup::Cause) -> Status
                 _ => BAD_ABI
             }
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         crate::toolbox::handles::cleanup::Cause::NativeTls(cause) =>
         {
             match cause
@@ -151,7 +151,7 @@ fn cleanup_status_of(cause: crate::toolbox::handles::cleanup::Cause) -> Status
                 | crate::toolbox::native_threads::CleanupCause::Preparing { .. } => SERVICE_BUSY
             }
         }
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         crate::toolbox::handles::cleanup::Cause::ApplicationHeap(cause) =>
         {
             match cause
@@ -176,7 +176,7 @@ fn cleanup_status_of(cause: crate::toolbox::handles::cleanup::Cause) -> Status
         | crate::toolbox::handles::cleanup::Cause::WindowControlsPending { .. }
         | crate::toolbox::handles::cleanup::Cause::WindowPaintPending { .. } => SERVICE_BUSY,
         crate::toolbox::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         crate::toolbox::handles::cleanup::Cause::ThreadPreparations { .. }
         | crate::toolbox::handles::cleanup::Cause::DefinitionPending { .. }
         | crate::toolbox::handles::cleanup::Cause::NativeJoin { .. } => SERVICE_BUSY,

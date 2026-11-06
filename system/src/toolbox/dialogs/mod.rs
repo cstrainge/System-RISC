@@ -5,7 +5,7 @@ use alloc::{string::String, vec::Vec};
 use mac_abi::{dialogs::*, geometry::Rect, *};
 
 use super::resources::manager::Manager;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[path = "core.rs"]
 pub(crate) mod core_alerts;
 #[derive(Clone)]
@@ -81,7 +81,7 @@ fn resource_text(payload: &[u8], substitution: &str) -> Result<String, Status>
 /// Borrow each wrapped line from its paragraph. The candidate is the contiguous
 /// original span, including repeated/trailing spaces; no temporary String or
 /// second text buffer is needed. A true flag denotes a width-triggered wrap.
-#[cfg(any(target_arch = "riscv64", test))]
+#[cfg(any(systemrisc, test))]
 pub(super) fn wrapped_lines(text: &str, width: i16,
                             measure: impl FnMut(&str) -> Result<i16, Status>,
                             mut emit: impl FnMut(&str, bool) -> Result<(), Status>)
@@ -94,7 +94,7 @@ pub(super) fn wrapped_lines(text: &str, width: i16,
 
 /// Checked byte ranges belong to this exact source, never inferred from a
 /// borrowed slice's pointer or from equal text in another owner.
-#[cfg(any(target_arch = "riscv64", test))]
+#[cfg(any(systemrisc, test))]
 pub(super) fn wrapped_line_ranges(text: &str, width: i16,
                                   mut measure: impl FnMut(&str) -> Result<i16, Status>,
                                   mut emit: impl FnMut(core::ops::Range<usize>,
@@ -249,13 +249,13 @@ pub fn load(resources: Manager<'_>, call: &DialogCall) -> Result<Alert, Status>
                position,
                items })
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod modal;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use modal::Manager as Alerts;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use modal::Released as ReleasedAlert;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use modal::{ReleaseAlerts, ReleaseStorage, specification};
 
 #[cfg(all(test, feature = "test-support"))]

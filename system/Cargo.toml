@@ -66,12 +66,15 @@ toolbox-resources = { path = "../toolbox/resources" }
 toolbox-quickdraw = { path = "../toolbox/quickdraw" }
 mac-traps.workspace = true
 
-[target.'cfg(target_arch = "riscv64")'.dependencies]
+# Bare metal on any architecture: both guest targets report target_os = "none",
+# while the host does not. Cargo cannot see the custom `systemrisc` cfg, so this
+# is the built-in that distinguishes a guest build from the host test build.
+[target.'cfg(target_os = "none")'.dependencies]
 hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 spin = { version = "=0.12.3", default-features = false, features = ["once"] }
 linked_list_allocator = "0.10"
 
-[target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+[target.'cfg(not(target_os = "none"))'.dependencies]
 mac-driver = { path = "../crates/mac-driver", optional = true }
 mac-traps = { workspace = true, optional = true }
 toolbox-quickdraw = { path = "../toolbox/quickdraw", optional = true }

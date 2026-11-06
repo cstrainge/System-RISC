@@ -47,6 +47,12 @@ pub struct Definition
     /// Integrated peripherals, by identity. Not emulator device kinds.
     #[serde(default)]
     pub devices:     Vec<Peripheral>,
+    /// Controllers this board carries that this platform deliberately does not
+    /// use, with the reason. Several SoCs have two parts that could serve one
+    /// function; recording the one that is not wired up stops a later reader
+    /// from driving the wrong controller and debugging a silent absence.
+    #[serde(default)]
+    pub unused:      Vec<Unused>,
     /// Programs needed to write the artifact to the medium.
     #[serde(default)]
     pub tooling:     Vec<String>
@@ -58,7 +64,7 @@ pub struct Boot
 {
     pub medium:      Medium,
     /// What runs before this platform's payload. A board whose first stage is
-    /// vendor firmware — a Raspberry Pi, for example — has no bootloader
+    /// vendor firmware — a BCM2837-class board, for example — has no bootloader
     /// package of ours at all, and that is a normal configuration.
     pub first_stage: FirstStage
 }
@@ -117,13 +123,17 @@ pub struct Console
     pub baud:   Option<u32>
 }
 
-/// A device tree is either supplied by board firmware, or is a file this
-/// platform must ship. Which one is a platform fact, not a build assumption.
+/// A device tree is supplied by board firmware, shipped as a file, or generated
+/// from this record at build time. Which one is a platform fact, not a build
+/// assumption: a board whose firmware passes no tree needs the record to be the
+/// author, so the bootloader and the kernel consume the same declared hardware
+/// rather than each hardcoding it.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum DeviceTree
 {
     Firmware,
+    Generated,
     File
     {
         path: String
@@ -139,12 +149,23 @@ pub struct Region
     pub bytes: String
 }
 
+/// A controller the board carries but this platform does not use.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Unused
+{
+    /// The part's own name, e.g. `bcm2835-sdhost`.
+    pub model:  String,
+    pub base:   String,
+    /// Why this platform drives a different controller instead.
+    pub reason: String
+}
+
 /// An integrated peripheral identified the way a SoC datasheet identifies it.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Peripheral
-{
-    pub kind:      PeripheralKind,
+{    pub kind:      PeripheralKind,
     /// The part's own name, e.g. `pl011`, `sdhci`, `genet`.
     pub model:     String,
     #[serde(default)]
@@ -166,7 +187,8 @@ pub enum PeripheralKind
     Pcie,
     Timer,
     InterruptController,
-    Display
+    Display,
+    Entropy
 }
 
 impl Definition

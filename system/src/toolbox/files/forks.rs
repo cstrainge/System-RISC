@@ -13,7 +13,7 @@ impl super::objects::Payload for OpenFile
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FFRK");
     const WIRE: Option<Kind> = Some(Kind::Files);
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
     {
         self.io_subject.as_ref()
@@ -51,10 +51,10 @@ impl super::objects::Payload for OpenFile
         self.authority.scope()
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[must_use = "dispose open-fork backing after the Files guard ends"]
 pub(crate) struct ForkRelease(Option<objects::prepared::Backing>);
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl ForkRelease
 {
     pub(crate) fn dispose(self)
@@ -65,7 +65,7 @@ impl ForkRelease
         }
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl Manager
 {
     pub(crate) fn release_fork_owned(

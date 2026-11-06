@@ -350,7 +350,7 @@ pub(crate) fn cleanup(ticket: mac_object_table::domain::ReleasedResource,
 /// System display publication authenticates the provider's real module and pins
 /// the exact registered allocation, never an arbitrary reported CPU address.
 pub(crate) fn pin_buffer(module: u64, id: u64)
-                         -> Result<alloc::sync::Arc<super::dma::Buffer>, Status>
+                         -> Result<alloc::sync::Arc<crate::machine::dma::Buffer>, Status>
 {
     let owner = drivers::module_authority(module)?;
     with(|devices| devices.pin_buffer(&owner, id))

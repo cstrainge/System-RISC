@@ -3,6 +3,12 @@
 //! Arbitrary privileged-fault recovery remains the unproven M-D04 gate.
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
+#[cfg(target_arch = "aarch64")]
+mod aarch64;
+#[cfg(target_arch = "riscv64")]
+use riscv64 as arch;
+#[cfg(target_arch = "aarch64")]
+use aarch64 as arch;
 /// Resident allocator forwarding and synchronous retained-state selection.
 pub mod allocation;
 pub mod workers;
@@ -15,7 +21,7 @@ pub(crate) fn critical_section<R>(operation: impl FnOnce() -> R) -> crate::Resul
     scope::invoke(host.context, callback, operation)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub fn panic(info: &core::panic::PanicInfo<'_>) -> !
 {
     fatal(format_args!("DRIVER_PANIC_FATAL: {info}\n"))
@@ -47,12 +53,12 @@ pub(crate) fn worker_fault(details: core::fmt::Arguments<'_>) -> !
 
 fn fatal(arguments: core::fmt::Arguments<'_>) -> !
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     {
         diagnostic(arguments);
-        riscv64::fault()
+        arch::fault()
     }
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(not(systemrisc))]
     {
         extern "C" fn unsupported() -> !
         {
@@ -67,7 +73,7 @@ fn fatal(arguments: core::fmt::Arguments<'_>) -> !
 /// Native output allocates no memory and takes no SDK/resident registry lock.
 pub(crate) fn diagnostic(arguments: core::fmt::Arguments<'_>)
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     {
         use core::fmt::Write;
         struct Text
@@ -96,17 +102,17 @@ pub(crate) fn diagnostic(arguments: core::fmt::Arguments<'_>)
                               length:    0,
                               truncated: false };
         let failed = text.write_fmt(arguments).is_err();
-        riscv64::log(&text.bytes[..text.length]);
+        arch::log(&text.bytes[..text.length]);
         if text.truncated
         {
-            riscv64::log(b"DRIVER_DIAGNOSTIC_TRUNCATED\n");
+            arch::log(b"DRIVER_DIAGNOSTIC_TRUNCATED\n");
         }
         if failed
         {
-            riscv64::log(b"DRIVER_DIAGNOSTIC_FORMAT_FAILED\n");
+            arch::log(b"DRIVER_DIAGNOSTIC_FORMAT_FAILED\n");
         }
     }
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(not(systemrisc))]
     {
         let _ = arguments;
     }

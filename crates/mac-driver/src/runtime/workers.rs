@@ -236,16 +236,16 @@ pub fn current() -> Result<WorkerHandle>
 }
 fn native(call: &mut abi::WorkerCall) -> Result<()>
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     {
-        let status = super::riscv64::worker(call);
+        let status = super::arch::worker(call);
         if status != OK
         {
             return Err(Error(if status < OK { status } else { BAD_ABI }));
         }
         response(call)
     }
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(not(systemrisc))]
     {
         let _ = call;
         Err(Error(NOT_SUPPORTED))

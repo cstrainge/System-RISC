@@ -10,6 +10,7 @@ use core::fmt;
 use mac_kernel_model::{pages::{Access, PageOwnership, Permissions, PhysicalAddress},
                        policy::AddressRange};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sv39;
 impl mac_kernel_model::pages::PageLayout for Sv39
 {
@@ -28,6 +29,80 @@ impl mac_kernel_model::pages::PageLayout for Sv39
     fn valid_virtual_range(range: AddressRange) -> bool
     {
         Self::canonical_range(range)
+    }
+}
+/// The supervisor root register value: the Sv39 mode field, the address-space
+/// tag and the root table's physical page number, encoded together. Callers
+/// never re-derive the mode field or the PPN mask, so the encoding has exactly
+/// one definition and a second architecture states its own register form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Root(u64);
+impl Root
+{
+    pub const ASID_BITS: u32 = 16;
+    pub const ASID_MASK: u64 = (1 << Self::ASID_BITS) - 1;
+    pub const ASID_SHIFT: u32 = 44;
+    /// Sv39 is mode 8 in the satp mode field.
+    pub const MODE: u64 = 8;
+    pub const MODE_SHIFT: u32 = 60;
+    pub const PPN_MASK: u64 = (1 << 44) - 1;
+    pub const SHIFT: u32 = 12;
+
+    /// Encode a root table address and address-space tag. The address must be
+    /// page aligned and the tag must fit the ASID field; both are refused rather
+    /// than truncated.
+    pub fn from_physical(physical: PhysicalAddress, tag: u64) -> Result<Self, Error>
+    {
+        if physical.0 & (Sv39::PAGE_BYTES - 1) != 0
+        {
+            return Err(Error::Physical { address:   physical.0,
+                                         alignment: Sv39::PAGE_BYTES });
+        }
+        if tag > Self::ASID_MASK
+        {
+            return Err(Error::AddressSpaceTag { tag });
+        }
+        let ppn = physical.0 >> Self::SHIFT;
+        if ppn > Self::PPN_MASK
+        {
+            return Err(Error::Physical { address:   physical.0,
+                                         alignment: Sv39::PAGE_BYTES });
+        }
+        Ok(Self((Self::MODE << Self::MODE_SHIFT) | (tag << Self::ASID_SHIFT) | ppn))
+    }
+
+    /// Admit an observed register value, refusing any mode this crate does not
+    /// encode. A warm root comparison must not accept a differently-moded
+    /// register that happens to share the low bits.
+    pub fn decode(bits: u64) -> Result<Self, Error>
+    {
+        let mode = bits >> Self::MODE_SHIFT;
+        if mode != Self::MODE
+        {
+            return Err(Error::RootMode { mode });
+        }
+        Ok(Self(bits))
+    }
+
+    pub const fn bits(self) -> u64
+    {
+        self.0
+    }
+
+    pub fn physical(self) -> PhysicalAddress
+    {
+        PhysicalAddress((self.0 & Self::PPN_MASK) << Self::SHIFT)
+    }
+
+    pub fn tag(self) -> u64
+    {
+        (self.0 >> Self::ASID_SHIFT) & Self::ASID_MASK
+    }
+
+    /// Whether this register names the given root table, ignoring the tag.
+    pub fn names(self, physical: PhysicalAddress) -> bool
+    {
+        self.physical() == physical
     }
 }
 impl Sv39
@@ -129,7 +204,17 @@ pub enum Error
     {
         bits: u8
     },
-    NonLeafAtBottom
+    NonLeafAtBottom,
+    /// An address-space tag does not fit the ASID field, or a decoded root
+    /// register does not name the Sv39 mode.
+    AddressSpaceTag
+    {
+        tag: u64
+    },
+    RootMode
+    {
+        mode: u64
+    }
 }
 impl fmt::Display for Error
 {
@@ -175,6 +260,14 @@ impl fmt::Display for Error
             Self::NonLeafAtBottom =>
             {
                 f.write_str("Sv39 level 0 entry cannot refer to a lower page table")
+            }
+            Self::AddressSpaceTag { tag } =>
+            {
+                write!(f, "address-space tag {tag:#x} does not fit the 16-bit ASID field")
+            }
+            Self::RootMode { mode } =>
+            {
+                write!(f, "root register mode {mode} is not Sv39; this crate encodes Sv39 only")
             }
         }
     }

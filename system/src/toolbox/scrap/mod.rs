@@ -13,7 +13,7 @@ use crate::toolbox::handles::InvocationGate;
 pub mod native;
 pub(crate) mod extension;
 pub(crate) mod extension_wire;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) mod extension_runtime;
 struct Record
 {

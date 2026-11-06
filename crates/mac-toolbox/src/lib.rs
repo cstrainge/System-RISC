@@ -1,6 +1,6 @@
 //! Rust Toolbox facade over the resident System trap gate.
 #![no_std]
-#![cfg_attr(all(feature = "application", target_arch = "riscv64"), feature(alloc_error_handler))]
+#![cfg_attr(all(feature = "application", systemrisc), feature(alloc_error_handler))]
 #[cfg(feature = "application")]
 extern crate alloc;
 #[cfg(all(feature = "application", target_os = "systemrisc"))]
@@ -28,7 +28,7 @@ pub use toolbox_events::{Event, EventMask, Modifiers};
 pub use toolbox_inspection as inspection;
 pub mod panic;
 /// Native application entry, allocator and failure scaffold.
-#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
+#[cfg(all(systemrisc, not(target_os = "systemrisc")))]
 pub mod application;
 pub use toolbox_controls as controls;
 pub use toolbox_crashes as crashes;
