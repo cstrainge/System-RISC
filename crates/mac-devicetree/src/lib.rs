@@ -131,7 +131,20 @@ pub struct Node<'a>
     pub name:         &'a str,
     /// The parent's name, or `None` at the root. A child is visited before its
     /// parent, so this is how a consumer knows which container it is in.
+    ///
+    /// A name is not an identity: two siblings may share one. Use `index` when
+    /// the answer must be about a particular node.
     pub parent:       Option<&'a str>,
+    /// This node's position in the walk, unique within the tree.
+    ///
+    /// A node-at-END walk cannot otherwise express instance identity, so a
+    /// consumer that needs to know whether *this* node has children, or that
+    /// two same-named nodes are different, would have to reach past the API into
+    /// the token stream. `index` exists so it does not have to.
+    pub index:        usize,
+    /// The index of this node's parent, or `None` at the root. Leaf-ness is
+    /// "no node has `parent_index == Some(this.index)`".
+    pub parent_index: Option<usize>,
     /// The first entry of `compatible`, if the node declares one.
     pub compatible:   Option<&'a str>,
     /// The whole `compatible` list, so a consumer can match any entry rather
@@ -308,7 +321,7 @@ impl<'a> Tree<'a>
     /// Properties accumulate per depth. A node is visited when it ends, so
     /// without a stack the last child's properties would leak into every
     /// ancestor's visit and a four-hart machine would report five CPUs.
-    pub fn for_each_node(&self, mut visit: impl FnMut(&Node<'_>)) -> Result<usize, Error>
+    pub fn for_each_node(&self, mut visit: impl FnMut(&Node<'a>)) -> Result<usize, Error>
     {
         /// Deep enough for any real tree's device nesting; a tree that exceeds
         /// it is refused rather than silently truncated.
@@ -318,6 +331,8 @@ impl<'a> Tree<'a>
         {
             name:         &'a str,
             parent:       Option<&'a str>,
+            index:        usize,
+            parent_index: Option<usize>,
             compatible:   Option<&'a str>,
             compatible_list: Option<&'a [u8]>,
             device_type:  Option<&'a str>,
@@ -334,6 +349,7 @@ impl<'a> Tree<'a>
         let mut depth = 0usize;
         let mut cursor = 0usize;
         let mut seen = 0usize;
+        let mut next_index = 0usize;
         while cursor + 4 <= self.structure.len()
         {
             let token = self.word(&mut cursor)?;
@@ -361,6 +377,8 @@ impl<'a> Tree<'a>
                         (parent.own_address_cells.or(parent.address_cells),
                          parent.own_size_cells.or(parent.size_cells))
                     };
+                    let index = next_index;
+                    next_index += 1;
                     stack[depth] = State { name,
                                            parent: if depth == 0
                                            {
@@ -369,6 +387,15 @@ impl<'a> Tree<'a>
                                            else
                                            {
                                                Some(stack[depth - 1].name)
+                                           },
+                                           index,
+                                           parent_index: if depth == 0
+                                           {
+                                               None
+                                           }
+                                           else
+                                           {
+                                               Some(stack[depth - 1].index)
                                            },
                                            address_cells,
                                            size_cells,
@@ -385,6 +412,8 @@ impl<'a> Tree<'a>
                     let state = stack[depth];
                     visit(&Node { name:         state.name,
                                   parent:       state.parent,
+                                  index:        state.index,
+                                  parent_index: state.parent_index,
                                   compatible:   state.compatible,
                                   compatible_list: state.compatible_list,
                                   device_type:  state.device_type,
@@ -694,9 +723,21 @@ impl<'a> Tree<'a>
                                 -> Result<(), Error>
     {
         // The reservation block first, then the static reserved-memory children.
+        // A visitor that refuses must not have its refusal swallowed: the
+        // reservation block is walked by a closure that cannot return an error,
+        // so the first refusal is carried out by hand.
+        let mut refused: Option<Error> = None;
         self.reservations(|range| {
-                  visit(range);
+                  if refused.is_none()
+                     && let Err(error) = visit(range)
+                  {
+                      refused = Some(error);
+                  }
               })?;
+        if let Some(error) = refused
+        {
+            return Err(error);
+        }
         let mut problem: Option<Error> = None;
         self.for_each_node(|node| {
               if problem.is_some()
@@ -1083,5 +1124,92 @@ mod tests
         let tree = Tree::new(&blob).expect("valid envelope");
         assert!(tree.has_compatible("arm,primecell").expect("walk"));
         assert_eq!(tree.window("arm,primecell").expect("walk"), Some((0x0900_0000, 0x1000)));
+    }
+
+    #[test]
+    fn two_identically_named_nodes_under_different_parents_are_distinguishable()
+    {
+        // Two CPUs each carry an `interrupt-controller`. Their names are equal
+        // and their parents' names are equal, so a consumer that only had names
+        // could not tell which controller belonged to which CPU. Indices are
+        // what make the question answerable.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("cpus").u32("#address-cells", 1).u32("#size-cells", 0);
+            b.begin("cpu@0").text("device_type", "cpu").u32("reg", 0);
+            b.begin("interrupt-controller").text("compatible", "riscv,cpu-intc").end();
+            b.end();
+            b.begin("cpu@1").text("device_type", "cpu").u32("reg", 1);
+            b.begin("interrupt-controller").text("compatible", "riscv,cpu-intc").end();
+            b.end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+
+        let mut controllers: Vec<(usize, Option<usize>, Option<&str>, &str)> = Vec::new();
+        tree.for_each_node(|node| {
+                  if node.name == "interrupt-controller"
+                  {
+                      controllers.push((node.index, node.parent_index, node.parent, node.name));
+                  }
+              })
+            .expect("walk");
+
+        assert_eq!(controllers.len(), 2, "both controllers must be seen");
+        // The two controllers are indistinguishable by name, which is why a
+        // consumer cannot answer "which CPU owns this one" from the name alone.
+        assert_eq!(controllers[0].3, controllers[1].3, "the nodes share a name");
+        // Their identities are not: different instances, different parents.
+        assert_ne!(controllers[0].0, controllers[1].0, "indices must differ");
+        assert_ne!(controllers[0].1,
+                   controllers[1].1,
+                   "the two controllers must belong to different parents");
+        // And the parent's name is not an identity either: it happens to differ
+        // here, but a machine whose two containers share a name would make the
+        // name ambiguous while the index stays exact.
+        assert_eq!(controllers[0].2, Some("cpu@0"));
+        assert_eq!(controllers[1].2, Some("cpu@1"));
+    }
+
+    #[test]
+    fn leaf_ness_is_answerable_by_index()
+    {
+        // "must be a leaf" is a statement about one node instance. With indices
+        // it is a query over the walk rather than a second pass through the
+        // token stream.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("soc");
+            b.begin("clint@2000000").text("compatible", "sifive,clint0").end();
+            b.begin("container");
+            b.begin("child").end();
+            b.end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+
+        let mut parents = Vec::new();
+        let mut clint = None;
+        let mut container = None;
+        tree.for_each_node(|node| {
+                  parents.push(node.parent_index);
+                  if node.name.starts_with("clint@")
+                  {
+                      clint = Some(node.index);
+                  }
+                  if node.name == "container"
+                  {
+                      container = Some(node.index);
+                  }
+              })
+            .expect("walk");
+
+        let is_leaf = |index: usize| !parents.iter().any(|parent| *parent == Some(index));
+        assert!(is_leaf(clint.expect("clint node")), "the clint has no children");
+        assert!(!is_leaf(container.expect("container node")), "the container has a child");
     }
 }
