@@ -99,7 +99,14 @@ impl Memory
         for (base, bytes) in [(crate::BOOT_BASE, crate::BOOT_BYTES),
                               (crate::IMAGE_BASE, crate::IMAGE_BYTES),
                               (crate::FW_HEAP_BASE, crate::FW_HEAP_BYTES),
-                              (crate::DISPLAY_SCRATCH_BASE, crate::DISPLAY_SCRATCH_BYTES)]
+                              (crate::DISPLAY_SCRATCH_BASE, crate::DISPLAY_SCRATCH_BYTES),
+                              // The translation tables this bootstrap walks. They
+                              // are not inside the boot window, so without this the
+                              // kernel would refuse the root it is asked to
+                              // authenticate - and, if it accepted it, could hand
+                              // the page tables to the pool.
+                              (crate::L1_LOW, crate::L2_IMAGE + 0x1000 - crate::L1_LOW),
+                              (crate::L3_BASE, crate::IMAGE_TABLES as u64 * 0x1000)]
         {
             if bytes != 0
             {
