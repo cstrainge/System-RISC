@@ -138,7 +138,11 @@
         "interrupt": 48
       }
     ],
-    "board": "qemu-virt"
+    "board": "qemu-virt",
+    "console": {
+      "kind": "pl011",
+      "compatible": "arm,pl011"
+    }
   },
   "emulation": {
     "description": "QEMU virt board, 4x Cortex-A72, 2 GiB RAM at 0x40000000, virtio-MMIO devices with a virtio GPU and ramfb display",
@@ -222,7 +226,13 @@
         "BOOT_ALLOCATION_FAILED:",
         "SYSTEM_PANIC:",
         "SYSTEM_ALLOCATION_FAILED:",
-        "SYSTEM_STARTUP_FAILED:"
+        "SYSTEM_STARTUP_FAILED:",
+        "BOOT_AARCH64_DT_REFUSED:",
+        "BOOT_AARCH64_CONSOLE_MISMATCH:",
+        "BOOT_AARCH64_COUNTER_REFUSED:",
+        "BOOT_AARCH64_NO_DISK:",
+        "BOOT_AARCH64_SYSTEM_REFUSED:",
+        "BOOT_AARCH64_MOUNT_FAILED:"
       ]
     }
   },

@@ -174,10 +174,21 @@ pub extern "C" fn mmu_init()
         // are not congruent modulo a block, so no block descriptor can express
         // this translation; a page descriptor can, because the offset between
         // the two windows is constant.
+        //
+        // This extent is the mapped window, not the record's reserved image
+        // window: those are different quantities and the record's
+        // `memory.images.bytes` is 256 MiB, which would need 128 page tables
+        // and only 112 fit between the table base and the loaded image at
+        // 0x40080000. Deriving this from the loaded image length is the correct
+        // fix and it arrives with the image decode, which the loader does not
+        // do yet; deriving it from the reserved window would overwrite the
+        // loader's own code.
         let image_tables = 16usize; // 32 MiB of window, covering the System image
         assert!(image_l1 < 512, "the image window must sit inside the kernel half");
         assert!(image_first + image_tables <= 512,
                 "the image window must fit one level-2 table");
+        assert!(L3_BASE + image_tables as u64 * 0x1000 <= IMAGE_BASE,
+                "the image window's page tables must stay clear of the loaded image");
         entry(L1_HIGH, image_l1, L2_IMAGE | TABLE);
         for k in 0..image_tables
         {
@@ -324,12 +335,12 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
             return 0;
         }
     };
-    let (pl011, _) = match tree.window("arm,pl011")
+    let (pl011, _) = match tree.window(PL011_COMPATIBLE)
     {
         Some(window) => window,
         None =>
         {
-            puts("BOOT_AARCH64_DT_REFUSED: no arm,pl011 window in the tree\n");
+            puts("BOOT_AARCH64_DT_REFUSED: no console window in the tree\n");
             return 0;
         }
     };

@@ -87,10 +87,19 @@ kmap_bad:
 kmap_done:
     mov x0, x19
     bl virt_probe
+    // A refusal is not recoverable. The probe returns zero when it has already
+    // named its reason, and printing READY after that is how a named refusal
+    // used to scroll past as a green boot. Nothing downstream may run once the
+    // machine's description has been refused.
+    cbz x0, refused
     adr x0, ready_marker
     bl uart_puts
 2:  wfe
     b 2b
+
+refused:
+4:  wfe
+    b 4b
 
 el_bad:
     adr x0, el_bad_marker
