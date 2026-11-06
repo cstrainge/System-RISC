@@ -269,119 +269,9 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
                  image })
 }
 
-struct BootVolume
-{
-    disks:      *mut Box<dyn WritableBlockDevice>,
-    disk_count: usize
-}
-
-unsafe extern "C" fn disk_info(context: *mut (), index: u32, output: *mut mac_abi::DiskInfo)
-                               -> Status
-{
-    if context.is_null()
-       || output.is_null()
-       || !(output as usize).is_multiple_of(core::mem::align_of::<mac_abi::DiskInfo>())
-    {
-        return BAD_ARGUMENT;
-    }
-    let context = unsafe { &*context.cast::<BootVolume>() };
-    if index as usize >= context.disk_count
-    {
-        return NOT_FOUND;
-    }
-    let disk = unsafe { &**context.disks.add(index as usize) };
-    unsafe {
-        *output = mac_abi::DiskInfo { sector_count: disk.sector_count(),
-                                      read_only:    u32::from(disk.is_read_only()),
-                                      icon_kind:    *b"ICN#",
-                                      icon_id:      24000,
-                                      reserved:     0 };
-    }
-    OK
-}
-
-unsafe extern "C" fn read_sector(context: *mut (), index: u32, sector: u64, output: *mut u8)
-                                 -> Status
-{
-    if context.is_null() || output.is_null()
-    {
-        return BAD_ARGUMENT;
-    }
-    let context = unsafe { &mut *context.cast::<BootVolume>() };
-    if index as usize >= context.disk_count
-    {
-        return NOT_FOUND;
-    }
-    let disk = unsafe { &mut **context.disks.add(index as usize) };
-    if sector >= disk.sector_count()
-    {
-        return BAD_ARGUMENT;
-    }
-    let output = unsafe { &mut *output.cast::<[u8; 512]>() };
-    match disk.read_sector(sector, output)
-    {
-        Ok(()) => OK,
-        Err(error) =>
-        {
-            serial!("DISK_READ_FAILED: disk={} sector={} {}", index, sector, error);
-            NOT_SUPPORTED
-        }
-    }
-}
-unsafe extern "C" fn write_sector(context: *mut (), index: u32, sector: u64, input: *const u8)
-                                  -> Status
-{
-    if context.is_null() || input.is_null()
-    {
-        return BAD_ARGUMENT;
-    }
-    let context = unsafe { &mut *context.cast::<BootVolume>() };
-    if index as usize >= context.disk_count
-    {
-        return NOT_FOUND;
-    }
-    let disk = unsafe { &mut **context.disks.add(index as usize) };
-    if disk.is_read_only()
-    {
-        return mac_abi::READ_ONLY;
-    }
-    if sector >= disk.sector_count()
-    {
-        return BAD_ARGUMENT;
-    }
-    let input = unsafe { &*input.cast::<[u8; 512]>() };
-    disk.write_sector(sector, input).map_or_else(|error| {
-                                                     serial!("DISK_WRITE_FAILED: disk={} \
-                                                              sector={} {}",
-                                                             index,
-                                                             sector,
-                                                             error);
-                                                     mac_abi::IO_ERROR
-                                                 },
-                                                 |_| OK)
-}
-unsafe extern "C" fn flush_disk(context: *mut (), index: u32) -> Status
-{
-    if context.is_null()
-    {
-        return BAD_ARGUMENT;
-    }
-    let context = unsafe { &mut *context.cast::<BootVolume>() };
-    if index as usize >= context.disk_count
-    {
-        return NOT_FOUND;
-    }
-    let disk = unsafe { &mut **context.disks.add(index as usize) };
-    if disk.is_read_only()
-    {
-        return mac_abi::READ_ONLY;
-    }
-    disk.flush().map_or_else(|error| {
-                                 serial!("DISK_FLUSH_FAILED: disk={} {}", index, error);
-                                 mac_abi::IO_ERROR
-                             },
-                             |_| OK)
-}
+/// The storage contract System receives. The implementation is shared so a
+/// second board's bootstrap cannot bound a request differently.
+use mac_bootloader::volume::BootVolume;
 
 
 
@@ -610,10 +500,10 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
                           ram_size:                memory.ram[0].length,
                           log:                     Some(log),
                           storage_context:         (&mut context as *mut BootVolume).cast(),
-                          disk_info:               Some(disk_info),
-                          read_sector:             Some(read_sector),
-                          write_sector:            Some(write_sector),
-                          flush_disk:              Some(flush_disk),
+                          disk_info:               Some(mac_bootloader::volume::disk_info),
+                          read_sector:             Some(mac_bootloader::volume::read_sector),
+                          write_sector:            Some(mac_bootloader::volume::write_sector),
+                          flush_disk:              Some(mac_bootloader::volume::flush_disk),
                           startup_disk:            disk_index as u32,
                           flags:                   mac_abi::BOOT_GRAPHICAL,
                           startup_partition_start: partition.start,
