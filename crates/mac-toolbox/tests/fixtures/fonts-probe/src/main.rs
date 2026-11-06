@@ -77,7 +77,7 @@ fn select(system: &System<'_>, fonts: Fonts<'_>, name: &str, size: i16, face: u1
     // FONT_ID: the wire operation that maps a name to a family.
     let family = fonts.id(name).map_err(|error| failed("resolve name", error))?;
     let reported = fonts.name(family).map_err(|error| failed("family name", error))?;
-    check(reported.name == name, "the family answered with another name")?;
+    check(reported.name() == name, "the family answered with another name")?;
     // FONT_METRICS: the same selection an application makes to measure text.
     let metrics = fonts.metrics(FontSelection { family, size, face })
                        .map_err(|error| failed("metrics", error))?;
