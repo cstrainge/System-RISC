@@ -21,11 +21,12 @@ fn main() -> ExitCode
 fn usage() -> &'static str
 {
     "mac-extract — build a package's generated resources from its extract list\n\nmac-extract \
-     extract --package PATH --list PATH [--check]\n\n\x20 --package  the package's \
-     resources.json\n\x20 --list     its extract-list.json; the disc it names is read from \
-     iso/\n\x20 --check    compare what would be generated with what is on disk\n\nOutputs go \
-     beside the list: extracted_resources.json and extracted_assets/.\nThe build runs this step \
-     itself; running it by hand is optional."
+     extract --list PATH [--check]\n\n\x20 --list     its extract-list.json; the disc it names is \
+     read from iso/\n\x20 --check    compare what would be generated with what is on disk\n\n\
+     Inputs are the extract list and the disc it names, and nothing else: what the package \
+     declares is not read here, because the list is the reviewed record of what was taken.\n\n\
+     Outputs go beside the list: extracted_resources.json and extracted_assets/.\nThe build runs \
+     this step itself; running it by hand is optional."
 }
 
 fn run() -> mac_extract::Result<ExitCode>
