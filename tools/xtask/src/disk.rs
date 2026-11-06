@@ -19,11 +19,15 @@ use mac_build::{Result, error, package,
 use mac_formats::{macbinary, text};
 use serde_json::{Value, json};
 
-use crate::{Workspace, crates::Crates, write_json};
+use crate::{Workspace,
+            crates::{Crates, Installed},
+            write_json};
 
-/// The volumes this builder can produce, so an unsupported layout is reported
+mod partition;
+
+/// The layouts this builder can produce, so an unsupported shape is reported
 /// against the record that declared it.
-const SUPPORTED: &str = "a single unpartitioned system7-filesystem volume";
+const SUPPORTED: &str = "a single unpartitioned system7-filesystem volume or a partitioned medium";
 
 /// Check that every installed package can be named uniquely inside its folder.
 pub(super) fn validate_modules(workspace: &Workspace) -> Result<()>
@@ -83,61 +87,6 @@ pub(super) fn edit<R>(image: &Path,
     apply(&mut volume)
 }
 
-/// The volume this platform's boot medium is built as.
-struct Volume
-{
-    filesystem: FilesystemKind,
-    size:       u64,
-    /// The medium's layout in the record's own terms, for the report.
-    layout:     String
-}
-
-/// Read the boot medium's layout out of the record, refusing a shape this
-/// builder cannot produce.
-fn volume(workspace: &Workspace) -> Result<Volume>
-{
-    let platform = &workspace.platform.name;
-    let storage =
-        workspace.platform.storage.as_ref().ok_or_else(|| {
-                                                error(format!("platform '{platform}' declares no \
-                                                               storage.images, so it has no boot \
-                                                               volume to build"))
-                                            })?;
-    let name = workspace.boot_image_name()?;
-    let image = storage.image(name).ok_or_else(|| {
-                                        error(format!("platform '{platform}' storage.images has \
-                                                       no image named '{name}'"))
-                                    })?;
-    let (filesystem, size, layout) = match &image.layout
-    {
-        Layout::Filesystem { filesystem,
-                             size,
-                             .. } =>
-        {
-            let bytes = size.bytes()?.ok_or_else(|| {
-                                          error(format!("platform '{platform}' \
-                                                         storage.images.{name}: layout.size must \
-                                                         state a size"))
-                                      })?;
-            (*filesystem, bytes, format!("unpartitioned {filesystem:?}"))
-        }
-        other =>
-        {
-            return Err(error(format!("platform '{platform}' storage.images.{name}: this build \
-                                      produces {SUPPORTED}, not {}",
-                                     describe(other))));
-        }
-    };
-    if filesystem != FilesystemKind::System7
-    {
-        return Err(error(format!("platform '{platform}' storage.images.{name}: this build \
-                                  produces {SUPPORTED}, not {filesystem:?}")));
-    }
-    Ok(Volume { filesystem,
-                size,
-                layout })
-}
-
 /// A layout's shape, for an error that names what the record asked for.
 fn describe(layout: &Layout) -> String
 {
@@ -155,7 +104,18 @@ fn describe(layout: &Layout) -> String
 
 pub fn image(workspace: &Workspace) -> Result<Value>
 {
-    let medium = volume(workspace)?;
+    let platform = &workspace.platform.name;
+    let storage =
+        workspace.platform.storage.as_ref().ok_or_else(|| {
+                                                error(format!("platform '{platform}' declares no \
+                                                               storage.images, so it has no boot \
+                                                               volume to build"))
+                                            })?;
+    let name = workspace.boot_image_name()?;
+    let image = storage.image(name).ok_or_else(|| {
+                                        error(format!("platform '{platform}' storage.images has \
+                                                       no image named '{name}'"))
+                                    })?;
     let crates = Crates::read(workspace)?;
     let installed = crate::crates::installed(workspace, &crates)?;
     // Refuse collisions before any image mutation, including callers reusing
@@ -163,10 +123,80 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     crate::modules::validate_identities(&workspace.dist(),
                                         installed.iter().map(|entry| entry.name.as_str()))?;
     let dist = workspace.dist();
-    let started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let scratch = Scratch::create(&workspace.build)?;
-    let raw = scratch.path.join("boot.hfsb");
-    let mut image = hfs_b::Image::create(&raw, medium.size)?;
+    let output = workspace.disk_image()?;
+    let (report, summary) = match &image.layout
+    {
+        Layout::Filesystem { filesystem,
+                             size,
+                             .. } =>
+        {
+            if *filesystem != FilesystemKind::System7
+            {
+                return Err(error(format!("platform '{platform}' storage.images.{name}: this \
+                                          build produces {SUPPORTED}, not {filesystem:?}")));
+            }
+            let bytes = size.bytes()?.ok_or_else(|| {
+                                          error(format!("platform '{platform}' \
+                                                         storage.images.{name}: layout.size must \
+                                                         state a size"))
+                                      })?;
+            let raw = scratch.path.join("boot.hfsb");
+            let mut report = build_system7(workspace, &raw, bytes, &installed)?;
+            fs::rename(&raw, &output)?;
+            report["raw"] = json!(workspace.describe(&output));
+            report["virtual_size"] = json!(bytes);
+            report["layout"] = json!(format!("unpartitioned {filesystem:?}"));
+            report["boot_rom"] = json!(workspace.describe(&dist.join("bootrom-riscv.bin")));
+            let summary = format!("Built {} MiB HFS-B v1 as unpartitioned System7; all installed \
+                                   forks, metadata, blessing and structural checks passed.",
+                                  bytes / (1024 * 1024));
+            (report, summary)
+        }
+        Layout::Partitioned { table,
+                              size,
+                              partitions } =>
+        {
+            let total = size.bytes()?.ok_or_else(|| {
+                                          error(format!("platform '{platform}' \
+                                                         storage.images.{name}: layout.size must \
+                                                         state a size"))
+                                      })?;
+            let raw = scratch.path.join("sd-card.img");
+            let mut report =
+                partition::build(workspace, &raw, total, table, partitions, &installed)?;
+            fs::rename(&raw, &output)?;
+            report["raw"] = json!(workspace.describe(&output));
+            report["virtual_size"] = json!(total);
+            report["layout"] = json!(format!("{:?} partitioned medium", table.kind));
+            let summary = format!("Built {} MiB partitioned medium as {:?}; {} partition(s), \
+                                   files read back.",
+                                  total / (1024 * 1024),
+                                  table.kind,
+                                  partitions.len());
+            (report, summary)
+        }
+        other =>
+        {
+            return Err(error(format!("platform '{platform}' storage.images.{name}: this build \
+                                      produces {SUPPORTED}, not {}",
+                                     describe(other))));
+        }
+    };
+    write_json(&dist.join("disk.json"), &report)?;
+    println!("{summary}");
+    Ok(report)
+}
+
+/// Build a whole System7 volume at `path`. Both the unpartitioned layout and a
+/// partitioned System7 partition use this one population path, so the installed
+/// set, blessing and structural checks cannot drift between them.
+fn build_system7(workspace: &Workspace, path: &Path, size: u64, installed: &[Installed])
+                 -> Result<Value>
+{
+    let dist = workspace.dist();
+    let started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let mut image = hfs_b::Image::create(path, size)?;
     let partition = image.partition();
     let when = match env::var("SOURCE_DATE_EPOCH")
     {
@@ -218,36 +248,34 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                 when)?;
             // Derive the persistent key from the actual packaged EABI identity,
             // just as resident MPRE does. Display names confer no storage scope.
-            let clipboard = installed.iter()
-                                     .find(|entry| entry.package == "host-clipboard-extension")
-                                     .map(|entry| dist.join(format!("{}.bin", entry.name)))
-                                     .ok_or_else(|| {
-                                         error("this platform does not install \
-                                                host-clipboard-extension, so it has no clipboard \
-                                                preferences to seed")
-                                     })?;
-            let bytes = fs::read(clipboard)?;
-            let module = macbinary::decode(&bytes)?;
-            let resources = mac_formats::resource::decode(&module.resources)?;
-            let package = mac_formats::module::Package::inspect(&resources, module.file_type)?;
-            let mut buffer = [0; 37];
-            let filename =
-                mac_module::preferences::filename(package.contract.identity, &mut buffer);
-            let filename = core::str::from_utf8(filename)?;
-            let file = volume.create(folder, filename, false, when)?.id;
-            volume.set_finder_metadata(file, 0, finder_info, when)?;
-            let mut bytes = [0; mac_host_clipboard::MAX_SETTINGS_BYTES];
-            let length = mac_host_clipboard::Settings::default().encode(&mut bytes)?;
-            hfs_b::write_stream(&mut volume,
-                                file,
-                                mac_hfs_b::ForkKind::Data,
-                                &bytes[..length],
-                                when)?;
+            if let Some(clipboard) =
+                installed.iter()
+                         .find(|entry| entry.package == "host-clipboard-extension")
+                         .map(|entry| dist.join(format!("{}.bin", entry.name)))
+            {
+                let bytes = fs::read(clipboard)?;
+                let module = macbinary::decode(&bytes)?;
+                let resources = mac_formats::resource::decode(&module.resources)?;
+                let package = mac_formats::module::Package::inspect(&resources, module.file_type)?;
+                let mut buffer = [0; 37];
+                let filename =
+                    mac_module::preferences::filename(package.contract.identity, &mut buffer);
+                let filename = core::str::from_utf8(filename)?;
+                let file = volume.create(folder, filename, false, when)?.id;
+                volume.set_finder_metadata(file, 0, finder_info, when)?;
+                let mut bytes = [0; mac_host_clipboard::MAX_SETTINGS_BYTES];
+                let length = mac_host_clipboard::Settings::default().encode(&mut bytes)?;
+                hfs_b::write_stream(&mut volume,
+                                    file,
+                                    mac_hfs_b::ForkKind::Data,
+                                    &bytes[..length],
+                                    when)?;
+            }
         }
     }
 
     let mut verified = Vec::new();
-    for entry in &installed
+    for entry in installed
     {
         let parent = create_folder(&mut folders, &mut volume, &entry.folder, when)?;
         let bytes = fs::read(dist.join(format!("{}.bin", entry.name)))?;
@@ -280,7 +308,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     drop(volume);
     drop(image);
     // A fresh mount, not the formatter's retained state, verifies the blessing.
-    let mut image = hfs_b::Image::open(&raw, false)?;
+    let mut image = hfs_b::Image::open(path, false)?;
     let mut volume = mac_hfs_b::Volume::mount(&mut image, partition, Default::default())?;
     if volume.blessed_folder()?.id != system
     {
@@ -291,28 +319,12 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     drop(volume);
     drop(image);
     let finished = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    // The raw medium is the build artifact; a disk image format an emulator
-    // prefers is produced on demand by `run`, so building needs no emulator
-    // tools on the host.
-    let output = workspace.disk_image()?;
-    fs::rename(&raw, &output)?;
-    let report = json!({"raw":workspace.describe(&output),
-        "virtual_size":medium.size,
-        "layout":medium.layout,
-        "filesystem":format!("{:?}", medium.filesystem),
+    Ok(json!({"filesystem":"System7",
         "filesystem_version":1,
         "unicode_version":"17.0.0","volume_name":h.name,"created":h.created,"modified":h.modified,
         "image_started_unix":started,"image_finished_unix":finished,"time_basis":"1904 epoch microseconds, UTC",
-        "blessed_system_folder_id":system,"files":verified,"catalog_files":checked.files,"catalog_directories":checked.directories,
-        "boot_rom":workspace.describe(&dist.join("bootrom-riscv.bin"))});
-    write_json(&dist.join("disk.json"), &report)?;
-    println!("Built {} MiB HFS-B v1 as {}; all installed forks, metadata, blessing and \
-              structural checks passed.",
-             medium.size / (1024 * 1024),
-             medium.layout);
-    Ok(report)
+        "blessed_system_folder_id":system,"files":verified,"catalog_files":checked.files,"catalog_directories":checked.directories}))
 }
-
 /// Create `path` on the volume if it does not exist yet, returning its CNID.
 fn create_folder(folders: &mut BTreeMap<String, u32>,
                  volume: &mut mac_hfs_b::Volume<'_, hfs_b::Image>, path: &str,

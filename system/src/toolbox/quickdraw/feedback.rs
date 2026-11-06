@@ -7,7 +7,7 @@ use mac_abi::{BAD_ARGUMENT, NO_MEMORY, SERVICE_BUSY, Status};
 use super::{Canvas, Point, Rect,
             geometry::{outline_edges, sect_rect},
             presentation::{Outline, indexed_tracking_xor}};
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 use crate::toolbox::windows::{WindowId, WindowManager};
 
 #[derive(Clone, Default, Debug)]
@@ -81,7 +81,7 @@ impl Clip
         }
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(not(systemrisc))]
     pub(crate) fn rectangles(rectangles: &[Rect], previous: Option<&Self>) -> Option<Self>
     {
         if let Some(Self::Visible(old)) = previous
@@ -114,13 +114,13 @@ impl Clip
 /// A visibility sweep happens only when its target or committed scene geometry
 /// changes. Arc snapshots keep old clipping alive until its pixels are erased.
 #[derive(Default)]
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) struct VisibilityCache
 {
     target: Option<Option<WindowId>>,
     clip:   Clip
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl VisibilityCache
 {
     pub(crate) fn invalidate(&mut self)
@@ -191,7 +191,7 @@ impl VisibilityCache
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 fn allocation_refused(target: Option<WindowId>)
 {
     serial!("FEEDBACK_CLIP_UNAVAILABLE: target={target:?}; not enough memory for visibility \

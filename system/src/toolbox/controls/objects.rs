@@ -13,10 +13,10 @@ use sr_control_reflow_handling as layout;
 use super::tracking::{Action, Tracking};
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      resources::definitions::{BoundDefinition, DefinitionRef}};
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[path = "admission.rs"]
 mod admission;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use admission::{ControlCommit, ControlPlan, CreationError};
 
 /// Recovery placement follows a genuine active Session and its original I/O
@@ -24,7 +24,7 @@ pub(crate) use admission::{ControlCommit, ControlPlan, CreationError};
 /// SAME genuine System owner in both roles and still uses admitted endpoints.
 fn recovery_mode(recipient: &OwnerRef, storage: &OwnerRef) -> Result<bool, Status>
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     if let Some(activity) = crate::context::recovery_activity()
     {
         if activity.recipient().owner() != recipient.owner()
@@ -112,7 +112,7 @@ struct Object
     definition:         BoundDefinition,
     // Last: registered removal must finish payload destruction before the
     // protected modal service can become available to another recipient.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     _recovery_activity: Option<crate::recovery::Activity>
 }
 // Only mutable control state is staged; ownership and recovery pins stay live.
@@ -486,7 +486,7 @@ impl Manager
         let storage = self.objects.owner(id).ok_or(NOT_FOUND)?;
         if storage.incarnation() != owner
         {
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             {
                 let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
                 if activity.owner() != owner || activity.storage_owner().owner() != storage
@@ -494,7 +494,7 @@ impl Manager
                     return Err(ACCESS_DENIED);
                 }
             }
-            #[cfg(not(target_arch = "riscv64"))]
+            #[cfg(not(systemrisc))]
             return Err(ACCESS_DENIED);
         }
         Ok(o)
@@ -903,7 +903,7 @@ impl Manager
                                           .iter_mut()
                                           .find(|reservation| reservation.ready())
                                           .ok_or(SERVICE_BUSY)?;
-                    #[cfg(target_arch = "riscv64")]
+                    #[cfg(systemrisc)]
                     {
                         let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
                         let subject = activity.root_subject();
@@ -911,7 +911,7 @@ impl Manager
                             reservation, subject.scope(), Some(activity.acknowledgement_pin()),
                             |_| object).map_err(publication_status)?
                     }
-                    #[cfg(not(target_arch = "riscv64"))]
+                    #[cfg(not(systemrisc))]
                     {
                         let _ = (reservation, object);
                         return Err(NOT_SUPPORTED);
@@ -1160,7 +1160,7 @@ impl Object
            storage: &OwnerRef, cleanup: Option<disposal::ControlCleanup>)
            -> Result<(Self, Option<Arc<disposal::DisposalSlot>>), Status>
     {
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let _ = recovery;
         let (disposal, slot) = if let Some(cleanup) = cleanup
         {
@@ -1205,7 +1205,7 @@ impl Object
                                   {
                                       None
                                   } },
-                   #[cfg(target_arch = "riscv64")]
+                   #[cfg(systemrisc)]
                    _recovery_activity: if recovery
                    {
                        crate::context::recovery_activity()
@@ -1253,7 +1253,7 @@ fn pool_status(error: mac_object_table::domain::PoolError) -> Status
     crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 fn publication_status(error: mac_object_table::store::PublicationError) -> Status
 {
     match error

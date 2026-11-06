@@ -35,6 +35,6 @@ pub(super) fn hide_other(ledger: &OwnerRef, info: &mut ProcessInfo, foreground: 
     }
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "riscv64")))]
+#[cfg(all(test, feature = "test-support", not(systemrisc)))]
 #[path = "presentation/tests.rs"]
 mod tests;

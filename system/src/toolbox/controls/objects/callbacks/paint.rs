@@ -52,7 +52,7 @@ pub(crate) struct ManagedPaintClaim
     origin:         ManagedPaintOrigin,
     expected:       Expected,
     inherited_clip: Option<Rect>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     _activity:      Option<crate::recovery::Activity>,
     _allocation:    AllocationAuthority,
     // Last: actual reader/authority destruction precedes availability notices.
@@ -132,7 +132,7 @@ impl Manager
     fn paint_recovery_scope(&self, origin: &ManagedPaintOrigin) -> Result<(), Status>
     {
         let object = self.objects.get(origin.key.id()).ok_or(NOT_FOUND)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         {
             match (&object._recovery_activity, crate::context::recovery_activity())
             {
@@ -156,7 +156,7 @@ impl Manager
                 _ => return Err(ACCESS_DENIED)
             }
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         let _ = object;
         Ok(())
     }
@@ -195,7 +195,7 @@ impl Manager
                                   recipient: object.recipient,
                                   tree:      object.tree,
                                   source:    object.definition.quiescence_plan() };
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let activity = object._recovery_activity.clone();
         object.claim = Some(ClaimLink { claim:         Arc::downgrade(&claim),
                                         whole_window:  false,
@@ -203,7 +203,7 @@ impl Manager
         Ok(ManagedPaintClaim { origin: *origin,
                                expected,
                                inherited_clip,
-                               #[cfg(target_arch = "riscv64")]
+                               #[cfg(systemrisc)]
                                _activity: activity,
                                _allocation: allocation.clone(),
                                claim })

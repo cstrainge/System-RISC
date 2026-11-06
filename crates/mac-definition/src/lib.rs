@@ -15,7 +15,7 @@ pub use families::{Button, ButtonKind, CaptionMode, Highlight, Progress, Progres
 /// Generate the CDEF entry and panic scaffold for the family named by `Message`.
 pub use mac_definition_macros::cdef_main;
 pub use toolbox_controls::Part;
-#[cfg(any(target_arch = "riscv64", test))]
+#[cfg(any(systemrisc, test))]
 #[doc(hidden)]
 pub mod runtime;
 #[doc(hidden)]
@@ -134,7 +134,7 @@ impl<'a> Services<'a>
 #[macro_export]
 macro_rules! definition_panic_handler {
     () => {
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         #[panic_handler]
         fn __definition_panic(info: &core::panic::PanicInfo<'_>) -> !
         {

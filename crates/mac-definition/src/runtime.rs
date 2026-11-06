@@ -2,12 +2,18 @@
 //! and allocation-free. The System authenticates the current invocation; this
 //! runtime neither claims privileged unwind nor owns a recovery UI/event loop.
 use core::fmt::{self, Write};
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 use core::panic::PanicInfo;
 
 use mac_abi::definitions::DefinitionPanic;
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
+#[cfg(target_arch = "aarch64")]
+mod aarch64;
+#[cfg(target_arch = "riscv64")]
+use riscv64 as arch;
+#[cfg(target_arch = "aarch64")]
+use aarch64 as arch;
 struct Diagnostic
 {
     report: DefinitionPanic
@@ -31,7 +37,7 @@ impl Write for Diagnostic
         Ok(())
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub fn panic(info: &PanicInfo<'_>) -> !
 {
     let mut diagnostic = Diagnostic { report: DefinitionPanic::default() };
@@ -39,7 +45,7 @@ pub fn panic(info: &PanicInfo<'_>) -> !
     {
         diagnostic.report.flags |= DefinitionPanic::FORMAT_FAILED;
     }
-    riscv64::report(&mut diagnostic.report)
+    arch::report(&mut diagnostic.report)
 }
 
 #[cfg(test)]

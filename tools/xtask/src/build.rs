@@ -8,7 +8,7 @@
 
 use std::{env, fs, path::Path};
 
-use mac_build::{Result, error, package};
+use mac_build::{Result, error, package, platform::install::Set};
 use serde_json::{Value, json};
 
 use crate::{Workspace, authority, boot,
@@ -19,6 +19,13 @@ use crate::{Workspace, authority, boot,
 /// hand the graph to ninja.
 pub fn build(workspace: &Workspace) -> Result<()>
 {
+    // Name the resolved machine before compiling, so a record edit is visible
+    // in the build's own output rather than only in the file that was edited.
+    if let Some(emulation) = workspace.platform.emulation()
+    {
+        println!("Platform {}: {}; {} harts",
+                 workspace.platform.name, emulation.description, emulation.harts);
+    }
     sdk::prerequisites(workspace)?;
     ninja::run(workspace, &[])
 }
@@ -30,13 +37,34 @@ pub fn stage(workspace: &Workspace, name: &str) -> Result<()>
     {
         "definitions" =>
         {
-            guest_build(workspace,
-                        &names(&Crates::read(workspace)?.in_stage(crates::Stage::Definitions)))?
+            // Definitions are resources of the resident System. A platform
+            // that installs no guest module has no System to consume them, so
+            // there is nothing to compile; building another architecture's
+            // definition set would fail on its own RISC-V-only runtime gate.
+            let crates = Crates::read(workspace)?;
+            let packages = if workspace.platform.install.modules.is_empty()
+            {
+                Vec::new()
+            }
+            else
+            {
+                names(&crates.in_stage(crates::Stage::Definitions))
+            };
+            require_stage_output(workspace, "definitions", &packages)?;
+            guest_build(workspace, &packages)?
         }
-        "guest" => guest_build(workspace, &guest_packages(workspace)?)?,
+        "guest" =>
+        {
+            let packages = guest_packages(workspace)?;
+            require_stage_output(workspace, "guest", &packages)?;
+            guest_build(workspace, &packages)?
+        }
         "apps" =>
         {
-            sdk::applications(workspace, &applications(workspace)?)?;
+            let apps = applications(workspace)?;
+            let packages: Vec<String> = apps.iter().map(|app| app.package.clone()).collect();
+            require_stage_output(workspace, "apps", &packages)?;
+            sdk::applications(workspace, &apps)?;
         }
         "extract" => extract(workspace)?,
         "package" => package_all(workspace)?,
@@ -76,6 +104,37 @@ fn extract(workspace: &Workspace) -> Result<()>
         mac_extract::extract(&list, false)?;
     }
     Ok(())
+}
+
+/// Refuse a stage whose selected package set is empty.
+///
+/// A stage that produces nothing must not stamp a success. The record says
+/// whether the emptiness is intentional (`install.set` is `none`, with a
+/// reason) or a defect (`packages` selected none for this stage), and the
+/// error names the stage and that declaration.
+fn require_stage_output(workspace: &Workspace, stage: &str, packages: &[String]) -> Result<()>
+{
+    if !packages.is_empty()
+    {
+        return Ok(());
+    }
+    let install = &workspace.platform.install;
+    let why = match install.set
+    {
+        Set::None =>
+        {
+            format!("platform '{}' declares install.set none: {}",
+                    workspace.platform.name,
+                    install.reason.trim())
+        }
+        Set::Packages =>
+        {
+            format!("platform '{}' declares install.set packages but selected no packages for \
+                     this stage; add the packages or set install.set to none with a reason",
+                    workspace.platform.name)
+        }
+    };
+    Err(error(format!("{stage} stage produced no artifact: {why}")))
 }
 
 /// Every package this platform's guest images are compiled from: the installed
@@ -231,10 +290,17 @@ fn applications(workspace: &Workspace) -> Result<Vec<sdk::App>>
 /// Package every compiled module and record what was built.
 pub fn package_all(workspace: &Workspace) -> Result<()>
 {
-    let _ = boot::package_rom(workspace)?;
     let crates = Crates::read(workspace)?;
+    let installed = crates::installed(workspace, &crates)?;
+    let mut selected: Vec<String> = installed.iter().map(|entry| entry.name.clone()).collect();
+    if let Some(bootloader) = &workspace.platform.bootloader
+    {
+        selected.push(bootloader.package.clone());
+    }
+    require_stage_output(workspace, "package", &selected)?;
+    let _ = boot::package_rom(workspace)?;
     let mut reports = Vec::new();
-    for entry in crates::installed(workspace, &crates)?
+    for entry in &installed
     {
         let package = crates.get(&entry.package)?;
         // The application stage already packaged these, with the SDK's own
@@ -261,7 +327,13 @@ pub fn package_all(workspace: &Workspace) -> Result<()>
     // The receipts carry the role beside each report; packaging only needs the
     // report itself.
     reports.extend(application_reports(workspace)?.into_iter().map(|(_, report)| report));
-    authority::install(workspace, &mut reports)?;
+    // The application authority policy is a resource of the resident System.
+    // A platform that installs no System has no policy to bind and no
+    // System.bin to attach it to.
+    if reports.iter().any(|report| report["role"] == "system")
+    {
+        authority::install(workspace, &mut reports)?;
+    }
     // No pairwise preferred-placement exclusion here, and that is a resolved
     // merge rather than a deletion. It used to compare every pair of mappings
     // and refuse overlapping reservations, excluding `code_resource`. User-mode

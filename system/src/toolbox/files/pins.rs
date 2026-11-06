@@ -540,7 +540,7 @@ pub(super) fn directory_changed()
     DIRECTORY_ACTIVE.store(true, Ordering::Release);
     DIRECTORY_DIRTY.store(true, Ordering::Release);
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(super) fn pump_directory_cleanup()
 {
     if !DIRECTORY_ACTIVE.load(Ordering::Acquire) && !DIRECTORY_DIRTY.load(Ordering::Acquire)

@@ -4,16 +4,16 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 mod storage;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod detail;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use detail::FailureDetail;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 mod pending;
 use mac_abi::{crashes::*, geometry::Rect, *};
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use pending::owner_stopped as pending_owner_stopped;
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) use pending::{cleanup_progress, modal_available, pump_dismissals, pump_reports,
                          take_for_termination};
 use storage::Payload;
@@ -24,27 +24,27 @@ pub const DEFAULT_COLUMNS: usize = 90;
 pub const PAGE_LINES: u32 = 23;
 
 /// Prepared once from the fixed resident report geometry and its System font.
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 #[derive(Clone, Copy)]
 pub(crate) struct ReportLayout
 {
     pub(crate) columns:    usize,
     pub(crate) page_lines: u32
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 struct PreparedReport
 {
     layout: ReportLayout,
     icon:   super::quickdraw::icons_service::Drawing
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 static PREPARED: spin::Once<PreparedReport> = spin::Once::new();
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn prepared_layout() -> Result<ReportLayout, Status>
 {
     PREPARED.get().map(|prepared| prepared.layout).ok_or(NOT_SUPPORTED)
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(super) fn prepared_icon() -> Result<super::quickdraw::icons_service::Drawing, Status>
 {
     // The immutable family and its original protected receipt are reset-pinned.
@@ -84,37 +84,37 @@ pub struct Manager
     previous_cr:                     bool,
     native_fault:                    Option<NativeFailure>,
     info:                            CrashInfo,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) controls:             [Option<u64>; 2],
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) control_enabled:      [bool; 2],
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) control_labels:       [u32; 2],
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) tracking:             Option<usize>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) copy_failed:          bool,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) restart_pending:      bool,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) restart_error:        Option<Status>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) restart_terminal:     bool,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) power_failure:        Option<(Status, u32)>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) scrollbox:            Option<u64>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) scroll_tracking:      bool,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) restart_detail:       Option<FailureDetail>,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(super) restart_detail_dirty: bool
 }
 
 /// Diagnostic data is independent of the dying application's window/control
 /// objects. A recovery controller can preserve it before stopping that owner.
-#[cfg(any(target_arch = "riscv64", test))]
+#[cfg(any(systemrisc, test))]
 pub(crate) struct Snapshot
 {
     capture:      Capture,
@@ -126,7 +126,7 @@ pub(crate) struct Snapshot
     native_fault: Option<NativeFailure>,
     info:         CrashInfo
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 impl Snapshot
 {
     pub(crate) fn retain(&self) -> Result<Self, Status>
@@ -151,7 +151,7 @@ impl Snapshot
         self.info
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn queue_report(binding: crate::toolbox::processes::ResourceBinding,
                            snapshot: Snapshot, flags: u32)
                            -> Result<CrashInfo, Status>
@@ -159,7 +159,7 @@ pub(crate) fn queue_report(binding: crate::toolbox::processes::ResourceBinding,
     pending::queue(binding, snapshot, flags)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn queue_dismissal(binding: crate::toolbox::processes::ResourceBinding,
                               activity: crate::recovery::Activity, snapshot: Snapshot,
                               window: WindowId)
@@ -215,35 +215,35 @@ impl Default for Manager
                info:
                    CrashInfo { page_lines: PAGE_LINES,
                                ..Default::default() },
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                controls:                                             [None; 2],
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                control_enabled:                                      [false; 2],
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                control_labels:                                       [u32::MAX; 2],
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                tracking:                                             None,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                scrollbox:                                            None,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                scroll_tracking:                                      false,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                copy_failed:                                          false,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                restart_pending:                                      false,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                restart_error:                                        None,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                restart_terminal:                                     false,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                power_failure:                                        None,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                restart_detail:                                       None,
-               #[cfg(target_arch = "riscv64")]
+               #[cfg(systemrisc)]
                restart_detail_dirty:                                 false }
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn initialize_protected_report(permit: crate::allocator::recovery::Permit)
                                           -> Result<(), Status>
 {
@@ -271,7 +271,7 @@ pub(crate) fn initialize_protected_report(permit: crate::allocator::recovery::Pe
     })
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 pub(crate) fn protected_stock_available() -> bool
 {
     storage::available()
@@ -282,7 +282,7 @@ impl Manager
     /// Preserve the genuine capture/archive identity after its System-owned
     /// presentation has acknowledged dismissal. This retains no protected
     /// snapshot, so the single capture stock can be reused by a later BEGIN.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn dismissed_metadata(&self) -> Self
     {
         let mut info = self.info;
@@ -307,20 +307,20 @@ impl Manager
                ..Self::default() }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn capture_attempt(&mut self)
     {
         self.dismissal = None;
         self.superseded = true;
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn capture_superseded(&self) -> bool
     {
         self.superseded
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn acknowledged_capture(&self, owner: u64) -> bool
     {
         !self.superseded
@@ -329,7 +329,7 @@ impl Manager
         && self.dismissal.is_some_and(|receipt| receipt.app() == owner)
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn main_error_capture(&self, owner: u64, thread: u64) -> bool
     {
         !self.superseded
@@ -339,7 +339,7 @@ impl Manager
         && self.info.flags & MAIN_ERROR != 0
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn owns_protected_stock(&self) -> bool
     {
         self.payload.protected()
@@ -354,7 +354,7 @@ impl Manager
         self.info.flags |= flags;
     }
 
-    #[cfg(any(target_arch = "riscv64", test))]
+    #[cfg(any(systemrisc, test))]
     pub(crate) fn snapshot(&self) -> Result<Snapshot, Status>
     {
         let payload = if let Some(origin) = self.archive_origin
@@ -375,7 +375,7 @@ impl Manager
                       info: self.info() })
     }
 
-    #[cfg(any(target_arch = "riscv64", test))]
+    #[cfg(any(systemrisc, test))]
     pub(crate) fn from_snapshot(snapshot: Snapshot) -> Self
     {
         let mut info = snapshot.info;
@@ -393,7 +393,7 @@ impl Manager
                ..Default::default() }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn begin_protected(&mut self, app: u64, thread: u64, flags: u32)
                                   -> Result<(), Status>
     {
@@ -424,7 +424,7 @@ impl Manager
         Ok(())
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn archive(&self)
     {
         self.payload.archive();
@@ -433,7 +433,7 @@ impl Manager
     /// End this saved manager's use after actual UI disposal. The System archive
     /// retains the complete latest bytes, while the one boot buffer can be
     /// claimed for a later report once every genuine snapshot is gone.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn release_payload(&mut self)
     {
         if let Some(origin) = self.payload.origin()
@@ -444,7 +444,7 @@ impl Manager
         self.payload = Payload::default();
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn finish_dismissal(&mut self, snapshot: &Snapshot) -> Result<bool, Status>
     {
         let expected = snapshot.payload.origin().ok_or(BAD_ABI)?;
@@ -462,7 +462,7 @@ impl Manager
         Ok(changed)
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn finder_recovered(&mut self)
     {
         self.restart_error = None;
@@ -473,13 +473,13 @@ impl Manager
         self.restart_detail_dirty = true;
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn add_flags(&mut self, flags: u32)
     {
         self.info.flags |= flags;
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn seal_failure_capture(&mut self)
                                        -> crate::toolbox::processes::termination::Retention
     {
@@ -522,7 +522,7 @@ impl Manager
         }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn seal_system_diagnostic(&mut self)
     {
         self.capture = Capture::SystemDiagnostic;
@@ -531,7 +531,7 @@ impl Manager
     /// Preserve trusted fault scalars even if the author filled its diagnostic
     /// allowance first. A bounded tail replaces only the necessary app suffix;
     /// TRUNCATED then explicitly prevents a complete-report claim.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn append_native_fault(&mut self, fault: crate::machine::scheduler::FaultSnapshot,
                                       application_label: &str, application_name: &str)
                                       -> Result<(), Status>
@@ -618,7 +618,7 @@ impl Manager
 
     /// The report owns both ordinary buttons and its managed row scrollbar.
     /// Its real capture continues outside the window until release/cancel.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn tracks_input(&self) -> bool
     {
         self.tracking.is_some() || self.scroll_tracking
@@ -627,7 +627,7 @@ impl Manager
     pub fn set_window(&mut self, window: WindowId)
     {
         self.info.window = window;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         {
             self.controls = [None; 2];
             self.control_enabled = [false; 2];
@@ -678,7 +678,7 @@ impl Manager
         self.payload.data().report.get(start..end).map(|line| line.trim_end_matches(['\r', '\n']))
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     pub(crate) fn columns(&self) -> usize
     {
         self.columns

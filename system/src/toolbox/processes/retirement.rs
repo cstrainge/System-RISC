@@ -8,7 +8,7 @@ static CHANGED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn thread_reclaimed()
 {
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     crate::kernel::window_sources_changed();
     super::termination::progress();
     super::finder::thread_reclaimed();

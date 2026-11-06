@@ -109,7 +109,7 @@ pub(crate) fn report_tracking_refusal(call: &ControlCall, cause: &impl fmt::Disp
     {
         return;
     }
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     {
         let thread = crate::context::current_thread_context();
         if !thread.traps.tracking_refusal_reported()

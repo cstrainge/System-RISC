@@ -4,7 +4,7 @@ use std::{fs, path::Path, process::Command};
 
 use mac_formats::{native::Role, resource::Resource};
 use mac_module::{ClassId, Dependency, DeviceMatch, ExtensionTarget, Offer, PackageKind, Service,
-                 Spec, Target};
+                 Spec};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -170,7 +170,7 @@ pub fn declaration(path: &Path, manifest: &Manifest) -> Result<Vec<u8>>
                              rustc.trim());
     let spec = Spec { kind,
                       kernel_abi: mac_formats::native::ABI_VERSION,
-                      target: Target::RVA23U64,
+                      target: crate::platform::module_target()?,
                       identity: id(&declared.identity)?,
                       code_id: manifest.module_code_id(),
                       code_digest: [0; 32],

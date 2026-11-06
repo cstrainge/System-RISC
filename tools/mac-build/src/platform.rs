@@ -61,6 +61,12 @@ pub struct Platform
     /// build when they disagree.
     #[serde(default = "compiler_record")]
     pub toolchain:        String,
+    /// The linker script guest images link with, relative to the repository
+    /// root. The target alone cannot choose it: two targets may share an
+    /// architecture but need different section rules, and the record is the
+    /// authority for the machine's link geometry.
+    #[serde(default)]
+    pub guest_linker:     Option<String>,
     /// Which workspace packages this platform installs, and with which
     /// features. The build tool reads the graph from Cargo and the selection
     /// from here, so changing the installed set is a platform edit.
@@ -438,6 +444,17 @@ pub fn load(name: &str) -> Result<Platform>
         return Err(error(format!("platform '{name}' declares a different name '{}'",
                                  platform.name)));
     }
+    // A platform that installs guest modules links them, so it must name the
+    // script they link with. A platform with no guest set is not required to
+    // carry a linker record it never uses.
+    if !platform.install.modules.is_empty() && platform.guest_linker.is_none()
+    {
+        return Err(error(format!("platform '{}' installs guest modules but declares no \
+                                  guest_linker; set it to the linker script this target links \
+                                  with",
+                                 platform.name)));
+    }
+    platform.install.check(&platform.name)?;
     // Validate every section the record does declare, and nothing it does not:
     // a platform without an emulator or without a physical layout still loads.
     if platform.memory.is_some()
@@ -464,6 +481,7 @@ pub fn load(name: &str) -> Result<Platform>
     {
         hardware.check(&platform.name)?;
     }
+    platform.check_peripheral_windows()?;
     if let Some(storage) = &platform.storage
     {
         storage.check(&platform.name)?;
@@ -513,6 +531,210 @@ pub fn current() -> &'static Platform
     &PLATFORM
 }
 
+/// A peripheral window as the record declares it, keyed by the part's own name
+/// so a consumer asks for `sdhci` or `pl011` rather than an address.
+pub struct DeclaredDevice
+{
+    pub compatible: String,
+    pub base:       u64,
+    pub bytes:      u64
+}
+
+impl Platform
+{
+    /// The harts this platform describes. A record that declares no emulation
+    /// still runs somewhere, so the kernel-facing count defaults to one.
+    pub fn harts(&self) -> usize
+    {
+        self.emulation.as_ref().map(|emulation| emulation.harts.get()).unwrap_or(1)
+    }
+
+    /// Every peripheral window the record declares. A peripheral that states a
+    /// base but no size is refused rather than given a default or looked up in
+    /// the MMIO inventory: one window must have one declaration, and a second
+    /// source could disagree with the first. A peripheral with no base describes
+    /// a function rather than a window and is skipped.
+    pub fn declared_devices(&self) -> Result<Vec<DeclaredDevice>>
+    {
+        let hardware = match self.hardware.as_ref()
+        {
+            Some(hardware) => hardware,
+            None => return Ok(Vec::new())
+        };
+        let mut devices = Vec::new();
+        for peripheral in &hardware.devices
+        {
+            let base = match peripheral.base.as_deref()
+            {
+                Some(text) => Some(parse_hex(text).ok_or_else(|| {
+                                                       crate::error(format!("platform '{}' \
+                                                                             peripheral {} states an \
+                                                                             unreadable base {text:?}",
+                                                                            self.name,
+                                                                            peripheral.model))
+                                                   })?),
+                None => None
+            };
+            let base = match base
+            {
+                Some(base) => base,
+                None => continue
+            };
+            let bytes = match peripheral.bytes.as_deref()
+            {
+                Some(text) => parse_hex(text).ok_or_else(|| {
+                                                 crate::error(format!("platform '{}' peripheral {} \
+                                                                       states an unreadable size \
+                                                                       {text:?}",
+                                                                      self.name,
+                                                                      peripheral.model))
+                                             })?,
+                None =>
+                {
+                    return Err(crate::error(format!("platform '{}' peripheral {} states a base but \
+                                                     no size, so its window is not fully declared",
+                                                    self.name,
+                                                    peripheral.model)));
+                }
+            };
+            devices.push(DeclaredDevice { compatible: peripheral.model.clone(),
+                                          base,
+                                          bytes });
+        }
+        Ok(devices)
+    }
+
+    /// Ties a peripheral's exact window to the page-granular range a driver
+    /// claims. The MMIO inventory cannot state a sub-page window — its ranges
+    /// must be page aligned and page sized — so a peripheral whose registers
+    /// start part way into a page is declared twice: the window in
+    /// `hardware.devices`, which becomes the device-tree node, and the page in
+    /// `mmio_devices`, which a module matches and claims. Those are two
+    /// declarations of one device, and a record that states them inconsistently
+    /// is refused here rather than discovered when a driver claims the wrong
+    /// page. Two windows inside one claimed page are refused for the same
+    /// reason: one claim would then cover two devices.
+    fn check_peripheral_windows(&self) -> Result<()>
+    {
+        let windows = self.declared_devices()?;
+        if windows.is_empty() || self.mmio_devices.is_empty()
+        {
+            return Ok(());
+        }
+        let ranges = devices::check(&self.mmio_devices, &self.memory()?)?;
+        for window in &windows
+        {
+            let end = window.base
+                           .checked_add(window.bytes)
+                           .ok_or_else(|| {
+                               crate::error(format!("platform '{}' peripheral {} window \
+                                                     0x{:x}+0x{:x} overflows the address space",
+                                                    self.name, window.compatible, window.base,
+                                                    window.bytes))
+                           })?;
+            let containing: Vec<&devices::Checked> = ranges.iter()
+                                                           .filter(|range| {
+                                                               range.address <= window.base
+                                                               && end <= range.address + range.bytes
+                                                           })
+                                                           .collect();
+            match containing.as_slice()
+            {
+                [range] =>
+                {
+                    let occupants = windows.iter()
+                                           .filter(|other| {
+                                               range.address <= other.base
+                                               && other.base + other.bytes
+                                                  <= range.address + range.bytes
+                                           })
+                                           .count();
+                    if occupants > 1
+                    {
+                        return Err(crate::error(format!("platform '{}' MMIO range {} \
+                                                         0x{:x}+0x{:x} contains {occupants} \
+                                                         declared peripheral windows; one \
+                                                         claim would cover more than one \
+                                                         device",
+                                                        self.name,
+                                                        range.id,
+                                                        range.address,
+                                                        range.bytes)));
+                    }
+                }
+                [] =>
+                {
+                    return Err(crate::error(format!("platform '{}' peripheral {} window \
+                                                     0x{:x}+0x{:x} lies outside every \
+                                                     declared MMIO range, so no module can \
+                                                     claim it",
+                                                    self.name,
+                                                    window.compatible,
+                                                    window.base,
+                                                    window.bytes)));
+                }
+                _ =>
+                {
+                    return Err(crate::error(format!("platform '{}' peripheral {} window \
+                                                     0x{:x}+0x{:x} is contained by more than \
+                                                     one MMIO range",
+                                                    self.name,
+                                                    window.compatible,
+                                                    window.base,
+                                                    window.bytes)));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_hex(text: &str) -> Option<u64>
+{
+    let digits = text.trim().trim_start_matches("0x").trim_start_matches("0X");
+    u64::from_str_radix(digits, 16).ok()
+}
+
+/// The module contract target this platform admits. Modules carry their
+/// architecture, pointer width, endianness and feature profile in the DABI/EABI
+/// resource, and the resident kernel validates every contract against the target
+/// of the machine it is running on. The record's `rust_target` is the single
+/// source of that fact, so a second board states its own target rather than
+/// inheriting a hardcoded one.
+pub fn module_target() -> Result<mac_module::Target>
+{
+    let platform = current();
+    match platform.rust_target.as_str()
+    {
+        "riscv64imac-unknown-none-elf" => Ok(mac_module::Target::RVA23U64),
+        "aarch64-unknown-none" => Ok(mac_module::Target::AARCH64),
+        target =>
+        {
+            Err(error(format!("platform '{}' declares rust_target {target:?}, which has no module \
+                               contract target; add its architecture to \
+                               mac_module::Target",
+                              platform.name)))
+        }
+    }
+}
+
+/// The resident kernel's copy of the module contract target, generated into the
+/// build output so the kernel compares module contracts against the machine the
+/// record describes rather than a constant chosen at authoring time.
+pub fn module_target_constants() -> Result<String>
+{
+    let target = module_target()?;
+    Ok(format!("// Generated from the platform record's module contract target.\n\
+                pub(crate) const MODULE_TARGET: mac_module::Target = mac_module::Target {{ \
+                architecture: {architecture}, pointer_bits: {pointer_bits}, endian: {endian}, \
+                convention: {convention}, features: {features} }};\n",
+               architecture = target.architecture,
+               pointer_bits = target.pointer_bits,
+               endian = target.endian,
+               convention = target.convention,
+               features = target.features))
+}
+
 /// The rustup channel this checkout's compiler pin names.
 ///
 /// The pin lives in `platforms/rust/sdk.json` beside the target specification
@@ -534,6 +756,26 @@ pub fn compiler_path(root: &Path, platform: &Platform) -> Result<PathBuf>
                                  platform.name)));
     }
     Ok(root.join("platforms").join(record))
+}
+
+/// The linker script this platform's guest images link with.
+pub fn guest_linker_path(root: &Path, platform: &Platform) -> Result<PathBuf>
+{
+    let relative = platform.guest_linker.as_deref().ok_or_else(|| {
+                                                        error(format!("platform '{}' declares no \
+                                                                       guest_linker, so its \
+                                                                       guest images cannot be \
+                                                                       linked",
+                                                                      platform.name))
+                                                    })?;
+    let path = Path::new(relative);
+    if path.is_absolute() || relative.contains("..")
+    {
+        return Err(error(format!("platform '{}' guest_linker '{}' must be a relative path \
+                                  inside the repository",
+                                 platform.name, relative)));
+    }
+    Ok(root.join(path))
 }
 
 pub fn rust_toolchain(root: &Path, platform: &Platform) -> Result<String>
@@ -753,17 +995,28 @@ mod tests
         let set = features(&text);
         let actual = set.iter().copied().collect::<Vec<_>>().join(",");
         validate_guest(&p.rust_target, &actual).unwrap();
-        let narrowed = set.iter().copied().filter(|&s| s != "v").collect::<Vec<_>>().join(",");
+        let narrowed = set.iter()
+                          .copied()
+                          .filter(|&s| s != p.llvm_profile)
+                          .collect::<Vec<_>>()
+                          .join(",");
         let error = validate_guest(&p.rust_target, &narrowed).unwrap_err().to_string();
-        assert!(error.contains("missing [\"v\"]")
+        assert!(error.contains(&format!("missing [\"{}\"]", p.llvm_profile))
                 && error.contains("rebuild with cargo xtask image"));
         let error =
             validate_guest(&p.rust_target, &format!("{actual},zvl256b")).unwrap_err().to_string();
         assert!(error.contains("unexpected [\"zvl256b\"]"));
-        assert!(validate_guest("riscv64gc-unknown-none-elf", &actual).unwrap_err()
-                                                                     .to_string()
-                                                                     .contains("native guest \
-                                                                                target must be"));
+        let foreign = if p.rust_target == "riscv64imac-unknown-none-elf"
+        {
+            "riscv64gc-unknown-none-elf"
+        }
+        else
+        {
+            "riscv64imac-unknown-none-elf"
+        };
+        assert!(validate_guest(foreign, &actual).unwrap_err()
+                                                .to_string()
+                                                .contains("native guest target must be"));
     }
 
     /// Include composition is the schema's only inheritance mechanism, so its
@@ -828,6 +1081,11 @@ mod tests
 pub struct FatalShutdown
 {
     device:        String,
+    /// The reset/control register's offset inside the named MMIO device. A
+    /// device whose finisher is not at its base declares it; zero keeps the
+    /// original whole-window behaviour.
+    #[serde(default)]
+    offset:        u32,
     failure_value: u32,
     restart_value: u32
 }
@@ -1015,7 +1273,17 @@ fn artifacts_for(device: &FatalShutdown, devices: &[devices::Checked], include_r
                               error("platform fatal-shutdown device is absent from the MMIO \
                                      inventory")
                           })?;
-    let address = hardware.address;
+    let address =
+        hardware.address.checked_add(u64::from(device.offset)).ok_or_else(|| {
+                                                                   error("platform fatal-shutdown \
+                                                                          register address \
+                                                                          overflows")
+                                                               })?;
+    if u64::from(device.offset).checked_add(4).is_none_or(|end| end > hardware.bytes)
+    {
+        return Err(error("platform fatal-shutdown offset must leave a u32 register inside the \
+                          named MMIO window"));
+    }
     if hardware.bytes < 4 || device.failure_value == 0
     {
         return Err(error("platform fatal-shutdown MMIO requires a nonzero aligned u32 register \
@@ -1068,7 +1336,7 @@ mod artifact_tests
         }
         let error = load("NoSuchBoard").err().unwrap().to_string();
         assert!(error.contains("cannot select platform 'NoSuchBoard'")
-                && error.contains("known platforms: arm_virt, qemu_riscv"));
+                && error.contains("known platforms: qemu_arm64, qemu_riscv"));
         for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234", "0x80000000"]
         {
             let mut bad = load("qemu_riscv").unwrap();
@@ -1089,6 +1357,58 @@ mod artifact_tests
         bad.mmio_devices.push(bad.mmio_devices[0].clone());
         assert!(bad.device_artifacts(true).err().unwrap().to_string().contains("non-overlapping"));
     }
+    #[test]
+    fn a_peripheral_window_and_the_page_a_driver_claims_cannot_describe_different_devices()
+    {
+        let platform = load("qemu_arm64").unwrap();
+        platform.check_peripheral_windows().unwrap();
+        // The mailbox registers start part way into the ARM control page the
+        // record claims, so one device is declared at two granularities on
+        // purpose: the window in the tree, the page in the inventory.
+        let mailbox = platform.declared_devices()
+                              .unwrap()
+                              .into_iter()
+                              .find(|device| device.compatible == "bcm2835-mailbox")
+                              .expect("the record declares the mailbox window");
+        assert_eq!((mailbox.base, mailbox.bytes), (0x3f00b880, 0x40));
+        // A window moved out of the page that claims it is refused.
+        let mut drifted = load("qemu_arm64").unwrap();
+        drifted.hardware
+               .as_mut()
+               .unwrap()
+               .devices
+               .iter_mut()
+               .find(|device| device.model == "bcm2835-mailbox")
+               .unwrap()
+               .base = Some("0x3f00c880".into());
+        let error = drifted.check_peripheral_windows().unwrap_err().to_string();
+        assert!(error.contains("bcm2835-mailbox"), "{error}");
+        assert!(error.contains("outside every declared MMIO range"), "{error}");
+        // A claimed page moved away from the window it is supposed to hold is
+        // refused in the same way.
+        let mut drifted = load("qemu_arm64").unwrap();
+        drifted.mmio_devices
+               .iter_mut()
+               .find(|device| device.id == "bcm2835-mbox")
+               .unwrap()
+               .address = "0x3f00c000".into();
+        let error = drifted.check_peripheral_windows().unwrap_err().to_string();
+        assert!(error.contains("outside every declared MMIO range"), "{error}");
+        // Two windows in one claimed page would make a single claim cover two
+        // devices, which is the same defect in the other direction.
+        let mut crowded = load("qemu_arm64").unwrap();
+        crowded.hardware
+               .as_mut()
+               .unwrap()
+               .devices
+               .iter_mut()
+               .find(|device| device.model == "pl011")
+               .unwrap()
+               .base = Some("0x3f00b000".into());
+        let error = crowded.check_peripheral_windows().unwrap_err().to_string();
+        assert!(error.contains("contains 2 declared peripheral windows"), "{error}");
+    }
+
     #[test]
     fn emergency_restart_is_required_checked_and_generated_from_the_selected_record()
     {

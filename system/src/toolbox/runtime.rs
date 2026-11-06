@@ -820,7 +820,7 @@ impl Toolbox
         {
             CLOSE_WINDOW =>
             {
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 if match self.windows.plan_trusted_close(id)
                 {
                     Ok(plan) => plan.is_some(),

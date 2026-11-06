@@ -55,7 +55,7 @@ struct Object
     // Retain executable source through all control payload destruction; the
     // recovery Activity below remains the final modal-session acknowledgment.
     definition:       BoundDefinition,
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     _recovery_origin: Option<crate::recovery::ScrollBoxOrigin>
 }
 pub struct Manager
@@ -145,7 +145,7 @@ pub struct Drawing
     bar:              super::Drawing,
     // Actual immutable readers release raster and executable source BEFORE
     // this original Session pin wakes closing cleanup.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     _recovery_origin: Option<crate::recovery::ScrollBoxOrigin>
 }
 pub(crate) struct PaintCursor
@@ -443,7 +443,7 @@ impl Manager
             return Err(ACCESS_DENIED);
         }
         let storage = self.objects.owner(id).ok_or(NOT_FOUND)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         {
             if object.recovery != object._recovery_origin.is_some()
             {
@@ -463,7 +463,7 @@ impl Manager
                 return Err(ACCESS_DENIED);
             }
         }
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         if storage.incarnation() != owner
         {
             return Err(ACCESS_DENIED);
@@ -482,7 +482,7 @@ impl Manager
     fn get_mut_live(&mut self, id: u64, owner: u64) -> Result<&mut Object, Status>
     {
         let object = self.get(id, owner)?;
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         if let Some(origin) = &object._recovery_origin
         {
             let current = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
@@ -581,7 +581,7 @@ impl Manager
         }
     }
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(systemrisc)]
     fn creation_origin(recipient: &OwnerRef, storage: &OwnerRef, window: u64)
                        -> Result<Option<crate::recovery::ScrollBoxOrigin>, Status>
     {
@@ -602,7 +602,7 @@ impl Manager
                                        -> Result<Option<DefinitionRef>, Status>
     {
         let owner = recipient.owner().incarnation();
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(systemrisc)]
         let creation_origin = if call.operation == CREATE
         {
             Self::creation_origin(recipient, storage, call.window)?
@@ -611,7 +611,7 @@ impl Manager
         {
             None
         };
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(not(systemrisc))]
         if storage.owner() != recipient.owner()
         {
             return Err(ACCESS_DENIED);
@@ -645,7 +645,7 @@ impl Manager
         if call.operation != CREATE
         {
             let object = self.get(call.id, owner)?;
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             if let Some(origin) = &object._recovery_origin
             {
                 let current = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
@@ -678,11 +678,11 @@ impl Manager
             fonts.metrics(fonts_service::selection(call.spec.font))?;
             let recovery = if call.operation == CREATE
             {
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 {
                     creation_origin.is_some()
                 }
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 {
                     false
                 }
@@ -731,7 +731,7 @@ impl Manager
                 0
             };
             let used = self.raster_bytes;
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(systemrisc)]
             let creation_origin = if call.operation == CREATE
             {
                 Self::creation_origin(recipient, storage, call.window)?
@@ -742,11 +742,11 @@ impl Manager
             };
             let recovery = if call.operation == CREATE
             {
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 {
                     creation_origin.is_some()
                 }
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 {
                     false
                 }
@@ -769,9 +769,9 @@ impl Manager
                                                        tracking:  None,
                                                        highlight: 0 },
                                       definition: binding,
-                                      #[cfg(target_arch = "riscv64")]
+                                      #[cfg(systemrisc)]
                                       _recovery_origin: creation_origin.clone() };
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(systemrisc)]
                 {
                     call.id = if let Some(origin) = creation_origin
                     {
@@ -787,7 +787,7 @@ impl Manager
                         self.objects.insert(storage, object).map_err(pool_status)?
                     };
                 }
-                #[cfg(not(target_arch = "riscv64"))]
+                #[cfg(not(systemrisc))]
                 {
                     call.id = self.objects.insert(storage, object).map_err(pool_status)?;
                 }
@@ -982,7 +982,7 @@ impl Manager
                                      bounds: object.view.spec.viewport,
                                      raster: object.view.raster.clone(),
                                      bar,
-                                     #[cfg(target_arch = "riscv64")]
+                                     #[cfg(systemrisc)]
                                      _recovery_origin: object._recovery_origin.clone() }));
         }
         Ok(None)
@@ -1035,7 +1035,7 @@ fn pool_status(error: mac_object_table::domain::PoolError) -> Status
     crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(systemrisc)]
 fn publication_status(error: mac_object_table::store::PublicationError) -> Status
 {
     match error

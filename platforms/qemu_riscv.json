@@ -1,6 +1,7 @@
 {
   "include": "riscv_base.json",
   "name": "qemu_riscv",
+  "guest_linker": "platforms/linker/riscv64.ld",
   "install": {
     "description": "The complete System RISC desktop: every application, resident driver and System extension this platform ships",
     "applications": [
@@ -67,7 +68,7 @@
     "cpu": "rva23s64,mmu=on,pmp=on,sv39=on",
     "ram": "2G",
     "harts": 4,
-    "firmware": "none",
+    "firmware": "disabled",
     "boot_medium": {
       "kind": "flash",
       "unit": 0,

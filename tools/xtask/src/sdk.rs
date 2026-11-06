@@ -236,11 +236,19 @@ pub fn prerequisites(workspace: &Workspace) -> Result<()>
         }
     }
 
-    let sdk = prepare(workspace)?;
-
-    if !sdk.root.join("build.json").is_file()
+    // The private SDK exists to build `std` applications for the platform's
+    // declared standard-library target. A platform that declares none cannot
+    // install one — `platform::validate_std_target` rejects such a record — so
+    // preparing the SDK here would build another platform's standard library
+    // and reject this platform's own compiler record.
+    if workspace.platform.std_target.is_some()
     {
-        build_std(workspace, &sdk)?;
+        let sdk = prepare(workspace)?;
+
+        if !sdk.root.join("build.json").is_file()
+        {
+            build_std(workspace, &sdk)?;
+        }
     }
 
     Ok(())

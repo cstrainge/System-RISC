@@ -444,7 +444,7 @@ impl<'a> CursorSprite<'a>
 
 /// Copy one clipped damage rectangle and composite only its cursor pixels.
 /// Refuse invalid surface extents before writing any frontbuffer pixels.
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(systemrisc))]
 pub(crate) fn present_rect(scene: &[u32], front: &mut [u32], width: usize, height: usize,
                            rect: Rect, cursor: Option<CursorSprite<'_>>)
                            -> Option<Rect>

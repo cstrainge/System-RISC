@@ -1,5 +1,6 @@
 # Generated Rust and native image artifacts (including standalone test fixtures).
 **/target/
+/selftest-aarch64/kernel8.img
 /build/
 /dist/
 /results/

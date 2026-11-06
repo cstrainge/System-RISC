@@ -15,8 +15,9 @@ use std::{ffi::OsString,
 use mac_build::{Result, error,
                 platform::{Platform,
                            emulation::{BootMedium, ConsoleMode, Definition, DiskTransport,
-                                       EntropyBackend, Family, Firmware, Framebuffer,
-                                       NetworkKind, PointerKind, ScreenMode, Transport}}};
+                                       DisplayKind, EntropyBackend, EntropyKind, Family,
+                                       Firmware, Framebuffer, NetworkKind, PointerKind,
+                                       ScreenMode, Transport}}};
 
 use crate::{boot, tools};
 
@@ -166,7 +167,9 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
     push(args, "-smp", definition.harts.get().to_string());
     match &definition.firmware
     {
-        Firmware::None => push(args, "-bios", "none"),
+        Firmware::None =>
+        {}
+        Firmware::Disabled => push(args, "-bios", "none"),
         Firmware::Image { path } => push(args, "-bios", root.join(path).display().to_string())
     }
     // The four fields of `boot_medium.flash` are the four parts of QEMU's
@@ -186,6 +189,8 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
                          if *readonly { "on" } else { "off" },
                          payload.display()));
         }
+        BootMedium::Sd =>
+        {}
         BootMedium::Direct =>
         {}
     }
@@ -210,13 +215,26 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
     if let Some(display) = &definition.display
     {
         // `display.kind` selects the device; `display.transport` selects where
-        // it is attached.
-        device(args, "virtio-gpu-device", display.transport.clone());
-        // `display.framebuffer`: a machine that asks for `ramfb` gets the
-        // second display device that provides it.
-        if display.framebuffer == Framebuffer::Ramfb
+        // it is attached. A display integrated into the SoC has no attachable
+        // bus and is provided by the machine itself, so the renderer emits no
+        // device for it.
+        match display.kind
         {
-            push(args, "-device", "ramfb");
+            DisplayKind::VirtioGpu =>
+            {
+                if let Some(transport) = display.transport.clone()
+                {
+                    device(args, "virtio-gpu-device", transport);
+                }
+                // `display.framebuffer`: a machine that asks for `ramfb` gets
+                // the second display device that provides it.
+                if display.framebuffer == Framebuffer::Ramfb
+                {
+                    push(args, "-device", "ramfb");
+                }
+            }
+            DisplayKind::VideoCoreMailbox =>
+            {}
         }
     }
     if let Some(keyboard) = &definition.keyboard
@@ -236,27 +254,41 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
     }
     if let Some(entropy) = &definition.entropy
     {
-        // `entropy.backend` selects the source. `id=system-rng` is the
-        // renderer's own name for the pairing between the backend object and
-        // the device that consumes it, so it is plumbing, not a machine fact.
-        let backend = match entropy.backend
+        // `entropy.kind` selects the generator. A generator integrated into the
+        // SoC is provided by the machine itself, so it needs no backend object
+        // and no device.
+        match entropy.kind
         {
-            EntropyBackend::Builtin => "rng-builtin,id=system-rng"
-        };
-        push(args, "-object", backend.to_string());
-        // `entropy.transport` and `entropy.kind` select the device and its bus.
-        match entropy.transport
-        {
-            Transport::VirtioMmio { slot } =>
+            EntropyKind::VirtioRng =>
             {
-                push(args,
-                     "-device",
-                     format!("virtio-rng-device,rng=system-rng,bus=virtio-mmio-bus.{slot}"))
+                // `entropy.backend` selects the source. `id=system-rng` is the
+                // renderer's own name for the pairing between the backend
+                // object and the device that consumes it, so it is plumbing,
+                // not a machine fact.
+                let backend = match entropy.backend
+                {
+                    EntropyBackend::Builtin => "rng-builtin,id=system-rng"
+                };
+                push(args, "-object", backend.to_string());
+                // `entropy.transport` selects the bus.
+                match entropy.transport
+                {
+                    Some(Transport::VirtioMmio { slot }) =>
+                    {
+                        push(args,
+                             "-device",
+                             format!("virtio-rng-device,rng=system-rng,bus=virtio-mmio-bus.{slot}"))
+                    }
+                    Some(Transport::VirtioPci) =>
+                    {
+                        push(args, "-device", "virtio-rng-device,rng=system-rng".to_string())
+                    }
+                    None =>
+                    {}
+                }
             }
-            Transport::VirtioPci =>
-            {
-                push(args, "-device", "virtio-rng-device,rng=system-rng".to_string())
-            }
+            EntropyKind::Bcm2835Rng =>
+            {}
         }
     }
     // `screen.interactive` / `screen.headless` say whether this mode shows a
@@ -335,10 +367,10 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
 fn uses_mmio(definition: &Definition) -> bool
 {
     let mmio = |transport: &Transport| matches!(transport, Transport::VirtioMmio { .. });
-    definition.display.as_ref().is_some_and(|display| mmio(&display.transport))
+    definition.display.as_ref().and_then(|display| display.transport.as_ref()).is_some_and(mmio)
     || definition.keyboard.as_ref().is_some_and(|keyboard| mmio(&keyboard.transport))
     || definition.pointer.as_ref().is_some_and(|pointer| mmio(&pointer.transport))
-    || definition.entropy.as_ref().is_some_and(|entropy| mmio(&entropy.transport))
+    || definition.entropy.as_ref().and_then(|entropy| entropy.transport.as_ref()).is_some_and(mmio)
     || definition.clipboard.as_ref().is_some_and(|clipboard| mmio(&clipboard.transport))
     || definition.disks.as_ref().is_some_and(|disks| disks.transport() == DiskTransport::VirtioMmio)
 }
@@ -378,7 +410,7 @@ fn attach_disks(definition: &Definition, platform: &Platform, dist: &Path, media
         let slot = match (slot, disks.transport())
         {
             (Some(slot), _) => slot,
-            (None, DiskTransport::VirtioPci) => 0,
+            (None, DiskTransport::VirtioPci | DiskTransport::Sdhci) => 0,
             (None, DiskTransport::VirtioMmio) =>
             {
                 return Err(error(format!("platform '{}' attaches image '{image}' to a \
@@ -421,23 +453,35 @@ fn attach_disks(definition: &Definition, platform: &Platform, dist: &Path, media
         // covers a file too short to sniff.
         let format = boot::disk_format(path).map(str::to_string)
                                             .unwrap_or_else(|_| disks.format().to_string());
-        push(args,
-             "-drive",
-             format!("if=none,id={drive},readonly={},format={},file={}",
-                     if !writable && disks.readonly() { "on" } else { "off" },
-                     format,
-                     path.display()));
+        let readonly = if !writable && disks.readonly() { "on" } else { "off" };
         match disks.transport()
         {
             DiskTransport::VirtioMmio =>
             {
+                push(args,
+                     "-drive",
+                     format!("if=none,id={drive},readonly={readonly},format={format},file={}",
+                             path.display()));
                 push(args,
                      "-device",
                      format!("virtio-blk-device,drive={drive},bus=virtio-mmio-bus.{slot}"))
             }
             DiskTransport::VirtioPci =>
             {
+                push(args,
+                     "-drive",
+                     format!("if=none,id={drive},readonly={readonly},format={format},file={}",
+                             path.display()));
                 push(args, "-device", format!("virtio-blk-pci,drive={drive}"))
+            }
+            DiskTransport::Sdhci =>
+            {
+                // The machine's SD host controller is its default block device,
+                // so the medium is attached as `if=sd`; the controller owns the
+                // card slot and there is no separate device object to add.
+                push(args,
+                     "-drive",
+                     format!("if=sd,readonly={readonly},format={format},file={}", path.display()));
             }
         }
     }
