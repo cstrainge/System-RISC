@@ -473,14 +473,33 @@ Rebuild ROM and System together; previous layouts are rejected.
 
 At byte160, BootInfo carries a mandatory physical machine-monitor directory
 pointer; byte168 holds its mandatory layout fingerprint. The fingerprint covers
-all shared sizes, alignments, offsets and protocol constants. The40byte directory
+all shared sizes, alignments, offsets and protocol constants. The64byte directory
 is `{ entries: physical pointer, count: usize, stack_bytes: u64, timebase_hz: u64,
-image: physical pointer }`. Each32byte entry is `{ hart: u64, msip: u64,
-storage: BootMemoryRange }`, in checked topology order. All arrays, the80byte
-BootImage and disjoint page-aligned control backing remain reserved until reset.
-The checked DT timebase and CPU interrupt-controller/CLINT route pairs determine
-clock and MSIP addresses; numeric hart IDs are not MMIO offsets. Unsupported
-bindings or translated buses refuse boot.
+signalling: Signalling, image: physical pointer }`. Each32byte entry is
+`{ hart: u64, signal: u64, storage: BootMemoryRange }`, in checked topology
+order. All arrays, the80byte BootImage and disjoint page-aligned control backing
+remain reserved until reset. The checked DT timebase determines the clock;
+numeric hart IDs are not MMIO offsets. Unsupported bindings or translated buses
+refuse boot.
+
+`signal` is this hart's inter-processor signalling target, encoded by the
+platform, and the monitor writes whatever its own platform requires. The
+24byte `Signalling` states which kind it is, so the kernel validates the right
+property instead of assuming one machine's:
+
+  Cells(BootMemoryRange)       a bank of 32-bit per-hart cells. `signal` is the
+                               address of that hart's own cell, checked for
+                               containment, 4-byte alignment and uniqueness.
+  Controller(BootMemoryRange)  a shared controller whose target selection is
+                               part of the value written. `signal` is a target
+                               encoding the platform defines, so its numeric
+                               value is checked only for being stated and for not
+                               aliasing another hart.
+
+The loader publishes this because it is a fact about the platform. A kernel
+carrying a compiled-in route cannot admit on a platform that has none, and the
+signalling window is device memory, not RAM, so it is excluded from the memory
+account rather than reserved inside it.
 
 BootImage contains ten atomic u64s: sealed, entry, image base, image bytes,
 required physical limit, required ISA, vector bytes, hardware tag mask, fault
