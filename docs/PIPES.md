@@ -903,9 +903,9 @@ Verified by execution in the guest, not only by compilation: a probe
 application replaces Finder on a cloned disk and runs its cases in order — echo,
 a 512-byte atomic write into a full pipe that must wait for a reader, a parked
 reader resumed by a writer, would-block versus end-of-stream, broken pipe, name
-removal, the writer limit, the folder, the folder's bounded continuation and
-opening an item — and reports how many
-actually ran (`PIPES_PROBE_PASS cases=10`, counted from the cases executed rather
+removal, the writer limit, the folder, the folder's bounded continuation, the two
+icon glyphs and opening an item — and reports how many
+actually ran (`PIPES_PROBE_PASS cases=11`, counted from the cases executed rather
 than written down). The probe is
 `crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
 it and runs it as the single `pipes-probe` case, so the marker set is part of the
@@ -960,23 +960,42 @@ dispatch to that route are covered by reading, not by this run. The process coun
 is the witness that nothing was launched, and it is measured across the open
 only: it does not prove that no application started earlier in the session.
 
-Not implemented:
+Both icon families:
 
-- Both icon families, and what that costs today. The Finder already draws every
-  item through the icon service, so nothing is missing from the drawing path; what
-  is missing is the two families themselves. There is no `standard` identifier for
-  a `Pipes` folder, no native family for one in the reserved `-30031..-30000`
-  block, and no Desktop-database entry mapping the `PIPE`/`PIPE` pair to a document
-  family. A `Pipes` folder therefore draws the generic folder glyph and a named
-  pipe draws the generic document glyph: right kind of shape, wrong identity, and
-  a double-click already connects. Adding them means new icon assets, manifest
-  entries in that reserved block, the name-to-icon mapping the other blessed
-  folders already have, a type-pair registration, and an extension of the
-  canonical icon-reservation allowlist — its own pass, with its own gate.
+- The `Pipes` folder has its own family, `-30002`, and a named pipe has its own,
+  `-30003`. Both extend the schema's reserved native block `-30031..-30000` and
+  the canonical icon-reservation allowlist knows them.
+- Both are derived from the project's own standard artwork — the original folder
+  family `-3999` and document family `-4000` — with a pipe motif added, so
+  neither is a second copy of the generic glyph. Section 9 of
+  `docs/APPLICATION-ICONS.md` records the derivation and
+  `scripts/make_pipes_icons.py` regenerates them.
+- The folder's icon is chosen by its name under the blessed folder, through
+  `quickdraw::icons::standard::for_blessed_folder` — the same table the other
+  System folders use. One table, so the Finder and any other caller cannot
+  disagree about which icon a System folder has.
+- The `PIPE`/`PIPE` pair reaches `-30003` through a `BNDL`/`FREF` pair in the
+  System's resources, the same mechanism the font suitcase uses. No Finder-side
+  type table is involved; Icon Manager lookup resolves it.
 
-This is a Finder affordance — how the folder and its items look — and it **does
-not block a Terminal session**: a Terminal reaches a pipe by name through the
-SDK, which is exactly what is proven. It comes after the Terminal work.
+Verified by execution in the guest: the probe resolves the folder's icon the way
+the Finder does, resolves the item's icon through the resident type bundle, plots
+both into offscreen worlds and compares them pixel for pixel with the generic
+folder and document. `PIPES_ICON_FOLDER_OK id=-30002 drawn=…` and
+`PIPES_ICON_ITEM_OK id=-30003 drawn=…` report how many pixels each glyph drew,
+`PIPES_ICON_MONO_OK` reads the `ICN#`/`ics#` payloads directly because the plot
+selects the colour family at 32 pixels, and `PIPES_ICON_DISTINCT_OK` reports how
+many pixels the two glyphs differ in and how many each drew. A row in a table
+would not have been evidence; the plotted pixels are.
+
+**What the icon markers do not prove.** They draw through the same icon service
+the Finder draws through, at the same size and from the same resolved ids, but
+they are plotted into an offscreen world by the probe rather than into a Finder
+window. What that leaves unobserved is the Finder's own selection call at paint
+time — covered by reading the shared table, not by this run. The drawn pixels are
+the 32-pixel colour family; the 1-bit family is checked by payload, not by a
+plot, because the SDK offers no depth selector and adding one for a probe would be
+production machinery for a harness.
 
 **Not covered, stated as cost.** The probe covers the transport contract, the
 writer limit, the folder and the open. It does not cover multiple concurrent

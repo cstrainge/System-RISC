@@ -544,7 +544,11 @@ fn native_system_icon_reservation_preserves_classic_ids_and_rejects_import_colli
             assert!((r.id == standard::DRIVERS_FOLDER && r.symbol.starts_with("DRIVERS_FOLDER_"))
                     || (r.id == standard::DRIVER
                         && (r.symbol.starts_with("DRIVER_FILE_")
-                            || r.symbol.starts_with("NATIVE_DRIVER_ICON_"))),
+                            || r.symbol.starts_with("NATIVE_DRIVER_ICON_")))
+                    || (r.id == standard::PIPES_FOLDER && r.symbol.starts_with("PIPES_FOLDER_"))
+                    || (r.id == standard::NAMED_PIPE
+                        && (r.symbol.starts_with("NAMED_PIPE_")
+                            || r.symbol == "NAMED_PIPE_TYPE_BUNDLE")),
                     "unexpected resource in native System icon reservation: {} {}",
                     r.kind,
                     r.id);

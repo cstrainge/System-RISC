@@ -22,6 +22,36 @@ the same bounded reader. The icon renderer prefers small resources at16px and
 large resources at32px, then color depth; it preserves masks and selection/open
 transforms.
 
+## System folders and System types
+
+Folders that belong to the installed layout draw their own glyph rather than the
+generic folder. The mapping lives in one table,
+`quickdraw::icons::standard::for_blessed_folder`, keyed by the folder's name and
+applied only to folders directly inside the volume's blessed folder. The System
+creates those folders, so their name is their identity; an ordinary folder with
+the same name elsewhere keeps the generic glyph. `Drivers`, `Fonts`, `Extensions`,
+`Control Panels`, `Preferences`, `Startup Items`, `Apple Menu Items` and `Pipes`
+are in the table.
+
+A type can carry its own document glyph without the Finder holding a table of
+types. The `BNDL`/`FREF` pair in the System's resources does what it does for the
+font suitcase: the bundle's signature is the creator, its `FREF` names the file
+type and a local icon id, and its `ICN#` mapping carries the real family id, so
+Icon Manager lookup resolves a creator/type pair to a family. `PIPE`/`PIPE`
+resolves to `-30003` this way.
+
+Native families live in the reserved block `-30031..-30000`, which
+`file_icons.rs` guarantees does not collide with any original Macintosh icon id
+and admits only the symbols the System actually defines: the Drivers folder and
+driver document (`-30000`, `-30001`), the Pipes folder (`-30002`) and a named
+pipe (`-30003`).
+
+The Pipes families are derived from the original standard folder (`-3999`) and
+document (`-4000`) artwork with a pipe motif added, so each is its own glyph
+rather than a duplicate. `scripts/make_pipes_icons.py` regenerates them from the
+extracted originals and `system/assets/icons/pipes/README.md` records the
+provenance.
+
 ## Running files
 
 Finder's APPL icon uses the open/stipple transform while
@@ -44,7 +74,15 @@ is running, then verifies the source returns to normal after exit.
 - `mac-toolbox/tests/file_icons.rs` exercises actual HFS reads through the SDK:
   non-128 IDs, overlapping IDs in different apps, large/small families, color
   precedence, transparency, malformed/missing resources, unchanged search chain,
-  read-only media and bounded reads alongside a1MiB executable resource.
+  read-only media and bounded reads alongside a1MiB executable resource. It also
+  holds the native-reservation allowlist that admits only the System's own
+  families in `-30031..-30000`.
+- The pipes probe, which runs in the guest as a boot-check case, resolves the
+  `Pipes` folder's icon through the shared blessed-folder table and a named
+  pipe's through the `PIPE`/`PIPE` type bundle, plots both into offscreen worlds
+  and compares the pixels with the generic folder and document. It reports the
+  resolved ids and how many pixels each glyph drew, so a family that resolved but
+  drew nothing fails the case.
 - `mac-toolbox/tests/application_ui.rs` checks6,656 icon pixels across unlaunched
   Finder entries, application-menu rows and foreground titles. A private copy
   moves QuickDraw's icon to9433 without changing its executable. Both Linux and

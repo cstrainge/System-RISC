@@ -57,10 +57,13 @@ PATH syntax and explicit path rules.
 ## Streams, terminal behavior and lifecycle
 
 System owns session admission, endpoint lifetimes and process lifecycle;
-Terminal owns presentation. Full pipe functionality is planned in a pipes
-extension replacing the kernel's current placeholders. The std platform must bind
-the normal service/module boundary so that implementation can replace the stubs,
-without growing a parallel full pipe stack in the resident kernel. Define stdin/stdout/stderr, terminal detection,
+Terminal owns presentation. Byte transport is the resident pipes facility, which
+ships: `docs/PIPES.md` is its contract, and a guest probe proves the transport,
+the `Pipes` folder and open-as-connect as part of `cargo xtask boot-check`. What
+the std platform must still do is bind its streams to that facility rather than
+to the null profile, through the normal service boundary, without growing a
+parallel pipe stack in the resident kernel. Define stdin/stdout/stderr, terminal
+detection,
 partial reads/writes, EOF, backpressure, resize notifications and readiness.
 Redirection and pipelines keep the same Terminal session even when a particular
 stream is a file/pipe rather than the display. A GUI caller requesting a CLAP
