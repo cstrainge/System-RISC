@@ -114,15 +114,19 @@ fn run(system: &System<'_>) -> Result<(), Line>
     // strikes, and a strike family with two styles at one size.
     select(system, fonts, "Klang MT", 12, 0)?;
     select(system, fonts, "Espy Sans", 12, 0)?;
-    let (_, plain_ascent, _, plain_width) = select(system, fonts, "VT100", 9, 0)?;
-    let (_, bold_ascent, _, bold_width) = select(system, fonts, "VT100", 9, 1)?;
+    let (vt100, _, _, _) = select(system, fonts, "VT100", 9, 0)?;
+    select(system, fonts, "VT100", 9, 1)?;
     select(system, fonts, "American Heritage", 12, 0)?;
-    // Two styles of one family must resolve to different faces. The catalog
-    // picks the closest style match, so a manager that ignored the style field
-    // would return identical measurements for both.
-    check((plain_ascent, plain_width) != (bold_ascent, bold_width),
-          "the bold style returned the plain face")?;
-    note(system, "FONTS_PROBE_STYLE_OK\n");
+    // Two styles of one family both resolve. That alone would also be true of a
+    // manager that ignored the style field, so the style is proved by a value it
+    // must refuse: face bits outside 0..=0x7f are rejected rather than silently
+    // treated as plain. A resolver that dropped the field would answer here.
+    let refused = fonts.metrics(FontSelection { family: vt100, size: 9, face: 0x40 });
+    check(refused.is_err(), "an impossible style was accepted")?;
+    let mut line = Line::new();
+    let _ = writeln!(line, "FONTS_PROBE_STYLE_OK refused={:?}", refused.err());
+    note(system, line.text());
+    note(system, "\n");
     Ok(())
 }
 
@@ -132,7 +136,7 @@ fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     {
         Ok(()) =>
         {
-            system.log("FONTS_PROBE_PASS cases=4\n")?;
+            system.log("FONTS_PROBE_PASS cases=5\n")?;
             // The boot check stops reading at the platform's readiness line, so
             // it must follow every outcome marker, never precede them.
             system.log("DESKTOP_READY: fonts probe pass\n")?;
