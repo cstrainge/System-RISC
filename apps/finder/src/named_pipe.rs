@@ -23,8 +23,9 @@ pub fn candidate(entry: &files::CatalogInfo) -> bool
 /// action failure it is.
 pub fn open(system: &System<'_>, entry: &files::CatalogInfo) -> Result<(), Error>
 {
-    let writer = system.files().open_pipe(entry.volume, entry.id)?;
-    let writer = system.pipes().adopt_writer(writer)?;
+    // The open returns an owned writer bound to this process: there is no bare
+    // handle to adopt, and no second owner of it can be obtained.
+    let writer = system.pipes().open_item(entry.volume, entry.id)?;
     system.log(&format!("FINDER_PIPE_CONNECTED name={} volume={} cnid={}",
                         entry.name(),
                         entry.volume.0,

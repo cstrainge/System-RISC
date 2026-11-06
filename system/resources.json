@@ -3834,6 +3834,105 @@
     },
     {
       "type": "ICN#",
+      "id": -30002,
+      "symbol": "PIPES_FOLDER_LARGE_MONO",
+      "name": "Pipes folder",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/pipes/49434e23--30002.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": -30002,
+      "symbol": "PIPES_FOLDER_LARGE_COLOR",
+      "name": "Pipes folder",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/pipes/69636c38--30002.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": -30002,
+      "symbol": "PIPES_FOLDER_SMALL_MONO",
+      "name": "Pipes folder",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/pipes/69637323--30002.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": -30002,
+      "symbol": "PIPES_FOLDER_SMALL_COLOR",
+      "name": "Pipes folder",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/pipes/69637338--30002.bin"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": -30003,
+      "symbol": "NAMED_PIPE_LARGE_MONO",
+      "name": "Named pipe",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/named-pipe/49434e23--30003.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": -30003,
+      "symbol": "NAMED_PIPE_LARGE_COLOR",
+      "name": "Named pipe",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/named-pipe/69636c38--30003.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": -30003,
+      "symbol": "NAMED_PIPE_SMALL_MONO",
+      "name": "Named pipe",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/named-pipe/69637323--30003.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": -30003,
+      "symbol": "NAMED_PIPE_SMALL_COLOR",
+      "name": "Named pipe",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/named-pipe/69637338--30003.bin"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": -30003,
+      "symbol": "NAMED_PIPE_TYPE_BUNDLE",
+      "name": "Named pipe type icon",
+      "payload": {
+        "format": "hex",
+        "hex": "504950450000000149434e23000000008acd46524546000000008acd"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": -30003,
+      "symbol": "NAMED_PIPE_ICON_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "50495045000000"
+      }
+    },
+    {
+      "type": "ICN#",
       "id": 32740,
       "symbol": "BOOT_HAPPY_MAC",
       "payload": {
