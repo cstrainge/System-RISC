@@ -474,6 +474,7 @@
       {
         "kind": "uart",
         "model": "pl011",
+        "compatible": "arm,pl011",
         "base": "0x3f201000",
         "bytes": "0x1000",
         "interrupt": 57
@@ -481,6 +482,7 @@
       {
         "kind": "storage",
         "model": "sdhci",
+        "compatible": "brcm,bcm2835-mmc",
         "base": "0x3f300000",
         "bytes": "0x1000",
         "interrupt": 62
@@ -488,6 +490,7 @@
       {
         "kind": "gpio-mailbox",
         "model": "bcm2835-mailbox",
+        "compatible": "brcm,bcm2835-mbox",
         "base": "0x3f00b880",
         "bytes": "0x40",
         "interrupt": 1
@@ -499,6 +502,7 @@
       {
         "kind": "entropy",
         "model": "bcm2835-rng",
+        "compatible": "brcm,bcm2835-rng",
         "base": "0x3f104000",
         "bytes": "0x14",
         "interrupt": 61
@@ -506,6 +510,7 @@
       {
         "kind": "dma",
         "model": "bcm2835-dma",
+        "compatible": "brcm,bcm2835-dma",
         "base": "0x3f007000",
         "bytes": "0xf00",
         "interrupt": 16
@@ -513,6 +518,7 @@
       {
         "kind": "spi",
         "model": "bcm2835-spi0",
+        "compatible": "brcm,bcm2835-spi",
         "base": "0x3f204000",
         "bytes": "0x200",
         "interrupt": 54
@@ -520,6 +526,7 @@
       {
         "kind": "auxiliary",
         "model": "bcm2835-aux",
+        "compatible": "brcm,bcm2835-aux",
         "base": "0x3f215000",
         "bytes": "0x1000",
         "interrupt": 29
@@ -527,24 +534,28 @@
       {
         "kind": "pwm",
         "model": "bcm2835-pwm",
+        "compatible": "brcm,bcm2835-pwm",
         "base": "0x3f20c000",
         "bytes": "0x28"
       },
       {
         "kind": "audio",
         "model": "bcm2835-i2s",
+        "compatible": "brcm,bcm2835-i2s",
         "base": "0x3f203000",
         "bytes": "0x24"
       },
       {
         "kind": "clock",
         "model": "bcm2835-cprman",
+        "compatible": "brcm,bcm2835-cprman",
         "base": "0x3f101000",
         "bytes": "0x2000"
       },
       {
         "kind": "3d",
         "model": "bcm2835-v3d",
+        "compatible": "brcm,vc4-v3d",
         "base": "0x3fc00000",
         "bytes": "0x1000",
         "interrupt": 10
@@ -557,7 +568,7 @@
       {
         "model": "bcm2835-sdhost",
         "base": "0x3f202000",
-        "reason": "This SoC carries two SD controllers and the platform drives the Arasan sdhci at 0x3f300000: a self-test binary on the board read the user's card, including its partition table, through that block. Some public descriptions of this family attach the microSD slot to bcm2835-sdhost instead; that does not hold for this board, and the board is the authority. Nothing drives bcm2835-sdhost, so it has no mmio_devices window: a window granted to no module is a claim nobody can use."
+        "reason": "The board's own firmware tree describes the card slot on this controller: mmc@7e202000, compatible brcm,bcm2835-sdhost, status okay. The same tree carries the Arasan block the platform instead drives - mmc@7e300000, compatible brcm,bcm2835-mmc, status disabled - so the two sources disagree and neither is dismissed. What the board did is recorded in docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md: a self-test binary read the card's partition table through the Arasan block at 0x3f300000 on real silicon. The likely reconciliation is that the firmware's status describes the configuration it was given rather than what the hardware can do, since a bare-metal reader drives the controller without the firmware's model, but that is an explanation and not evidence. Nothing drives bcm2835-sdhost here, so it has no mmio_devices window: a window granted to no module is a claim nobody can use."
       }
     ]
   }
