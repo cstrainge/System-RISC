@@ -375,6 +375,53 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     puts("BOOT_AARCH64_COUNTER: hz=");
     puthex(counter);
     puts("\n");
+    // CPU topology and RAM come from the machine's tree, not from the record.
+    // These are the two facts BootInfo carries that the loader must not invent:
+    // a machine that describes four harts has four, and a machine that reports
+    // its RAM at a different base has it there.
+    let mut harts = 0u64;
+    let mut primary_hart = 0u64;
+    tree.cpus(|hart| {
+          if harts == 0
+          {
+              primary_hart = hart;
+          }
+          harts += 1;
+      });
+    puts("BOOT_AARCH64_CPUS: count=");
+    puthex(harts);
+    puts(" first=");
+    puthex(primary_hart);
+    puts("\n");
+    if harts == 0
+    {
+        puts("BOOT_AARCH64_CPUS_REFUSED: the machine's tree describes no CPU\n");
+        return 0;
+    }
+    let mut ram_base = 0u64;
+    let mut ram_bytes = 0u64;
+    let mut banks = 0u64;
+    tree.memory(|base, bytes| {
+          if banks == 0
+          {
+              ram_base = base;
+              ram_bytes = bytes;
+          }
+          banks += 1;
+      });
+    puts("BOOT_AARCH64_RAM: banks=");
+    puthex(banks);
+    puts(" base=");
+    puthex(ram_base);
+    puts(" bytes=");
+    puthex(ram_bytes);
+    puts("\n");
+    if banks == 0 || ram_bytes < PHYSICAL_RAM_BYTES
+    {
+        puts("BOOT_AARCH64_RAM_REFUSED: the machine's RAM is absent or below the platform \
+              minimum\n");
+        return 0;
+    }
     if counter == 0
     {
         puts("BOOT_AARCH64_COUNTER_REFUSED: the machine reports no counter frequency\n");
