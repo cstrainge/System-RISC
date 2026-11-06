@@ -320,6 +320,12 @@ impl<'a> Client<'a>
         status(self.invoke(FILE, call))
     }
 
+    /// Size-distinct pipe-item open; the writer handle is 64-bit.
+    pub fn file_pipe_open(self, call: &mut mac_abi::files::PipeOpenCall) -> Result<()>
+    {
+        status(self.invoke(FILE, call))
+    }
+
     pub fn textedit_display(self, call: &mut textedit::TextEditDisplayCall) -> Result<()>
     {
         status(self.invoke(TEXTEDIT, call))

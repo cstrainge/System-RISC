@@ -57,18 +57,20 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
 {
     let dist = workspace.dist().to_path_buf();
     fs::create_dir_all(&dist)?;
-    // A record that declares its machine description is built from the record is
-    // given one here. The blob is a build artifact rather than something embedded
-    // in the bootloader: whoever loads this machine's payload is handed it — an
-    // emulator with `-dtb`, or the board's own firmware as a file on the card —
-    // and passes it back in x0, so the bootloader reads one pointer whatever the
+    // A machine that supplies no device tree is given one, built from its own
+    // emulation profile. The blob is a build artifact rather than something
+    // embedded in the bootloader: the emulator is handed it with `-dtb` and
+    // passes it back in x0, so the bootloader reads one pointer whatever the
     // source and never knows where the tree came from.
     if mac_build::devicetree::generates(&workspace.platform)
     {
         let blob = mac_build::devicetree::generate_for(&workspace.platform)?;
         let path = dist.join(format!("{}.dtb", workspace.platform.name));
         fs::write(&path, &blob)?;
-        println!("Generated {} from the record: {} bytes.", workspace.describe(&path), blob.len());
+        println!("Generated {} for the emulated machine: {} bytes, passed to the emulator with \
+                  -dtb.",
+                 workspace.describe(&path),
+                 blob.len());
     }
     let Some(bootloader) = workspace.platform.bootloader.clone()
     else
@@ -91,50 +93,41 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
                                  elf.display())));
     }
     let memory = workspace.platform.memory()?;
-    // A bootloader is either executed in place from a read-only flash bank or
-    // copied into the boot window by the board's own first stage. Either way the
-    // record states one window that bounds the payload; the difference is whether
-    // the published image is the bank's whole contents, which a reader fetches
-    // whole and so must be padded to the erased value, or only the bytes the first
-    // stage copies, where padding would add bytes to a file the firmware loads
-    // raw.
-    let (window, banked) = match memory.flash()
+    // A machine that fetches its first stage from flash places the payload in
+    // the flash window it declares. A machine the emulator loads a bootable
+    // image into has no flash window at all, and its payload goes into the
+    // window that machine loads its first stage into. Both are statements the
+    // record already makes; nothing here invents a window.
+    let (window, medium) = match memory.flash()
     {
-        Some(flash) => (flash, true),
-        None => (memory.boot_window(), false)
+        Some(flash) => (flash, "flash"),
+        None => (memory.boot_window(), "load")
     };
     let window_bytes = window.end - window.start;
     let flattened = elf::flatten(&fs::read(&elf)?, window_bytes)?;
     let rom = dist.join(format!("{}.bin", bootloader.artifact));
     fs::write(&rom, &flattened.bytes)?;
-    if banked
-    {
-        // A flash bank is read whole, so the image is padded to its size and
-        // the unused bytes read as the erased value the medium would hold.
-        OpenOptions::new().write(true).open(&rom)?.set_len(window_bytes)?;
-    }
+    OpenOptions::new().write(true).open(&rom)?.set_len(window_bytes)?;
     let elf_copy = dist.join(format!("{}.elf", bootloader.artifact));
     fs::copy(&elf, &elf_copy)?;
     let report = json!({"image": workspace.describe(&rom),
                         "elf": workspace.describe(&elf_copy),
                         "bootloader": bootloader.package,
-                        "medium": if banked { "flash-bank" } else { "load-window" },
+                        "medium": medium,
                         "window_base": window.start,
                         "window_bytes": window_bytes,
                         "load_base": flattened.base,
                         "entry": flattened.entry,
                         "payload_size": flattened.bytes.len(),
-                        "image_bytes": fs::metadata(&rom)?.len(),
                         "sha256": package::sha256(&fs::read(&rom)?),
                         "source": bootloader.package,
                         "execution": bootloader.description});
     write_json(&dist.join(format!("{}.json", bootloader.artifact)), &report)?;
-    println!("Packaged {}: {} bytes at 0x{:x} in the {}-byte {}.",
+    println!("Packaged {}: {} bytes at 0x{:x} in the {medium} window (0x{:x} bytes).",
              bootloader.package,
              flattened.bytes.len(),
              flattened.base,
-             window_bytes,
-             if banked { "platform flash bank" } else { "load window the first stage copies into" });
+             window_bytes);
     Ok(Some(report))
 }
 
@@ -645,7 +638,14 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                                 "holder=",
                                 "SYSTEM_LEASE_PROBE: concurrent",
                                 "SYSTEM_LEASE_PROBE: released",
-                                "SYSTEM_LEASE_PROBE: ok"],
+                                "SYSTEM_LEASE_PROBE: ok",
+                                // The stock Finder's browser window enumerates the
+                                // startup root through the bounded scan before it
+                                // paints. The line names the directory it read and
+                                // how many entries it accepted; the count itself is
+                                // not asserted because it moves with the image's
+                                // root contents.
+                                "FINDER_FOLDER_LAYOUT window=", " folder="],
                               true)?];
     // A second probe replaces Finder on a clone to exercise font selection the
     // way an application does: by name, through the public client.
@@ -659,7 +659,8 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                       "FONTS_PROBE_SELECT name=\"Espy Sans\"",
                       "FONTS_PROBE_SELECT name=\"VT100\" size=9 style=1",
                       "FONTS_PROBE_SELECT name=\"American Heritage\"",
-                      "FONTS_PROBE_STYLE_UNPROVEN refused=", "FONTS_PROBE_PASS cases=5"],
+                      "FONTS_PROBE_STYLE plain=", "FONTS_PROBE_STYLE_OK",
+                      "FONTS_PROBE_PASS cases=5"],
                     true)?);
     let probe_image = directory.join("pipes-probe.hfsb");
     pipes_probe_image(workspace, &probe_image)?;
@@ -672,13 +673,26 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     // separate boot-check case. The folder comes from the built
                     // image, so the probe must find it, not create it.
                     &["PIPES_PROBE_ECHO_OK", "PIPES_PROBE_BLOCK_OK",
+                      "PIPES_PROBE_READER_PARKED", "PIPES_PROBE_READER_RESUMED transferred=5",
+                      "PIPES_PROBE_READER_OK parked=1 resumed=1 bytes=5",
                       "PIPES_PROBE_WOULD_BLOCK_OK", "PIPES_PROBE_EOF_OK",
                       "PIPES_PROBE_BROKEN_OK", "PIPES_PROBE_NAME_OK", "PIPES_WRITER_FIRST_OK",
                       "PIPES_WRITER_SECOND_REFUSED", "PIPES_WRITER_RELEASE_OK",
                       "PIPES_WRITER_CLOSED_OK", "PIPES_FOLDER_PRESENT volume=",
                       "PIPES_FOLDER_LIST_OK items=1", "PIPES_FOLDER_LOOKUP_OK",
                       "PIPES_FOLDER_STABLE_OK", "PIPES_FOLDER_ANON_ABSENT_OK",
-                      "PIPES_FOLDER_REFUSED_OK refusals=11", "PIPES_PROBE_PASS cases=5"],
+                      "PIPES_FOLDER_REFUSED_OK refusals=11",
+                      // The folder through one bounded continuation, then a
+                      // registration between two steps of that continuation:
+                      // the next step must be ScanStale, and the restarted scan
+                      // must see both pipes.
+                      "PIPES_SCAN_OK directory=", "PIPES_SCAN_STALE_OK",
+                      "PIPES_SCAN_RESTART_OK entries=2",
+                      // Opening an item is `connect` and launches nothing: the
+                      // process count across the open is the witness.
+                      "PIPES_OPEN_NO_LAUNCH_OK processes_before=", "PIPES_OPEN_LIMIT_OK",
+                      "PIPES_OPEN_DATA_OK bytes=4", "PIPES_OPEN_GONE_OK",
+                      "PIPES_PROBE_PASS cases=10"],
                     true)?);
     if converted.is_some()
     {
