@@ -24,7 +24,8 @@
     "modules": [
       "mac-system",
       "videocore-framebuffer",
-      "spi0-wave"
+      "spi0-wave",
+      "bcm2835-rng"
     ],
     "folders": {
       "applications": "Applications",
