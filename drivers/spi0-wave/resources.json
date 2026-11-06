@@ -1,0 +1,10 @@
+{
+  "name": "SPI0 Timed Output",
+  "binary_name": "Spi0Wave",
+  "file_type": "DRVR",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 1,
+  "description": "Timed waveform output: an SPI shift register fed by a leased DMA channel",
+  "resources": []
+}

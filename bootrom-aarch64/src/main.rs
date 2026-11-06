@@ -13,21 +13,21 @@ use linked_list_allocator::LockedHeap;
 use mac_sdhci::Disk;
 
 
-/// The filesystem code above the block device needs storage for its own
-/// bookkeeping. This is a bounded firmware heap in the image's own BSS, not a
-/// claim about the machine's RAM.
-const HEAP_BYTES: usize = 256 * 1024;
-
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
 
-static mut HEAP_STORAGE: [u8; HEAP_BYTES] = [0; HEAP_BYTES];
-
+/// The filesystem code above the block device needs storage for its own
+/// bookkeeping. It comes from the platform record's firmware heap window, which
+/// is the region the boot stage owns, so the payload itself stays small enough
+/// to fit beside its own stack.
 fn init_heap()
 {
-    // SAFETY: the bootrom is single-threaded on the primary CPU and this runs
-    // once before any allocation; no reference to the storage escapes.
-    unsafe { HEAP.lock().init(core::ptr::addr_of_mut!(HEAP_STORAGE) as *mut u8, HEAP_BYTES) };
+    // SAFETY: the bootrom is single-threaded on the primary CPU, this runs once
+    // before any allocation, the MMU is already on, and the window is RAM the
+    // record reserves for exactly this purpose. No reference to it escapes.
+    unsafe {
+        HEAP.lock().init(FIRMWARE_HEAP_BASE as *mut u8, FIRMWARE_HEAP_BYTES as usize)
+    };
 }
 
 #[alloc_error_handler]
@@ -82,19 +82,23 @@ fn firmware_tree(address: usize) -> Option<&'static [u8]>
     Some(unsafe { core::slice::from_raw_parts(header, total) })
 }
 
-// Translation tables live inside the declared boot window, clear of the loaded
-// image and of the stack. The stack grows down from `__stack_top` (0x101040 in
-// the current image), so the tables sit above it: at 0x101000 the first stack
-// pushes overwrote the level-1 entries for the code and stack, which only
-// showed up once a caller's frame grew deep enough to force a table walk. A
-// 39-bit regime with a 4 KiB granule starts its walk at level 1, so TTBR0/TTBR1
-// name the level-1 tables directly. Every descriptor we touch sets AF; a table
-// walker that reaches a descriptor without AF faults on first access even when
-// the rest of the entry looks right.
-const L1_LOW: u64 = 0x11_0000;
-const L2_LOW: u64 = 0x11_1000;
-const L1_HIGH: u64 = 0x11_2000;
-const L2_PHYSMAP: u64 = 0x11_3000;
+// The bootstrap translation tables. They are not a section — the entry code
+// writes them with plain stores, so the linker cannot place them — so their
+// address comes from `link.ld`, which owns it and asserts that the four pages
+// clear the stack window and stop short of the firmware heap. That ordering
+// matters because the stack grows down from `__stack_top`: tables inside the
+// stack window are overwritten by the first deep call, and the result is a data
+// abort inside whatever function forced the walk rather than anything that names
+// the tables. Stating the address here as well is what once let a comment carry
+// one build's stack top into another build.
+unsafe extern "C"
+{
+    // The script's own symbol; its address is the table base.
+    static __tables_start: u8;
+}
+
+/// One translation table: 512 descriptors of eight bytes.
+const TABLE_BYTES: u64 = 4096;
 const BLOCK: u64 = 0x20_0000;
 const TABLE: u64 = 0x3;
 // Valid block, AttrIndx 0 (normal write-back), inner shareable, AF.
@@ -132,25 +136,33 @@ pub extern "C" fn mmu_init()
     // extent rather than any individual peripheral address.
     assert!(PHYSICAL_RAM_BYTES % BLOCK == 0, "RAM must end on a block boundary");
     assert!(physmap_index < 512, "the physmap must sit inside the kernel half");
+    // A 39-bit regime with a 4 KiB granule starts its walk at level 1, so
+    // TTBR0/TTBR1 name the level-1 tables directly. Every descriptor we touch
+    // sets AF; a table walker that reaches a descriptor without AF faults on
+    // first access even when the rest of the entry looks right.
+    let l1_low = core::ptr::addr_of!(__tables_start) as u64;
+    let l2_low = l1_low + TABLE_BYTES;
+    let l1_high = l1_low + 2 * TABLE_BYTES;
+    let l2_physmap = l1_low + 3 * TABLE_BYTES;
     unsafe
     {
-        for table in [L1_LOW, L2_LOW, L1_HIGH, L2_PHYSMAP]
+        for table in [l1_low, l2_low, l1_high, l2_physmap]
         {
             clear(table);
         }
-        entry(L1_LOW, 0, L2_LOW | TABLE);
+        entry(l1_low, 0, l2_low | TABLE);
         for index in 0..ram_blocks
         {
-            entry(L2_LOW, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
+            entry(l2_low, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
         }
         for index in ram_blocks..512
         {
-            entry(L2_LOW, index, index as u64 * BLOCK | DEVICE);
+            entry(l2_low, index, index as u64 * BLOCK | DEVICE);
         }
-        entry(L1_HIGH, physmap_index, L2_PHYSMAP | TABLE);
+        entry(l1_high, physmap_index, l2_physmap | TABLE);
         for index in 0..ram_blocks
         {
-            entry(L2_PHYSMAP, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
+            entry(l2_physmap, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
         }
         core::arch::asm!(
             "dsb sy",
@@ -161,8 +173,8 @@ pub extern "C" fn mmu_init()
             "isb",
             mair = in(reg) MAIR,
             tcr = in(reg) TCR,
-            ttbr0 = in(reg) L1_LOW,
-            ttbr1 = in(reg) L1_HIGH,
+            ttbr0 = in(reg) l1_low,
+            ttbr1 = in(reg) l1_high,
             options(nostack)
         );
         core::arch::asm!(
@@ -241,7 +253,9 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
             return 0;
         }
     };
-    let sdhci = match tree.window("sdhci")
+    // Looked up by the tree's own `compatible`, which is the device tree's
+    // vocabulary rather than this platform's inventory name for the part.
+    let sdhci = match tree.window("brcm,bcm2835-mmc")
     {
         Ok(Some((base, bytes))) =>
         {
@@ -258,7 +272,7 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
             return 0;
         }
     };
-    match tree.window("pl011")
+    match tree.window("arm,pl011")
     {
         Ok(Some((base, _))) =>
         {

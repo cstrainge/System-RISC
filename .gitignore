@@ -15,6 +15,11 @@
 *.rom
 *.log
 .hfs*
+# The board's own firmware, supplied by the developer from the firmware
+# distribution. Redistributable only unmodified and only for its own hardware,
+# with the licence travelling alongside, so it is build input and never
+# repository content. The image carries it; the checkout does not.
+/firmware/
 # Extracted Apple resources: generated from the System 7.5.1 ISO by the
 # extraction build, never checked in. `extract-list.json` is the reviewed
 # metadata that says what we take, and stays tracked.

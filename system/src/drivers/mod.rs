@@ -2,6 +2,7 @@
 pub mod devices;
 pub mod file_sources;
 pub mod jobs;
+pub mod leases;
 pub(crate) mod registry;
 #[cfg(any(systemrisc, feature = "test-support"))]
 pub(crate) mod synchronous;

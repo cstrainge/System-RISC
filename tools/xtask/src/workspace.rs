@@ -198,12 +198,25 @@ impl Workspace
 
     pub(crate) fn boot_image_name(&self) -> Result<&str>
     {
+        // A board names the image it is written from directly, in
+        // `hardware.boot_image`; a virtual machine names it by marking one of its
+        // attached disks as the boot medium. Both are declarations, and neither is
+        // inferred from the other — a platform that has no emulator still has a
+        // card, which is the whole point of having a board record.
+        if let Some(name) = self.platform
+                                .hardware
+                                .as_ref()
+                                .and_then(|hardware| hardware.boot_image.as_deref())
+        {
+            return Ok(name);
+        }
         self.platform
             .emulation()
             .and_then(|emulation| emulation.boot_image())
             .ok_or_else(|| {
-                error(format!("platform '{}' does not mark any emulation.disks.attach entry \
-                               `\"boot\": true`, so the machine's boot medium is undeclared",
+                error(format!("platform '{}' declares no hardware.boot_image and marks no \
+                               emulation.disks.attach entry `\"boot\": true`, so the boot medium \
+                               is undeclared",
                               self.platform.name))
             })
     }

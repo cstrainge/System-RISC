@@ -132,9 +132,14 @@ a property of any endpoint.
 - The limit does not count the creator's own writer handle. A limit of one
   therefore means one connecting owner at a time, and the creator still holds
   the writer it was given.
-- A limit larger than the endpoint population the System can hold is accepted
-  and behaves as unlimited; the registry's own limit decides when endpoints run
-  out.
+- The limit is a 32-bit count, and the public interface takes it as such, so only
+  a hand-built call can state a wider value. A stated limit that does not fit in
+  32 bits is refused with `BadArgument` before anything is created; it is **not**
+  clamped and **not** accepted as a synonym for unlimited, because a caller that
+  asks for a value the facility cannot represent has asked for something it is
+  not getting. A limit that does fit but is larger than the number of endpoints
+  the System can hold simply never binds: it is stored as stated and the
+  registry's own endpoint limit is what refuses `connect` when endpoints run out.
 
 ### 3.3 `connect`
 
@@ -277,10 +282,17 @@ one:
 
 - Bytes are delivered in the order they were written. There is no reordering, no
   prioritisation and no out-of-band path.
-- Waiters on the same condition are woken in the order they began waiting.
-- Wakeup order is the only ordering promised. Which woken writer or reader wins
-  the resulting race is not specified; a woken caller must re-check the condition
-  rather than assume the transfer is available.
+- A change of condition wakes **every** thread waiting on that condition at that
+  moment: a wake is a broadcast over the wait set, not a handoff to one waiter.
+  No eligible waiter is passed over.
+- The order in which woken threads *run* is not promised. It is not arrival order:
+  the implementation releases them in scheduler thread-slot order, which is an
+  allocation artefact and may change. Nothing in this contract makes "woken first"
+  observable, and a caller must not infer it.
+- Because waking is a broadcast, several woken callers may race for the same
+  newly available bytes or space. Which of them wins is not specified; a woken
+  caller must re-check the condition and must not assume the transfer is
+  available.
 - Multiple writers are permitted and receive no fairness guarantee: a writer that
   always has data may keep the ring full. There is no round-robin, no quota and
   no priority. A name's writer limit bounds how many writers there are; it does
@@ -367,10 +379,10 @@ refusal case — it is not an entry in that namespace at all.
 - An item's fields never reveal its source: a named pipe is a file-kind entry
   with the type and creator of section 9.3, the folder's volume and catalog node
   ID as its parent, and the pipe's name as its name.
-- The merged listing is a single cursor with a single revision. Registering or
-  removing a named pipe changes that revision, so an enumeration that spans the
-  change reports `ScanStale` rather than silently combining two snapshots. A
-  caller restarts the enumeration.
+- The merged listing is a single continuation with a single revision (section
+  9.6). Registering or removing a named pipe changes that revision, so an
+  enumeration that spans the change reports `ScanStale` rather than silently
+  combining two snapshots. A caller restarts the enumeration.
 - Lookup of a single name in this folder searches real children first, then named
   pipes. Path resolution uses the same lookup, so a path through the folder
   resolves both kinds.
@@ -406,6 +418,14 @@ association.
   File Manager operation is defined for `PIPE`/`PIPE`. The File Manager's generic
   open operations refuse these items; opening is the pipe facility's operation,
   performed on the item's name.
+- The open is a request of its own, not a reinterpretation of the File Manager's
+  ordinary open. It carries a volume and an identity and returns a writer handle,
+  so it is a *different request record* from every other File Manager request,
+  and its length is one no other File Manager request uses. That matters because
+  the `FILE` trap identifies a request by its length alone: two requests of equal
+  length cannot be told apart, and a shared length would deliver this one to
+  another operation's validation. A colliding length is therefore refused at
+  build time rather than at run time.
 
 ### 9.5 Why the merge is File Manager enumeration and not a mounted volume
 
@@ -442,8 +462,38 @@ synthetic identifier space that both sources agree on, and a merged cursor with
 one revision across two sources — remains a separate, larger change. It is not
 a prerequisite for pipes, and nothing in this contract depends on it.
 
-## 10. Launch paths, and the stubbed standard streams
+### 9.6 The enumeration continuation
 
+Merging two sources into one listing needs two things an ordinary directory scan
+does not have: the revision of the pipe registry the enumeration started against,
+and the number of registry rows already returned. The directory-scan continuation
+therefore carries two additional 32-bit fields.
+
+- **Registry revision.** Set when the scan starts and carried unchanged by every
+  continuation. For a scan of the `Pipes` folder it is the registry's revision at
+  the start of the enumeration; a registration or a destruction during the
+  enumeration changes that revision, and a continuation carrying the older value
+  is refused with `ScanStale`. A listing therefore never combines two snapshots,
+  and a caller that receives `ScanStale` restarts the enumeration. The field is
+  zero for every other directory.
+- **Registry row offset.** Zero while the folder's real catalog children are being
+  returned. Once the catalog portion is exhausted the scan continues into the
+  registry, and this field counts the rows already handed out. It is always zero
+  for every other directory.
+- **Which directories may carry them.** Only the `Pipes` folder. A scan request
+  for any other directory that arrives with either field nonzero is refused with
+  `BadArgument`, so a caller cannot carry registry state into a directory that has
+  no registry. A continuation naming a different volume or directory from the one
+  it was started on is likewise `BadArgument`, and a catalog revision that has
+  changed is `ScanStale`.
+- **Not an additive change.** This is a change of the request record's layout, not
+  a compatible extension of it: the record grew, and its length is how the service
+  identifies the request. There is no second decoder, no version field to select
+  one, and no tolerant reading of the older, shorter record. Callers are rebuilt
+  with the System, which is what this project's unreleased-ABI rule requires. A
+  caller built against the older layout is refused rather than misread.
+
+## 10. Launch paths, and the stubbed standard streams
 The GUI standard streams are deliberately stubbed, and this facility does not
 replace them:
 
@@ -609,8 +659,9 @@ Explicitly not promised, with the reason:
 - **Fairness among multiple writers.** Permitted, not promised. Nothing in v1
   prevents one writer from monopolising a pipe. A writer limit of one removes the
   case entirely rather than ordering it.
-- **Wakeup ordering beyond arrival order.** Waiters are woken in arrival order,
-  but the outcome of the resulting race is unspecified.
+- **Wakeup ordering.** No order is promised at all, not even arrival order. A
+  change wakes every waiter on the condition, and the order they run in is
+  scheduler slot order. A caller must re-check rather than rely on being first.
 - **Deadlines.** No v1 operation has one. "Blocking does not spin" is the whole
   guarantee; a caller wanting a limit uses non-blocking mode.
 - **Framing, message boundaries, record sizes.** Never part of pipes. The 512-byte
@@ -672,7 +723,9 @@ Two facts about the numbering:
 **Allocated by this facility: `0x1002f` = `PIPES`.** It is the first unoccupied
 number, it is not a Mac Roman variant, and it is additive: no existing number
 changes meaning. The native development ABI stays at version 1 because this is
-an additive service in an unreleased tree.
+an additive service in an unreleased tree. The additive claim is about this
+number only: a request record this facility extends keeps its identity in its
+length, and a record whose layout changes is not additive at all (section 9.6).
 
 Operation selectors inside the pipes call occupy the small-integer space of that
 call alone (0 through 6, in section 3 order). They are not trap numbers and share
@@ -784,6 +837,12 @@ ambiguity is resolved by namespace and by handle type, not by renaming:
 - The pipe endpoint type is distinct from every other handle type. Passing a pipe
   handle where a file handle is expected is a type error in the Rust interface
   and a kind mismatch in the native call.
+- The File Manager gains one operation code for opening a pipe item. It is the
+  next free value in the File Manager's own operation space, not a trap number,
+  and it is carried by its own request record. No existing File Manager operation
+  code changes meaning, and the generic open operations still refuse these items.
+  The selector is an operation *inside* the existing `FILE` service, so this file's
+  trap allocation above is unaffected.
 
 ## 14. Acceptance
 
@@ -809,13 +868,12 @@ against the shipping artifacts rather than a host substitute:
 - Double-clicking a named pipe connects and does not launch an application.
 - The folder shows its own icon and a named pipe shows the `PIPE`/`PIPE` icon.
 - The GUI standard streams still behave exactly as section 10 describes.
-- The boot check remains 18 of 18 and the canonical public-SDK suite still
+- The boot check remains 19 of 19 and the canonical public-SDK suite still
   passes.
 
 Section 15 records which of these have actually been executed.
 
 ## 15. Implementation status
-
 Implemented and built into the guest, with the guest booting:
 
 - The seven operations, the three outcomes, the fixed ring, the 512-byte
@@ -834,15 +892,24 @@ Implemented and built into the guest, with the guest booting:
 - The folder itself, created by the image builder as part of the platform's
   installed folder layout, beside `Fonts` and `Control Panels`. No guest step
   creates it, and the probe proves the built folder reaches the mount record.
+- Opening an item is `connect`, through the File Manager. The Finder's
+  double-click reaches the same operation: a `PIPE`/`PIPE` item is recognised
+  before any document association, the open returns the writer the caller would
+  have obtained from `connect` by name, and nothing is launched. A destroyed
+  identity is `NotFound` and a full writer limit is `AccessDenied`, so a refused
+  open is a reportable failure rather than a different item or a launch.
 
 Verified by execution in the guest, not only by compilation: a probe
-application replaces Finder on a cloned disk and runs five cases — echo,
-a 512-byte atomic write into a full pipe that must wait for a reader, would-block
-versus end-of-stream, broken pipe, and name removal — followed by the writer-limit
-and folder markers. The probe is
+application replaces Finder on a cloned disk and runs its cases in order — echo,
+a 512-byte atomic write into a full pipe that must wait for a reader, a parked
+reader resumed by a writer, would-block versus end-of-stream, broken pipe, name
+removal, the writer limit, the folder, the folder's bounded continuation and
+opening an item — and reports how many
+actually ran (`PIPES_PROBE_PASS cases=10`, counted from the cases executed rather
+than written down). The probe is
 `crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
 it and runs it as the single `pipes-probe` case, so the marker set is part of the
-gate (18 of 18). The folder markers assert that the folder is present with the
+gate (19 of 19). The folder markers assert that the folder is present with the
 identity the mount recorded (`PIPES_FOLDER_PRESENT volume=66113 blessed=17
 cnid=26`, the same CNID the built image carries), one item per named pipe,
 identical identity by name and by CNID, `NotFound` for an unknown name, identity
@@ -850,28 +917,78 @@ stability across two enumerations and non-reuse after destruction, that an
 anonymous pipe does not appear, and eleven refused mutations. The writer-limit
 markers assert that a one-writer name accepts one `connect`, refuses the second
 with `AccessDenied`, accepts a new connection once the first closes, and still
-disappears with its last handle. `scripts/capture_pipes_probe.py` boots the same
-artifact standalone and records the QEMU command and the serial hash.
+disappears with its last handle. The open markers assert that opening the item
+returns a writer while the process count is unchanged
+(`PIPES_OPEN_NO_LAUNCH_OK processes_before=1 processes_after=1`), that the open
+consumed the name's one writer so a second open is `AccessDenied`
+(`PIPES_OPEN_LIMIT_OK`), that the adopted writer's bytes reach the creator's
+reader (`PIPES_OPEN_DATA_OK bytes=4`), and that a destroyed identity is
+`NotFound` (`PIPES_OPEN_GONE_OK`). `scripts/capture_pipes_probe.py` boots the
+same artifact standalone and records the QEMU command and the serial hash.
 
-Not implemented, and neither blocks a Terminal session:
+The merged folder is also enumerated through one bounded continuation, the way a
+Finder window reads it: `PIPES_SCAN_OK directory=26 entries=1 steps=2` counts one
+entry across more than one step, so the listing is read incrementally rather than
+handed back whole. A named pipe registered between two steps of that continuation
+changes the registry revision, and the next step is refused
+(`PIPES_SCAN_STALE_OK`); restarting from a fresh continuation sees both pipes
+(`PIPES_SCAN_RESTART_OK entries=2 steps=3`). That staleness is provoked
+deliberately — nothing else in the probe would produce one — so it is coverage of
+the contract, not of an accident.
 
-- Finder open-as-connect. Double-clicking a named pipe currently falls through to
-  the document path rather than connecting; the facility is reachable by name
-  through the SDK, which is what a Terminal uses.
-- The folder icon family, the `PIPE`/`PIPE` document family and its bundle, and
-  the corresponding extension of the canonical icon-reservation allowlist. The
-  type pair is reported today; the icons that would use it are not.
+The Finder's own window path is covered by the stock application in the ordinary
+boot case: `FINDER_FOLDER_LAYOUT window=... volume=66113 folder=2 ... count=3`
+reports that a browser window enumerated a named directory through the scan and
+how many entries it accepted. The window's contents are the accepted scan
+entries; there is no other path that fills them. A window whose continuation
+keeps going stale now restarts a bounded number of times and is then reported as
+a failed folder, through the same failure path that logs `FINDER_ACTION_FAILED`
+and offers a retry, rather than rescanning for ever and showing nothing.
 
-Both are Finder affordances — how the folder and its items look and what a
-double-click does — and **neither blocks a Terminal session**: a Terminal reaches
-a pipe by name through the SDK, which is exactly what is proven. They come after
-the Terminal work.
+**What the enumeration markers do not prove.** The eight-restart bound is not
+exercised: provoking eight consecutive stale restarts needs a folder mutated
+faster than the browser can read it, and manufacturing that churn would be
+harness machinery in a production path. The bound is written, and its failure
+mode without it — an endlessly restarting empty window — is the one these markers
+would not distinguish from slow progress.
+
+**What the open markers do not prove.** They drive the File Manager open route
+from a guest application, which is the operation a double-click invokes and the
+only part of the gesture with a refusable outcome; they do not synthesise a
+mouse double-click in the Finder's own window, so the Finder's hit test and
+dispatch to that route are covered by reading, not by this run. The process count
+is the witness that nothing was launched, and it is measured across the open
+only: it does not prove that no application started earlier in the session.
+
+Not implemented:
+
+- Both icon families, and what that costs today. The Finder already draws every
+  item through the icon service, so nothing is missing from the drawing path; what
+  is missing is the two families themselves. There is no `standard` identifier for
+  a `Pipes` folder, no native family for one in the reserved `-30031..-30000`
+  block, and no Desktop-database entry mapping the `PIPE`/`PIPE` pair to a document
+  family. A `Pipes` folder therefore draws the generic folder glyph and a named
+  pipe draws the generic document glyph: right kind of shape, wrong identity, and
+  a double-click already connects. Adding them means new icon assets, manifest
+  entries in that reserved block, the name-to-icon mapping the other blessed
+  folders already have, a type-pair registration, and an extension of the
+  canonical icon-reservation allowlist — its own pass, with its own gate.
+
+This is a Finder affordance — how the folder and its items look — and it **does
+not block a Terminal session**: a Terminal reaches a pipe by name through the
+SDK, which is exactly what is proven. It comes after the Terminal work.
 
 **Not covered, stated as cost.** The probe covers the transport contract, the
-writer limit and the folder. It does not cover multiple concurrent writers
-interleaving under load, or stale and foreign handle refusals; those are
+writer limit, the folder and the open. It does not cover multiple concurrent
+writers interleaving under load, or stale and foreign handle refusals; those are
 refinements whose failure mode is a wrong arrangement of bytes, not a hang. Two
 failures are worse and are also uncovered: a **lost wake under load**, and
 **cancellation of a blocked caller by process exit**. Both are written, neither
 is executed, and both would hang rather than fail. Section 10.1 says what a
 consumer should do about that: bounded waits, so the failure is visible.
+
+The canonical host suite does not build on this tree: `system/src/toolbox/controls`
+imports `crate::machine`, which is gated to the target, so `cargo test -p
+mac-toolbox` stops at compilation. That breakage is older than this facility and
+this work neither caused nor depended on it; acceptance here rests on the guest
+boot check, which builds and runs the shipping artifacts.

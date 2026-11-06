@@ -1,0 +1,10 @@
+{
+  "name": "BCM2837 Entropy",
+  "binary_name": "Bcm2835Rng",
+  "file_type": "DRVR",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 1,
+  "description": "Ring-oscillator entropy from an exclusively claimed bcm2835-rng block, refusing rather than fabricating",
+  "resources": []
+}

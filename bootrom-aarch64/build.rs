@@ -10,9 +10,6 @@ fn main()
     let record: serde_json::Value =
         serde_json::from_slice(&fs::read(&record_path).expect("platform record"))
             .expect("valid platform record");
-    let boot = &record["memory"]["boot"];
-    let boot_base = boot["base"].as_str().expect("memory.boot.base");
-    let bytes = boot["bytes"].as_str().expect("memory.boot.bytes");
     let uart = record["hardware"]["devices"].as_array()
                                             .expect("hardware.devices")
                                             .iter()
@@ -32,6 +29,10 @@ fn main()
     let ram_bytes = memory["minimum_ram_bytes"].as_str().expect("memory.minimum_ram_bytes");
     let physmap_base = record["virtual_memory"]["physmap"]["start"].as_str()
                              .expect("virtual_memory.physmap.start");
+    let firmware_heap = &memory["firmware_heap"];
+    let firmware_heap_base = firmware_heap["base"].as_str().expect("memory.firmware_heap.base");
+    let firmware_heap_bytes = firmware_heap["bytes"].as_str()
+                                                    .expect("memory.firmware_heap.bytes");
     let devices = record["hardware"]["devices"].as_array().expect("hardware.devices");
     let base = |kind: &str, model: &str| -> String {
         devices.iter()
@@ -52,21 +53,25 @@ fn main()
               format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
                        pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
                        pub const PHYSMAP_BASE: u64 = {physmap_base};\n\
+                       pub const FIRMWARE_HEAP_BASE: u64 = {firmware_heap_base};\n\
+                       pub const FIRMWARE_HEAP_BYTES: u64 = {firmware_heap_bytes};\n\
                        pub const PL011_BASE: u64 = {pl011};\n\
                        pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n"))
         .expect("memory constants");
-    let linker = format!("OUTPUT_ARCH(aarch64)\nENTRY(_start)\nMEMORY {{ ram (rwx) : ORIGIN = \
-                          {boot_base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \
-                          KEEP(*(.text.entry)) *(.text .text.*) }} > ram\n.rodata : ALIGN(4096) \
-                          {{ *(.rodata .rodata.* .srodata .srodata.*) }} > ram\n.data : \
-                          ALIGN(4096) {{ *(.data .data.* .sdata .sdata.* .got .got.*) }} > \
-                          ram\n.bss (NOLOAD) : ALIGN(4096) {{ __bss_start = .; *(.bss .bss.* \
-                          .sbss .sbss.*) *(COMMON) . = ALIGN(16); __bss_end = .; }} > ram\n. = \
-                          ALIGN(16);\n. += 0x10000;\n__stack_top = .;\n.ARM.attributes 0 : {{ \
-                          *(.ARM.attributes) }} :NONE\n/DISCARD/ : {{ *(.eh_frame .eh_frame_hdr) \
-                          }}\n}}\n");
-    fs::write(out.join("boot.ld"), linker).expect("boot linker script");
-    println!("cargo:rustc-link-arg-bin=bootrom-aarch64=-T{}", out.join("boot.ld").display());
+    // The link layout is the platform record's, not a second copy of it: the
+    // checked memory map is turned into linker symbols and the script beside
+    // this build file places every section and the stack in that one window.
+    let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("link.ld");
+    println!("cargo:rerun-if-changed={}", template.display());
+    let (_, symbols) = mac_build::platform::firmware_artifacts().expect("checked boot window");
+    let script = out.join("boot.ld");
+    let contents = format!("{symbols}{}",
+                           fs::read_to_string(&template).expect("boot linker template"));
+    if fs::read(&script).ok().as_deref() != Some(contents.as_bytes())
+    {
+        fs::write(&script, contents).expect("boot linker script");
+    }
+    println!("cargo:rustc-link-arg-bin=bootrom-aarch64=-T{}", script.display());
     if env::var("TARGET") != env::var("HOST")
     {
         mac_build::platform::validate_pic_flags().expect("native PIC dependency contract");

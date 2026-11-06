@@ -158,6 +158,13 @@ fn execute() -> Result<()>
     let name = global.platform
                      .or_else(|| env::var(mac_build::platform::PLATFORM_ENV).ok())
                      .unwrap_or_else(|| mac_build::platform::DEFAULT_PLATFORM.into());
+    // The packaging library resolves the selected record through a process-wide
+    // singleton that reads this variable, while this binary resolves it from its
+    // own command line. Publishing the selection here makes the two agree; a
+    // mismatch silently packages against another machine's link geometry.
+    // SAFETY: no thread has been spawned yet, so nothing else can be reading or
+    // writing the environment concurrently.
+    unsafe { env::set_var(mac_build::platform::PLATFORM_ENV, &name) };
     let workspace = Workspace::new(global.build,
                                    global.dist,
                                    global.target,

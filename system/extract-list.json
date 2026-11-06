@@ -3876,7 +3876,7 @@
       "resources": [
         {
           "type": "NFNT",
-          "id": 13021,
+          "id": 13008,
           "source_id": 2784,
           "symbol": "EXTRACTED_NFNT_2784_2",
           "name": null,
@@ -3889,7 +3889,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13022,
+          "id": 13009,
           "source_id": 3169,
           "symbol": "EXTRACTED_NFNT_3169_2",
           "name": null,
@@ -3902,7 +3902,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13023,
+          "id": 13010,
           "source_id": 3662,
           "symbol": "EXTRACTED_NFNT_3662_2",
           "name": null,
@@ -3915,7 +3915,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13024,
+          "id": 13011,
           "source_id": 5380,
           "symbol": "EXTRACTED_NFNT_5380_2",
           "name": null,
@@ -3928,7 +3928,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13025,
+          "id": 13012,
           "source_id": 11814,
           "symbol": "EXTRACTED_NFNT_11814_2",
           "name": null,
@@ -4018,19 +4018,6 @@
           "name": "Courier Bold",
           "attributes": 32,
           "form": "file"
-        },
-        {
-          "type": "sfnt",
-          "id": 13003,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217",
-          "name": "Courier",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 0,
-          "family": "Courier"
         }
       ]
     },
@@ -4039,7 +4026,7 @@
       "resources": [
         {
           "type": "NFNT",
-          "id": 13032,
+          "id": 13019,
           "source_id": 7155,
           "symbol": "EXTRACTED_NFNT_7155_2",
           "name": null,
@@ -4052,7 +4039,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13033,
+          "id": 13020,
           "source_id": 7843,
           "symbol": "EXTRACTED_NFNT_7843_2",
           "name": null,
@@ -4065,7 +4052,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13034,
+          "id": 13021,
           "source_id": 15521,
           "symbol": "EXTRACTED_NFNT_15521_2",
           "name": null,
@@ -4078,7 +4065,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13035,
+          "id": 13022,
           "source_id": 18252,
           "symbol": "EXTRACTED_NFNT_18252_2",
           "name": null,
@@ -4091,7 +4078,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13036,
+          "id": 13023,
           "source_id": 19129,
           "symbol": "EXTRACTED_NFNT_19129_2",
           "name": null,
@@ -4104,7 +4091,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13037,
+          "id": 13024,
           "source_id": 20845,
           "symbol": "EXTRACTED_NFNT_20845_2",
           "name": null,
@@ -4117,7 +4104,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13038,
+          "id": 13025,
           "source_id": 27283,
           "symbol": "EXTRACTED_NFNT_27283_2",
           "name": null,
@@ -4131,29 +4118,11 @@
       ]
     },
     {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Geneva",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13004,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_2",
-          "name": "Geneva",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 0,
-          "family": "Geneva"
-        }
-      ]
-    },
-    {
       "path": "Hard Disk Files/System Folder Files/Fonts/Gill Sans Condensed Bold",
       "resources": [
         {
           "type": "sfnt",
-          "id": 13005,
+          "id": 13003,
           "source_id": 15011,
           "symbol": "EXTRACTED_SFNT_15011_2",
           "name": "Gill Sans Condensed Bold",
@@ -4167,42 +4136,11 @@
       ]
     },
     {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Helvetica",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13006,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_3",
-          "name": "Helvetica",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 0,
-          "family": "Helvetica"
-        },
-        {
-          "type": "sfnt",
-          "id": 13007,
-          "source_id": 9218,
-          "symbol": "EXTRACTED_SFNT_9218",
-          "name": "Helvetica Bold",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 1,
-          "family": "Helvetica"
-        }
-      ]
-    },
-    {
       "path": "Hard Disk Files/System Folder Files/Fonts/Klang MT",
       "resources": [
         {
           "type": "sfnt",
-          "id": 13008,
+          "id": 13004,
           "source_id": 10840,
           "symbol": "EXTRACTED_SFNT_10840_2",
           "name": "Klang MT",
@@ -4216,29 +4154,11 @@
       ]
     },
     {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Monaco",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13009,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_4",
-          "name": "Monaco",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 0,
-          "family": "Monaco"
-        }
-      ]
-    },
-    {
       "path": "Hard Disk Files/System Folder Files/Fonts/New Berolina MT",
       "resources": [
         {
           "type": "sfnt",
-          "id": 13010,
+          "id": 13005,
           "source_id": 10909,
           "symbol": "EXTRACTED_SFNT_10909_2",
           "name": "New Berolina MT",
@@ -4252,29 +4172,11 @@
       ]
     },
     {
-      "path": "Hard Disk Files/System Folder Files/Fonts/New York",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13011,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_5",
-          "name": "New York",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 0,
-          "family": "New York"
-        }
-      ]
-    },
-    {
       "path": "Hard Disk Files/System Folder Files/Fonts/Old English Text MT",
       "resources": [
         {
           "type": "sfnt",
-          "id": 13012,
+          "id": 13006,
           "source_id": 10897,
           "symbol": "EXTRACTED_SFNT_10897_2",
           "name": "Old English Text MT",
@@ -4305,32 +4207,6 @@
           "name": "Palatino Bold Italic",
           "attributes": 32,
           "form": "file"
-        },
-        {
-          "type": "sfnt",
-          "id": 13013,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_6",
-          "name": "Palatino",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 0,
-          "family": "Palatino"
-        },
-        {
-          "type": "sfnt",
-          "id": 13014,
-          "source_id": 9218,
-          "symbol": "EXTRACTED_SFNT_9218_2",
-          "name": "Palatino Italic",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 2,
-          "family": "Palatino"
         }
       ]
     },
@@ -4339,7 +4215,7 @@
       "resources": [
         {
           "type": "sfnt",
-          "id": 13015,
+          "id": 13007,
           "source_id": 10890,
           "symbol": "EXTRACTED_SFNT_10890_2",
           "name": "Script MT Bold",
@@ -4353,86 +4229,11 @@
       ]
     },
     {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Symbol",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13016,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_7",
-          "name": "Symbol",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 0,
-          "family": "Symbol"
-        }
-      ]
-    },
-    {
-      "path": "Hard Disk Files/System Folder Files/Fonts/Times",
-      "resources": [
-        {
-          "type": "sfnt",
-          "id": 13017,
-          "source_id": 9217,
-          "symbol": "EXTRACTED_SFNT_9217_8",
-          "name": "Times",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 0,
-          "family": "Times"
-        },
-        {
-          "type": "sfnt",
-          "id": 13018,
-          "source_id": 9218,
-          "symbol": "EXTRACTED_SFNT_9218_3",
-          "name": "Times Bold",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 1,
-          "family": "Times"
-        },
-        {
-          "type": "sfnt",
-          "id": 13019,
-          "source_id": 9219,
-          "symbol": "EXTRACTED_SFNT_9219",
-          "name": "Times Italic",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 2,
-          "family": "Times"
-        },
-        {
-          "type": "sfnt",
-          "id": 13020,
-          "source_id": 9220,
-          "symbol": "EXTRACTED_SFNT_9220",
-          "name": "Times Bold Italic",
-          "attributes": 32,
-          "form": "file",
-          "taken": true,
-          "size": 0,
-          "style": 3,
-          "family": "Times"
-        }
-      ]
-    },
-    {
       "path": "Hard Disk Files/System Folder Files/Fonts/TTYFont",
       "resources": [
         {
           "type": "NFNT",
-          "id": 13026,
+          "id": 13013,
           "source_id": 28809,
           "symbol": "EXTRACTED_NFNT_28809_2",
           "name": null,
@@ -4445,7 +4246,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13027,
+          "id": 13014,
           "source_id": 28812,
           "symbol": "EXTRACTED_NFNT_28812_2",
           "name": null,
@@ -4463,7 +4264,7 @@
       "resources": [
         {
           "type": "NFNT",
-          "id": 13028,
+          "id": 13015,
           "source_id": 15516,
           "symbol": "EXTRACTED_NFNT_15516_2",
           "name": null,
@@ -4476,7 +4277,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13029,
+          "id": 13016,
           "source_id": 17234,
           "symbol": "EXTRACTED_NFNT_17234_2",
           "name": null,
@@ -4489,7 +4290,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13030,
+          "id": 13017,
           "source_id": 30500,
           "symbol": "EXTRACTED_NFNT_30500_2",
           "name": null,
@@ -4502,7 +4303,7 @@
         },
         {
           "type": "NFNT",
-          "id": 13031,
+          "id": 13018,
           "source_id": 30501,
           "symbol": "EXTRACTED_NFNT_30501_2",
           "name": null,

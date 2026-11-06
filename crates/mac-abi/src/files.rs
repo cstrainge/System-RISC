@@ -76,6 +76,13 @@ pub const RESOLVE_PATH: u32 = 48;
 pub const OPEN_PATH: u32 = 49;
 /// Query the actual executable alias; output/transferred contain UTF-8 bytes.
 pub const CURRENT_EXECUTABLE_PATH: u32 = 50;
+/// Open a named pipe as an item: `volume`/`cnid` name a live entry in the pipes
+/// folder, and the reply carries a writer handle for the calling process. The
+/// File Manager performs `connect` on the caller's behalf, because a pipe item
+/// has no fork for the generic `OPEN` to act on. A destroyed pipe is
+/// `NOT_FOUND`; an identity that is not a live named pipe is `BAD_ARGUMENT`.
+/// The generic `OPEN` keeps refusing these items.
+pub const OPEN_PIPE: u32 = 51;
 /// Item name of the named-pipe folder under the volume's blessed folder. One
 /// spelling shared by the image builder, which creates it, and the resident
 /// File Manager, which enumerates it and records its identity.
@@ -168,6 +175,43 @@ pub struct DirectoryScanCursor
     /// folder is exhausted. Zero until then, and unused elsewhere.
     pub registry:  u32
 }
+/// Size-distinct open of a named pipe as an item. `FileCall.handle` is 32 bits
+/// and a pipe handle is 64, so the writer travels in its own width instead of
+/// being truncated into the generic call. `folder` reports the folder that
+/// contained the item, so a caller can verify the item it opened.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PipeOpenCall
+{
+    pub operation: u32,
+    pub volume:    u32,
+    pub cnid:      u32,
+    pub reserved:  u32,
+    /// Output: the writer handle `connect` issued to the calling process.
+    pub writer:    u64,
+    /// Output: the folder that contained the item at open time.
+    pub folder:    u32,
+    pub reserved2: u32,
+    /// Padding that keeps this structure a size no other `FILE` request uses.
+    /// The `FILE` trap selects a request by its size alone, so two requests of
+    /// equal size cannot be told apart; must be zero.
+    pub reserved3: u32
+}
+
+// The `FILE` trap identifies a request by its length, and so does the nested
+// pointer validation that runs before dispatch. A length shared with another
+// request would deliver this one to the wrong validator and refuse a valid
+// call, so a collision is a build failure rather than a runtime mystery.
+const _: () = {
+    let pipe = size_of::<PipeOpenCall>();
+    assert!(pipe != size_of::<FileCall>());
+    assert!(pipe != size_of::<FileScanCall>());
+    assert!(pipe != size_of::<DataWriteCall>());
+    assert!(pipe != size_of::<ForkWriteCall>());
+    assert!(pipe != size_of::<FileTransferCall>());
+    assert!(pipe != size_of::<IconMoveCall>());
+    assert!(pipe != size_of::<IconGroupCall>());
+};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FileScanCall

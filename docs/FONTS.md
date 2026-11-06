@@ -215,34 +215,30 @@ application that replaces Finder on a cloned volume and asks for families the wa
 an application does: `Fonts::id(name)` — the `FONT_ID` wire operation — then
 `Fonts::metrics(FontSelection { family, size, face })` — the `FONT_METRICS`
 operation the resident selection path uses. It asserts that the returned family
-answers with the requested name, that the face reports a real ascent, a
-non-positive descent and a width, and that two styles of one family resolve to
-different faces (a manager that ignored the style field would return identical
-measurements for both).
+answers with the requested name and that the face reports a real ascent, a
+descent no larger than the ascent, and a width.
 
 The probe writes no family ID: an imported family's number is an allocation
 detail, so a probe that pinned one would fail on a renumbering no user could
 observe. The boot check asserts the probe's markers, which makes "this family is
-selectable by name at this style" a guest observation rather than a review
-conclusion.
+selectable by name" a guest observation rather than a review conclusion.
 
-Style selection needs care, because metrics are not a reliable witness for it.
-The disc's VT100 family carries a 9-point regular strike and a 9-point bold
-strike; being fixed-pitch, they report the same ascent, descent and width and
-differ only in content. Measured equality therefore says nothing about which
-face was chosen, and a probe that required two styles to measure differently
-would fail on a correct implementation. The resolver's scoring does prefer an
-exact style match, but that is a property of the resident implementation, not
-something the probe observes.
+Style selection needs its own witness, because metrics alone are not one. A
+resolver that dropped the style field would answer every request with the plain
+face, so the discriminator has to be a measurement only a different face can
+produce. Times carries a real bold outline, so its advance widths differ between
+style 0 and style 1 at one size; the probe measures the same text both ways and
+asserts the difference, which fails if the style is ignored. The imported VT100
+strikes cannot serve as that witness: the disc's two 9-point strikes are
+fixed-pitch and report identical metrics and advances, so they show that both
+styles resolve but not which one was chosen.
 
-**Known gap.** An application can ask for bold and will get a face, but nothing
-in the public font API can currently report *which* face a selection resolved
-to — `Fonts` exposes the family, its name, metrics and widths, not the selected
-resource. Until a client accessor for the resolved source exists, "the bold
-strike was chosen" cannot be asserted from an application or a guest probe, and
-the probe records `FONTS_PROBE_STYLE_UNPROVEN` rather than claiming otherwise.
-Adding that accessor is the follow-up.
-
+So the two facts are proved separately and honestly: the imported families are
+selectable by name, and the style field selects a different face. The public
+client still cannot report *which* face a selection resolved to — `Fonts` exposes
+the family, its name, metrics and widths, not the selected resource. An accessor
+for the resolved source would let a probe assert face identity directly, and it
+remains the follow-up.
 
 ## Delivery and acceptance
 

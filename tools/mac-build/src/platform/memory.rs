@@ -474,9 +474,9 @@ impl Checked
     }
 
     /// The window the machine loads its first stage into. A machine that
-    /// fetches its firmware from flash declares that medium as well; a machine
-    /// the emulator loads a bootable image into declares only this one, and
-    /// this is where its payload is placed.
+    /// fetches its firmware from flash declares that medium as well; a board
+    /// whose firmware copies the payload from removable media declares only this
+    /// one, and it is the address and extent that copy is made to.
     pub fn boot_window(&self) -> Range<u64>
     {
         self.boot.clone()
