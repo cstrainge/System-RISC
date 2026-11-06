@@ -318,20 +318,10 @@ impl<'a> Files<'a>
         }
     }
 
-    /// Open a named pipe item: the File Manager performs `connect` for this
-    /// process, so `open` on a pipe item never launches an application. The
-    /// writer belongs to this process and is closed by dropping
-    /// `pipes::PipeWriter` or calling its `close`. A consumed writer limit is
-    /// `AccessDenied`; a destroyed pipe is `NotFound`.
-    pub fn open_pipe(self, volume: VolumeId, file: Cnid) -> Result<u64>
-    {
-        let mut call = PipeOpenCall { operation: OPEN_PIPE,
-                                      volume: volume.0,
-                                      cnid: file.0,
-                                      ..Default::default() };
-        self.client.file_pipe_open(&mut call)?;
-        Ok(call.writer)
-    }
+    /// Open a named pipe item is `System::pipes().open_item`, which returns an
+    /// owned writer. This module deliberately offers no bare-handle form: an
+    /// endpoint that leaves the SDK without an owner can be adopted twice and
+    /// closes at no defined time.
 
     pub fn catalog(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
     {

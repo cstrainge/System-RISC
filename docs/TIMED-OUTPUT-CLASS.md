@@ -169,10 +169,12 @@ endpoint that cannot work.
 
 The transport between the two is a **named pipe** the extension publishes: the
 application writes frames, the extension reads them and submits them as jobs.
-Pipes are specified but not yet implemented, so the worked example describes a
-composition that cannot be run end to end — but the split does not depend on the
-transport: the argument is about who holds the deadline, and the extension holds
-it either way. There is deliberately no timed-output service for applications
+The pipes facility ships — `docs/PIPES.md` is its contract and a guest probe
+exercises the transport — so the split is runnable once this extension's own
+timed path exists; the worked example describes the composition rather than a
+built extension. The argument does not depend on the transport either way: it is
+about who holds the deadline, and the extension holds it regardless. There is
+deliberately no timed-output service for applications
 here, because an application that held a contract with the serialiser directly
 would be back to owning the timing.
 
