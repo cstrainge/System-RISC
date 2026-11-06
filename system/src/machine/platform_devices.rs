@@ -15,7 +15,7 @@
 use mac_abi::BootInfo;
 use mac_devicetree::{Node, Tree};
 
-use super::power::platform::DECLARED_DEVICES;
+use super::power::platform::{DECLARED_DEVICES, DECLARED_NO_INTERRUPT};
 
 /// How many declared identities the platform has. A capacity, not a machine
 /// fact: the record states it and the tree supplies the contents.
@@ -50,6 +50,8 @@ pub(crate) enum Cause
     NoWindow,
     /// The node declares interrupts that cannot be attributed to a controller.
     NoInterruptParent,
+    /// The record states an interrupt the machine's tree does not.
+    InterruptDivergence,
     /// A slot admission should have published but did not. Admission publishes
     /// every slot or none, so this is an internal inconsistency rather than a
     /// machine fact, and it is still reported rather than skipped.
@@ -86,7 +88,9 @@ impl Refusal
     /// rather than at an index.
     pub(crate) fn unresolved(index: usize) -> Self
     {
-        let key = DECLARED_DEVICES.get(index).map(|&(_, key)| key).unwrap_or(NO_KEY);
+        let key = DECLARED_DEVICES.get(index)
+                                  .map(|&(_, key, _)| key)
+                                  .unwrap_or(NO_KEY);
         Refusal { key,
                   cause: Cause::Unpublished }
     }
@@ -112,6 +116,12 @@ impl core::fmt::Display for Refusal
                 write!(out,
                        "`{}` declares interrupts but no interrupt controller can be resolved \
                         for it",
+                       self.name())
+            }
+            Cause::InterruptDivergence =>
+            {
+                write!(out,
+                       "`{}` declares an interrupt the machine's device tree does not",
                        self.name())
             }
             Cause::Unpublished =>
@@ -151,9 +161,20 @@ pub(crate) unsafe fn admit(info: &BootInfo) -> Result<(), Refusal>
     let tree = Tree::new(blob).map_err(|_| Refusal { key: NO_KEY,
                                                      cause: Cause::Tree })?;
     let mut devices: [Option<Device>; SLOTS] = [None; SLOTS];
-    for (slot, &(bus, key)) in devices.iter_mut().zip(DECLARED_DEVICES)
+    for (slot, &(bus, key, declared_interrupt)) in devices.iter_mut().zip(DECLARED_DEVICES)
     {
-        *slot = Some(resolve(&tree, bus, key)?);
+        let device = resolve(&tree, bus, key)?;
+        // The record's interrupt is a declaration and the tree is the authority,
+        // so the two are compared rather than one being preferred. A record that
+        // states a line the machine does not is a divergence worth refusing: the
+        // alternative is a driver waiting on an interrupt that never arrives.
+        if declared_interrupt != DECLARED_NO_INTERRUPT
+           && declared_interrupt != device.interrupt
+        {
+            return Err(Refusal { key,
+                                 cause: Cause::InterruptDivergence });
+        }
+        *slot = Some(device);
     }
     INVENTORY.call_once(|| Inventory { devices });
     Ok(())

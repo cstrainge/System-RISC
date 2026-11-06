@@ -298,13 +298,6 @@ pub(crate) fn take_dirty() -> DamageRegion
     })
 }
 
-/// Puts back damage that a caller could not paint. Nothing accumulates here
-/// for the same reason `mark_dirty` records nothing: there is no front buffer, so
-/// restoring damage would be restoring a record this machine never kept.
-pub(crate) fn restore_dirty(_region: DamageRegion)
-{
-}
-
 /// Adopts a driver-owned framebuffer. There is none until the mailbox driver
 /// exists, so this reports that nothing changed rather than claiming adoption.
 pub(crate) fn use_driver_front(_address: usize)

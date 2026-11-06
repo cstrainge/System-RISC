@@ -332,7 +332,7 @@ fn declared_windows(tree: &bootrom_riscv::devicetree::Tree<'_>)
                                              mac_formats::Error>
 {
     let mut windows = [(0u64, 0u64); platform::DECLARED_DEVICES.len()];
-    for (slot, &(_, key)) in windows.iter_mut().zip(platform::DECLARED_DEVICES)
+    for (slot, &(_, key, _)) in windows.iter_mut().zip(platform::DECLARED_DEVICES)
     {
         let end = key.iter().position(|&byte| byte == 0).unwrap_or(key.len());
         let name = core::str::from_utf8(&key[..end]).map_err(|_| {
