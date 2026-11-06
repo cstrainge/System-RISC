@@ -62,6 +62,11 @@ fn main()
     // the bootloader reads the pointer it passes, so embedding a second
     // description would give one machine two trees and a consumer a choice.
     let fdt_tail_bytes = memory["fdt_tail_bytes"].as_str().expect("memory.fdt_tail_bytes");
+    // The firmware heap is a region the record declares, not a BSS array: the
+    // code resource is several megabytes, so a fixed in-image buffer cannot
+    // hold it and the declared region is what the memory map is checked against.
+    let heap_base = memory["firmware_heap"]["base"].as_str().expect("memory.firmware_heap.base");
+    let heap_bytes = memory["firmware_heap"]["bytes"].as_str().expect("memory.firmware_heap.bytes");
     fs::write(out.join("platform-memory.rs"),
               format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
                        pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
@@ -83,7 +88,9 @@ fn main()
                        pub const IMAGE_BYTES: u64 = {image_bytes};\n\
                        // The reservation a machine-supplied tree must fit inside. A blob that\
                        // states a larger size is refused rather than read past its end.\n\
-                       pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n",
+                       pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n\
+                       pub const FW_HEAP_BASE: u64 = {heap_base};\n\
+                       pub const FW_HEAP_BYTES: u64 = {heap_bytes};\n",
               format!("{ram_base}u64 + 0x1000"),
               format!("{ram_base}u64 + 0x2000"),
               format!("{ram_base}u64 + 0x3000"),
