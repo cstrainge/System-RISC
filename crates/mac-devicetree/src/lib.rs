@@ -50,7 +50,16 @@ pub enum Error
     /// The structure block ends without its END token, or holds an unknown one.
     Structure,
     /// A string offset does not name a terminated string.
-    Strings
+    Strings,
+    /// A cell-count declaration or a `reg` is not decodable as declared.
+    Cells,
+    /// A CPU node is not admissible: missing device_type, wrong reg width, or a
+    /// container that does not declare one or two address cells and zero size
+    /// cells.
+    Cpu,
+    /// A `/reserved-memory` child asks for dynamic allocation, which this reader
+    /// refuses rather than ignoring.
+    DynamicReservation
 }
 
 impl core::fmt::Display for Error
@@ -95,6 +104,18 @@ impl core::fmt::Display for Error
             {
                 "device tree string offset is invalid"
             }
+            Error::Cells =>
+            {
+                "device tree cell declaration or reg is not decodable as declared"
+            }
+            Error::Cpu =>
+            {
+                "device tree CPU node is not admissible"
+            }
+            Error::DynamicReservation =>
+            {
+                "device tree reserved-memory child requests dynamic allocation"
+            }
         })
     }
 }
@@ -108,8 +129,14 @@ pub struct Node<'a>
 {
     /// The node's own name, e.g. `cpu@1`.
     pub name:         &'a str,
+    /// The parent's name, or `None` at the root. A child is visited before its
+    /// parent, so this is how a consumer knows which container it is in.
+    pub parent:       Option<&'a str>,
     /// The first entry of `compatible`, if the node declares one.
     pub compatible:   Option<&'a str>,
+    /// The whole `compatible` list, so a consumer can match any entry rather
+    /// than only the most specific one.
+    pub compatible_list: Option<&'a [u8]>,
     /// `device_type`, which is how memory and cpu nodes identify themselves.
     pub device_type:  Option<&'a str>,
     /// The raw `reg` property, unparsed, because its cell layout depends on the
@@ -123,7 +150,16 @@ pub struct Node<'a>
     pub dma_coherent: bool,
     /// Depth below the root, so a consumer can tell `/cpus/cpu@0` from a
     /// same-named node elsewhere.
-    pub depth:        usize
+    pub depth:        usize,
+    /// The parent's `#address-cells`, which is how wide each address is in this
+    /// node's `reg`. Inherited, because a `reg` cannot be decoded without it.
+    pub address_cells: Option<u32>,
+    /// The parent's `#size-cells`, likewise for the length half of `reg`.
+    pub size_cells:    Option<u32>,
+    /// What this node itself declares, which is what its children inherit. A
+    /// container is validated on these, a leaf on the inherited pair.
+    pub own_address_cells: Option<u32>,
+    pub own_size_cells:    Option<u32>
 }
 
 impl Node<'_>
@@ -281,12 +317,18 @@ impl<'a> Tree<'a>
         struct State<'a>
         {
             name:         &'a str,
+            parent:       Option<&'a str>,
             compatible:   Option<&'a str>,
+            compatible_list: Option<&'a [u8]>,
             device_type:  Option<&'a str>,
             reg:          Option<&'a [u8]>,
             interrupts:   Option<&'a [u8]>,
             status:       Option<&'a str>,
-            dma_coherent: bool
+            dma_coherent: bool,
+            address_cells: Option<u32>,
+            size_cells:    Option<u32>,
+            own_address_cells: Option<u32>,
+            own_size_cells:    Option<u32>
         }
         let mut stack = [State::default(); MAX_DEPTH];
         let mut depth = 0usize;
@@ -304,7 +346,32 @@ impl<'a> Tree<'a>
                         return Err(Error::Structure);
                     }
                     let name = self.take_name(&mut cursor)?;
+                    // A node inherits its parent's cell declarations; the root
+                    // has none until it declares them, and the specification's
+                    // default for the root is two address cells and one size.
+                    let (address_cells, size_cells) = if depth == 0
+                    {
+                        (Some(2), Some(1))
+                    }
+                    else
+                    {
+                        // The parent's own declaration is what its children
+                        // inherit; its inherited pair describes the parent.
+                        let parent = &stack[depth - 1];
+                        (parent.own_address_cells.or(parent.address_cells),
+                         parent.own_size_cells.or(parent.size_cells))
+                    };
                     stack[depth] = State { name,
+                                           parent: if depth == 0
+                                           {
+                                               None
+                                           }
+                                           else
+                                           {
+                                               Some(stack[depth - 1].name)
+                                           },
+                                           address_cells,
+                                           size_cells,
                                            ..State::default() };
                     depth += 1;
                 }
@@ -317,13 +384,19 @@ impl<'a> Tree<'a>
                     depth -= 1;
                     let state = stack[depth];
                     visit(&Node { name:         state.name,
+                                  parent:       state.parent,
                                   compatible:   state.compatible,
+                                  compatible_list: state.compatible_list,
                                   device_type:  state.device_type,
                                   reg:          state.reg,
                                   interrupts:   state.interrupts,
                                   status:       state.status,
                                   dma_coherent: state.dma_coherent,
-                                  depth });
+                                  depth,
+                                  address_cells: state.address_cells,
+                                  size_cells: state.size_cells,
+                                  own_address_cells: state.own_address_cells,
+                                  own_size_cells: state.own_size_cells });
                     seen += 1;
                 }
                 PROP =>
@@ -346,6 +419,7 @@ impl<'a> Tree<'a>
                             "compatible" =>
                             {
                                 state.compatible = Some(first_string(value));
+                                state.compatible_list = Some(value);
                             }
                             "device_type" =>
                             {
@@ -355,6 +429,14 @@ impl<'a> Tree<'a>
                             "reg" => state.reg = Some(value),
                             "interrupts" => state.interrupts = Some(value),
                             "dma-coherent" => state.dma_coherent = true,
+                            "#address-cells" =>
+                            {
+                                state.own_address_cells = cell_count(value);
+                            }
+                            "#size-cells" =>
+                            {
+                                state.own_size_cells = cell_count(value);
+                            }
                             _ => {}
                         }
                     }
@@ -381,7 +463,7 @@ impl<'a> Tree<'a>
         let mut found = None;
         self.for_each_node(|node| {
               if found.is_none()
-                 && node.compatible == Some(compatible)
+                 && names(&node, compatible)
                  && node.enabled()
                  && let Some(window) = node.window()
               {
@@ -397,7 +479,7 @@ impl<'a> Tree<'a>
     {
         let mut found = false;
         self.for_each_node(|node| {
-              if node.compatible == Some(compatible) && node.enabled()
+              if names(&node, compatible) && node.enabled()
               {
                   found = true;
               }
@@ -464,6 +546,210 @@ impl<'a> Tree<'a>
         }
     }
 
+
+    /// The RAM windows the machine describes, decoded as its cell declarations
+    /// say they are.
+    ///
+    /// `reg` is only decodable together with the parent's `#address-cells` and
+    /// `#size-cells`, so a root that declares something other than the
+    /// specification's default is honoured rather than assumed, and a bank whose
+    /// `reg` does not divide into whole address/size pairs is refused instead of
+    /// half-read.
+    pub fn memory_checked(&self, mut visit: impl FnMut(u64, u64)) -> Result<usize, Error>
+    {
+        let mut count = 0usize;
+        let mut problem: Option<Error> = None;
+        self.for_each_node(|node| {
+              if problem.is_some() || node.device_type != Some("memory") || !node.enabled()
+              {
+                  return;
+              }
+              let Some(reg) = node.reg
+              else
+              {
+                  return;
+              };
+              let address = node.address_cells.unwrap_or(2);
+              let size = node.size_cells.unwrap_or(1);
+              let stride = (address as usize + size as usize) * 4;
+              if stride == 0 || reg.len() < stride || reg.len() % stride != 0
+              {
+                  problem = Some(Error::Cells);
+                  return;
+              }
+              let base = cells(reg, address).unwrap_or(0);
+              let length = cells(&reg[address as usize * 4..], size).unwrap_or(0);
+              visit(base, length);
+              count += 1;
+          })?;
+        match problem
+        {
+            Some(error) => Err(error),
+            None => Ok(count)
+        }
+    }
+
+    /// The enabled hart ids the machine describes, with the CPU container's
+    /// declarations checked.
+    ///
+    /// A CPU node's `reg` holds exactly one hart id, whose width the `/cpus`
+    /// container declares; a node that disagrees with its container is refused
+    /// rather than decoded by guessing. The status of a *disabled* CPU is
+    /// checked too, so a machine that writes a status this reader does not know
+    /// is refused instead of silently dropping a hart.
+    pub fn cpus_checked(&self, mut visit: impl FnMut(u64)) -> Result<usize, Error>
+    {
+        let mut count = 0usize;
+        let mut seen_container = false;
+        let mut problem: Option<Error> = None;
+        self.for_each_node(|node| {
+              if problem.is_some()
+              {
+                  return;
+              }
+              let is_container = node.depth == 1 && node.name == "cpus";
+              if is_container
+              {
+                  if seen_container
+                  {
+                      problem = Some(Error::Cpu);
+                      return;
+                  }
+                  seen_container = true;
+                  // `/cpus` must declare one or two address cells and no size
+                  // cells: a CPU has an address, not an extent.
+                  match (node.own_address_cells, node.own_size_cells)
+                  {
+                      (Some(1 | 2), Some(0)) => {}
+                      _ => problem = Some(Error::Cpu)
+                  }
+                  return;
+              }
+              if node.depth != 2 || node.parent != Some("cpus")
+              {
+                  return;
+              }
+              let named = node.name == "cpu" || node.name.starts_with("cpu@");
+              if !named && node.device_type != Some("cpu")
+              {
+                  return;
+              }
+              if node.device_type != Some("cpu")
+              {
+                  problem = Some(Error::Cpu);
+                  return;
+              }
+              let Some(reg) = node.reg
+              else
+              {
+                  problem = Some(Error::Cpu);
+                  return;
+              };
+              let address = match node.address_cells
+              {
+                  Some(1 | 2) => node.address_cells.unwrap(),
+                  _ => {
+                      problem = Some(Error::Cpu);
+                      return;
+                  }
+              };
+              if node.size_cells != Some(0) || reg.len() != address as usize * 4
+              {
+                  problem = Some(Error::Cpu);
+                  return;
+              }
+              // An unknown status is refused rather than treated as enabled or
+              // as silently absent.
+              let enabled = match node.status
+              {
+                  None | Some("okay") | Some("ok") => true,
+                  Some("disabled") | Some("reserved") | Some("fail") => false,
+                  Some(other) if other.starts_with("fail-") => false,
+                  Some(_) =>
+                  {
+                      problem = Some(Error::Cpu);
+                      return;
+                  }
+              };
+              if enabled
+              {
+                  visit(cells(reg, address).unwrap_or(0));
+                  count += 1;
+              }
+          })?;
+        match problem
+        {
+            Some(error) => Err(error),
+            None => Ok(count)
+        }
+    }
+
+    /// Every extent the machine asks to be kept clear of: its reservation block
+    /// and the static children of `/reserved-memory`.
+    ///
+    /// A `/reserved-memory` child that asks for dynamic allocation is refused
+    /// rather than ignored, because ignoring it would hand the page pool memory
+    /// the machine reserved for itself.
+    pub fn reservations_checked(&self, mut visit: impl FnMut(Range<u64>) -> Result<(), Error>)
+                                -> Result<(), Error>
+    {
+        // The reservation block first, then the static reserved-memory children.
+        self.reservations(|range| {
+                  visit(range);
+              })?;
+        let mut problem: Option<Error> = None;
+        self.for_each_node(|node| {
+              if problem.is_some()
+              {
+                  return;
+              }
+              if node.depth != 2 || node.parent != Some("reserved-memory") || !node.enabled()
+              {
+                  return;
+              }
+              if node.name == "ranges" || node.reg.is_none()
+              {
+                  // A child with no `reg` is not describing a static extent;
+                  // one that asks for `size` wants a dynamic allocation.
+                  if node.reg.is_none()
+                  {
+                      problem = Some(Error::DynamicReservation);
+                  }
+                  return;
+              }
+              let address = node.address_cells.unwrap_or(2);
+              let size = node.size_cells.unwrap_or(1);
+              let stride = (address as usize + size as usize) * 4;
+              let reg = node.reg.unwrap();
+              if stride == 0 || reg.len() < stride || reg.len() % stride != 0
+              {
+                  problem = Some(Error::Cells);
+                  return;
+              }
+              let base = cells(reg, address).unwrap_or(0);
+              let length = cells(&reg[address as usize * 4..], size).unwrap_or(0);
+              match extent(base, length)
+              {
+                  Ok(range) =>
+                  {
+                      if let Err(error) = visit(range)
+                      {
+                          problem = Some(error);
+                      }
+                  }
+                  Err(error) =>
+                  {
+                      problem = Some(error);
+                  }
+              }
+          })?;
+        match problem
+        {
+            Some(error) => Err(error),
+            None => Ok(())
+        }
+    }
+
     fn word(&self, cursor: &mut usize) -> Result<u32, Error>
     {
         let value = word(self.structure, *cursor)?;
@@ -503,10 +789,299 @@ impl<'a> Tree<'a>
     }
 }
 
+/// Whether a node's `compatible` list names `wanted`.
+///
+/// The property is a list of NUL-separated strings, most specific first, and a
+/// machine's own tree uses the standard vocabulary - `arm,pl011` rather than a
+/// record's `pl011` - so any entry matches rather than only the first.
+fn names(node: &Node<'_>, wanted: &str) -> bool
+{
+    let Some(list) = node.compatible_list
+    else
+    {
+        return false;
+    };
+    list.split(|byte| *byte == 0)
+        .any(|entry| entry == wanted.as_bytes())
+}
+
+/// A cell-count property's value, which must be exactly one u32.
+fn cell_count(value: &[u8]) -> Option<u32>
+{
+    if value.len() != 4
+    {
+        return None;
+    }
+    Some(u32::from_be_bytes(value.try_into().unwrap()))
+}
+
+/// Decodes a `reg` address from `count` cells.
+fn cells(bytes: &[u8], count: u32) -> Result<u64, Error>
+{
+    match count
+    {
+        1 => Ok(word(bytes, 0)? as u64),
+        2 => wide(bytes, 0),
+        _ => Err(Error::Cells)
+    }
+}
+
 /// The first NUL-terminated string of a string list, which is the most specific
 /// entry of a `compatible` property.
 fn first_string(value: &[u8]) -> &str
 {
     let end = value.iter().position(|byte| *byte == 0).unwrap_or(value.len());
     core::str::from_utf8(&value[..end]).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests
+{
+    extern crate std;
+    use std::vec::Vec;
+    use std::vec;
+
+    use super::*;
+
+    /// A minimal blob builder, so each test states the tree it means rather than
+    /// relying on a fixture that could drift from the reader.
+    struct Blob
+    {
+        structure: Vec<u8>,
+        strings:   Vec<u8>
+    }
+
+    impl Blob
+    {
+        fn new() -> Self
+        {
+            Self { structure: Vec::new(),
+                   strings:   Vec::new() }
+        }
+
+        fn intern(&mut self, name: &str) -> u32
+        {
+            let offset = self.strings.len() as u32;
+            self.strings.extend_from_slice(name.as_bytes());
+            self.strings.push(0);
+            offset
+        }
+
+        fn begin(&mut self, name: &str) -> &mut Self
+        {
+            self.structure.extend_from_slice(&BEGIN_NODE.to_be_bytes());
+            self.structure.extend_from_slice(name.as_bytes());
+            self.structure.push(0);
+            while self.structure.len() % 4 != 0
+            {
+                self.structure.push(0);
+            }
+            self
+        }
+
+        fn end(&mut self) -> &mut Self
+        {
+            self.structure.extend_from_slice(&END_NODE.to_be_bytes());
+            self
+        }
+
+        fn prop(&mut self, name: &str, value: &[u8]) -> &mut Self
+        {
+            let offset = self.intern(name);
+            self.structure.extend_from_slice(&PROP.to_be_bytes());
+            self.structure.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            self.structure.extend_from_slice(&offset.to_be_bytes());
+            self.structure.extend_from_slice(value);
+            while self.structure.len() % 4 != 0
+            {
+                self.structure.push(0);
+            }
+            self
+        }
+
+        fn text(&mut self, name: &str, value: &str) -> &mut Self
+        {
+            let mut bytes = value.as_bytes().to_vec();
+            bytes.push(0);
+            self.prop(name, &bytes)
+        }
+
+        fn u32(&mut self, name: &str, value: u32) -> &mut Self
+        {
+            self.prop(name, &value.to_be_bytes())
+        }
+
+        fn finish(mut self) -> Vec<u8>
+        {
+            self.structure.extend_from_slice(&END.to_be_bytes());
+            let reserved = 16usize;
+            let structure_offset = HEADER_BYTES + reserved;
+            let strings_offset = structure_offset + self.structure.len();
+            let total = strings_offset + self.strings.len();
+            let mut blob = Vec::new();
+            blob.extend_from_slice(&MAGIC.to_be_bytes());
+            blob.extend_from_slice(&(total as u32).to_be_bytes());
+            blob.extend_from_slice(&(structure_offset as u32).to_be_bytes());
+            blob.extend_from_slice(&(strings_offset as u32).to_be_bytes());
+            blob.extend_from_slice(&(HEADER_BYTES as u32).to_be_bytes());
+            blob.extend_from_slice(&VERSION.to_be_bytes());
+            blob.extend_from_slice(&16u32.to_be_bytes());
+            blob.extend_from_slice(&0u32.to_be_bytes());
+            blob.extend_from_slice(&(self.strings.len() as u32).to_be_bytes());
+            blob.extend_from_slice(&(self.structure.len() as u32).to_be_bytes());
+            blob.extend_from_slice(&[0u8; 16]);
+            blob.extend_from_slice(&self.structure);
+            blob.extend_from_slice(&self.strings);
+            blob
+        }
+    }
+
+    /// The specification's defaults for a root that declares nothing.
+    fn root(blob: &mut Blob)
+    {
+        blob.begin("").u32("#address-cells", 2).u32("#size-cells", 2);
+    }
+
+    #[test]
+    fn a_cpu_container_must_declare_one_or_two_address_cells_and_no_size_cells()
+    {
+        // Zero size cells is the rule; one is a container that claims CPUs have
+        // an extent, which no CPU has. Without the check this reads happily.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("cpus").u32("#address-cells", 1).u32("#size-cells", 1);
+            b.begin("cpu@0").text("device_type", "cpu").u32("reg", 0).end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert_eq!(tree.cpus_checked(|_| {}).unwrap_err(), Error::Cpu);
+
+        // The same tree with the declared rule is accepted.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("cpus").u32("#address-cells", 1).u32("#size-cells", 0);
+            b.begin("cpu@0").text("device_type", "cpu").u32("reg", 0).end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert_eq!(tree.cpus_checked(|_| {}), Ok(1));
+    }
+
+    #[test]
+    fn a_cpu_reg_must_be_exactly_one_hart_id()
+    {
+        // Two cells where the container declares one: the extra cell would be
+        // read as a size, inventing a hart.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("cpus").u32("#address-cells", 1).u32("#size-cells", 0);
+            b.begin("cpu@0").text("device_type", "cpu");
+            b.prop("reg", &[0, 0, 0, 0, 0, 0, 0, 1]).end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert_eq!(tree.cpus_checked(|_| {}).unwrap_err(), Error::Cpu);
+    }
+
+    #[test]
+    fn an_unknown_cpu_status_is_refused_rather_than_dropped()
+    {
+        // A status this reader does not know must not be read as "enabled" or as
+        // "absent": either guess loses or invents a hart.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("cpus").u32("#address-cells", 1).u32("#size-cells", 0);
+            b.begin("cpu@0").text("device_type", "cpu").text("status", "quiesced");
+            b.u32("reg", 0).end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert_eq!(tree.cpus_checked(|_| {}).unwrap_err(), Error::Cpu);
+    }
+
+    #[test]
+    fn a_memory_reg_that_does_not_divide_into_address_size_pairs_is_refused()
+    {
+        // The root declares one address cell and one size cell, so a reg of four
+        // cells is two banks, not one bank of two cells each. Reading it anyway
+        // would invent a size from an address.
+        let blob = {
+            let mut b = Blob::new();
+            b.begin("").u32("#address-cells", 1).u32("#size-cells", 1);
+            b.begin("memory@0").text("device_type", "memory");
+            b.prop("reg", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2]).end();
+            b.end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert_eq!(tree.memory_checked(|_, _| {}).unwrap_err(), Error::Cells);
+    }
+
+    #[test]
+    fn a_dynamically_allocated_reserved_memory_child_is_refused()
+    {
+        // `size` without `reg` asks the firmware to choose an extent. Ignoring
+        // that child would hand the page pool memory the machine reserved.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("reserved-memory").u32("#address-cells", 2).u32("#size-cells", 2);
+            b.begin("scratch").u32("size", 0x1000).end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert_eq!(tree.reservations_checked(|_| Ok(())).unwrap_err(),
+                   Error::DynamicReservation);
+    }
+
+    #[test]
+    fn a_static_reserved_memory_child_is_reported()
+    {
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("reserved-memory").u32("#address-cells", 2).u32("#size-cells", 2);
+            b.begin("firmware@1000");
+            b.prop("reg", &[0, 0, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0x10]).end();
+            b.end().end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        let mut seen = Vec::new();
+        tree.reservations_checked(|range| {
+                 seen.push(range);
+                 Ok(())
+             })
+            .expect("static reservation is admissible");
+        assert_eq!(seen, vec![0x1000..0x1010]);
+    }
+
+    #[test]
+    fn a_compatible_list_matches_any_entry_not_only_the_first()
+    {
+        // A machine writes the most specific name first; a consumer asking for
+        // the generic one must still find the node.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("serial@9000000").text("compatible", "arm,pl011");
+            b.prop("compatible", b"arm,pl011\0arm,primecell\0");
+            b.prop("reg",
+                   &[0, 0, 0, 0, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10, 0]).end();
+            b.end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        assert!(tree.has_compatible("arm,primecell").expect("walk"));
+        assert_eq!(tree.window("arm,primecell").expect("walk"), Some((0x0900_0000, 0x1000)));
+    }
 }
