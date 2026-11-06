@@ -5,7 +5,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::pipes as wire;
-use mac_traps::{Client, Error, Result};
+use mac_traps::{Client, Cnid, Error, Result, VolumeId};
 
 #[derive(Clone, Copy)]
 pub struct Pipes<'a>
@@ -24,6 +24,30 @@ pub struct PipeWriter<'a>
     client: Client<'a>,
     handle: u64,
     active: bool
+}
+
+/// The right to one endpoint handle, and the only way to move one between
+/// threads of the same process. It is produced by consuming a `PipeReader` or
+/// `PipeWriter`, so one handle yields at most one token and a handle cannot be
+/// adopted twice; adopting consumes the token, so a handle cannot be left with
+/// two owners. A token dropped without being adopted closes its handle rather
+/// than leaking it.
+pub struct Endpoint<'a>
+{
+    client: Client<'a>,
+    handle: Option<u64>
+}
+impl Drop for Endpoint<'_>
+{
+    fn drop(&mut self)
+    {
+        if let Some(handle) = self.handle.take()
+        {
+            let _ = self.client.pipes(&mut wire::Call { operation: wire::CLOSE,
+                                                        handle,
+                                                        ..Default::default() });
+        }
+    }
 }
 
 impl<'a> Pipes<'a>
@@ -67,32 +91,45 @@ impl<'a> Pipes<'a>
                         active: true })
     }
 
-    /// Take ownership of a reader handle this process already holds, such as one
-    /// a parent thread created. Endpoint ownership is per process, so another
-    /// thread of the same application may read through it. A zero handle is
-    /// refused.
-    pub fn adopt_reader(self, handle: u64) -> Result<PipeReader<'a>>
+    /// Take ownership of a reader handle this process already holds, by
+    /// consuming the endpoint token that authorises it. Endpoint ownership is
+    /// per process, so another thread of the same application may pass a reader
+    /// here. Because the token is consumed and cannot be copied, two readers
+    /// cannot be adopted from one handle.
+    pub fn adopt_reader(self, endpoint: Endpoint<'a>) -> Result<PipeReader<'a>>
     {
-        if handle == 0
-        {
-            return Err(Error::BadArgument);
-        }
+        let handle = endpoint.take()?;
         Ok(PipeReader { client: self.client,
                         handle,
                         active: true })
     }
 
-    /// Take ownership of a writer handle this process already holds. Endpoint
-    /// ownership is per process, so another thread of the same application may
-    /// write through it. A zero handle is refused.
-    pub fn adopt_writer(self, handle: u64) -> Result<PipeWriter<'a>>
+    /// Take ownership of a writer handle this process already holds, by
+    /// consuming the endpoint token that authorises it. A zero handle is refused.
+    pub fn adopt_writer(self, endpoint: Endpoint<'a>) -> Result<PipeWriter<'a>>
     {
-        if handle == 0
-        {
-            return Err(Error::BadArgument);
-        }
+        let handle = endpoint.take()?;
         Ok(PipeWriter { client: self.client,
                         handle,
+                        active: true })
+    }
+
+    /// Open a named pipe item: the File Manager performs `connect` for this
+    /// process. The returned writer is the caller's only owner of that handle,
+    /// and dropping it closes the endpoint as it would for `connect`.
+    ///
+    /// This is how a Finder double-click and any other item-open reaches a pipe;
+    /// `open` on a pipe item never launches an application. A consumed writer
+    /// limit is `AccessDenied`; a destroyed identity is `NotFound`.
+    pub fn open_item(self, volume: VolumeId, item: Cnid) -> Result<PipeWriter<'a>>
+    {
+        let mut call = mac_abi::files::PipeOpenCall { operation: mac_abi::files::OPEN_PIPE,
+                                                      volume: volume.0,
+                                                      cnid: item.0,
+                                                      ..Default::default() };
+        self.client.file_pipe_open(&mut call)?;
+        Ok(PipeWriter { client: self.client,
+                        handle: call.writer,
                         active: true })
     }
 
@@ -116,6 +153,16 @@ impl<'a> Pipes<'a>
     }
 }
 
+impl Endpoint<'_>
+{
+    /// Move the handle out, leaving the token inert so its `Drop` cannot close a
+    /// handle that a new owner now holds.
+    fn take(mut self) -> Result<u64>
+    {
+        self.handle.take().filter(|handle| *handle != 0).ok_or(Error::BadArgument)
+    }
+}
+
 fn name_into(call: &mut wire::Call, name: &str) -> Result<()>
 {
     if name.len() > wire::NAME_BYTES
@@ -127,14 +174,16 @@ fn name_into(call: &mut wire::Call, name: &str) -> Result<()>
     Ok(())
 }
 
-impl PipeReader<'_>
+impl<'a> PipeReader<'a>
 {
-    /// The handle this reader owns. Passing it to `Pipes::adopt_reader` lets
-    /// another thread of the same process read through it; the handle stays
-    /// owned by the process either way.
-    pub const fn raw(&self) -> u64
+    /// Hand this reader's handle to another thread of the same process without
+    /// closing it. Consumes the reader, so the handed-over handle never has two
+    /// owners; the receiving side adopts it with `Pipes::adopt_reader`.
+    pub fn release(mut self) -> Endpoint<'a>
     {
-        self.handle
+        self.active = false;
+        Endpoint { client: self.client,
+                   handle: Some(self.handle) }
     }
 
     /// Remove up to `output.len()` bytes. Zero is returned only when no writer
@@ -189,8 +238,18 @@ impl Drop for PipeReader<'_>
     }
 }
 
-impl PipeWriter<'_>
+impl<'a> PipeWriter<'a>
 {
+    /// Hand this writer's handle to another thread of the same process without
+    /// closing it. Consumes the writer, so the handed-over handle never has two
+    /// owners; the receiving side adopts it with `Pipes::adopt_writer`.
+    pub fn release(mut self) -> Endpoint<'a>
+    {
+        self.active = false;
+        Endpoint { client: self.client,
+                   handle: Some(self.handle) }
+    }
+
     /// Add bytes. A write of at most 512 bytes transfers all of them or none;
     /// a larger write transfers at least one and may transfer fewer than asked.
     pub fn write(&mut self, input: &[u8]) -> Result<usize>

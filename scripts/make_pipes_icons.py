@@ -51,8 +51,8 @@ def source_images(repo, iid):
 def pipe(draw, size, mono):
     """A pipe spanning the icon body: two flanges joined by a tube.
 
-    `mono` draws for the 1-bit variant, where the palette is unavailable and only
-    black and white are meaningful.
+    Both variants use the same geometry; only the interior fill differs, because
+    the 1-bit family has no palette and can express just black and white.
     """
     body = (0, 0, 0) if mono else (68, 68, 68)
     edge = (0, 0, 0)
@@ -66,51 +66,38 @@ def pipe(draw, size, mono):
     draw.rectangle([left, top - 1, left + 1, top + height], fill=edge)
     draw.rectangle([right - 1, top - 1, right, top + height], fill=edge)
     draw.rectangle([left + 2, top, right - 2, top + height - 1], fill=body)
-    if not mono:
-        draw.line([left + 2, top, right - 2, top], fill=shine)
-    else:
-        draw.line([left + 2, top, right - 2, top], fill=shine)
+    draw.line([left + 2, top, right - 2, top], fill=shine)
 
 
-def build(repo, base, iid, mono_only):
-    pal = iconconvert.load_palette(repo)
+def build(repo, base, iid):
     out = os.path.join(repo, "system", "assets", "icons", base)
     os.makedirs(out, exist_ok=True)
     images = source_images(repo, iid)
     pngs = {}
     for size in (32, 16):
-        mono = images[size, True].copy()
-        pipe(ImageDraw.Draw(mono), size, True)
-        pngs[size, True] = mono
-        if not mono_only:
-            color = images[size, False].copy()
-            pipe(ImageDraw.Draw(color), size, False)
-            pngs[size, False] = color
+        for mono in (True, False):
+            image = images[size, mono].copy()
+            pipe(ImageDraw.Draw(image), size, mono)
+            pngs[size, mono] = image
     return out, pngs
 
 
-def emit(repo, base, target_id, iid, mono_only):
-    out, pngs = build(repo, base, iid, mono_only)
+def emit(repo, base, target_id, iid):
+    out, pngs = build(repo, base, iid)
     pal = iconconvert.load_palette(repo)
     written = []
     for size in (32, 16):
-        mono_name = f"{base}-{size}-1bit.png"
-        pngs[size, True].save(os.path.join(out, mono_name))
-        written.append(mono_name)
-        if (size, False) in pngs:
-            color_name = f"{base}-{size}-color.png"
-            pngs[size, False].save(os.path.join(out, color_name))
-            written.append(color_name)
+        for mono, suffix in ((True, "1bit"), (False, "color")):
+            name = f"{base}-{size}-{suffix}.png"
+            pngs[size, mono].save(os.path.join(out, name))
+            written.append(name)
     # Monochrome payloads come from the 1-bit artwork, colour payloads from the
     # colour artwork, so neither is derived from the other by conversion.
     _, mono32 = iconconvert.png_to_bins(os.path.join(out, f"{base}-32-1bit.png"), pal, 32)
     _, mono16 = iconconvert.png_to_bins(os.path.join(out, f"{base}-16-1bit.png"), pal, 16)
-    bins = {"ICN#": mono32, "ics#": mono16}
-    if not mono_only:
-        color32, _ = iconconvert.png_to_bins(os.path.join(out, f"{base}-32-color.png"), pal, 32)
-        color16, _ = iconconvert.png_to_bins(os.path.join(out, f"{base}-16-color.png"), pal, 16)
-        bins["icl8"] = color32
-        bins["ics8"] = color16
+    color32, _ = iconconvert.png_to_bins(os.path.join(out, f"{base}-32-color.png"), pal, 32)
+    color16, _ = iconconvert.png_to_bins(os.path.join(out, f"{base}-16-color.png"), pal, 16)
+    bins = {"ICN#": mono32, "ics#": mono16, "icl8": color32, "ics8": color16}
     for rtype, data in bins.items():
         name = f"{iconconvert.TYPEHEX[rtype]}--{abs(target_id)}.bin"
         open(os.path.join(out, name), "wb").write(data)
@@ -122,8 +109,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
     args = ap.parse_args()
-    written = emit(args.repo, "pipes", -30002, -3999, False)
-    written += emit(args.repo, "named-pipe", -30003, -4000, False)
+    written = emit(args.repo, "pipes", -30002, -3999)
+    written += emit(args.repo, "named-pipe", -30003, -4000)
     print("\n".join(written))
 
 

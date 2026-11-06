@@ -84,11 +84,12 @@ asks for them at initialisation.
   the platform as the cause, and **declines to attach**. It does not publish an
   endpoint that will fail later, and it does not leave a partially claimed
   hardware path behind.
-* On a system whose named-pipe facility is absent — which is every system today,
-  since the facility is specified and not implemented — it declines for that
+* On a system whose named-pipe facility is absent it declines for that
   reason instead, naming the missing facility rather than the hardware. That
   refusal is the same declared-dependency mechanism, and it is what makes the
-  extension reviewable before the transport exists.
+  extension reviewable before the transport exists. The facility ships in this
+  tree (`docs/PIPES.md`), so today that refusal is what an unqualified board
+  produces; the case still matters for any deployment built without it.
 
 The second case is not hypothetical: the emulated ARM board used for development
 has no GPIO controller, no PWM and no DMA at all. Loading this extension there
@@ -97,8 +98,8 @@ extension whose first job fails.
 
 ## The transport: named pipes
 
-**Requires named pipes; the pipes facility is specified (`docs/PIPES.md`) but not
-implemented, and finishing it is a separate project's work.** This extension does
+**Requires named pipes, which ship in this tree: `docs/PIPES.md` is the facility's
+contract.** This extension does
 not build a pipe, and must not: a second pipe implementation inside an extension
 is the duplication that would make the real facility harder to land.
 
