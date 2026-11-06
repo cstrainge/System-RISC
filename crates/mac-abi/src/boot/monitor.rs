@@ -98,9 +98,17 @@ impl BootImage
 pub struct SecondaryStart
 {
     pub sequence:          AtomicU64,
-    /// Exact owned resident firmware-root SATP value, including its admitted tag.
-    /// Warm S admission moves to the separately owned canonical kernel root.
+    /// The platform's primary translation root: RISC-V's `satp`, AArch64's
+    /// `TTBR0_EL1`. Published before the canonical command request, so a
+    /// secondary re-enters through the same root the primary admitted it with.
     pub root_register:     AtomicU64,
+    /// The platform's secondary translation root, for a machine that addresses
+    /// its kernel half and its physmap through different base registers. RISC-V
+    /// has one root and publishes zero here; AArch64 publishes `TTBR1_EL1`.
+    /// Everything else a secondary needs to re-enter — the control-register
+    /// values, the vector base — it rebuilds from the same record the primary
+    /// used, so those are not carried.
+    pub root_register_aux: AtomicU64,
     pub control_virtual:   AtomicU64,
     pub service_top:       AtomicU64,
     pub phase:             AtomicU64,
@@ -118,6 +126,7 @@ impl SecondaryStart
     {
         Self { sequence:          AtomicU64::new(0),
                root_register:     AtomicU64::new(0),
+               root_register_aux: AtomicU64::new(0),
                control_virtual:   AtomicU64::new(0),
                service_top:       AtomicU64::new(0),
                phase:             AtomicU64::new(START_PREPARED),
@@ -211,9 +220,9 @@ impl Control
 }
 pub const CONTROL_BYTES: usize = core::mem::size_of::<Control>();
 pub const CONTROL_ALIGNMENT: usize = core::mem::align_of::<Control>();
-const _: () = assert!(CONTROL_BYTES == 464
+const _: () = assert!(CONTROL_BYTES == 480
                       && CONTROL_ALIGNMENT == 16
-                      && core::mem::offset_of!(Control, frame) == 192);
+                      && core::mem::offset_of!(Control, frame) == 208);
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Entry
@@ -404,11 +413,11 @@ const _: () =
             && core::mem::offset_of!(Directory, signalling) == 32
             && core::mem::offset_of!(Directory, image) == 56);
 
-const _: () = assert!(core::mem::size_of::<SecondaryStart>() == 96
+const _: () = assert!(core::mem::size_of::<SecondaryStart>() == 104
                       && core::mem::size_of::<BootImage>() == 80
                       && core::mem::offset_of!(Control, start) == 80
-                      && core::mem::offset_of!(Control, wake_requested) == 176
-                      && core::mem::offset_of!(Control, wake_acknowledged) == 184);
+                      && core::mem::offset_of!(Control, wake_requested) == 184
+                      && core::mem::offset_of!(Control, wake_acknowledged) == 192);
 /// Exact shared layout/protocol identity, checked before any expanded monitor view.
 /// This is an artifact-layout gate, not a security hash or restart epoch.
 pub const LAYOUT_FINGERPRINT: u64 = layout_fingerprint();

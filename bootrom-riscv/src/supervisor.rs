@@ -142,8 +142,10 @@ struct PrimaryReport
     previous_timer: u64,
     timer_valid:    u64
 }
-const _: () = assert!(core::mem::offset_of!(PrimaryReport, previous_timer) == 96
-                      && core::mem::offset_of!(PrimaryReport, timer_valid) == 104);
+// The tail follows SecondaryStart, which grew by the layout's second root, so
+// these offsets move with it rather than being preserved at their old values.
+const _: () = assert!(core::mem::offset_of!(PrimaryReport, previous_timer) == 104
+                      && core::mem::offset_of!(PrimaryReport, timer_valid) == 112);
 pub(crate) const PRIMARY_TIMER_OFFSET: usize = core::mem::offset_of!(PrimaryReport, previous_timer);
 pub(crate) const PRIMARY_TIMER_VALID_OFFSET: usize =
     core::mem::offset_of!(PrimaryReport, timer_valid);

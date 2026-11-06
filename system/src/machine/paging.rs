@@ -631,6 +631,9 @@ struct Space
     owner:        AddressSpace<SelectedLayout, PagingBacking>,
     tables:       Frames,
     register:     usize,
+    /// The layout's second root, or zero where the layout has only one. Zero is
+    /// "no second root", never a root at address zero.
+    register_aux: usize,
     leaves:       u64,
     _root_charge: Option<mac_kernel_model::account::Committed<NativeInvocationGate>>
 }
@@ -693,6 +696,11 @@ impl PreparedRoots
     pub(crate) fn firmware_register(&self) -> usize
     {
         self.spaces.firmware.register
+    }
+
+    pub(crate) fn firmware_register_aux(&self) -> usize
+    {
+        self.spaces.firmware.register_aux
     }
 
     pub(crate) fn hardware_tag_mask(&self) -> u16
@@ -825,10 +833,12 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     let (physical, mut tables) = mapper.into_tables();
     let (root, root_charge) = tables.take_root(physical)?;
     let owner=AddressSpace::<SelectedLayout, PagingBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
-    let register = super::page_layout::encode_root(owner.root_physical().0, tag as u64);
+    let (register, register_aux) =
+        super::page_layout::encode_roots(owner.root_physical().0, tag as u64);
     Ok(Space { owner,
                tables,
                register,
+               register_aux,
                leaves,
                _root_charge: root_charge })
 }
