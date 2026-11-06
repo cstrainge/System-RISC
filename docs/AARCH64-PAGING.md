@@ -266,6 +266,97 @@ descriptor encoding — is the shape this implies. The alternative, a second
 paging implementation beside the shared one, is the duplication this document
 exists to prevent.
 
+## The supervisor handoff
+
+Starting System means satisfying four contracts, all read from the ABI rather
+than inferred.
+
+### `BootInfo` (`mac_abi::BootInfo`, 176 bytes, layout asserted)
+
+| Field | Source |
+| ----- | ------ |
+| `header` | `Header::for_type::<BootInfo>()` |
+| `ram_base`, `ram_size` | the first RAM bank |
+| `log`, `disk_info`, `read_sector`, `write_sector`, `flush_disk`, `storage_context` | the loader's disk callbacks |
+| `startup_disk`, `flags`, `startup_partition_start` | the boot volume |
+| `ram_regions`, `reservations` and their counts | the checked memory account |
+| `display_scratch` | the reserved framebuffer extent, or zero for a headless boot |
+| `execution` | the `boot::execution::Execution` record for the load plan |
+| `cpus`, `cpu_count` | sorted enabled hart IDs |
+| `monitor` | the monitor `Directory` |
+| `monitor_layout` | must equal `boot::monitor::LAYOUT_FINGERPRINT` |
+
+The kernel refuses the image if `monitor_layout` does not match, so the monitor
+is not optional and cannot be stubbed with a zero.
+
+### The monitor `Directory`
+
+```
+entries:     *const Entry     per hart: { hart, msip, storage: BootMemoryRange }
+count:       usize
+stack_bytes: u64
+timebase_hz: u64              the real /cpus frequency, never a hardcoded clock
+image:       *const BootImage
+```
+
+`monitor::admit` validates every isolated control extent against the checked
+memory view before borrowing the atomic cells, so the storage ranges must be
+real, page-aligned reservations.
+
+**An ISA-specific field sits in this shared ABI.** `Entry::msip` is a RISC-V
+memory-mapped software-interrupt register. AArch64 has no equivalent — its
+interprocessor interrupts are GIC SGIs — so an AArch64 loader can only publish
+zero there, and the AArch64 monitor must drive IPIs through the GIC instead. That
+is a property of the ABI, not a choice, and it should be resolved deliberately
+rather than by writing zero and hoping the kernel never reads it.
+
+**Resolved: the field is the platform's signalling target, and it is renamed.**
+`Entry::msip` and `Control::msip` become `signal`, documented as *this hart's
+inter-processor signalling target, encoded by the platform and opaque to every
+consumer that does not implement signalling for that platform*. The encodings are
+each machine's own and neither is privileged:
+
+| platform | `signal` holds | the monitor raises an IPI by |
+|---|---|---|
+| RISC-V | the CLINT `msip` cell for this hart | writing the cell, which sets SSIP |
+| AArch64, GICv2 | the `GICD_SGIR` address for this machine | writing `GICD_SGIR` with this hart's target list |
+| AArch64, GICv3 | the SGI number and affinity, packed | writing `ICC_SGI1R_EL1` |
+
+`monitor::validate` therefore stops requiring a CLINT window. It requires that
+the platform's *own* signalling route is present and consistent with the
+published values: a RISC-V record must supply the CLINT window that contains
+every `signal`, and an AArch64 record must supply the interrupt controller
+window it declares. A platform whose signalling needs no MMIO route states that,
+and the check is that it states it — not that it declares a CLINT it does not
+have. The observable behaviour is unchanged on RISC-V: the same cells, the same
+SSIP injection, the same admission.
+
+**The secondary's translation root becomes two registers.**
+`SecondaryStart::root_register` carries one value, which is right for RISC-V
+(`satp`) and insufficient for AArch64, whose secondary needs `TTBR0_EL1` *and*
+`TTBR1_EL1` — two roots, because the kernel half and the physmap are addressed
+through different base registers. It becomes `root_register` and
+`root_register_aux`, documented as the platform's primary and secondary
+translation roots: RISC-V publishes `satp` in the primary and zero in the
+secondary; AArch64 publishes `TTBR0_EL1` and `TTBR1_EL1`. Everything else the
+secondary needs to re-enter — `TCR_EL1`, `MAIR_EL1`, the vector base — it
+rebuilds from the same record the primary used, so it is not passed.
+
+The ABI is unreleased, so this is a rename and a field addition rather than a
+migration, and every producer and consumer is rebuilt together.
+
+### What the loader must still do
+
+1. Read the System code resource from the resource fork and decode it with the
+   native image format, not an ELF reader: `mac_formats::native::image::decode`
+   plus `LoadPlan`, both already shared and already used by the RISC-V loader.
+2. Map the rest of the kernel half — stacks, heap, the definition and application
+   bases — not just the image window.
+3. Build `BootInfo` and the monitor `Directory` in reserved RAM.
+4. Drop to EL1 and branch to System's virtual entry with the `BootInfo` pointer.
+
+Only step 2 is currently started, and only for the image window.
+
 ## Open items
 
 - The image window is currently mapped with 2 MiB blocks and the read-back check
@@ -274,3 +365,39 @@ exists to prevent.
   Both should be corrected in the same pass.
 - The kernel half needs the rest of System's windows — stacks, heap, the
   definition and application bases — mapped before handoff, not just the image.
+
+## Where the port stands, and what blocks it
+
+Everything below `BOOT_AARCH64_READY` is unbuilt. The loader reaches it, finds
+and blesses System, and idles; System has never started under AArch64. The
+remaining work, in the order it must be done:
+
+1. **The `signal` rename and the second translation root**, per the two
+   decisions recorded above. Unreleased ABI, so producers and consumers are
+   rebuilt together and no compatibility path is added.
+2. **`BootInfo` construction.** The loader decodes the System code resource with
+   `mac_formats::native::image::decode` and `LoadPlan` — the same shared path the
+   RISC-V loader uses — then builds `BootInfo` and the monitor `Directory` in
+   reserved RAM, per the field list in this document. `monitor_layout` must
+   equal `boot::monitor::LAYOUT_FINGERPRINT`; the kernel refuses the image
+   otherwise, so the monitor is not optional.
+3. **The AArch64 monitor.** It does not exist. It is the largest piece, because
+   it owns what the RISC-V M-mode monitor owns — per-hart control blocks, the
+   isolated control extents, wake and stop delivery, and the secondary start
+   protocol — but must do it from a higher privilege level with a GIC rather
+   than a CLINT. Its storage extents are checked against the same memory account
+   the kernel uses.
+4. **The EL1 jump.** Branch to System's virtual entry with the `BootInfo`
+   pointer. The acceptance is a *System-side* line, not another loader line.
+
+`PLATFORM_MMIO_DEVICES` deletion rides with step 2 or after it. Its `flags` do
+not all come from a tree: `MMIO` is implied by the node, `COHERENT_DMA` is the
+tree's `dma-coherent` property, and the match key is built from `compatible` —
+but `RESIDENT_OWNED` is policy and comes from the module's own interface
+declaration. A reader looking for it in a device tree will not find it, and
+should not: hardware facts come from the tree, policy from the declaring
+component.
+
+Nothing in this section is verified. The toolchain on the machine that produced
+the measurements above lost its precompiled standard library, so no crate
+compiles and none of steps 1–4 has been built or run.

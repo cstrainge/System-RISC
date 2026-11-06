@@ -841,8 +841,8 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
                 Some(call) => crate::machine::scheduler::address::request(call, identity, suspension),
                 None =>
                 {
-                    crate::machine::scheduler::address::cancel_current();
-                    crate::machine::scheduler::pipe::cancel_current();
+                    super::scheduler::address::cancel_current();
+                    super::scheduler::pipe::cancel_current();
                     RequestResult::done(BAD_ARGUMENT)
                 }
             }
@@ -886,7 +886,7 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
                 }
                 None =>
                 {
-                    crate::machine::scheduler::pipe::cancel_current();
+                    super::scheduler::pipe::cancel_current();
                     RequestResult::done(BAD_ARGUMENT)
                 }
             }

@@ -76,8 +76,8 @@ source confirms.
 | Clock manager (CPRMAN) | `0x3F101000` | `0x2000` | **none** | ARM (read), VideoCore (rate policy) | resident | Divides the oscillators for every peripheral and for the ARM cores, and is therefore what a timed output's element rate is eventually derived from. A driver may set a peripheral's own divider through its control registers, and may query or ask for rates through the mailbox; it must not reprogram the ARM/AXI/display clocks the firmware is using. Two pages, so it is declared as two claimable ranges of one device; it raises no interrupt. |
 | Power management (PM) | `0x3F100000` | 4 KiB | — | ARM | resident | Reset controller (offset `0x1C`), watchdog (offset `0x24`), reset-strap status (offset `0x20`). Declared in the record as `bcm2835-pm` and used for the fatal-shutdown path. |
 | RNG | `0x3F104000` | `0x10` | 61 | ARM | **ENTR** (existing class) | A ring-oscillator entropy source. Declared in the record as `bcm2835-rng`; the existing entropy interface has no BCM2837 driver yet. Its registers are not in the SoC document at all, so `docs/BCM2837-RNG.md` states each fact's provenance instead of implying one. |
-| sdhci (Arasan EMMC) | `0x3F300000` | 4 KiB | 62 | ARM | storage controller | The SD Host Controller Standard Interface, and **the controller this platform's card reads have gone through** — see `docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md`. Declared in the record as `sdhci`; the boot payload and the shared reader read the card through it. Its name in a device tree is `brcm,bcm2835-mmc`, and the firmware's own tree puts **a different function at this address**: it disables `mmc@7e300000` and enables `mmcnr@7e300000` — the same registers, the same compatible — as the wireless module's non-removable SDIO host. That disagrees with the board observation above, and the disagreement is recorded rather than resolved; see the note below and the warning the image stage prints. |
-| sdhost (SD host) | `0x3F202000` | 4 KiB | 56 (derived; see note) | ARM | storage controller | The older, simpler SD controller, and **the controller the board's own firmware tree says the card slot is on**: `mmc@7e202000`, compatible `brcm,bcm2835-sdhost`, `status = "okay"`. The same tree marks the Arasan block `disabled` and configures it as the wireless module's non-removable SDIO host instead, so the two sources disagree about which controller owns the card and neither is dismissed — see the note below. No driver drives this block, and the record therefore grants no window for it. |
+| sdhci (Arasan EMMC) | `0x3F300000` | 4 KiB | 62 | ARM | storage controller | The SD Host Controller Standard Interface, and **the controller this board's card answered on** — see `docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md`. Declared in the record as `sdhci`; the boot payload and the shared reader read the card through it. Its name in a device tree is `brcm,bcm2835-mmc`, and the firmware's own tree disables `mmc@7e300000` while enabling `mmcnr@7e300000` — the same registers, the same compatible — as the wireless module's non-removable SDIO host. The hardware run decides between them: a card in the slot returned its master boot record through this block, so this is the controller the silicon puts the card on. See the note below, and the warning the image stage still prints because the difference is real. |
+| sdhost (SD host) | `0x3F202000` | 4 KiB | 56 (derived; see note) | ARM | storage controller | The older, simpler SD controller. The board's own firmware tree says the card slot is here — `mmc@7e202000`, compatible `brcm,bcm2835-sdhost`, `status = "okay"` — which is the firmware's arrangement for the driver set it brings up, not a statement about what a bare-metal reader can drive. The board's card answered over sdhci at `0x3F300000`, so that observation decides this platform's choice. No driver drives this block and the record grants no window for it; see the note below. |
 | USB OTG (dwc2) | `0x3F980000` | 4 KiB | 9 | ARM | USB host (future) | The single OTG port. On this board the visible USB sockets are behind an on-board hub chip attached to it, so a driver sees the hub, and a host controller stack is needed before anything downstream is reachable. Not in the record. |
 | MPHI (message passing host interface) | `0x3F00B000`-adjacent | — | 32 | ARM | — | Host-interface channels used by the firmware's message protocol. Overlaps the region the record gives the mailbox controller. No driver planned; listed to explain the shared window. |
 
@@ -94,21 +94,31 @@ source confirms.
   calibrated rule, not from a datasheet line. A wrong number here would present as a
   boot that hangs with no fault, so it stays out of the record until something drives
   this block.
-* **The two SD controllers, and the contradiction that is not resolved.** The board's
+* **The two SD controllers: the card answered, and that decides it.** The board's
   firmware tree carries **two nodes at `0x7E300000` under the same compatible**: `mmc`,
   `status = "disabled"`, and `mmcnr` — non-removable — `status = "okay"`, with a
   `brcm,bcm4329-fmac` wireless child. The same tree marks `sdhost@7e202000` `okay`.
-  Read together, the machine's own description assigns the Arasan registers to the
-  wireless module and the card to sdhost. Against that stands a recorded board run: a
-  self-test binary on this board read the user's microSD card's master boot record
-  through `0x3F300000`, and its partition offsets prove the bytes came from the real
-  card rather than from our own image
-  (`docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md`). Both are evidence. Neither has
-  been set aside here, and the record still selects sdhci because that is the only
-  path with a driver and the only path with positive evidence. What would settle it is
-  a board run that probes both controllers and reports which one returns the card's
-  sector zero; until then the build prints the disagreement by name rather than hiding
-  it, and `cargo xtask image --platform raspi3b` is where to read it.
+  Read alone, that description assigns the Arasan registers to the wireless module and
+  the card to sdhost.
+
+  The hardware observation settles which of the two the silicon puts the card on. A
+  self-test binary ran on this board with a card in the slot and read that card's
+  master boot record through **`0x3F300000`**, the Arasan block; the partition offsets
+  it returned (16384 and 1064960) prove the bytes were the physical card's and not our
+  own image's (`docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md`). A `status` in a device
+  tree is the firmware's statement about the driver set it was configured to bring up.
+  It is not a statement that a bare-metal reader cannot drive the block, and this
+  project is a bare-metal reader. So where the two disagree, **the hardware run wins and
+  the tree is the configuration**, and the platform drives sdhci.
+
+  The firmware's arrangement is coherent on its own terms — the wireless chip wants the
+  SDIO host, and the card is on the other controller under the configuration that tree
+  describes — and nothing here claims the firmware is wrong about its own boot. What is
+  settled is only what this project must do: it drives the controller that returned the
+  card. `bcm2835-sdhost` remains unused, with no window granted. The build still prints
+  the disagreement by name (`cargo xtask image --platform raspi3b`), because it is a real
+  difference between the record and the machine's tree; it is now a difference the
+  record explains rather than one it leaves open.
 * **systimer interrupt 0.** The record declares interrupt 0, which is the
   system timer's GPU interrupt, raised through the ARM-local block's basic
   pending register. It is not a GIC-style private interrupt.

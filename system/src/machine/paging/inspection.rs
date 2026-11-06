@@ -6,7 +6,7 @@ use core::{fmt,
 
 use mac_abi::{CORRUPT_DATA, NO_MEMORY, NOT_SUPPORTED, Status, inspection::memory as wire};
 use mac_kernel_model::pages::{Access, PhysicalAddress};
-use mac_riscv_pages::walk::{ReadTables, Span, Walker};
+use crate::machine::page_layout::walk::{ReadTables, Span, Walker};
 
 use super::{BOOT, FrameError, SPACES, Space};
 use crate::machine::memory::*;
@@ -31,7 +31,7 @@ pub(crate) enum Error
 {
     NotReady,
     Stale,
-    Tables(mac_riscv_pages::walk::Error<FrameError>),
+    Tables(crate::machine::page_layout::walk::Error<FrameError>),
     Allocation,
     Layout,
     Pages(crate::machine::pages::Error)
@@ -69,6 +69,8 @@ impl fmt::Display for Error
 struct Reader<'a>(&'a Space);
 impl ReadTables for Reader<'_>
 {
+    type Descriptor = super::Entry;
+    type Layout = super::SelectedLayout;
     type Error = FrameError;
 
     fn read_table(&self, physical: PhysicalAddress, output: &mut [u64; 512])

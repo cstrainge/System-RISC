@@ -1,5 +1,5 @@
-//! RV64 supervisor bootstrap and permanently owned translation roots. No
-//! existing reference changes its address; every RAM view starts in physmap.
+//! Supervisor bootstrap and permanently owned translation roots. No existing
+//! reference changes its address; every RAM view starts in physmap.
 pub(crate) mod inspection;
 pub(crate) mod modules;
 pub(crate) mod process;
@@ -325,7 +325,7 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
                                       hart: record.hart,
                                       mask: record.hardware_tag_mask });
     }
-    let ram=DirectMap::new::<Rva>(memory,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END).map_err(Error::Policy)?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE)).map_err(Error::Physical)?;
+    let ram=DirectMap::new::<SelectedLayout>(memory,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END).map_err(Error::Policy)?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE)).map_err(Error::Physical)?;
     // ROM already installed the admitted permanent RAM physmap; DirectMap is
     // its checked software view, not a hardware mapping operation. Monitor
     // admission checks every isolated control extent against that view before
@@ -508,7 +508,7 @@ impl Tables for Frames
 {
     type Error = FrameError;
     type Descriptor = Entry;
-    type Layout = Rva;
+    type Layout = SelectedLayout;
 
     fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, FrameError>
     {
@@ -525,7 +525,7 @@ impl Tables for Frames
         let backing = self.source.allocate_zeroed(table_layout)?;
         let cpu = backing.cpu_base();
         let physical = backing.physical();
-        let table = RootPage::reserve(backing, Rva::geometry())
+        let table = RootPage::reserve(backing, SelectedLayout::geometry())
             .map_err(|cause| FrameError::Pages(crate::machine::pages::Error::Model(cause)))?;
         let storage_layout = Layout::new::<Node>();
         let storage_charge = self.account
@@ -592,8 +592,8 @@ impl Drop for Frames
         }
     }
 }
-struct Rva;
-impl PageLayout for Rva
+struct SelectedLayout;
+impl PageLayout for SelectedLayout
 {
     fn geometry() -> PageGeometry
     {
@@ -609,8 +609,18 @@ impl PageLayout for Rva
     {
         super::page_layout::valid_virtual_range(range)
     }
+
+    fn lower_half_end() -> u64
+    {
+        super::page_layout::lower_half_end()
+    }
+
+    fn upper_half_start() -> u64
+    {
+        super::page_layout::upper_half_start()
+    }
 }
-impl Architecture for Rva
+impl Architecture for SelectedLayout
 {
     type InvocationGate = NativeInvocationGate;
     type PageTable = [u64; 512];
@@ -618,9 +628,12 @@ impl Architecture for Rva
 }
 struct Space
 {
-    owner:        AddressSpace<Rva, PagingBacking>,
+    owner:        AddressSpace<SelectedLayout, PagingBacking>,
     tables:       Frames,
     register:     usize,
+    /// The layout's second root, or zero where the layout has only one. Zero is
+    /// "no second root", never a root at address zero.
+    register_aux: usize,
     leaves:       u64,
     _root_charge: Option<mac_kernel_model::account::Committed<NativeInvocationGate>>
 }
@@ -683,6 +696,11 @@ impl PreparedRoots
     pub(crate) fn firmware_register(&self) -> usize
     {
         self.spaces.firmware.register
+    }
+
+    pub(crate) fn firmware_register_aux(&self) -> usize
+    {
+        self.spaces.firmware.register_aux
     }
 
     pub(crate) fn hardware_tag_mask(&self) -> u16
@@ -814,11 +832,13 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     }
     let (physical, mut tables) = mapper.into_tables();
     let (root, root_charge) = tables.take_root(physical)?;
-    let owner=AddressSpace::<Rva, PagingBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
-    let register = super::page_layout::encode_root(owner.root_physical().0, tag as u64);
+    let owner=AddressSpace::<SelectedLayout, PagingBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
+    let (register, register_aux) =
+        super::page_layout::encode_roots(owner.root_physical().0, tag as u64);
     Ok(Space { owner,
                tables,
                register,
+               register_aux,
                leaves,
                _root_charge: root_charge })
 }

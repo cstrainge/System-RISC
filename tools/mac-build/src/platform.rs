@@ -575,11 +575,21 @@ impl DeclaredDevice
 
 impl Platform
 {
-    /// The harts this platform describes. A record that declares no emulation
-    /// still runs somewhere, so the kernel-facing count defaults to one.
+    /// The harts this platform describes.
+    ///
+    /// A virtual machine states the count it is given; a board states the
+    /// application cores it presents. Both are declarations and neither may
+    /// supply the other's, so this asks the record in the same order the
+    /// scheduling check does. A record that declares neither still runs
+    /// somewhere, and the count defaults to one rather than to a number this
+    /// code invented.
     pub fn harts(&self) -> usize
     {
-        self.emulation.as_ref().map(|emulation| emulation.harts.get()).unwrap_or(1)
+        self.emulation
+            .as_ref()
+            .map(|emulation| emulation.harts)
+            .or_else(|| self.hardware().and_then(|hardware| hardware.harts))
+            .map_or(1, |harts| harts.get())
     }
 
     /// Every peripheral window the record declares. A peripheral that states a

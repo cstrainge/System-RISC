@@ -158,7 +158,15 @@ pub fn image(workspace: &Workspace) -> Result<Value>
             report["raw"] = json!(workspace.describe(&output));
             report["virtual_size"] = json!(bytes);
             report["layout"] = json!(format!("unpartitioned {filesystem:?}"));
-            report["boot_rom"] = json!(workspace.describe(&dist.join("bootrom-riscv.bin")));
+            // The payload's name comes from the record's bootloader section, so
+            // a board that builds a different first stage is not reported under
+            // another board's artifact name. A platform with no bootloader of
+            // its own has no payload and says so by omission.
+            if workspace.platform.bootloader.is_some()
+            {
+                report["boot_rom"] =
+                    json!(workspace.describe(&crate::boot::payload(&workspace.platform, &dist)?));
+            }
             let summary = format!("Built {} MiB HFS-B v1 as unpartitioned System7; all installed \
                                    forks, metadata, blessing and structural checks passed.",
                                   bytes / (1024 * 1024));

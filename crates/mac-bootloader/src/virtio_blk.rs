@@ -1,7 +1,5 @@
 //! Modern virtio-mmio, split queue, one outstanding read/write/flush request.
 use alloc::boxed::Box;
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
-use core::arch::asm;
 use core::{
            fmt::Write,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
@@ -84,8 +82,9 @@ impl Queue
     }
 }
 
-pub struct Disk
+pub struct Disk<M: Machine>
 {
+    _machine:        core::marker::PhantomData<M>,
     base:            usize,
     queue:           Box<Queue>,
     index:           u16,
@@ -95,50 +94,24 @@ pub struct Disk
     failed:          bool
 }
 
-fn fence()
+/// What the transport needs from the machine it runs on.
+///
+/// These are capabilities, not an architecture test. A machine supplies them
+/// explicitly; the shared transport never supplies a default, because a default
+/// is how an architecture assumption survives: it lets an unknown target compile
+/// into a silently absent barrier. A target that does not implement this fails
+/// to compile at the point where the capability should have been supplied, which
+/// is the loud outcome.
+pub trait Machine
 {
-    // SAFETY: a full fence has no memory operands. It is the device/CPU
-    // publication ordering virtio requires, not diagnostic instrumentation.
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        asm!("fence iorw, iorw", options(nostack));
-    }
-    // SAFETY: as above. AArch64's full barrier is a system-wide data
-    // synchronization barrier.
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        asm!("dsb sy", options(nostack));
-    }
+    /// Full publication barrier between this CPU and the device.
+    fn fence();
+
+    /// A monotonic counter used only to bound how long a request may stay
+    /// outstanding. Its units are the machine's; only differences are used.
+    fn counter() -> u64;
 }
-fn now() -> u64
-{
-    // The architectural time counter shares the board timebase without an
-    // MMIO round trip on every outstanding-request poll.
-    #[cfg(target_arch = "riscv64")]
-    let ticks = {
-        let value;
-        // SAFETY: reading the time counter has no side effects.
-        unsafe {
-            asm!("rdtime {value}", value = out(reg) value, options(nomem, nostack));
-        }
-        value
-    };
-    // The virtual counter is the architectural equivalent on AArch64.
-    #[cfg(target_arch = "aarch64")]
-    let ticks = {
-        let value: u64;
-        // SAFETY: reading the virtual counter has no side effects.
-        unsafe {
-            asm!("mrs {value}, cntvct_el0", value = out(reg) value, options(nomem, nostack));
-        }
-        value
-    };
-    // A host build only type-checks the crate; there is no device to poll and
-    // no counter to read, so the deadline is never reached.
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-    let ticks = 0u64;
-    ticks
-}
+
 pub fn is_block(base: usize) -> bool
 {
     unsafe {
@@ -147,7 +120,7 @@ pub fn is_block(base: usize) -> bool
     }
 }
 
-impl Disk
+impl<M: Machine> Disk<M>
 {
     fn read(&self, offset: usize) -> u32
     {
@@ -169,7 +142,8 @@ impl Disk
 
     pub fn open(base: usize) -> Result<Self>
     {
-        let mut disk = Self { base,
+        let mut disk = Self { _machine: core::marker::PhantomData,
+                              base,
                               queue: Box::new(Queue::new()),
                               index: 0,
                               sectors: 0,
@@ -230,7 +204,7 @@ impl Disk
         disk.address(0x80, descriptors);
         disk.address(0x90, available);
         disk.address(0xa0, used);
-        fence();
+        M::fence();
         disk.write(0x44, 1);
         disk.write(0x70, 15);
         for _ in 0..8
@@ -252,7 +226,7 @@ impl Disk
     }
 }
 
-impl BlockDevice for Disk
+impl<M: Machine> BlockDevice for Disk<M>
 {
     fn sector_count(&self) -> u64
     {
@@ -274,14 +248,14 @@ impl BlockDevice for Disk
     }
 }
 
-impl Disk
+impl<M: Machine> Disk<M>
 {
     fn request_error(&mut self, kind: u32, sector: u64, start: u64, reason: &'static str,
                      poison: bool)
                      -> Error
     {
         self.failed |= poison;
-        fence();
+        M::fence();
         let q = &mut *self.queue;
         let used = unsafe { u16::from_le(read_volatile(addr_of_mut!(q.used.index))) };
         let completion = unsafe {
@@ -302,7 +276,7 @@ impl Disk
                          u32::from_le(completion.length),
                          status,
                          self.read(0x70),
-                         now().wrapping_sub(start) / 10,
+                         M::counter().wrapping_sub(start) / 10,
                          self.failed,
                          reason);
         Error::Malformed(reason)
@@ -328,13 +302,13 @@ impl Disk
         }
         q.available.ring[self.index as usize % N] = 0;
         self.index = self.index.wrapping_add(1);
-        fence();
+        M::fence();
         unsafe {
             write_volatile(addr_of_mut!(q.available.index), self.index.to_le());
         }
-        fence();
+        M::fence();
         self.write(0x50, 0);
-        let start = now();
+        let start = M::counter();
         let mut next_status_check = 10_000; // At most once per pending millisecond.
         loop
         {
@@ -343,7 +317,7 @@ impl Disk
                                                        u16::from_le(read_volatile(core::ptr::addr_of!(self.queue.used.index)))
                                                    },
                                                    || {
-                                                       let elapsed = now().wrapping_sub(start);
+                                                       let elapsed = M::counter().wrapping_sub(start);
                                                        if elapsed < next_status_check
                                                        {
                                                            return None;
@@ -375,7 +349,7 @@ impl Disk
                 }
             }
         }
-        fence();
+        M::fence();
         let q = &mut *self.queue;
         let completion = unsafe {
             read_volatile(addr_of_mut!(q.used.ring[self.index.wrapping_sub(1) as usize % N]))
@@ -399,7 +373,7 @@ impl Disk
         Ok(())
     }
 }
-impl WritableBlockDevice for Disk
+impl<M: Machine> WritableBlockDevice for Disk<M>
 {
     fn is_read_only(&self) -> bool
     {
@@ -429,17 +403,17 @@ impl WritableBlockDevice for Disk
     }
 }
 
-impl Drop for Disk
+impl<M: Machine> Drop for Disk<M>
 {
     fn drop(&mut self)
     {
         // Stop DMA before releasing the queue's backing memory.
         self.write(0x70, 0);
-        fence();
-        let start = now();
+        M::fence();
+        let start = M::counter();
         while self.read(0x70) != 0
         {
-            assert!(now().wrapping_sub(start) <= 10_000_000,
+            assert!(M::counter().wrapping_sub(start) <= 10_000_000,
                     "virtio reset timed out before DMA memory release");
         }
     }

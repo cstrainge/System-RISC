@@ -2,8 +2,7 @@
 //! have separate phases; prepared peers gain no dispatch authority.
 //! Raw Control storage is authenticated before dereference and never borrowed
 //! as &Control or a slice after assembly publication.
-use core::{arch::global_asm,
-           fmt,
+use core::{           fmt,
            mem::MaybeUninit,
            ptr,
            sync::atomic::{AtomicU8, AtomicU64, Ordering}};
@@ -645,77 +644,11 @@ impl PreparedEntry
 unsafe extern "C" {
     fn __system_boot_stack(context: *mut (), entry: unsafe extern "C" fn(*mut ()), top: usize);
 }
-// The cold bootstrap call frame owns no lock/RAII resource needed by running
-// applications. Graphical startup never returns; headless startup restores it.
-// Each architecture saves the callee-saved set it must not disturb, swaps to the
-// supplied stack top, calls the entry and restores its own frame.
-#[cfg(target_arch = "riscv64")]
-global_asm!(
-            r#"
-.global __system_boot_stack
-__system_boot_stack:
-addi sp,sp,-112
-sd ra,0(sp)
-sd s0,8(sp)
-sd s1,16(sp)
-sd s2,24(sp)
-sd s3,32(sp)
-sd s4,40(sp)
-sd s5,48(sp)
-sd s6,56(sp)
-sd s7,64(sp)
-sd s8,72(sp)
-sd s9,80(sp)
-sd s10,88(sp)
-sd s11,96(sp)
-mv s0,sp
-mv sp,a2
-jalr a1
-mv sp,s0
-ld ra,0(sp)
-ld s0,8(sp)
-ld s1,16(sp)
-ld s2,24(sp)
-ld s3,32(sp)
-ld s4,40(sp)
-ld s5,48(sp)
-ld s6,56(sp)
-ld s7,64(sp)
-ld s8,72(sp)
-ld s9,80(sp)
-ld s10,88(sp)
-ld s11,96(sp)
-addi sp,sp,112
-ret
-"#
-);
+// The trampoline itself belongs to the architecture that owns the stack swap:
+// see `machine::riscv64::boot_stack` and `machine::aarch64::boot_stack`. This
+// file only calls the symbol, so the choice is made once at the selection point
+// rather than by a `cfg` here.
 
-#[cfg(target_arch = "aarch64")]
-global_asm!(
-            r#"
-.global __system_boot_stack
-__system_boot_stack:
-sub sp, sp, #112
-stp x29, x30, [sp, #0]
-stp x19, x20, [sp, #16]
-stp x21, x22, [sp, #32]
-stp x23, x24, [sp, #48]
-stp x25, x26, [sp, #64]
-stp x27, x28, [sp, #80]
-mov x29, sp
-mov sp, x2
-blr x1
-mov sp, x29
-ldp x29, x30, [sp, #0]
-ldp x19, x20, [sp, #16]
-ldp x21, x22, [sp, #32]
-ldp x23, x24, [sp, #48]
-ldp x25, x26, [sp, #64]
-ldp x27, x28, [sp, #80]
-add sp, sp, #112
-ret
-"#
-);
 
 pub(crate) fn can_defer_io() -> bool
 {
@@ -918,6 +851,14 @@ impl PreparedHart
         self.roots.firmware_register()
     }
 
+    /// The platform's secondary translation root. A machine with one root
+    /// answers zero here, and a secondary reads it as 'there is no second root'
+    /// rather than as a root at address zero.
+    pub(crate) fn root_register_aux(&self) -> usize
+    {
+        self.roots.firmware_register_aux()
+    }
+
     pub(crate) fn control(&self) -> usize
     {
         self.row().control
@@ -1085,13 +1026,16 @@ pub(crate) fn start_secondary(payload: *const (), bytes: usize) -> !
     let report = crate::machine::monitor::validate_start(&proof, payload.cast(), bytes)
         .unwrap_or_else(|error| warm_refused(error));
     if report.root_register != proof.roots.firmware_register() as u64
+       || report.root_register_aux != proof.roots.firmware_register_aux() as u64
        || report.control_virtual != proof.row.control as u64
        || report.service_top != proof.row._stack.top() as u64
     {
-        warm_refused(format_args!("monitor binding mismatch: root {:#x}/{:#x}, control \
-                                   {:#x}/{:#x}, service top {:#x}/{:#x}",
+        warm_refused(format_args!("monitor binding mismatch: root {:#x}/{:#x}, aux root \
+                                   {:#x}/{:#x}, control {:#x}/{:#x}, service top {:#x}/{:#x}",
                                   report.root_register,
                                   proof.roots.firmware_register(),
+                                  report.root_register_aux,
+                                  proof.roots.firmware_register_aux(),
                                   report.control_virtual,
                                   proof.row.control,
                                   report.service_top,

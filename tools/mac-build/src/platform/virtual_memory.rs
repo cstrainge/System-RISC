@@ -55,6 +55,16 @@ impl PageLayout for Sv39Layout
     {
         Sv39::valid_virtual_range(range)
     }
+
+    fn lower_half_end() -> u64
+    {
+        1 << 38
+    }
+
+    fn upper_half_start() -> u64
+    {
+        u64::MAX << 38
+    }
 }
 impl Layout for Sv39Layout
 {
@@ -86,6 +96,16 @@ impl PageLayout for Aarch64Layout
         let (start, end) = (range.start(), range.end());
         (start < 0x0000_0080_0000_0000 && end <= 0x0000_0080_0000_0000)
         || start >= 0xffff_ff80_0000_0000
+    }
+
+    fn lower_half_end() -> u64
+    {
+        0x0000_0080_0000_0000
+    }
+
+    fn upper_half_start() -> u64
+    {
+        0xffff_ff80_0000_0000
     }
 }
 impl Layout for Aarch64Layout
