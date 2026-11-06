@@ -6,6 +6,7 @@ pub mod lifecycle;
 pub mod preferences;
 pub mod scheduler;
 pub mod sync;
+pub mod arch;
 #[doc(hidden)]
 pub mod runtime;
 pub mod file_sources;

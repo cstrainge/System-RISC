@@ -106,21 +106,6 @@ static CONTROL: Shared<Control> =
                                      command:     [0; COMMAND_BYTES],
                                      response:    [0; RESPONSE_BYTES] }));
 
-fn fence()
-{
-    // SAFETY: a full fence has no memory operands. It is the required
-    // device/CPU publication ordering, not diagnostic instrumentation.
-    // RISC-V's full fence is `fence iorw, iorw`; AArch64's is a system-wide
-    // data synchronization barrier.
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!("fence iorw, iorw", options(nostack))
-    };
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("dsb sy", options(nostack))
-    };
-}
 
 /// Little-endian command builder over a fixed stack buffer.
 struct Command
@@ -255,7 +240,7 @@ impl Device
     {
         // SAFETY: same validated, exclusively claimed MMIO window as read().
         unsafe { write_volatile((self.registers + offset) as *mut u32, value.to_le()) };
-        fence();
+        mac_driver::arch::barrier();
     }
 
     fn address(&self, offset: usize, value: u64)
@@ -393,7 +378,7 @@ impl Device
         self.address(0x80, self.control_dma + offset_of!(Control, descriptors) as u64);
         self.address(0x90, self.control_dma + offset_of!(Control, available) as u64);
         self.address(0xa0, self.control_dma + offset_of!(Control, used) as u64);
-        fence();
+        mac_driver::arch::barrier();
         self.write(0x44, 1);
         self.write(0x70, 15);
         self.running = true;
@@ -443,11 +428,11 @@ impl Device
                                             [usize::from(self.offered) % QUEUE]),
                            0);
         }
-        fence();
+        mac_driver::arch::barrier();
         self.offered = self.offered.wrapping_add(1);
         // SAFETY: publishing the ring index hands the chain to the device.
         unsafe { write_volatile(addr_of_mut!((*control).available.index), self.offered.to_le()) };
-        fence();
+        mac_driver::arch::barrier();
         self.write(0x50, 0);
         loop
         {
@@ -455,7 +440,7 @@ impl Device
             let used = unsafe { u16::from_le(read_volatile(addr_of_mut!((*control).used.index))) };
             if used != self.consumed
             {
-                fence();
+                mac_driver::arch::barrier();
                 if used.wrapping_sub(self.consumed) != 1
                 {
                     self.wedged = true;
