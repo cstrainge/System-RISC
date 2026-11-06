@@ -982,16 +982,20 @@ Verified by execution in the guest: the probe resolves the folder's icon the way
 the Finder does, resolves the item's icon through the resident type bundle, plots
 both into offscreen worlds and compares them pixel for pixel with the generic
 folder and document. `PIPES_ICON_FOLDER_OK id=-30002 drawn=…` and
-`PIPES_ICON_ITEM_OK id=-30003 drawn=…` report how many pixels each glyph drew, and
-`PIPES_ICON_DISTINCT_OK` records that each differs from its generic counterpart
-and that the two differ from each other. A row in a table would not have been
-evidence; the plotted pixels are.
+`PIPES_ICON_ITEM_OK id=-30003 drawn=…` report how many pixels each glyph drew,
+`PIPES_ICON_MONO_OK` reads the `ICN#`/`ics#` payloads directly because the plot
+selects the colour family at 32 pixels, and `PIPES_ICON_DISTINCT_OK` reports how
+many pixels the two glyphs differ in and how many each drew. A row in a table
+would not have been evidence; the plotted pixels are.
 
 **What the icon markers do not prove.** They draw through the same icon service
 the Finder draws through, at the same size and from the same resolved ids, but
 they are plotted into an offscreen world by the probe rather than into a Finder
 window. What that leaves unobserved is the Finder's own selection call at paint
-time — covered by reading the shared table, not by this run.
+time — covered by reading the shared table, not by this run. The drawn pixels are
+the 32-pixel colour family; the 1-bit family is checked by payload, not by a
+plot, because the SDK offers no depth selector and adding one for a probe would be
+production machinery for a harness.
 
 **Not covered, stated as cost.** The probe covers the transport contract, the
 writer limit, the folder and the open. It does not cover multiple concurrent

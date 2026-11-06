@@ -691,8 +691,11 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                       // The two glyphs, resolved and drawn: the folder by name
                       // under the blessed folder, the item through the resident
                       // type bundle, each compared against the generic glyph.
+                      // The monochrome pair is read too, because the plot
+                      // selects the colour payload at 32 pixels.
+                      "PIPES_ICON_MONO_OK folder_bits=",
                       "PIPES_ICON_FOLDER_OK id=-30002 drawn=",
-                      "PIPES_ICON_ITEM_OK id=-30003 drawn=", "PIPES_ICON_DISTINCT_OK folder=1",
+                      "PIPES_ICON_ITEM_OK id=-30003 drawn=", "PIPES_ICON_DISTINCT_OK differ=",
                       // Opening an item is `connect` and launches nothing: the
                       // process count across the open is the witness.
                       "PIPES_OPEN_NO_LAUNCH_OK processes_before=", "PIPES_OPEN_LIMIT_OK",

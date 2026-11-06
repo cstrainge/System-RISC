@@ -209,19 +209,29 @@ pub mod standard
     /// the platform's installed layout names them, so the name is the identity.
     /// Anything else is an ordinary folder. One table, so a caller cannot pick a
     /// different icon for the same folder than the System does.
+    ///
+    /// Only `Pipes` has a declared name constant; the other seven are literals
+    /// here and again at the creation site in `tools/xtask/src/disk.rs`, so those
+    /// seven pairs must agree by inspection rather than by compiler.
     pub fn for_blessed_folder(name: &str) -> Option<i16>
     {
-        Some(match name
+        Some(if name == mac_abi::files::PIPES_FOLDER_NAME
              {
-                 "Drivers" => DRIVERS_FOLDER,
-                 "Pipes" => PIPES_FOLDER,
-                 "Fonts" => FONTS_FOLDER,
-                 "Extensions" => EXTENSIONS_FOLDER,
-                 "Control Panels" => CONTROL_PANELS_FOLDER,
-                 "Preferences" => PREFERENCES_FOLDER,
-                 "Startup Items" => STARTUP_FOLDER,
-                 "Apple Menu Items" => APPLE_MENU_FOLDER,
-                 _ => return None
+                 PIPES_FOLDER
+             }
+             else
+             {
+                 match name
+                 {
+                     "Drivers" => DRIVERS_FOLDER,
+                     "Fonts" => FONTS_FOLDER,
+                     "Extensions" => EXTENSIONS_FOLDER,
+                     "Control Panels" => CONTROL_PANELS_FOLDER,
+                     "Preferences" => PREFERENCES_FOLDER,
+                     "Startup Items" => STARTUP_FOLDER,
+                     "Apple Menu Items" => APPLE_MENU_FOLDER,
+                     _ => return None
+                 }
              })
     }
 }
