@@ -9,8 +9,8 @@ Status: the initial class-neutral contract/registry/relocating module loader is
 implemented; storage class providers and deferred I/O remain in progress, tracked as [P14](CORE-TOOLBOX-ROADMAP.md#p14--loadable-kernel-drivers).
 The minimal block-device path remains built into System for boot/storage access.
 The BCM2837-class boot reader is `crates/mac-sdhci`, shared by the bootrom and
-the hardware self-test. A physical Pi 3 read the real card through the Arasan
-controller at `0x3f300000`; see
+the hardware self-test. A physical BCM2837-class board read the real card
+through the Arasan controller at `0x3f300000`; see
 [HARDWARE-OBSERVATION-AARCH64-SELFTEST.md](HARDWARE-OBSERVATION-AARCH64-SELFTEST.md).
 That observation does not establish anything about `bcm2835-sdhost`.
 Other device backends move into separately packaged drivers loaded through P6's

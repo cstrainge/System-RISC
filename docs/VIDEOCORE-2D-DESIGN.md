@@ -6,9 +6,9 @@ which parts of it this OS can use, and records the conflict between what the
 primary documentation says and what working software actually does. It contains
 no code, no pseudo-code and no proposed data structures; those are designed from
 this description at implementation time.
-Scope is the `raspi3b` platform (`platforms/raspi3b.json`) - the Raspberry Pi 3
-board, which QEMU's `raspi3b` machine supplies when run under emulation - and the
-physical part it models: a BCM2837-class SoC with four
+Scope is the `raspi3b` platform (`platforms/raspi3b.json`) - the board QEMU's
+`raspi3b` machine supplies when run under emulation - and the physical part it
+models: a BCM2837-class SoC with four
 Cortex-A53 cores, 1 GiB of RAM and a VideoCore IV VPU. The question it answers
 is how much of QuickDraw's work can be moved off the CPU, with the minimum
 acceptable outcome being hardware composition of the desktop rather than

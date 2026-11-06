@@ -23,7 +23,7 @@ does:
    and must compile to something that matches software byte for byte.
 2. **The 3D API's shaders.** A vertex shader and a fragment shader for a small
    set of scenes: transformed, textured, lit, blended.
-3. **Future targets.** The same source must compile for a later Pi's GPU without
+3. **Future targets.** The same source must compile for a later SoC's GPU without
    the source changing. That is the whole reason for the IR.
 
 What it is *not* for: running arbitrary GLSL from the wild, or matching a
@@ -458,7 +458,7 @@ the IR verifier.
 
 ## 7. A second target
 
-V3D 4.x (Pi 4) and V3D 7.x (Pi 5) are different GPUs, not revisions of VC4:
+V3D 4.x and V3D 7.x are different GPUs, not revisions of VC4:
 
 * a different QPU instruction encoding and register model;
 * an MMU, so the submission path's no-IOMMU argument does not carry over;
