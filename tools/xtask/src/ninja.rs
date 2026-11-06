@@ -176,6 +176,14 @@ fn packages(crates: &Crates, stage: Stage) -> Vec<String>
 }
 
 /// The storage image a bootable platform attaches to its machine.
+///
+/// A card image is the board's deliverable, not an emulator's: a platform flashed
+/// and booted by its own firmware needs one just as much as a machine that attaches
+/// it to an emulated disk, and more so, because there is no other way to run it.
+/// Which medium the platform is given is a record fact — `hardware.boot_image` names
+/// it — so the image stage follows the record rather than the presence of an
+/// emulator. Before this, deleting an emulation section silently removed the image
+/// from the build graph and left a successful build with no card to write.
 fn image(workspace: &Workspace) -> Result<Option<String>>
 {
     let Some(storage) = workspace.platform.storage.as_ref()
@@ -183,7 +191,12 @@ fn image(workspace: &Workspace) -> Result<Option<String>>
     {
         return Ok(None);
     };
-    if workspace.platform.emulation().is_none()
+    if workspace.platform
+                .hardware
+                .as_ref()
+                .and_then(|hardware| hardware.boot_image.as_deref())
+                .is_none()
+       && workspace.platform.emulation().is_none()
     {
         return Ok(None);
     }
