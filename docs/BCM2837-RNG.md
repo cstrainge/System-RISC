@@ -94,3 +94,42 @@ The specification for the driver's interface does have a primary source: the
 entropy class (`mac-entropy-interface`), which defines readiness, fill, short
 fills and cancellation independently of the device. That contract is what the
 resident service validates, and it is not affected by anything unresolved here.
+
+## The driver
+
+`drivers/bcm2835-rng` supplies that class from this block. It is a package the
+System loads by interface, matched to the record's inventory key
+`brcm,bcm2835-rng`; nothing about the block enters the kernel or the resident
+core.
+
+What it does follows the five rules above, and two of them are the reason it is
+written the way it is:
+
+* **It proves the source before reporting ready.** The class says READY completes
+  "only after a genuine source completion, never from registration or a
+  configured-device lookup alone", so the driver enables the generator and then
+  takes a word. A block whose oscillator is dead accepts the enable and counts
+  nothing, and is refused instead of reported ready.
+* **It refuses rather than fabricating.** Every path that cannot supply a byte
+  ends in a refusal naming what it observed — including how many status polls
+  produced nothing. A caller seeding a pool cannot tell four zero bytes from four
+  bytes of entropy, so zeros are never returned.
+
+Two numbers in the driver are **chosen, not measured**, and are named in its
+source so a reader can disagree deliberately: sixteen words discarded after
+enabling, and a poll bound at which the source is called silent. Neither is a
+claim about timing on this machine.
+
+The interrupt-mask register at `0x10` is why this platform declares a `0x14`-byte
+window. The driver writes the mask before the enable, and its build script
+asserts the declared window still covers that register, so the record and the
+driver cannot drift apart.
+
+**What is still unverified, and it is everything that matters on hardware:** the
+block has never been exercised on a board by this project. The eleven host tests
+cover the engine's decisions against a simulated register file — that a silent
+block is refused, that the count gates every read, that settle words are
+discarded — and they establish nothing about whether a real ring oscillator
+counts words at the address declared. QEMU's `raspi3b` models no RNG at all, so no
+emulator result bears on it either. The list above of what only a board can
+settle is unchanged by the driver's existence.
