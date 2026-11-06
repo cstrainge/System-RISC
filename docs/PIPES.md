@@ -901,10 +901,16 @@ not block a Terminal session**: a Terminal reaches a pipe by name through the
 SDK, which is exactly what is proven. It comes after the Terminal work.
 
 **Not covered, stated as cost.** The probe covers the transport contract, the
-writer limit and the folder. It does not cover multiple concurrent writers
-interleaving under load, or stale and foreign handle refusals; those are
+writer limit, the folder and the open. It does not cover multiple concurrent
+writers interleaving under load, or stale and foreign handle refusals; those are
 refinements whose failure mode is a wrong arrangement of bytes, not a hang. Two
 failures are worse and are also uncovered: a **lost wake under load**, and
 **cancellation of a blocked caller by process exit**. Both are written, neither
 is executed, and both would hang rather than fail. Section 10.1 says what a
 consumer should do about that: bounded waits, so the failure is visible.
+
+The canonical host suite does not build on this tree: `system/src/toolbox/controls`
+imports `crate::machine`, which is gated to the target, so `cargo test -p
+mac-toolbox` stops at compilation. That breakage is older than this facility and
+this work neither caused nor depended on it; acceptance here rests on the guest
+boot check, which builds and runs the shipping artifacts.
