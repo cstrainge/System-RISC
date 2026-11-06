@@ -13,7 +13,13 @@
 #![no_main]
 use core::fmt::{self, Write};
 
-use mac_toolbox::{Error, System, quickdraw::fonts::{FontSelection, Fonts}};
+use mac_toolbox::{Error, System,
+                  abi::quickdraw::BOLD,
+                  quickdraw::fonts::{FontSelection, Fonts}};
+
+/// Proportional enough that a real bold face measures differently from the plain
+/// one at the same size.
+const SAMPLE: &str = "Handgloves 123";
 
 struct Line
 {
@@ -79,7 +85,9 @@ fn select(system: &System<'_>, fonts: Fonts<'_>, name: &str, size: i16, face: u1
     let reported = fonts.name(family).map_err(|error| failed("family name", error))?;
     check(reported.name() == name, "the family answered with another name")?;
     // FONT_METRICS: the same selection an application makes to measure text.
-    let metrics = fonts.metrics(FontSelection { family, size, face })
+    let metrics = fonts.metrics(FontSelection { family,
+                                                size,
+                                                face })
                        .map_err(|error| failed("metrics", error))?;
     check(metrics.ascent > 0, "the selected face reported no ascent")?;
     // A real face reports ink above and below the baseline, and a width. The
@@ -90,11 +98,9 @@ fn select(system: &System<'_>, fonts: Fonts<'_>, name: &str, size: i16, face: u1
     check(metrics.max_width > 0, "the selected face reported no width")?;
     let mut line = Line::new();
     let _ = writeln!(line,
-                     "FONTS_PROBE_SELECT name=\"{name}\" size={size} style={face} \
-                      ascent={} descent={} width={}",
-                     metrics.ascent,
-                     metrics.descent,
-                     metrics.max_width);
+                     "FONTS_PROBE_SELECT name=\"{name}\" size={size} style={face} ascent={} \
+                      descent={} width={}",
+                     metrics.ascent, metrics.descent, metrics.max_width);
     note(system, line.text());
     note(system, "\n");
     Ok((family, metrics.ascent, metrics.descent, metrics.max_width))
@@ -114,23 +120,33 @@ fn run(system: &System<'_>) -> Result<(), Line>
     // strikes, and a strike family with two styles at one size.
     select(system, fonts, "Klang MT", 12, 0)?;
     select(system, fonts, "Espy Sans", 12, 0)?;
-    let (vt100, _, _, _) = select(system, fonts, "VT100", 9, 0)?;
+    select(system, fonts, "VT100", 9, 0)?;
     select(system, fonts, "VT100", 9, 1)?;
     select(system, fonts, "American Heritage", 12, 0)?;
-    // Which face a style chose is deliberately not asserted. The disc's two
-    // 9-point VT100 strikes are fixed-pitch: they report the same ascent,
-    // descent and width and differ only in content, so metrics cannot tell them
-    // apart. The public font client has no way to ask which face a selection
-    // resolved to, and an out-of-range style bit is no substitute — refusing one
-    // would prove the field is validated, not that it is honoured. Comparing the
-    // resolved faces needs a client accessor for a selection's source.
-    let refused = fonts.metrics(FontSelection { family: vt100, size: 9, face: 0x80 });
-    check(refused.is_err(), "an impossible style was accepted")?;
+    // A family with real weight variants, resolved by name, for the style test.
+    let times = fonts.id("Times").map_err(|error| failed("resolve Times", error))?;
+    // Style selection, proved by output rather than by admission. A resolver
+    // that dropped the style field would answer every request with the plain
+    // face, so the discriminator is a measurement that only a different face can
+    // produce. Times carries a real bold outline, so its advance widths differ;
+    // the imported VT100 strikes cannot serve here because they are fixed-pitch
+    // and measure identically at both styles.
+    let plain = fonts.text_width(FontSelection { family: times,
+                                                 size:   12,
+                                                 face:   0 },
+                                 SAMPLE)
+                     .map_err(|error| failed("plain width", error))?;
+    let bold = fonts.text_width(FontSelection { family: times,
+                                                size:   12,
+                                                face:   BOLD },
+                                SAMPLE)
+                    .map_err(|error| failed("bold width", error))?;
     let mut line = Line::new();
-    let _ = writeln!(line, "FONTS_PROBE_STYLE_UNPROVEN refused={:?}", refused.err());
+    let _ = writeln!(line, "FONTS_PROBE_STYLE plain={plain} bold={bold} text=\"{SAMPLE}\"");
     note(system, line.text());
     note(system, "\n");
-
+    check(plain != bold, "the bold style measured exactly like the plain style")?;
+    note(system, "FONTS_PROBE_STYLE_OK\n");
     Ok(())
 }
 
