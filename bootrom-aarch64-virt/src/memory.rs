@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use mac_abi::BootMemoryRange;
 
-use crate::devicetree::Tree;
+use mac_devicetree::Tree;
 
 /// A page, from the record rather than assumed.
 pub const PAGE_BYTES: u64 = 4096;
@@ -30,7 +30,9 @@ pub enum Error
     /// The machine's tree does not lie inside the RAM it describes.
     TreeOutsideRam,
     /// Metadata allocation failed.
-    Allocation
+    Allocation,
+    /// The machine's tree could not be walked.
+    TreeUnreadable
 }
 
 pub struct Memory
@@ -67,7 +69,7 @@ impl Memory
               {
                   ram.push(wire(base, bytes));
               }
-          });
+          }).map_err(|_| Error::TreeUnreadable)?;
         if ram.is_empty()
         {
             return Err(Error::NoRam);

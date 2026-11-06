@@ -20,11 +20,9 @@ fn main()
                                             .expect("the platform must declare a UART peripheral");
     let uart_base = uart["base"].as_str().expect("the UART must state its base");
     let out = Path::new(&env::var("OUT_DIR").expect("Cargo supplies OUT_DIR")).to_path_buf();
-    // The record is the author of the machine description. Both the bootloader
-    // and the kernel consume this blob, so it is emitted once at build time and
-    // linked in rather than assembled at runtime.
-    let tree = mac_build::devicetree::generate().expect("device tree generation");
-    fs::write(out.join("devicetree.dtb"), &tree).expect("device tree blob");
+    // Nothing is generated here. The board's firmware loads the board's own
+    // device tree and hands it over in x0, so embedding a second description
+    // would give one machine two trees and a consumer a choice.
     println!("cargo:rerun-if-changed={}", record_path.display());
     fs::write(out.join("platform-hardware.inc"),
               format!(".equ PL011_BASE, {uart_base}\n"))
@@ -43,6 +41,10 @@ fn main()
                .to_string()
     };
     let pl011 = base("uart", "pl011");
+    // The reservation a firmware-supplied tree must fit inside. A blob that
+    // states a larger size is refused rather than read past its end.
+    let fdt_tail_bytes = record["memory"]["fdt_tail_bytes"].as_str()
+                               .expect("memory.fdt_tail_bytes");
     // Only the console and the boot MMU read generated constants. Every other
     // peripheral address comes from the device tree, so the bootloader stays a
     // consumer of the record rather than a second copy of it.
@@ -50,7 +52,8 @@ fn main()
               format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
                        pub const PHYSICAL_RAM_BYTES: u64 = {ram_bytes};\n\
                        pub const PHYSMAP_BASE: u64 = {physmap_base};\n\
-                       pub const PL011_BASE: u64 = {pl011};\n"))
+                       pub const PL011_BASE: u64 = {pl011};\n\
+                       pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n"))
         .expect("memory constants");
     let linker = format!("OUTPUT_ARCH(aarch64)\nENTRY(_start)\nMEMORY {{ ram (rwx) : ORIGIN = \
                           {boot_base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \

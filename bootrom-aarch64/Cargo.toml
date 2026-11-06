@@ -12,6 +12,7 @@ bench = false
 
 [dependencies]
 mac-block.workspace = true
+mac-devicetree.workspace = true
 mac-filesystem.workspace = true
 mac-hfs.workspace = true
 mac-sdhci.workspace = true
