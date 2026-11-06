@@ -868,6 +868,7 @@ fn payload(entry: &Entry) -> *const SecondaryStart
 pub(crate) struct StartReport
 {
     pub(crate) root_register:     u64,
+    pub(crate) root_register_aux: u64,
     pub(crate) control_virtual:   u64,
     pub(crate) service_top:       u64,
     pub(crate) vector_bytes:      u64,
@@ -890,6 +891,7 @@ pub(crate) fn validate_start(proof: &crate::machine::traps::StartingHart, pointe
         || proof.sequence()==0 { return Err(Error::StartBinding{hart:entry.hart}); }
     let report=StartReport {
         root_register:start_field(entry,core::mem::offset_of!(SecondaryStart,root_register)).load(Ordering::Relaxed),
+        root_register_aux:start_field(entry,core::mem::offset_of!(SecondaryStart,root_register_aux)).load(Ordering::Relaxed),
         control_virtual:start_field(entry,core::mem::offset_of!(SecondaryStart,control_virtual)).load(Ordering::Relaxed),
         service_top:start_field(entry,core::mem::offset_of!(SecondaryStart,service_top)).load(Ordering::Relaxed),
         vector_bytes:start_field(entry,core::mem::offset_of!(SecondaryStart,vector_bytes)).load(Ordering::Relaxed),
@@ -1001,6 +1003,7 @@ pub(crate) fn begin_secondary(mut prepared: crate::machine::traps::PreparedHart)
         }
         prepared.bind_sequence(sequence).map_err(Error::Entry)?;
         start_field(entry,core::mem::offset_of!(SecondaryStart,root_register)).store(prepared.root_register() as u64,Ordering::Relaxed);
+        start_field(entry,core::mem::offset_of!(SecondaryStart,root_register_aux)).store(prepared.root_register_aux() as u64,Ordering::Relaxed);
         start_field(entry,core::mem::offset_of!(SecondaryStart,control_virtual)).store(prepared.control() as u64,Ordering::Relaxed);
         start_field(entry,core::mem::offset_of!(SecondaryStart,service_top)).store(prepared.service_top() as u64,Ordering::Relaxed);
         start_field(entry, core::mem::offset_of!(SecondaryStart, sequence)).store(sequence,

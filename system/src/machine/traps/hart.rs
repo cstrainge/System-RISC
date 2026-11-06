@@ -851,6 +851,14 @@ impl PreparedHart
         self.roots.firmware_register()
     }
 
+    /// The platform's secondary translation root. A machine with one root
+    /// answers zero here, and a secondary reads it as 'there is no second root'
+    /// rather than as a root at address zero.
+    pub(crate) fn root_register_aux(&self) -> usize
+    {
+        self.roots.firmware_register_aux()
+    }
+
     pub(crate) fn control(&self) -> usize
     {
         self.row().control
@@ -1018,13 +1026,16 @@ pub(crate) fn start_secondary(payload: *const (), bytes: usize) -> !
     let report = crate::machine::monitor::validate_start(&proof, payload.cast(), bytes)
         .unwrap_or_else(|error| warm_refused(error));
     if report.root_register != proof.roots.firmware_register() as u64
+       || report.root_register_aux != proof.roots.firmware_register_aux() as u64
        || report.control_virtual != proof.row.control as u64
        || report.service_top != proof.row._stack.top() as u64
     {
-        warm_refused(format_args!("monitor binding mismatch: root {:#x}/{:#x}, control \
-                                   {:#x}/{:#x}, service top {:#x}/{:#x}",
+        warm_refused(format_args!("monitor binding mismatch: root {:#x}/{:#x}, aux root \
+                                   {:#x}/{:#x}, control {:#x}/{:#x}, service top {:#x}/{:#x}",
                                   report.root_register,
                                   proof.roots.firmware_register(),
+                                  report.root_register_aux,
+                                  proof.roots.firmware_register_aux(),
                                   report.control_virtual,
                                   proof.row.control,
                                   report.service_top,

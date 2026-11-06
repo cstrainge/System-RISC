@@ -503,7 +503,16 @@ account rather than reserved inside it.
 
 BootImage contains ten atomic u64s: sealed, entry, image base, image bytes,
 required physical limit, required ISA, vector bytes, hardware tag mask, fault
-entry and returned entry. The ROM seals the actual validated NABI load plan once
+entry and returned entry. SecondaryStart carries two translation roots: `root_register` is the
+platform's primary (RISC-V `satp`, AArch64 `TTBR0_EL1`) and
+`root_register_aux` its secondary (zero where the layout has one root, AArch64
+`TTBR1_EL1`). Zero means "this layout has no second root", never a root at
+address zero, and the page-layout seam returns the pair so no caller re-derives
+either. Everything else a secondary needs to re-enter — control-register values,
+the vector base — it rebuilds from the same record the primary used, so those
+are not carried.
+
+The ROM seals the actual validated NABI load plan once
 before the primary's nonreturning handoff. Input cells become immutable before
 sealed=1 is release-published. System entry uses a0=payload, a1=exact payload
 bytes and a2=nonzero role: BOOT=0x424f4f54 or HART=0x48415254. Unknown/zero roles
