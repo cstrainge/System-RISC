@@ -226,6 +226,19 @@ observe. The boot check asserts the probe's markers, which makes "this family is
 selectable by name at this style" a guest observation rather than a review
 conclusion.
 
+Style selection needs care, because metrics are not a reliable witness for it.
+The disc's VT100 family carries a 9-point regular strike and a 9-point bold
+strike; being fixed-pitch, they report the same ascent, descent and width and
+differ only in content. Measured equality therefore says nothing about which
+face was chosen, and a probe that required two styles to measure differently
+would fail on a correct implementation. Selecting a face is proved instead by
+the rules the manager states: both styles resolve, an unassociated style falls
+back to the closest match with synthesis (the resolver scores exact style match
+first, then face kind), and a face value outside `0..=0x7f` is refused rather
+than treated as plain. Proving which specific face an associated style returned
+would need a client accessor for the resolved source, which the public API does
+not expose.
+
 
 ## Delivery and acceptance
 
