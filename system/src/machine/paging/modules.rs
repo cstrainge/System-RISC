@@ -2441,6 +2441,7 @@ pub(super) fn monitor_cause(base: u64, stage: Stage, error: &crate::machine::mon
         E::Memory(_)
         | E::Directory(_)
         | E::Physical(_)
+        | E::Devices(_)
         | E::AlreadyAdmitted
         | E::Layout
         | E::Image

@@ -36,6 +36,7 @@ mac-object-table.workspace = true
 mac-kernel-model.workspace = true
 spinning_top = "=0.2.5"
 mac-abi.workspace = true
+mac-devicetree.workspace = true
 sr-control-reflow-handling.workspace = true
 mac-boot-screen.workspace = true
 mac-formats.workspace = true

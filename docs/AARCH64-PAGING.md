@@ -390,8 +390,10 @@ remaining work, in the order it must be done:
 4. **The EL1 jump.** Branch to System's virtual entry with the `BootInfo`
    pointer. The acceptance is a *System-side* line, not another loader line.
 
-`PLATFORM_MMIO_DEVICES` deletion rides with step 2 or after it. Its `flags` do
-not all come from a tree: `MMIO` is implied by the node, `COHERENT_DMA` is the
+The compiled MMIO device array is deleted. The kernel resolves the platform
+record's declared peripheral identities through the machine's tree at admission
+(`machine::platform_devices`), so no device address is compiled in. Its `flags`
+do not all come from a tree: `MMIO` is implied by the node, `COHERENT_DMA` is the
 tree's `dma-coherent` property, and the match key is built from `compatible` —
 but `RESIDENT_OWNED` is policy and comes from the module's own interface
 declaration. A reader looking for it in a device tree will not find it, and

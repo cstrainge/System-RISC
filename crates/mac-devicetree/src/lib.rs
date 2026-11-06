@@ -125,6 +125,7 @@ impl core::fmt::Display for Error
 /// A node is described by properties that may appear in any order, so the walk
 /// collects the ones a consumer can act on and reports them together. Absent
 /// properties stay absent: a device with no interrupt is a fact, not a zero.
+#[derive(Clone, Copy)]
 pub struct Node<'a>
 {
     /// The node's own name, e.g. `cpu@1`.
@@ -188,6 +189,13 @@ pub struct Node<'a>
     pub interrupt_controller: bool,
     /// `#interrupt-cells`, how wide each interrupt specifier is.
     pub interrupt_cells: Option<u32>,
+    /// `interrupt-parent`, the phandle of the controller this node's
+    /// `interrupts` specifiers are written for.
+    ///
+    /// Without it the width of a specifier is unknown, and a consumer can only
+    /// guess by length. The property is inherited from the nearest ancestor that
+    /// states one, so a consumer resolves it by walking `parent_index`.
+    pub interrupt_parent: Option<u32>,
     /// `timebase-frequency`, the counter rate a machine states for itself.
     pub timebase_frequency: Option<u32>
 }
@@ -338,8 +346,7 @@ impl<'a> Tree<'a>
     /// Properties accumulate per depth. A node is visited when it ends, so
     /// without a stack the last child's properties would leak into every
     /// ancestor's visit and a four-hart machine would report five CPUs.
-    pub fn for_each_node(&self, mut visit: impl FnMut(&Node<'a>)) -> Result<usize, Error>
-    {
+    pub fn for_each_node(&self, mut visit: impl FnMut(&Node<'a>)) -> Result<usize, Error>    {
         /// Deep enough for any real tree's device nesting; a tree that exceeds
         /// it is refused rather than silently truncated.
         const MAX_DEPTH: usize = 32;
@@ -363,6 +370,7 @@ impl<'a> Tree<'a>
             phandle:      Option<u32>,
             linux_phandle: Option<u32>,
             interrupt_cells: Option<u32>,
+            interrupt_parent: Option<u32>,
             timebase_frequency: Option<u32>,
             address_cells: Option<u32>,
             size_cells:    Option<u32>,
@@ -476,6 +484,7 @@ impl<'a> Tree<'a>
                                   linux_phandle: state.linux_phandle,
                                   interrupt_controller: state.interrupt_controller,
                                   interrupt_cells: state.interrupt_cells,
+                                  interrupt_parent: state.interrupt_parent,
                                   timebase_frequency: state.timebase_frequency });
                     seen += 1;
                 }
@@ -523,6 +532,7 @@ impl<'a> Tree<'a>
                             "phandle" => state.phandle = cell_count(value),
                             "linux,phandle" => state.linux_phandle = cell_count(value),
                             "#interrupt-cells" => state.interrupt_cells = cell_count(value),
+                            "interrupt-parent" => state.interrupt_parent = cell_count(value),
                             "timebase-frequency" => state.timebase_frequency = cell_count(value),
                             "#address-cells" =>
                             {
@@ -556,6 +566,20 @@ impl<'a> Tree<'a>
         Err(Error::Structure)
     }
 
+    /// The first node the walk accepts, so a consumer can resolve a phandle or
+    /// an index without reaching past the API into the token stream.
+    pub fn find(&self, mut accept: impl FnMut(&Node<'a>) -> bool) -> Result<Option<Node<'a>>, Error>
+    {
+        let mut found = None;
+        self.for_each_node(|node| {
+                if found.is_none() && accept(node)
+                {
+                    found = Some(*node);
+                }
+            })?;
+        Ok(found)
+    }
+
     /// The first `reg` window of the node whose `compatible` names `compatible`.
     ///
     /// A `compatible` property is a list of NUL-separated strings, most specific
@@ -564,17 +588,17 @@ impl<'a> Tree<'a>
     /// than only the first.
     pub fn window(&self, compatible: &str) -> Result<Option<(u64, u64)>, Error>
     {
-        let mut found = None;
-        self.for_each_node(|node| {
-              if found.is_none()
-                 && names(&node, compatible)
-                 && node.enabled()
-                 && let Some(window) = node.window()
-              {
-                  found = Some(window);
-              }
-          })?;
-        Ok(found)
+        Ok(self.find_compatible(compatible)?.and_then(|node| node.window()))
+    }
+
+    /// The first enabled node whose `compatible` list names `compatible`.
+    ///
+    /// The one place that decides which node an identity names, so a consumer
+    /// that needs more than the window - an interrupt, a DMA attribute - selects
+    /// the same node the window came from.
+    pub fn find_compatible(&self, compatible: &str) -> Result<Option<Node<'a>>, Error>
+    {
+        self.find(|node| node.enabled() && names(node, compatible))
     }
 
     /// Whether any enabled node declares `compatible`, so a consumer can tell a
@@ -1396,5 +1420,64 @@ mod tests
         };
         let tree = Tree::new(&blob).expect("valid envelope");
         assert_eq!(tree.for_each_node(|_| {}), Ok(1));
+    }
+
+    #[test]
+    fn a_node_is_addressable_by_index_and_by_phandle()
+    {
+        // Two things a consumer needs and cannot get from the walk alone: the
+        // node an index names, and the node a phandle names. Both are how an
+        // `interrupts` specifier is resolved, so both must be answerable
+        // without the consumer reaching into the token stream.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("intc@1000").text("compatible", "arm,gic-400").u32("phandle", 7).u32(
+                "#interrupt-cells",
+                3,
+            );
+            b.end();
+            b.begin("uart@2000")
+                .text("compatible", "arm,pl011")
+                .u32("interrupt-parent", 7);
+            b.end();
+            b.end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        let uart = tree.find(|n| n.compatible == Some("arm,pl011")).unwrap().expect("uart node");
+        let same = tree.find(|n| n.index == uart.index).unwrap().expect("index names one node");
+        assert_eq!(same.name, "uart@2000");
+        let controller = tree.find(|n| n.phandle == Some(7)).unwrap().expect("phandle names one node");
+        assert_eq!(controller.name, "intc@1000");
+        assert_eq!(controller.interrupt_cells, Some(3));
+        // An index or phandle the tree does not contain is absent, not an error.
+        assert!(tree.find(|n| n.index == uart.index + 1000).unwrap().is_none());
+        assert!(tree.find(|n| n.phandle == Some(99)).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_interrupt_parent_is_read_so_a_specifier_has_a_known_width()
+    {
+        // Without this property the width of an `interrupts` specifier is
+        // unknown, and a consumer can only guess it from the byte length - a
+        // guess that reads a two-cell specifier as one number plus a flag.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            b.begin("soc");
+            b.u32("interrupt-parent", 3);
+            b.begin("uart@2000").text("compatible", "arm,pl011");
+            b.end();
+            b.end();
+            b.end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        let uart = tree.find(|n| n.compatible == Some("arm,pl011")).unwrap().expect("uart node");
+        assert_eq!(uart.interrupt_parent, None, "the node itself states none");
+        // The property is inherited, which is why the ancestor is reachable.
+        let soc = tree.find(|n| n.index == uart.parent_index.unwrap()).unwrap().expect("soc");
+        assert_eq!(soc.interrupt_parent, Some(3));
     }
 }

@@ -11,20 +11,22 @@ use crate::{drivers::{self, ResidentCall, ResidentCompletion,
             state::TryState};
 struct PlatformBus;
 const VIRTIO_SLOTS: u32 = super::memory::VIRTIO_MMIO_SLOTS as u32;
-pub(crate) const DEVICE_SLOTS: usize =
-    VIRTIO_SLOTS as usize + super::power::platform::PLATFORM_MMIO_DEVICES.len();
+/// Capacity of the boot device snapshot: the transport's own slots plus one per
+/// peripheral the platform record declares. The declared count is a capacity,
+/// not a claim about the machine - each slot is filled from the machine's tree
+/// and a declared peripheral the tree does not describe is refused by name.
+pub(crate) const DEVICE_SLOTS: usize = VIRTIO_SLOTS as usize + super::platform_devices::SLOTS;
 fn board_device(ordinal: u32) -> Result<Description, Status>
 {
     let index = ordinal.checked_sub(VIRTIO_SLOTS).ok_or(NOT_FOUND)? as usize;
-    let &(bus, key, registers, register_bytes, interrupt, flags) =
-        super::power::platform::PLATFORM_MMIO_DEVICES.get(index).ok_or(NOT_FOUND)?;
+    let device = super::platform_devices::get(index).ok_or(NOT_FOUND)?;
     Ok(Description { handle: 0,
-                     bus: ClassId(bus),
-                     key,
-                     registers,
-                     register_bytes,
-                     interrupt,
-                     flags })
+                     bus: ClassId(device.bus),
+                     key: device.key,
+                     registers: device.registers,
+                     register_bytes: device.register_bytes,
+                     interrupt: device.interrupt,
+                     flags: device.flags })
 }
 fn base(ordinal: u32) -> Result<usize, Status>
 {

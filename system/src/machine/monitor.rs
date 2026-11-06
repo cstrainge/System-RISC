@@ -187,6 +187,7 @@ fn post_wake(entry: &Entry) -> Result<u64, WakeError>
 pub(crate) enum Error
 {
     Memory(mac_abi::boot::MemoryError),
+    Devices(super::platform_devices::Refusal),
     Directory(monitor::Error),
     Physical(mac_kernel_model::pages::physical::Error),
     AlreadyAdmitted,
@@ -249,6 +250,7 @@ impl fmt::Display for Error
         {
             Self::Wake(error) => error.fmt(f),
             Self::Memory(error) => error.fmt(f),
+            Self::Devices(error) => error.fmt(f),
             Self::Directory(error) => error.fmt(f),
             Self::Physical(error) => error.fmt(f),
             Self::Layout =>
@@ -837,9 +839,13 @@ fn physical_limit(memory: CheckedMemory<'_>) -> Result<u64, Error>
     {
         end = end.max(limit);
     }
-    for &(_, _, base, bytes, _, _) in super::power::platform::PLATFORM_MMIO_DEVICES
+    for index in 0..super::platform_devices::SLOTS
     {
-        end = end.max(base.checked_add(bytes).ok_or(Error::Image)?);
+        let device = super::platform_devices::get(index).ok_or(Error::Devices(
+            super::platform_devices::Refusal::unresolved(index)))?;
+        end = end.max(device.registers
+                            .checked_add(device.register_bytes)
+                            .ok_or(Error::Image)?);
     }
     Ok(end)
 }
