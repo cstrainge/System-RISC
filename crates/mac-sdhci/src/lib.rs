@@ -10,7 +10,8 @@
 //! Specification. All register access is little-endian MMIO into the window the
 //! caller supplies from the platform record.
 //!
-//! The bit positions below were corrected on a physical Pi 3. Two of them are
+//! The bit positions below were corrected on a physical BCM2837-class board.
+//! Two of them are
 //! indistinguishable under QEMU, whose model has the data available
 //! immediately: `PRESENT_BUFFER_READ` is bit 11 (data in the buffer), not bit 9
 //! (data transfer active), and CMD17 must not set the multi-block select bit.

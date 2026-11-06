@@ -43,7 +43,7 @@ weaker is marked as inference or as unestablished in §12.
 
 ### 1.2 Scope of the hardware
 
-BCM2837 in the Raspberry Pi 3 carries a V3D 2.1-class 3D pipeline: a tile
+The BCM2837-class SoC carries a V3D 2.1-class 3D pipeline: a tile
 binner, primitive setup, and a shader core built from quad processors (QPUs).
 `py-videocore` states the part has twelve QPUs; the guide's model is four QPUs
 and one texture unit per slice. The *actual* slice, QPU, TMU, semaphore and VPM
@@ -207,7 +207,7 @@ failure, because it cannot program the block without it.
 * Linux `drivers/gpu/drm/v3d/*` — GPL-2.0, facts only. The driver has a separate
   MMU module and GPU-virtual-address allocation, which is the structural
   difference from VC4: **V3D 4.x and later have an MMU; VC4 does not.**
-* V3D 4.1 has a published architecture guide. V3D 7.1 (Pi 5) is not publicly
+* V3D 4.1 has a published architecture guide. V3D 7.1 (the later SoC generation) is not publicly
   documented in the same form, and Mesa's compiler is the de facto reference.
 
 No V3D 4.x/7 fact is used by the first landing. §10 records what the second
@@ -237,7 +237,7 @@ source gives for anything.
 
 | Source | Claim | Verdict |
 |---|---|---|
-| `docs/PI-HARDWARE-INVENTORY.md`, row "V3D (3D engine)" | Base `0x3FC00000`, 64 KiB, interrupts 66 and 67, category **VideoCore** | **Address correct**; size, interrupt count and category wrong (below) |
+| the archived BCM2837 hardware inventory, row "V3D (3D engine)" | Base `0x3FC00000`, 64 KiB, interrupts 66 and 67, category **VideoCore** | **Address correct**; size, interrupt count and category wrong (below) |
 | `docs/VIDEOCORE-2D-DESIGN.md` §7 | Bus `0x7EC00000` / ARM `0x3FEC0000` | Bus correct; **ARM address wrong** — the offset `0x00C00000` was written as `0x00EC0000` |
 | Linux device tree, `bcm2835-common.dtsi` | `v3d@7ec00000`, `reg = <0x7ec00000 0x1000>` | Consistent with the rule → ARM `0x3FC00000` |
 | QEMU `include/hw/arm/raspi_platform.h` | `V3D_OFFSET 0xc00000` from the peripheral base | `0x3F000000 + 0x00C00000` = `0x3FC00000` — **the same address as the silicon** |
@@ -307,8 +307,8 @@ than as an access restriction.
   failure rather than a documentation error, and it should be checked before the
   record is committed.
 
-**Conflict 2 — "Mesa `vc4` is not available on 64-bit Pi 3".** A web search
-returned this claim, attributed to Raspberry Pi's 64-bit images. It is not
+**Conflict 2 — "Mesa `vc4` is not available on a 64-bit build of the board".** A web search
+returned this claim, attributed to 64-bit images for the board. It is not
 evidence about the hardware: the Mesa driver is architecture-independent C, and
 the register interface does not change with the ARM's exception level or
 register width. What a distribution ships in a 64-bit kernel configuration is a
@@ -1214,7 +1214,7 @@ profile, not a variant of the first.
 
 * `docs/VIDEOCORE-2D-DESIGN.md` §2 (address spaces), §7 (the V3D and the QPU),
   §10 (what QEMU models), §15 (residual uncertainties).
-* `docs/PI-HARDWARE-INVENTORY.md` — its V3D row is **partly wrong**: the address
+* the archived BCM2837 hardware inventory — its V3D row is **partly wrong**: the address
   is correct, and the size, interrupt count, category and reachability claim are
   not. See §2.7 for the derivation and the evidence. Every other row of that
   inventory used here (DMA channel mask, clock manager, PM block) agrees with
@@ -1462,7 +1462,7 @@ from the individual documents.
 
 | Record | Correction | Evidence |
 |---|---|---|
-| `docs/PI-HARDWARE-INVENTORY.md`, V3D row | Size 64 KiB → `0x1000`; interrupts "66, 67"/"three lines" → one line, GPU IRQ 10; category VideoCore → ARM; "no supported way to submit jobs" → false | QPU §2.7 |
+| the archived BCM2837 hardware inventory, V3D row | Size 64 KiB → `0x1000`; interrupts "66, 67"/"three lines" → one line, GPU IRQ 10; category VideoCore → ARM; "no supported way to submit jobs" → false | QPU §2.7 |
 | `docs/VIDEOCORE-2D-DESIGN.md` §7, §10 | ARM address `0x3FEC0000` → `0x3FC00000`; the claim that QEMU's V3D address differs from the silicon's is withdrawn | QPU §2.7 |
 | `platforms/raspi3b.json` (platform lane) | The V3D window must carry ARM `0x3FC00000`, not `0x3FEC0000`, if the ARM address is what the record stores | QPU §2.7 |
 

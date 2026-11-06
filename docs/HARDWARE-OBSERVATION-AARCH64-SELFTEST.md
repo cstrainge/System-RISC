@@ -1,4 +1,4 @@
-# Hardware observation: AArch64 self-test on a Raspberry Pi 3
+# Hardware observation: AArch64 self-test on a BCM2837-class board
 
 **This is an observation record, not a specification.** It records what one
 board did with one binary. It does not define how storage is wired, and it does
@@ -18,7 +18,7 @@ them would mean rebuilding that harness first.
 
 ## What was observed
 
-- **Board:** a physical Raspberry Pi 3 (BCM2837-class SoC), card in the slot,
+- **Board:** a physical BCM2837-class board, card in the slot,
   display attached. The board's own firmware performed first-stage boot.
 - **Image:** the flat `kernel8.img` built from commit `412ba4d9` of branch
   `cstrainge-aarch64-hardware-self-test`, the last commit of the board bring-up
@@ -127,7 +127,7 @@ claim them. They are:
 ## What this establishes
 
 - The Arasan SDHCI controller the platform record drives, at `0x3f300000`, can
-  identify and read the real microSD card on this Raspberry Pi 3. This directly
+  identify and read the real microSD card on this board. This directly
   contradicts the conclusion that the card cannot be read on real silicon with
   that controller.
 - The mailbox and VideoCore framebuffer path works on real firmware: the results
@@ -149,7 +149,7 @@ claim them. They are:
   error recovery, or performance. The reader is polled single-block PIO and
   never writes to the card.
 - It is one board, one card and one firmware configuration. It does not
-  generalise to other Pi revisions, cards, or `config.txt` variants.
+  generalise to other board revisions, cards, or `config.txt` variants.
 - It says nothing about the SPI0 or DMA checks, which postdate this run and
   have not been executed on hardware.
 - It is not a preserved log. The source is a photograph, and only the SDHCI
