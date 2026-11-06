@@ -102,28 +102,6 @@ returned the **user's actual microSD card**, not bytes the self-test or its
 image builder wrote. That is what makes this evidence about the controller
 rather than about our own fixture.
 
-## Timed-output checks (not yet observed on hardware)
-
-The self-test now also runs eight SPI0 and DMA checks. They postdate the board
-run recorded above and have not been observed on silicon; this record does not
-claim them. They are:
-
-`spi-claim`, `spi-len`, `spi-div`, `spi-pace`, `spi-done`, `dma-lease`,
-`dma-2nd`, `dma-clean`.
-
-- No external wiring is required. The checks use the SPI0 FIFO, the DMA engine
-  and RAM. The byte-length check counts receive words, so MISO may float. A
-  transmitted-versus-received data comparison would need a jumper from GPIO10
-  (MOSI, pin 19) to GPIO9 (MISO, pin 21); the test does not configure the GPIO
-  alternate functions, so an attached strip or analyser sees nothing on the
-  header even while the block shifts.
-- An LED strip is not required. If one is attached, the test emits arbitrary
-  bytes to it; that is harmless and not part of the result.
-- The aarch64 platform record does not declare the SPI0, DMA or power-management
-  windows. The temporary self-test states those three BCM2837 addresses in its
-  own build script rather than editing the shared record, which the kernel lane
-  owns.
-
 ## What this establishes
 
 - The Arasan SDHCI controller the platform record drives, at `0x3f300000`, can
@@ -155,6 +133,31 @@ claim them. They are:
 - It is not a preserved log. The source is a photograph, and only the SDHCI
   fields above were transcribed. There is no artifact in the repository from
   which the rest can be re-derived.
+- It says nothing about the SPI0, DMA or timed-output checks, or the additional
+  display checks, which postdate this run and have not been executed on
+  hardware. See the next section.
+
+## Checks added after this run (not observed on hardware)
+
+Two more groups of checks were written after the board run recorded above, so
+this record does not claim them: eight SPI0 and DMA checks, and the timed-output
+checks that the SPI0 driver is built on. They are `spi-claim`, `spi-len`,
+`spi-div`, `spi-pace`, `spi-done`, `dma-lease`, `dma-2nd` and `dma-clean`. What
+follows is what the code does, which is not the same as what a board has
+confirmed.
+
+- No external wiring is required. The checks use the SPI0 FIFO, the DMA engine
+  and RAM. The byte-length check counts receive words, so MISO may float. A
+  transmitted-versus-received data comparison would need a jumper from GPIO10
+  (MOSI, pin 19) to GPIO9 (MISO, pin 21); the test does not configure the GPIO
+  alternate functions, so an attached strip or analyser sees nothing on the
+  header even while the block shifts.
+- An LED strip is not required. If one is attached, the test emits arbitrary
+  bytes to it; that is harmless and not part of the result.
+- The SPI0, DMA, power-management, PWM, I2S and clock-manager windows are
+  declared in `platforms/raspi3b.json`, so a driver takes them from the record
+  rather than from a constant. They were added to the record after this run, and
+  nothing in this record is evidence about them.
 
 ## Reproducing
 

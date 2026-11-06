@@ -1,6 +1,7 @@
 {
   "name": "raspi3b",
   "rust_target": "aarch64-unknown-none",
+  "std_target": "aarch64-unknown-systemrisc",
   "toolchain": "rust/sdk.json",
   "guest_linker": "platforms/linker/aarch64.ld",
   "llvm_profile": "neon",
@@ -8,11 +9,33 @@
     "neon"
   ],
   "install": {
-    "description": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
-    "set": "none",
-    "reason": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
-    "applications": [],
-    "modules": []
+    "description": "The aarch64 System set for the board: the resident kernel, the VideoCore mailbox framebuffer driver that owns the display, the startup Finder, and the applications that build for this architecture. The board has no virtio bus, so nothing that expects one is installed.",
+    "set": "packages",
+    "applications": [
+      "mac-finder",
+      "quickdraw-test",
+      "text-edit",
+      "cursor-test",
+      "panic-test",
+      "resedit",
+      "reactor",
+      "control-suite"
+    ],
+    "modules": [
+      "mac-system",
+      "videocore-framebuffer",
+      "spi0-wave",
+      "bcm2835-rng"
+    ],
+    "folders": {
+      "applications": "Applications",
+      "system": "System Folder",
+      "drivers": "System Folder/Drivers",
+      "extensions": "System Folder/Extensions"
+    },
+    "exceptions": {
+      "mac-finder": "System Folder"
+    }
   },
   "memory": {
     "page_bytes": 4096,
@@ -176,8 +199,88 @@
       "address": "0x40000000",
       "bytes": 4096,
       "flags": 2
+    },
+    {
+      "id": "bcm2835-dma",
+      "bus": "MMIO",
+      "key": "6272636d2c646d610000000000000000",
+      "address": "0x3f007000",
+      "bytes": 4096,
+      "interrupt": 16,
+      "pool": 32557,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-spi0",
+      "bus": "MMIO",
+      "key": "6272636d2c7370693000000000000000",
+      "address": "0x3f204000",
+      "bytes": 4096,
+      "interrupt": 54,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-aux",
+      "bus": "MMIO",
+      "key": "6272636d2c6175780000000000000000",
+      "address": "0x3f215000",
+      "bytes": 4096,
+      "interrupt": 29,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-pwm",
+      "bus": "MMIO",
+      "key": "6272636d2c70776d0000000000000000",
+      "address": "0x3f20c000",
+      "bytes": 4096,
+      "interrupt": null,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-i2s",
+      "bus": "MMIO",
+      "key": "6272636d2c6932730000000000000000",
+      "address": "0x3f203000",
+      "bytes": 4096,
+      "interrupt": null,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-cprman-0",
+      "bus": "MMIO",
+      "key": "6272636d2c6370726d616e0000000000",
+      "address": "0x3f101000",
+      "bytes": 4096,
+      "interrupt": null,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-cprman-1",
+      "bus": "MMIO",
+      "key": "6272636d2c6370726d616e0000000000",
+      "address": "0x3f102000",
+      "bytes": 4096,
+      "interrupt": null,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-v3d",
+      "bus": "MMIO",
+      "key": "6272636d2c7633640000000000000000",
+      "address": "0x3fc00000",
+      "bytes": 4096,
+      "interrupt": 10,
+      "flags": 2
     }
   ],
+  "bootloader": {
+    "description": "AArch64 boot ROM that the board's own VideoCore firmware loads from the FAT32 boot partition into RAM at 0x80000 and starts at EL2 with the MMU off; it installs the 39-bit translation regime and reads the System volume from the SD card",
+    "package": "bootrom-aarch64",
+    "artifact": "bootrom-aarch64",
+    "entry": "bootrom-aarch64/src/entry.S",
+    "linker_script": "bootrom-aarch64/link.ld"
+  },
   "storage": {
     "images": {
       "sd-card": {
@@ -202,6 +305,40 @@
                 "bytes": "0x10000000"
               },
               "files": [
+                {
+                  "source": {
+                    "kind": "file",
+                    "file": "firmware/bootcode.bin"
+                  },
+                  "path": "bootcode.bin"
+                },
+                {
+                  "source": {
+                    "kind": "file",
+                    "file": "firmware/start.elf"
+                  },
+                  "path": "start.elf"
+                },
+                {
+                  "source": {
+                    "kind": "file",
+                    "file": "firmware/fixup.dat"
+                  },
+                  "path": "fixup.dat"
+                },
+                {
+                  "source": {
+                    "kind": "board-device-tree"
+                  },
+                  "path": "{board_device_tree}"
+                },
+                {
+                  "source": {
+                    "kind": "file",
+                    "file": "firmware/LICENCE.broadcom"
+                  },
+                  "path": "LICENCE.broadcom"
+                },
                 {
                   "source": {
                     "kind": "board-config",
@@ -229,7 +366,7 @@
                 {
                   "source": {
                     "kind": "artifact",
-                    "artifact": "system-image"
+                    "artifact": "bootrom-aarch64"
                   },
                   "path": "kernel8.img"
                 }
@@ -248,9 +385,9 @@
     }
   },
   "hardware": {
-    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware",
-    "board": "bcm2837-class",
     "harts": 4,
+    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware. The 3D engine is declared at ARM 0x3fc00000 (bus 0x7ec00000, translated by the same offset that places the RNG and the HVS) with GPU interrupt 10, and no driver claims it yet: the board has it, so the tree describes it, and a probe that finds no driver loads nothing. Its clock and reset come from the clock-manager and power-management windows declared above, which is the relationship a driver for it will need first. The entropy window is declared one word wider than the board's own description states (0x14 rather than 0x10), because its interrupt-mask register sits at offset 0x10, immediately past that stated extent; a driver that masked the block's interrupt would otherwise write outside the window it was granted. That widening is a fact this project derived from the register layout, not one any document states, so both the window and its reason are recorded here rather than left in a driver. Its DMA controller has fifteen channels, of which the board's own firmware keeps four for itself: the reference hardware description gives the ARM channels 0, 2, 4, 5 and 8 through 14, and that mask is what a driver must take its channels from rather than assuming all fifteen. The controller is therefore shared: the SD host path is served by channel 13 when that controller is driven, and a timed output needs a channel of its own from the same set.",
+    "board": "bcm2837-class",
     "soc": "bcm2837",
     "boot": {
       "medium": {
@@ -264,6 +401,10 @@
       "device": "ttyAMA0",
       "baud": 115200
     },
+    "device_tree": {
+      "kind": "generated"
+    },
+    "board_device_tree": "bcm2710-rpi-3-b.dtb",
     "ram": {
       "base": "0x0",
       "bytes": "0x40000000"
@@ -272,6 +413,7 @@
       {
         "kind": "uart",
         "model": "pl011",
+        "compatible": "arm,pl011",
         "base": "0x3f201000",
         "bytes": "0x1000",
         "interrupt": 57
@@ -279,6 +421,8 @@
       {
         "kind": "storage",
         "model": "sdhci",
+        "compatible": "brcm,bcm2835-mmc",
+        "note": "The controller this board's card answers on. The firmware's own tree disables this node and configures the same registers as a wireless SDIO host, and marks sdhost okay instead; the hardware run is what settles it, because a card in the slot returned its master boot record through this block on real silicon. See the storage section of docs/PI-HARDWARE-INVENTORY.md.",
         "base": "0x3f300000",
         "bytes": "0x1000",
         "interrupt": 62
@@ -286,6 +430,7 @@
       {
         "kind": "gpio-mailbox",
         "model": "bcm2835-mailbox",
+        "compatible": "brcm,bcm2835-mbox",
         "base": "0x3f00b880",
         "bytes": "0x40",
         "interrupt": 1
@@ -297,9 +442,71 @@
       {
         "kind": "entropy",
         "model": "bcm2835-rng",
+        "compatible": "brcm,bcm2835-rng",
         "base": "0x3f104000",
-        "bytes": "0x10",
+        "bytes": "0x14",
         "interrupt": 61
+      },
+      {
+        "kind": "dma",
+        "model": "bcm2835-dma",
+        "compatible": "brcm,bcm2835-dma",
+        "base": "0x3f007000",
+        "bytes": "0xf00",
+        "interrupt": 16
+      },
+      {
+        "kind": "spi",
+        "model": "bcm2835-spi0",
+        "compatible": "brcm,bcm2835-spi",
+        "base": "0x3f204000",
+        "bytes": "0x200",
+        "interrupt": 54
+      },
+      {
+        "kind": "auxiliary",
+        "model": "bcm2835-aux",
+        "compatible": "brcm,bcm2835-aux",
+        "base": "0x3f215000",
+        "bytes": "0x1000",
+        "interrupt": 29
+      },
+      {
+        "kind": "pwm",
+        "model": "bcm2835-pwm",
+        "compatible": "brcm,bcm2835-pwm",
+        "disposition": "declared",
+        "note": "the board carries the block, no driver claims it, and the firmware disables it unless a configuration asks for it",
+        "base": "0x3f20c000",
+        "bytes": "0x28"
+      },
+      {
+        "kind": "audio",
+        "model": "bcm2835-i2s",
+        "compatible": "brcm,bcm2835-i2s",
+        "disposition": "declared",
+        "note": "the board carries the block, no driver claims it, and the firmware disables it unless a configuration asks for it",
+        "base": "0x3f203000",
+        "bytes": "0x24"
+      },
+      {
+        "kind": "clock",
+        "model": "bcm2835-cprman",
+        "compatible": "brcm,bcm2835-cprman",
+        "disposition": "declared",
+        "note": "the board carries it, the resident clocks are driven from the power-management and mailbox paths, and nothing yet programs dividers through it",
+        "base": "0x3f101000",
+        "bytes": "0x2000"
+      },
+      {
+        "kind": "3d",
+        "model": "bcm2835-v3d",
+        "compatible": "brcm,vc4-v3d",
+        "disposition": "declared",
+        "note": "the board carries the 3D engine at bus 0x7EC00000 / ARM 0x3FC00000 with its own interrupt, no driver claims it yet, and the firmware leaves it disabled until something asks for it. Its clock and reset come from the cprman and pm blocks declared above",
+        "base": "0x3fc00000",
+        "bytes": "0x1000",
+        "interrupt": 10
       }
     ],
     "tooling": [
@@ -309,7 +516,7 @@
       {
         "model": "bcm2835-sdhost",
         "base": "0x3f202000",
-        "reason": "This SoC carries two SD controllers. The platform drives the Arasan sdhci at 0x3f300000 because it is the controller the sdhci register interface documents and the one this record declares a window for; bcm2835-sdhost is deliberately left unused so nobody wires the wrong controller."
+        "reason": "Unused here, and the hardware run is what decides that. The board's own firmware tree puts the card slot on this controller - mmc@7e202000, compatible brcm,bcm2835-sdhost, status okay - and disables the Arasan block the platform drives instead. Against that, docs/HARDWARE-OBSERVATION-AARCH64-SELFTEST.md records a card in the slot on real silicon whose master boot record was read through the Arasan block at 0x3f300000; the partition offsets in what came back prove the bytes were the physical card's and not our own image. A firmware status describes the driver set the firmware was configured to bring up, not what a bare-metal reader can drive, so where the two disagree the card that answered is the evidence and the tree is the configuration. Nothing drives bcm2835-sdhost here, so it has no mmio_devices window: a window granted to no module is a claim nobody can use."
       }
     ]
   }

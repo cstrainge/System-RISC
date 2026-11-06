@@ -28,6 +28,8 @@ members = [
     "crates/mac-device-interface",
     "crates/mac-power-interface",
     "crates/mac-video-interface",
+    "crates/mac-wave-interface",
+    "crates/mac-pool-interface",
     "crates/mac-entropy-interface",
     "crates/mac-filesystem-interface",
     "crates/mac-file-source-interface",
@@ -89,6 +91,8 @@ mac-scheduler-policy = { path = "crates/mac-scheduler-policy" }
 mac-device-interface = { path = "crates/mac-device-interface" }
 mac-power-interface = { path = "crates/mac-power-interface" }
 mac-video-interface = { path = "crates/mac-video-interface" }
+mac-wave-interface = { path = "crates/mac-wave-interface" }
+mac-pool-interface = { path = "crates/mac-pool-interface" }
 mac-entropy-interface = { path = "crates/mac-entropy-interface" }
 mac-filesystem-interface = { path = "crates/mac-filesystem-interface" }
 mac-file-source-interface = { path = "crates/mac-file-source-interface" }

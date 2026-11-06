@@ -234,6 +234,10 @@ pub fn run(workspace: &crate::workspace::Workspace, target: &str, yes: bool) -> 
                                   build'",
                                  image_path.display())));
     }
+    // Refuse an image that no longer matches the artifacts it claims to contain.
+    // Writing a stale image to a card is the one mistake here that cannot be
+    // corrected afterwards, because the evidence of it is on the card.
+    crate::disk::verify(workspace)?;
     let image = std::fs::read(&image_path)
         .map_err(|cause| error(format!("cannot read {}: {cause}", image_path.display())))?;
 

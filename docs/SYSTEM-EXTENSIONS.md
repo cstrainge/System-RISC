@@ -201,6 +201,23 @@ SMP behavior defined. Kernel modules are trusted code in the kernel's fault
 domain: Rust interfaces reduce mistakes but do not isolate a panic or bad native
 code. This is not an MMU-isolation or recoverable-fault guarantee.
 
+## Worked example, and the endpoint gap
+
+[The addressable-LED extension](NEOPIXEL-EXTENSION.md) is the shaping example for
+this machinery: an extension owns a pin, a serialiser and a DMA channel, and
+applications send it colour data instead of attempting sub-microsecond timing of
+their own. It shows the intended split — mechanisms in the system, composition in
+the extension — and the argument for that split holds whether or not its transport
+exists.
+
+Its transport is the named-pipe facility, not anything this document describes: a
+pipe *is* a name registry with a connection lifetime, so an extension that
+streams needs no resident service of its own to pair with applications. Pipes are
+specified and not yet implemented, and finishing them is a separate project. Until
+that lands, an extension that streams declares the dependency, refuses to attach
+with that cause visible, and waits — the same behaviour as an absent device
+class, and the reason the declared-dependency rule exists.
+
 ## Startup, failure and lifetime
 
 The boot ROM still locates and boots the blessed System. System discovers enabled

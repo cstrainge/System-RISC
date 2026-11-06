@@ -13,6 +13,9 @@ use super::build_system7;
 use crate::{Workspace, crates::Installed};
 
 const SECTOR: u64 = 512;
+/// The volume's name, in the eleven bytes both the boot sector and the root
+/// directory's label entry use. One constant, so the two cannot disagree.
+const VOLUME_LABEL: [u8; 11] = *b"BOOT       ";
 const ALIGN: u64 = 2048 * SECTOR; // 1 MiB
 const CLUSTER_SECTORS: u64 = 1; // 512-byte clusters: a 256 MiB FAT32 partition needs >65525 clusters
 const RESERVED_SECTORS: u64 = 32;
@@ -199,8 +202,12 @@ fn write_mbr(file: &mut File, placements: &[Placement<'_>], boot: Option<usize>)
 
 struct FatFile
 {
-    path:  String,
-    bytes: Vec<u8>
+    path:   String,
+    /// Where the bytes came from, in a form a later run can re-check. A file the
+    /// image embeds has to be identifiable after the fact, or nothing can tell a
+    /// current image from one built before the payload was rebuilt.
+    source: String,
+    bytes:  Vec<u8>
 }
 
 fn resolve_files(workspace: &Workspace, files: &[Entry]) -> Result<Vec<FatFile>>
@@ -208,10 +215,55 @@ fn resolve_files(workspace: &Workspace, files: &[Entry]) -> Result<Vec<FatFile>>
     let mut resolved = Vec::new();
     for entry in files
     {
-        resolved.push(FatFile { path:  entry.path.clone(),
+        let source = match &entry.source
+        {
+            Source::Artifact { artifact } => format!("artifact:{artifact}"),
+            Source::File { file } => format!("file:{file}"),
+            Source::BoardConfig { .. } => "generated:board-config".to_string(),
+            Source::BoardDeviceTree => format!("firmware:{}", board_tree(workspace)?)
+        };
+        // A destination that names the board tree follows the record rather than
+        // repeating the file name in two places: the firmware publishes it under
+        // its variant name and `start.elf` looks for that name, so renaming it
+        // here would be our change to the machine's description.
+        let path = if entry.path == BOARD_TREE_TOKEN
+        {
+            board_tree(workspace)?
+        }
+        else
+        {
+            entry.path.clone()
+        };
+        resolved.push(FatFile { path,
+                                source,
                                 bytes: resolve_source(workspace, &entry.source)? });
     }
     Ok(resolved)
+}
+
+/// Where the developer-supplied firmware lives.
+///
+/// The binaries are Broadcom's, redistributable only unmodified and only with
+/// their licence, so they are input rather than repository content: the image
+/// carries them and the checkout does not.
+pub const FIRMWARE_DIR: &str = "firmware";
+
+/// A destination that means "under the name the record gives the board tree".
+pub const BOARD_TREE_TOKEN: &str = "{board_device_tree}";
+
+/// The board tree name the record states, or a refusal naming what to add.
+fn board_tree(workspace: &Workspace) -> Result<String>
+{
+    workspace.platform
+             .hardware
+             .as_ref()
+             .and_then(|hardware| hardware.board_device_tree.clone())
+             .ok_or_else(|| {
+                 error(format!("platform '{}' stores a boot partition with a \
+                                board-device-tree entry but declares no hardware.board_device_tree, \
+                                so the build cannot know which .dtb this board variant needs",
+                               workspace.platform.name))
+             })
 }
 
 fn resolve_source(workspace: &Workspace, source: &Source) -> Result<Vec<u8>>
@@ -230,6 +282,18 @@ fn resolve_source(workspace: &Workspace, source: &Source) -> Result<Vec<u8>>
             let path = workspace.root().join(file);
             fs::read(&path).map_err(|why| {
                                error(format!("cannot read file {}: {why}", path.display()))
+                           })
+        }
+        Source::BoardDeviceTree =>
+        {
+            let name = board_tree(workspace)?;
+            let path = workspace.root().join(FIRMWARE_DIR).join(&name);
+            fs::read(&path).map_err(|why| {
+                               error(format!("cannot read the board device tree {}: {why}. It is \
+                                              the file the firmware distribution ships for this \
+                                              board variant; copy it into {FIRMWARE_DIR}/ \
+                                              unchanged",
+                                             path.display()))
                            })
         }
         Source::BoardConfig { lines } =>
@@ -380,14 +444,18 @@ fn write_fat32(file: &mut File, base: u64, size: u64, hidden: u64, files: &[FatF
     let mut fat = vec![0u32; (geo.clusters + 2) as usize];
     fat[0] = 0x0fff_fff8;
     fat[1] = 0x0fff_ffff;
-    fat[2] = 0x0fff_ffff; // root directory
-    let mut next = 3u32;
-    let mut root = Dir { cluster: 2,
+    let mut next = 2u32;
+    let mut root = Dir { cluster: 0,
                          entries: Vec::new() };
     for file in files
     {
         insert(&mut root, &file.path, file.bytes.clone())?;
     }
+    // The root is a directory like any other: its size follows from its entries,
+    // which is no longer one cluster once the boot partition carries the board's
+    // firmware under the names the firmware publishes.
+    let root_clusters = directory_clusters(&root, true)?;
+    root.cluster = allocate(&mut fat, &mut next, geo.clusters, root_clusters)?;
     let mut written = Vec::new();
     allocate_dir(&mut root, "", &mut fat, &mut next, geo.clusters, geo.cluster_bytes,
                  &mut written)?;
@@ -410,15 +478,25 @@ fn write_fat32(file: &mut File, base: u64, size: u64, hidden: u64, files: &[FatF
                  (RESERVED_SECTORS + index * u64::from(geo.fat_size)) * SECTOR,
                  &fat_bytes)?;
     }
-    write_dir(file, base, &root, geo.first_data, geo.cluster_bytes, true, 0)?;
+    write_dir(file, base, &root, geo.first_data, geo.cluster_bytes, true, 0, &fat)?;
     for entry in &written
     {
         write_file(file, base, geo.first_data, entry, &fat)?;
     }
+    // The provenance line: which file each entry came from, so a later run can
+    // re-read that source and tell a current image from a stale one. A nested
+    // entry has no source of its own and says so rather than borrowing one.
+    let source_of = |path: &str| {
+        files.iter()
+             .find(|file| file.path == path)
+             .map(|file| file.source.clone())
+             .unwrap_or_else(|| "generated:nested".to_string())
+    };
     Ok(json!(written.iter()
                     .map(|entry| {
                         json!({
                             "path": entry.path,
+                            "source": source_of(&entry.path),
                             "bytes": entry.bytes.len(),
                             "first_cluster": entry.first_cluster,
                             "sha256": package::sha256(&entry.bytes)
@@ -513,7 +591,10 @@ fn allocate_dir(dir: &mut Dir, prefix: &str, fat: &mut [u32], next: &mut u32, cl
             }
             Node::Dir(child) =>
             {
-                let cluster = allocate(fat, next, clusters, 1)?;
+                // A directory occupies as many clusters as its entries, long
+                // names included, need.
+                let count = directory_clusters(child, false)?;
+                let cluster = allocate(fat, next, clusters, count)?;
                 child.cluster = cluster;
                 entry.first_cluster = cluster;
                 allocate_dir(child, &path, fat, next, clusters, cluster_bytes, written)?;
@@ -523,51 +604,141 @@ fn allocate_dir(dir: &mut Dir, prefix: &str, fat: &mut [u32], next: &mut u32, cl
     Ok(())
 }
 
+/// The 32-byte slots a directory needs, including every long-name entry.
+///
+/// Counted before allocation, because a directory that needs more slots than its
+/// clusters hold would otherwise be written over the data that follows it.
+fn directory_slots(dir: &Dir, root: bool) -> Result<u64>
+{
+    // The same assignment the writer performs, so the count and the write cannot
+    // disagree about how many slots a name consumes.
+    let mut used: Vec<[u8; 11]> = Vec::new();
+    let mut slots = if root { 1 } else { 2 };
+    for entry in &dir.entries
+    {
+        let short = name83(&entry.name, &used)?;
+        used.push(short);
+        slots += 1;
+        if needs_long_name(&entry.name, &short)
+        {
+            slots += long_name_slots(&entry.name);
+        }
+    }
+    Ok(slots)
+}
+
+/// Slots per cluster: a 512-byte cluster holds sixteen directory entries.
+const fn entries_per_cluster() -> u64
+{
+    (CLUSTER_SECTORS * SECTOR) / 32
+}
+
 fn write_dir(file: &mut File, base: u64, dir: &Dir, first_data: u64, cluster_bytes: u64,
-             root: bool, parent: u32)
+             root: bool, parent: u32, fat: &[u32])
              -> Result<()>
 {
-    let offset = (first_data + (u64::from(dir.cluster) - 2) * CLUSTER_SECTORS) * SECTOR;
-    // One 512-byte cluster holds 16 directory entries. A larger directory is
-    // a named error rather than a silent overwrite of the following data.
-    let mut buffer = vec![0u8; cluster_bytes as usize];
-    let mut cursor = 0usize;
+    // Build the whole directory first so its length is known, then write it
+    // across the chain that was allocated for it. A directory is a file made of
+    // entries, and the only reason it was ever one cluster here is that the
+    // entry count was small.
+    let mut slots: Vec<[u8; 32]> = Vec::new();
     if !root
     {
-        write_entry(&mut buffer[cursor..cursor + 32], *b".          ", 0x10, dir.cluster, 0);
-        cursor += 32;
-        write_entry(&mut buffer[cursor..cursor + 32], *b"..         ", 0x10, parent, 0);
-        cursor += 32;
+        let mut slot = [0u8; 32];
+        write_entry(&mut slot, *b".          ", 0x10, dir.cluster, 0);
+        slots.push(slot);
+        let mut slot = [0u8; 32];
+        write_entry(&mut slot, *b"..         ", 0x10, parent, 0);
+        slots.push(slot);
+    }
+    let mut used: Vec<[u8; 11]> = Vec::new();
+    // A volume label lives in the boot sector *and* as a directory entry; a
+    // filesystem with one and not the other is what `fsck.fat` reports as a
+    // mismatch it wants to "fix" by deleting the label. The device name is
+    // derived from the boot sector's own field so the two cannot drift.
+    if root
+    {
+        let mut slot = [0u8; 32];
+        slot[..11].copy_from_slice(&VOLUME_LABEL);
+        slot[11] = 0x08;
+        let date: u16 = ((2026 - 1980) << 9) | (11 << 5) | 4;
+        slot[16..18].copy_from_slice(&date.to_le_bytes());
+        slot[18..20].copy_from_slice(&date.to_le_bytes());
+        slot[24..26].copy_from_slice(&date.to_le_bytes());
+        slots.push(slot);
     }
     for entry in &dir.entries
     {
-        if cursor + 32 > buffer.len()
+        let short = name83(&entry.name, &used)?;
+        used.push(short);
+        if needs_long_name(&entry.name, &short)
         {
-            return Err(error(format!("FAT32 directory cluster {} exceeds its 16 entries; \
-                                      directory-chain support is required",
-                                     dir.cluster)));
+            for long in long_name_entries(&entry.name, &short)
+            {
+                slots.push(long);
+            }
         }
         let (attr, size) = match &entry.node
         {
             Node::File(bytes) => (0x20, bytes.len() as u32),
             Node::Dir(_) => (0x10, 0)
         };
-        write_entry(&mut buffer[cursor..cursor + 32],
-                    name83(&entry.name)?,
-                    attr,
-                    entry.first_cluster,
-                    size);
-        cursor += 32;
+        let mut slot = [0u8; 32];
+        write_entry(&mut slot, short, attr, entry.first_cluster, size);
+        slots.push(slot);
     }
-    write_at(file, base, offset, &buffer)?;
+    let capacity = directory_clusters(dir, root)? * entries_per_cluster();
+    if slots.len() as u64 > capacity
+    {
+        return Err(error(format!("FAT32 directory at cluster {} needs {} entries but was \
+                                  allocated room for {}",
+                                 dir.cluster,
+                                 slots.len(),
+                                 capacity)));
+    }
+    let mut cluster = dir.cluster;
+    let mut cursor = 0usize;
+    loop
+    {
+        let offset = (first_data + (u64::from(cluster) - 2) * CLUSTER_SECTORS) * SECTOR;
+        let mut buffer = vec![0u8; cluster_bytes as usize];
+        let take = (slots.len() - cursor).min(entries_per_cluster() as usize);
+        for index in 0..take
+        {
+            let at = index * 32;
+            buffer[at..at + 32].copy_from_slice(&slots[cursor + index]);
+        }
+        write_at(file, base, offset, &buffer)?;
+        cursor += take;
+        if cursor >= slots.len()
+        {
+            break;
+        }
+        let next = *fat.get(cluster as usize)
+                      .ok_or_else(|| error("FAT32 directory chain leaves the table"))?
+                   & 0x0fff_ffff;
+        if next >= 0x0fff_fff8
+        {
+            return Err(error(format!("FAT32 directory at cluster {} ends before its entries do",
+                                     dir.cluster)));
+        }
+        cluster = next;
+    }
     for entry in &dir.entries
     {
         if let Node::Dir(child) = &entry.node
         {
-            write_dir(file, base, child, first_data, cluster_bytes, false, dir.cluster)?;
+            write_dir(file, base, child, first_data, cluster_bytes, false, dir.cluster, fat)?;
         }
     }
     Ok(())
+}
+
+/// The clusters a directory was allocated. Recomputed from its own slot count so
+/// the writing path and the allocating path cannot disagree.
+fn directory_clusters(dir: &Dir, root: bool) -> Result<u64>
+{
+    Ok(directory_slots(dir, root)?.div_ceil(entries_per_cluster()).max(1))
 }
 fn write_entry(slot: &mut [u8], name: [u8; 11], attr: u8, first_cluster: u32, size: u32)
 {
@@ -584,30 +755,169 @@ fn write_entry(slot: &mut [u8], name: [u8; 11], attr: u8, first_cluster: u32, si
     slot[28..32].copy_from_slice(&size.to_le_bytes());
 }
 
-fn name83(name: &str) -> Result<[u8; 11]>
+/// A short name's 11 bytes: eight for the base, three for the extension.
+///
+/// Every file has one even when it also has a long name, so this is generated
+/// rather than refused: the board's firmware ships `bcm2710-rpi-3-b.dtb`, and a
+/// writer that could only store names that already fit 8.3 could not carry the
+/// files the machine needs under the names the machine looks for.
+fn name83(name: &str, used: &[[u8; 11]]) -> Result<[u8; 11]>
 {
+    if let Some(exact) = plain83(name)
+    {
+        return Ok(exact);
+    }
     let upper = name.to_ascii_uppercase();
-    let (base, ext) = match upper.rsplit_once('.')
+    let (base, ext) = split_name(&upper);
+    let mut stem: String = base.chars()
+                               .filter(|character| name83_char(*character))
+                               .take(6)
+                               .collect();
+    if stem.is_empty()
+    {
+        stem.push('_');
+    }
+    let extension: String =
+        ext.chars().filter(|character| name83_char(*character)).take(3).collect();
+    // The numeric tail distinguishes this name from any other that generates the
+    // same stem. Starting at one and climbing is what the format expects; the
+    // three-digit tail bounds the stem at six characters.
+    for tail in 1..=999u32
+    {
+        let mut out = [b' '; 11];
+        let suffix = format!("~{tail}");
+        let head = stem.len().min(8 - suffix.len().min(7));
+        out[..head].copy_from_slice(&stem.as_bytes()[..head]);
+        out[head..head + suffix.len()].copy_from_slice(suffix.as_bytes());
+        let ext_bytes = extension.as_bytes();
+        out[8..8 + ext_bytes.len()].copy_from_slice(ext_bytes);
+        if !used.iter().any(|other| *other == out)
+        {
+            return Ok(out);
+        }
+    }
+    Err(error(format!("FAT32 cannot find a short name for '{name}'; too many similar names")))
+}
+
+fn name83_char(character: char) -> bool
+{
+    character.is_ascii_alphanumeric() || "-_.$~".contains(character)
+}
+
+fn split_name(upper: &str) -> (&str, &str)
+{
+    match upper.rsplit_once('.')
     {
         Some((base, ext)) => (base, ext),
-        None => (upper.as_str(), "")
-    };
+        None => (upper, "")
+    }
+}
+
+/// The short name, when the name already is one.
+///
+/// A name that fits is used exactly; nothing here lowercases or truncates it,
+/// because the long name alongside carries the real spelling.
+fn plain83(name: &str) -> Option<[u8; 11]>
+{
+    let upper = name.to_ascii_uppercase();
+    let (base, ext) = split_name(&upper);
     if base.is_empty() || base.len() > 8 || ext.len() > 3
     {
-        return Err(error(format!("FAT32 name '{name}' does not fit 8.3")));
+        return None;
     }
-    for character in base.chars().chain(ext.chars())
+    if !base.chars().chain(ext.chars()).all(name83_char)
     {
-        if !character.is_ascii_alphanumeric() && !"-_.$~".contains(character)
-        {
-            return Err(error(format!("FAT32 name '{name}' contains unsupported character \
-                                      '{character}'")));
-        }
+        return None;
     }
     let mut out = [b' '; 11];
     out[..base.len()].copy_from_slice(base.as_bytes());
     out[8..8 + ext.len()].copy_from_slice(ext.as_bytes());
-    Ok(out)
+    Some(out)
+}
+
+/// The checksum a long-name entry set carries so the volume can pair it with its
+/// short entry. It is computed over the short name's eleven bytes, and a mismatch
+/// makes the whole set invisible — so it is not optional bookkeeping.
+fn short_name_checksum(short: &[u8; 11]) -> u8
+{
+    let mut sum: u8 = 0;
+    for byte in short
+    {
+        sum = sum.rotate_right(1).wrapping_add(*byte);
+    }
+    sum
+}
+
+/// How many 32-byte slots a name needs beyond its own entry.
+fn long_name_slots(name: &str) -> u64
+{
+    (name.encode_utf16().count() as u64).div_ceil(13)
+}
+
+/// The long-name entries for `name`, in the order they appear in the directory.
+///
+/// They precede the short entry and are stored in reverse: the slot with the
+/// highest sequence number comes first, and that slot carries the `0x40` flag
+/// that marks the end of the set. Getting the order wrong makes readers see a
+/// name assembled backwards or not at all.
+fn long_name_entries(name: &str, short: &[u8; 11]) -> Vec<[u8; 32]>
+{
+    let mut units: Vec<u16> = name.encode_utf16().collect();
+    let count = units.len().div_ceil(13);
+    // A name that exactly fills its last entry is not terminated; otherwise the
+    // set ends with a zero unit and the rest is filled with 0xFFFF.
+    let padded = count * 13;
+    if units.len() < padded
+    {
+        units.push(0);
+    }
+    units.resize(padded, 0xffff);
+    let checksum = short_name_checksum(short);
+    let mut entries = Vec::with_capacity(count);
+    for index in (0..count).rev()
+    {
+        let mut entry = [0u8; 32];
+        let sequence = index as u8 + 1;
+        entry[0] = if index + 1 == count { sequence | 0x40 } else { sequence };
+        entry[11] = 0x0f;
+        entry[13] = checksum;
+        // The thirteen characters are split 5 / 6 / 2 around the attribute,
+        // checksum and reserved bytes: 1..11, 14..26 and 28..32.
+        for slot in 0..5
+        {
+            let at = 1 + slot * 2;
+            entry[at..at + 2].copy_from_slice(&units[index * 13 + slot].to_le_bytes());
+        }
+        for slot in 0..6
+        {
+            let at = 14 + slot * 2;
+            entry[at..at + 2].copy_from_slice(&units[index * 13 + 5 + slot].to_le_bytes());
+        }
+        for slot in 0..2
+        {
+            let at = 28 + slot * 2;
+            entry[at..at + 2].copy_from_slice(&units[index * 13 + 11 + slot].to_le_bytes());
+        }
+        entries.push(entry);
+    }
+    entries
+}
+
+/// Whether a name needs a long-name entry set.
+///
+/// It does whenever the short entry cannot spell it: a lower-case name, a longer
+/// one, or a character 8.3 cannot hold. The check is against the short form, so a
+/// name that is already its own short name costs no extra slots.
+fn needs_long_name(name: &str, short: &[u8; 11]) -> bool
+{
+    match plain83(name)
+    {
+        // Case matters even when the bytes fit: the firmware asks for
+        // `config.txt`, and a volume that can only offer `CONFIG.TXT` is a
+        // different name to every reader that preserves case.
+        Some(exact) => exact != *short || name.to_ascii_uppercase() != name,
+        None => true
+    }
 }
 
 fn boot_sector(fat_size: u32, total_sectors: u32, hidden: u32) -> [u8; 512]
@@ -636,7 +946,7 @@ fn boot_sector(fat_size: u32, total_sectors: u32, hidden: u32) -> [u8; 512]
     sector[64] = 0x80;
     sector[66] = 0x29;
     sector[67..71].copy_from_slice(&0x53525344u32.to_le_bytes());
-    sector[71..82].copy_from_slice(b"BOOT       ");
+    sector[71..82].copy_from_slice(&VOLUME_LABEL);
     sector[82..90].copy_from_slice(b"FAT32   ");
     sector[510] = 0x55;
     sector[511] = 0xaa;

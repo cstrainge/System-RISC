@@ -1,11 +1,9 @@
 //! Pipe state. The byte ring is architecture-neutral and available on every
-//! build so it can be exercised directly; the resident manager below issues
-//! handles and parks threads through the shared scheduler, and contains no
-//! architecture-specific code or branches.
-//!
-//! The manager was gated on RISC-V only because the scheduler it parks through
-//! was filed under an architecture. Now that the scheduler is shared, the gate
-//! is gone: it was a consequence of the old layout, not a property of the code.
+//! build so it can be exercised directly. The resident manager below is compiled
+//! for every resident target, not just the one this project happens to boot most
+//! often: it contains no architecture-specific code or branches, and parking a
+//! writer is the scheduler's job, which both machines provide.
 pub(crate) mod ring;
-pub(crate) mod manager;
+
+mod manager;
 pub(crate) use manager::*;

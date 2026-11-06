@@ -14,6 +14,7 @@ mod watches;
 mod icon_view;
 mod get_info;
 mod font_suitcase;
+mod named_pipe;
 
 fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info::Controller)
                 -> Result<(), Error>

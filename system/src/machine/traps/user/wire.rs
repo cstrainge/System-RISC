@@ -549,6 +549,14 @@ wire_struct!(mac_abi::files::FileScanCall { operation:          u32,
                                             data_allocated:     u64,
                                             resource_allocated: u64 });
 
+wire_struct!(mac_abi::files::PipeOpenCall { operation: u32,
+                                            volume:    u32,
+                                            cnid:      u32,
+                                            reserved:  u32,
+                                            writer:    u64,
+                                            folder:    u32,
+                                            reserved2: u32 });
+
 wire_struct!(mac_abi::files::ForkWriteCall {
     operation: u32,
     handle: u64,

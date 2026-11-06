@@ -25,10 +25,13 @@ pub(crate) mod smp;
 pub(crate) use smp::eligible_harts;
 pub(crate) mod video;
 
-// Mechanism-free trees. These describe how System schedules, admits a trap,
-// owns an address space and tracks a hart; none of them names an instruction, so
-// every architecture compiles them. A machine-specific fact they need comes from
-// the adapters below through a function, never from a cfg at the call site.
+// The scheduler, trap dispatch, pager and monitor are one implementation for
+// every machine. They live here rather than inside an architecture module
+// because they contain no ISA mechanism: what they need from the hardware is
+// reached through the selected adapter, and the parts that do touch it — trap
+// entry, interrupt masking, the timer and the wait instruction — are in that
+// adapter's own `trap_entry`, `interrupts`, `cpu` and `power` modules. That is
+// what makes a second architecture an adapter rather than a copy of these trees.
 pub(crate) mod monitor;
 pub(crate) mod paging;
 pub(crate) mod scheduler;
