@@ -118,6 +118,24 @@ parsed, since a bad tree has to be reported somewhere. It then compares the
 discovered console window against the one in use and fails by name on a
 divergence, so the two cannot drift silently.
 
+## Testing the tree handoff, and how to get it wrong
+
+QEMU's **ELF** loader does not set `x0`; its **raw-binary** loader does. Loading
+the bootloader with `-kernel <elf>` therefore reports `x0 = 0` whether or not
+`-dtb` is supplied, and makes it look as though `-dtb` never reaches the
+bootloader. It does: with the `.bin` that `cargo xtask` and real firmware use,
+`x0 = 0x48000000` on `-machine virt` both with and without `-dtb`.
+
+Test the handoff with the binary, not the ELF, or you will conclude the
+mechanism is broken when your test method is.
+
+QEMU also validates a `-dtb` blob's magic itself and refuses to start on a
+corrupt one (`load_device_tree: Unable to copy device tree into memory:
+FDT_ERR_BADMAGIC`), so a hand-built garbage blob cannot exercise the bootloader's
+own validation. To test a refusal, supply a *valid* tree that lacks what the
+loader needs - for example a 174-byte root node with no console - and check that
+the loader names the refusal and does **not** print `BOOT_AARCH64_READY`.
+
 ## Where the clock comes from, and why it is not in the tree
 
 AArch64 states its counter frequency in a system register, not in the device
