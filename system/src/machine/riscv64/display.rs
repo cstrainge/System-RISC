@@ -5,6 +5,7 @@ use core::{arch::asm,
 /// Live display geometry comes from `crate::display`; the platform record only
 /// fixes the default and the maximum the reservations are sized for.
 use crate::display::{height, pixels, width};
+use crate::machine::video::DamageRegion;
 use crate::toolbox::quickdraw::{Rect, geometry::union_rect};
 
 static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -71,78 +72,6 @@ pub(crate) fn use_boot_front()
 pub(crate) fn video_attached() -> bool
 {
     VIDEO_ATTACHED.load(Ordering::Acquire)
-}
-
-pub(crate) struct DamageRegion
-{
-    rects: [Rect; mac_video_interface::Damage::MAX_RECTS],
-    len:   usize
-}
-
-impl DamageRegion
-{
-    const EMPTY: Self = Self { rects: [Rect::ZERO; mac_video_interface::Damage::MAX_RECTS],
-                               len:   0 };
-
-    fn add(&mut self, mut rect: Rect)
-    {
-        rect = Rect::new(rect.left.max(0),
-                         rect.top.max(0),
-                         rect.right.min(width() as i16),
-                         rect.bottom.min(height() as i16));
-        if rect.is_empty()
-        {
-            return;
-        }
-
-        // Merge only when the union still describes exactly the same pixels.
-        let mut i = 0;
-        while i < self.len
-        {
-            let old = self.rects[i];
-            if old.left <= rect.left
-               && old.top <= rect.top
-               && old.right >= rect.right
-               && old.bottom >= rect.bottom
-            {
-                return;
-            }
-            let bounds = union_rect(old, rect);
-            if bounds == rect
-               || (old.left == rect.left
-                   && old.right == rect.right
-                   && old.top <= rect.bottom
-                   && rect.top <= old.bottom)
-               || (old.top == rect.top
-                   && old.bottom == rect.bottom
-                   && old.left <= rect.right
-                   && rect.left <= old.right)
-            {
-                rect = bounds;
-                self.len -= 1;
-                self.rects[i] = self.rects[self.len];
-                i = 0;
-            }
-            else
-            {
-                i += 1;
-            }
-        }
-        if self.len == self.rects.len()
-        {
-            // Bound the backlog if the display falls behind a complex scene.
-            // Keep all pending pixels covered, without forcing a mode-wide update.
-            rect = self.rects().iter().copied().fold(rect, union_rect);
-            self.len = 0;
-        }
-        self.rects[self.len] = rect;
-        self.len += 1;
-    }
-
-    pub(crate) fn rects(&self) -> &[Rect]
-    {
-        &self.rects[..self.len]
-    }
 }
 
 pub(crate) fn mark_dirty(rect: Rect)

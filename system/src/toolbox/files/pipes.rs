@@ -11,7 +11,6 @@ use mac_abi::files::*;
 use mac_filesystem::CatalogEntry;
 pub(in crate::toolbox::files) use resident::virtual_entry;
 
-#[cfg(target_arch = "riscv64")]
 mod resident
 {
     use super::*;
@@ -223,63 +222,6 @@ mod resident
                     return Some((volume, found.id));
                 }
             }
-            None
-        }
-    }
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-mod resident
-{
-    //! The registry that gives the folder its contents is resident target
-    //! state, so nothing on this configuration can be a virtual catalog item.
-    use super::*;
-    use crate::toolbox::files::Manager;
-
-    pub(in crate::toolbox::files) fn virtual_entry(_: u32, _: &[u8]) -> Option<CatalogEntry>
-    {
-        None
-    }
-
-    impl Manager
-    {
-        pub(in crate::toolbox::files) fn pipes_folder(&self) -> Option<(u32, u32)>
-        {
-            None
-        }
-
-        pub(in crate::toolbox::files) fn pipes_scan_revision(&self, _: u32, _: u32) -> Option<u32>
-        {
-            None
-        }
-
-        pub(in crate::toolbox::files) fn pipes_row(&self, _: u32, _: u32, _: u32)
-                                                   -> Option<CatalogInfo>
-        {
-            None
-        }
-
-        pub(in crate::toolbox::files) fn pipes_entry(&self, _: u32, _: u32)
-                                                     -> Option<CatalogEntry>
-        {
-            None
-        }
-
-        pub(in crate::toolbox::files) fn pipes_refuses(&self, _: &FileCall) -> bool
-        {
-            false
-        }
-
-        pub(in crate::toolbox::files) fn pipes_note(&mut self, _: &FileCall, _: &str)
-        {
-        }
-
-        pub(in crate::toolbox::files) fn pipes_refresh(&mut self, _: u32, _: u32)
-        {
-        }
-
-        pub(in crate::toolbox::files) fn pipes_discover(&mut self) -> Option<(u32, u32)>
-        {
             None
         }
     }

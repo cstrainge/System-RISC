@@ -157,9 +157,16 @@ pub(crate) fn peek_dirty() -> bool
     false
 }
 
-pub(crate) fn take_dirty() -> Option<mac_abi::geometry::Rect>
+pub(crate) fn take_dirty() -> crate::machine::video::DamageRegion
 {
-    None
+    crate::machine::video::DamageRegion::EMPTY
+}
+
+/// Puts back damage that a caller could not paint. Nothing accumulates here for
+/// the same reason `mark_dirty` records nothing: there is no front buffer, so
+/// restoring damage would be restoring a record this machine never kept.
+pub(crate) fn restore_dirty(_region: crate::machine::video::DamageRegion)
+{
 }
 
 /// Adopts a driver-owned framebuffer. There is none until the mailbox driver

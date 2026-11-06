@@ -411,7 +411,6 @@ pub(crate) fn file_fork_kinds() -> Result<(KindLease, KindLease), mac_abi::Statu
 }
 
 /// Pipe object and endpoint handles, in that order.
-#[cfg(target_arch = "riscv64")]
 pub(crate) fn pipe_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"PPST"))?, registry.get(KindCode(*b"PIPE"))?)))
