@@ -135,6 +135,10 @@ pub struct Metadata
     pub frame:           Rect,
     pub trash:           Option<Option<mac_toolbox::Cnid>>,
     pub refresh_pending: bool,
+    /// Consecutive `ScanStale` restarts of this folder without accepting an
+    /// entry. The scan contract asks for a bounded retry, so the browser counts
+    /// them and reports a failure rather than restarting for ever.
+    pub stale_retries:   u32,
     pub selected_before: crate::selection::Selection,
     pub refreshing:      bool,
     pub placements:      crate::selection::Selection,
@@ -161,6 +165,7 @@ impl Metadata
                frame:           Rect::ZERO,
                trash:           None,
                refresh_pending: false,
+               stale_retries:   0,
                selected_before: crate::selection::Selection::EMPTY,
                refreshing:      false,
                placements:      crate::selection::Selection::EMPTY,
@@ -181,6 +186,7 @@ impl Metadata
         self.next = 0;
         self.trash = None;
         self.refresh_pending = false;
+        self.stale_retries = 0;
         self.selected_before = crate::selection::Selection::EMPTY;
         self.refreshing = false;
         self.placements = crate::selection::Selection::EMPTY;
