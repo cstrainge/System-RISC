@@ -275,6 +275,13 @@ impl Workspace
         // already name a toolchain-specific binary, which rejects `+channel`,
         // while the shim honours the variable.
         command.env("RUSTUP_TOOLCHAIN", &self.toolchain);
+        // Never let a cargo this build spawns install into the shared toolchain.
+        // A nested build is not the place that decides what the toolchain
+        // contains: two running at once delete each other's files, and the
+        // process that would notice is long gone by the time a later build fails
+        // on a missing library. Installing is `prerequisites`' job, once, at top
+        // level.
+        command.env("RUSTUP_AUTO_INSTALL", "0");
         // An unselected target leaves cargo's own default in place.
         if self.target_selected
         {

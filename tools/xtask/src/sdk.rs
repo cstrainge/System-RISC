@@ -231,6 +231,15 @@ pub fn installed(listing: &str, toolchain: &str) -> bool
 /// again under it, because that answer can change while a process waits.
 pub fn prerequisites(workspace: &Workspace) -> Result<()>
 {
+    // A nested build is covered by the parent that started it: ninja passes the
+    // lease down, and the parent has already established the toolchain. Letting
+    // a child reach the install path would mean several children of one build
+    // racing over a toolchain none of them owns.
+    if env::var_os(crate::LEASE_ENV).is_some()
+    {
+        return Ok(());
+    }
+
     let pin = pin(workspace.root(), &workspace.platform)?;
 
     // A healthy toolchain is the common case, and needing nothing is not a
