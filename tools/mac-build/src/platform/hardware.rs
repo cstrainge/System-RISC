@@ -188,6 +188,31 @@ pub enum PeripheralKind
     Entropy
 }
 
+impl PeripheralKind
+{
+    /// The device class this peripheral belongs to, as the tree spells it.
+    ///
+    /// It is the record's own `kind`, so a driver binds a family rather than
+    /// guessing one from a part name: `pl011` and `uart` are the same class on
+    /// two machines, and a consumer that matched on the model would need a list
+    /// of every part that has ever been a UART.
+    pub fn name(self) -> &'static str
+    {
+        match self
+        {
+            PeripheralKind::Uart => "uart",
+            PeripheralKind::Storage => "storage",
+            PeripheralKind::GpioMailbox => "gpio-mailbox",
+            PeripheralKind::Network => "network",
+            PeripheralKind::Pcie => "pcie",
+            PeripheralKind::Timer => "timer",
+            PeripheralKind::InterruptController => "interrupt-controller",
+            PeripheralKind::Display => "display",
+            PeripheralKind::Entropy => "entropy"
+        }
+    }
+}
+
 impl Peripheral
 {
     /// The window this device occupies, when it declares one.
