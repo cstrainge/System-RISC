@@ -654,13 +654,15 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     // separate boot-check case. The folder comes from the built
                     // image, so the probe must find it, not create it.
                     &["PIPES_PROBE_ECHO_OK", "PIPES_PROBE_BLOCK_OK",
+                      "PIPES_PROBE_READER_PARKED", "PIPES_PROBE_READER_RESUMED transferred=5",
+                      "PIPES_PROBE_READER_OK parked=1 resumed=1 bytes=5",
                       "PIPES_PROBE_WOULD_BLOCK_OK", "PIPES_PROBE_EOF_OK",
                       "PIPES_PROBE_BROKEN_OK", "PIPES_PROBE_NAME_OK", "PIPES_WRITER_FIRST_OK",
                       "PIPES_WRITER_SECOND_REFUSED", "PIPES_WRITER_RELEASE_OK",
                       "PIPES_WRITER_CLOSED_OK", "PIPES_FOLDER_PRESENT volume=",
                       "PIPES_FOLDER_LIST_OK items=1", "PIPES_FOLDER_LOOKUP_OK",
                       "PIPES_FOLDER_STABLE_OK", "PIPES_FOLDER_ANON_ABSENT_OK",
-                      "PIPES_FOLDER_REFUSED_OK refusals=11", "PIPES_PROBE_PASS cases=5"],
+                      "PIPES_FOLDER_REFUSED_OK refusals=11", "PIPES_PROBE_PASS cases=6"],
                     true)?);
     if converted.is_some()
     {

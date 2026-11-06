@@ -4,12 +4,20 @@
 #![no_std]
 #![no_main]
 use core::{fmt::{self, Write},
-           sync::atomic::{AtomicBool, Ordering}};
+           sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use mac_toolbox::{Error, System, abi::pipes as wire, files};
 
 static ARMED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
+/// Reader handle created by the main thread and used by the parked reader
+/// thread. Endpoint ownership is per process, so the same application's other
+/// thread may read through it.
+static READER_HANDLE: AtomicU64 = AtomicU64::new(0);
+/// Count transferred to the parked reader, and its first eight bytes packed
+/// little-endian, so the main thread can check what the parked read received.
+static RECEIVED: AtomicU64 = AtomicU64::new(0);
+static FIRST_BYTES: AtomicU64 = AtomicU64::new(0);
 const NAME: &str = "ProbePipe";
 const PIPE: &str = "FolderPipe";
 const PIPE2: &str = "FolderPipe2";
@@ -65,6 +73,7 @@ fn run(system: &System<'_>) -> Result<(), Line>
 {
     echo(system)?;
     block(system)?;
+    reader_park(system)?;
     eof(system)?;
     broken(system)?;
     named(system)?;
@@ -215,6 +224,137 @@ fn block(system: &System<'_>) -> Result<(), Line>
     check(reader.read(&mut tail).map_err(|error| failed("eof", error))? == 0,
           "no end of stream after the last writer")?;
     note(system, "PIPES_PROBE_BLOCK_OK parked=1 resumed=1 eof=1\n");
+    Ok(())
+}
+
+/// A reader thread parks on an empty pipe that still has a writer, and is
+/// resumed by the writer. This is the direction the writer-park case does not
+/// cover: the suspension is on the read, and the wake is a write.
+///
+/// What these markers prove, and what they do not. They prove the read did not
+/// return before a byte was written, that it returned all five bytes after the
+/// write, and that the creating thread ran in between. They do **not** prove the
+/// reader was descheduled while it waited: a read that spun would produce the
+/// same sequence. Distinguishing the two needs the scheduler's own wait state
+/// for a thread, which the SDK does not expose and which this repository will
+/// not grow production introspection for the sake of one probe. Read the marker
+/// as "the read waited for a writer", not as "the thread was parked".
+unsafe extern "C" fn parked_reader(_: *mut u8)
+{
+    let Ok(system) = System::new()
+    else
+    {
+        return;
+    };
+    let handle = READER_HANDLE.load(Ordering::Acquire);
+    let Ok(mut reader) = system.pipes().adopt_reader(handle)
+    else
+    {
+        note(&system, "PIPES_PROBE_READER_REFUSED\n");
+        DONE.store(true, Ordering::Release);
+        return;
+    };
+    ARMED.store(true, Ordering::Release);
+    note(&system, "PIPES_PROBE_READER_ARMED\n");
+    let mut buffer = [0u8; 8];
+    match reader.read(&mut buffer)
+    {
+        Ok(count) =>
+        {
+            RECEIVED.store(count as u64, Ordering::Release);
+            let mut packed = 0u64;
+            for (index, byte) in buffer.iter().take(count.min(8)).enumerate()
+            {
+                packed |= u64::from(*byte) << (index * 8);
+            }
+            FIRST_BYTES.store(packed, Ordering::Release);
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_READER_RESUMED transferred={count}");
+            note(&system, line.text());
+            note(&system, "\n");
+        }
+        Err(error) =>
+        {
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_READER_READ_REFUSED {error:?}");
+            note(&system, line.text());
+            note(&system, "\n");
+        }
+    }
+    DONE.store(true, Ordering::Release);
+}
+
+fn reader_park(system: &System<'_>) -> Result<(), Line>
+{
+    let (reader, mut writer) = system.pipes()
+                                     .create_named("ProbeRead", wire::MIN_CAPACITY, 0)
+                                     .map_err(|error| failed("create reader pipe", error))?;
+    READER_HANDLE.store(reader.raw(), Ordering::Release);
+    ARMED.store(false, Ordering::Release);
+    DONE.store(false, Ordering::Release);
+    RECEIVED.store(0, Ordering::Release);
+    FIRST_BYTES.store(0, Ordering::Release);
+    // SAFETY: the entry takes no caller pointer, and the join right stays on
+    // this creating application thread.
+    let right = match unsafe {
+              system.client().create_native_thread(parked_reader, core::ptr::null_mut(), 64 * 1024)
+          }
+    {
+        Ok(right) => right,
+        Err(failure) =>
+        {
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_FAIL reader thread {failure}");
+            return Err(line);
+        }
+    };
+    // The reader thread now owns the reader end through the same handle; this
+    // copy must not close it while that thread is parked on it.
+    core::mem::forget(reader);
+    let mut spins = 0u32;
+    while !ARMED.load(Ordering::Acquire)
+    {
+        spins = spins.saturating_add(1);
+        if spins > 100_000_000
+        {
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_FAIL reader never armed");
+            return Err(line);
+        }
+        core::hint::spin_loop();
+    }
+    // Let the scheduler run the reader so it reaches its wait, rather than
+    // writing while it is still on its way there. An idle wait returns after
+    // one tick with no event required.
+    let _ = system.events().wait_event(mac_toolbox::EventMask::ALL, 2);
+    check(!DONE.load(Ordering::Acquire), "the empty pipe read returned early")?;
+    note(system, "PIPES_PROBE_READER_PARKED\n");
+    let sent = [0x5au8, 0x5b, 0x5c, 0x5d, 0x5e];
+    check(writer.write(&sent).map_err(|error| failed("wake write", error))? == sent.len(),
+          "the waking write was short")?;
+    note(system, "PIPES_PROBE_READER_WROTE\n");
+    match right.join()
+    {
+        Ok(_) => (),
+        Err(_) =>
+        {
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_FAIL reader join refused");
+            return Err(line);
+        }
+    }
+    check(DONE.load(Ordering::Acquire), "the parked reader never resumed")?;
+    check(RECEIVED.load(Ordering::Acquire) == sent.len() as u64,
+          "the resumed read transferred the wrong count")?;
+    let mut expected = 0u64;
+    for (index, byte) in sent.iter().enumerate()
+    {
+        expected |= u64::from(*byte) << (index * 8);
+    }
+    check(FIRST_BYTES.load(Ordering::Acquire) == expected,
+          "the resumed read received different bytes")?;
+    note(system, "PIPES_PROBE_READER_OK parked=1 resumed=1 bytes=5\n");
+    drop(writer);
     Ok(())
 }
 
@@ -460,7 +600,7 @@ fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     {
         Ok(()) =>
         {
-            system.log("PIPES_PROBE_PASS cases=5\n")?;
+            system.log("PIPES_PROBE_PASS cases=6\n")?;
             // The boot check stops reading at the platform's readiness line, so
             // it must follow every outcome marker, never precede them.
             system.log("DESKTOP_READY: pipes probe pass\n")?;
