@@ -874,7 +874,6 @@ against the shipping artifacts rather than a host substitute:
 Section 15 records which of these have actually been executed.
 
 ## 15. Implementation status
-
 Implemented and built into the guest, with the guest booting:
 
 - The seven operations, the three outcomes, the fixed ring, the 512-byte
@@ -904,8 +903,9 @@ Verified by execution in the guest, not only by compilation: a probe
 application replaces Finder on a cloned disk and runs its cases in order — echo,
 a 512-byte atomic write into a full pipe that must wait for a reader, a parked
 reader resumed by a writer, would-block versus end-of-stream, broken pipe, name
-removal, the writer limit, the folder, and opening an item — and reports how many
-actually ran (`PIPES_PROBE_PASS cases=9`, counted from the cases executed rather
+removal, the writer limit, the folder, the folder's bounded continuation and
+opening an item — and reports how many
+actually ran (`PIPES_PROBE_PASS cases=10`, counted from the cases executed rather
 than written down). The probe is
 `crates/mac-toolbox/tests/fixtures/pipes-probe`; `cargo xtask boot-check` builds
 it and runs it as the single `pipes-probe` case, so the marker set is part of the
@@ -926,6 +926,32 @@ reader (`PIPES_OPEN_DATA_OK bytes=4`), and that a destroyed identity is
 `NotFound` (`PIPES_OPEN_GONE_OK`). `scripts/capture_pipes_probe.py` boots the
 same artifact standalone and records the QEMU command and the serial hash.
 
+The merged folder is also enumerated through one bounded continuation, the way a
+Finder window reads it: `PIPES_SCAN_OK directory=26 entries=1 steps=2` counts one
+entry across more than one step, so the listing is read incrementally rather than
+handed back whole. A named pipe registered between two steps of that continuation
+changes the registry revision, and the next step is refused
+(`PIPES_SCAN_STALE_OK`); restarting from a fresh continuation sees both pipes
+(`PIPES_SCAN_RESTART_OK entries=2 steps=3`). That staleness is provoked
+deliberately — nothing else in the probe would produce one — so it is coverage of
+the contract, not of an accident.
+
+The Finder's own window path is covered by the stock application in the ordinary
+boot case: `FINDER_FOLDER_LAYOUT window=... volume=66113 folder=2 ... count=3`
+reports that a browser window enumerated a named directory through the scan and
+how many entries it accepted. The window's contents are the accepted scan
+entries; there is no other path that fills them. A window whose continuation
+keeps going stale now restarts a bounded number of times and is then reported as
+a failed folder, through the same failure path that logs `FINDER_ACTION_FAILED`
+and offers a retry, rather than rescanning for ever and showing nothing.
+
+**What the enumeration markers do not prove.** The eight-restart bound is not
+exercised: provoking eight consecutive stale restarts needs a folder mutated
+faster than the browser can read it, and manufacturing that churn would be
+harness machinery in a production path. The bound is written, and its failure
+mode without it — an endlessly restarting empty window — is the one these markers
+would not distinguish from slow progress.
+
 **What the open markers do not prove.** They drive the File Manager open route
 from a guest application, which is the operation a double-click invokes and the
 only part of the gesture with a refusable outcome; they do not synthesise a
@@ -936,10 +962,17 @@ only: it does not prove that no application started earlier in the session.
 
 Not implemented:
 
-- The folder icon family and the `PIPE`/`PIPE` document family and its bundle,
-  and the corresponding extension of the canonical icon-reservation allowlist.
-  The type pair is reported today and open-as-connect honours it; the icons that
-  would use it are not drawn.
+- Both icon families, and what that costs today. The Finder already draws every
+  item through the icon service, so nothing is missing from the drawing path; what
+  is missing is the two families themselves. There is no `standard` identifier for
+  a `Pipes` folder, no native family for one in the reserved `-30031..-30000`
+  block, and no Desktop-database entry mapping the `PIPE`/`PIPE` pair to a document
+  family. A `Pipes` folder therefore draws the generic folder glyph and a named
+  pipe draws the generic document glyph: right kind of shape, wrong identity, and
+  a double-click already connects. Adding them means new icon assets, manifest
+  entries in that reserved block, the name-to-icon mapping the other blessed
+  folders already have, a type-pair registration, and an extension of the
+  canonical icon-reservation allowlist — its own pass, with its own gate.
 
 This is a Finder affordance — how the folder and its items look — and it **does
 not block a Terminal session**: a Terminal reaches a pipe by name through the
