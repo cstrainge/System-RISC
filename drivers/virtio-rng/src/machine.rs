@@ -224,7 +224,7 @@ impl Hardware
     {
         // SAFETY: same validated, exclusively claimed MMIO window as read().
         unsafe { write_volatile((self.registers + offset) as *mut u32, value.to_le()) };
-        fence();
+        mac_driver::arch::barrier();
     }
 
     fn address(&self, offset: usize, value: u64)
@@ -294,7 +294,7 @@ impl Hardware
         self.address(0x80, self.dma + offset_of!(Memory, descriptor) as u64);
         self.address(0x90, self.dma + offset_of!(Memory, available) as u64);
         self.address(0xa0, self.dma + offset_of!(Memory, used) as u64);
-        fence();
+        mac_driver::arch::barrier();
         self.write(0x44, 1);
         self.write(0x70, 15);
         self.running = true;
@@ -331,10 +331,10 @@ impl Hardware
                                         next:    0 });
             write_volatile(addr_of_mut!((*pointer).available.ring[0]), 0);
         }
-        fence();
+        mac_driver::arch::barrier();
         self.offered = self.offered.wrapping_add(1);
         unsafe { write_volatile(addr_of_mut!((*pointer).available.index), self.offered.to_le()) };
-        fence();
+        mac_driver::arch::barrier();
         self.write(0x50, 0);
         Ok(())
     }
@@ -353,7 +353,7 @@ impl Hardware
         {
             return Ok(None);
         }
-        fence();
+        mac_driver::arch::barrier();
         if next.wrapping_sub(self.consumed) != 1
         {
             return Err(Error(IO_ERROR));
@@ -391,11 +391,6 @@ impl Hardware
     }
 }
 
-fn fence()
-{
-    // Required device/CPU publication ordering, not diagnostic instrumentation.
-    unsafe { core::arch::asm!("fence iorw, iorw", options(nostack)) };
-}
 
 #[derive(Clone, Copy)]
 struct Work

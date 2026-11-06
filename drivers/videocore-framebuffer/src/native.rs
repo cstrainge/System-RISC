@@ -28,42 +28,25 @@ const ALLOCATION_TIMEOUT_MICROSECONDS: u64 = 1_000_000;
 struct Storage([u32; WORDS]);
 static mut MESSAGE: Storage = Storage([0; WORDS]);
 
-/// Clean `bytes` at `address` to the point of coherency, then wait for it. The
-/// firmware reads the request from memory, so the stores must be visible before
-/// the doorbell.
+/// Clean `bytes` at `address` to the point of coherency. The firmware reads the
+/// request from memory, so the stores must be visible before the doorbell.
+///
+/// # Safety
+/// `address..address + bytes` must be the live message buffer this channel owns.
 unsafe fn clean(address: usize, bytes: usize)
 {
-    unsafe {
-        let ctr: u64;
-        asm!("mrs {}, ctr_el0", out(reg) ctr, options(nostack, nomem));
-        let line = 4usize << ((ctr >> 16) & 0xf);
-        let end = address.saturating_add(bytes);
-        let mut at = address & !(line - 1);
-        while at < end
-        {
-            asm!("dc cvac, {}", in(reg) at, options(nostack));
-            at += line;
-        }
-        asm!("dsb sy", options(nostack));
-    }
+    // SAFETY: the caller guarantees the range is the live message buffer.
+    unsafe { mac_driver::arch::clean(address, bytes) };
 }
 
 /// Discard cached copies of `bytes` at `address` after the firmware wrote them.
+///
+/// # Safety
+/// `address..address + bytes` must be the live message buffer this channel owns.
 unsafe fn invalidate(address: usize, bytes: usize)
 {
-    unsafe {
-        let ctr: u64;
-        asm!("mrs {}, ctr_el0", out(reg) ctr, options(nostack, nomem));
-        let line = 4usize << ((ctr >> 16) & 0xf);
-        let end = address.saturating_add(bytes);
-        let mut at = address & !(line - 1);
-        while at < end
-        {
-            asm!("dc ivac, {}", in(reg) at, options(nostack));
-            at += line;
-        }
-        asm!("dsb sy", options(nostack));
-    }
+    // SAFETY: the caller guarantees the range is the live message buffer.
+    unsafe { mac_driver::arch::invalidate(address, bytes) };
 }
 
 /// The mailbox with the message buffer's cache maintenance attached. The

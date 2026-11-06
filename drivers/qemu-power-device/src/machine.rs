@@ -67,7 +67,7 @@ impl Hardware for Device
         // claimed this aligned register window. No references to MMIO exist.
         unsafe {
             core::ptr::write_volatile(self.registers as *mut u32, value);
-            core::arch::asm!("fence iorw, iorw", options(nostack));
+            mac_driver::arch::barrier();
         }
         Ok(())
     }
