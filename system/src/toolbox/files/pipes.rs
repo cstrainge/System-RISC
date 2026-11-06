@@ -18,8 +18,9 @@ mod resident
     use crate::toolbox::{files::{MAX_VOLUMES, Manager, Mounted, utf8_name},
                          pipes};
 
-    /// Item name of the folder under the volume's blessed folder.
-    const NAME: &str = "Pipes";
+    /// Item name of the folder under the volume's blessed folder. The image
+    /// builder creates it, so this is the same spelling that created it.
+    const NAME: &str = mac_abi::files::PIPES_FOLDER_NAME;
     /// Reserved item type and creator for a named pipe (section 9.3). Nothing
     /// else in the system claims this pair.
     const PIPE_TYPE: [u8; 4] = *b"PIPE";
@@ -53,19 +54,19 @@ mod resident
         let mut finder_info = [0u8; 32];
         finder_info[..4].copy_from_slice(&PIPE_TYPE);
         finder_info[4..8].copy_from_slice(&PIPE_TYPE);
-        CatalogEntry { id:                 row.cnid,
+        CatalogEntry { id: row.cnid,
                        parent,
-                       name:               row.name().to_vec(),
-                       directory:          false,
-                       flags:              0,
+                       name: row.name().to_vec(),
+                       directory: false,
+                       flags: 0,
                        finder_info,
-                       created:            row.created,
-                       modified:           row.created,
-                       backup:             None,
-                       child_count:        0,
-                       data:               None,
-                       resources:          None,
-                       data_allocated:     0,
+                       created: row.created,
+                       modified: row.created,
+                       backup: None,
+                       child_count: 0,
+                       data: None,
+                       resources: None,
+                       data_allocated: 0,
                        resource_allocated: 0 }
     }
 
@@ -177,10 +178,9 @@ mod resident
             }
         }
 
-        /// Re-resolve the cached identity after a mutation on the folder
-        /// itself. The folder is a real directory, so renaming, moving or
-        /// deleting it is a legitimate catalog change that must not leave a
-        /// stale identity pointing at nothing.
+        /// Re-resolve the cached identity after a mutation on the folder        /// itself. The
+        /// folder is a real directory, so renaming, moving or deleting it is a legitimate
+        /// catalog change that must not leave a stale identity pointing at nothing.
         pub(in crate::toolbox::files) fn pipes_refresh(&mut self, volume: u32, cnid: u32)
         {
             if self.pipes_folder == Some((volume, cnid))

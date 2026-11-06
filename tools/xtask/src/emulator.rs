@@ -100,7 +100,11 @@ pub enum Media<'a>
     /// The disks the platform record attaches.
     Declared,
     /// Exactly these disks, in order, replacing the record's attachments.
-    Given(&'a [PathBuf])
+    Given(&'a [PathBuf]),
+    /// The same, attached writable. A case that must observe the guest writing
+    /// to its own disk states this instead of relying on the record's shipping
+    /// read-only policy, which exists so a check cannot damage the real medium.
+    GivenWritable(&'a [PathBuf])
 }
 
 pub fn invocation(platform: &Platform, root: &Path, dist: &Path, media: Media<'_>, mode: Mode,
@@ -266,9 +270,50 @@ fn qemu(definition: &Definition, platform: &Platform, root: &Path, dist: &Path, 
         Mode::Interactive => definition.screen.interactive,
         Mode::Headless => definition.screen.headless
     };
-    if screen == ScreenMode::None
+    let clipboard = definition.clipboard.as_ref().filter(|_| screen == ScreenMode::Window);
+    if let Some(clipboard) = clipboard
     {
-        push(args, "-display", "none");
+        push(args, "-chardev", "qemu-vdagent,id=clipboard,clipboard=on,mouse=off");
+        match clipboard.transport
+        {
+            Transport::VirtioMmio { slot } =>
+            {
+                push(args,
+                     "-device",
+                     format!("virtio-serial-device,id=clipboardserial,bus=virtio-mmio-bus.\
+                              {slot},max_ports=2"));
+            }
+            Transport::VirtioPci =>
+            {
+                push(args, "-device", "virtio-serial-pci,id=clipboardserial,max_ports=2");
+            }
+        }
+        push(args, "-device",
+             "virtserialport,bus=clipboardserial.0,nr=1,chardev=clipboard,name=com.redhat.spice.0");
+    }
+    match screen
+    {
+        ScreenMode::None => push(args, "-display", "none"),
+        ScreenMode::Window =>
+        {
+            let display = if cfg!(target_os = "macos")
+            {
+                "cocoa,zoom-to-fit=off,scale=1.5"
+            }
+            else
+            {
+                "gtk,zoom-to-fit=off,scale=1.5"
+            };
+            let display = if clipboard.is_some() && !cfg!(target_os = "macos")
+            {
+                format!("{display},clipboard=on")
+            }
+            else
+            {
+                display.to_string()
+            };
+            push(args, "-display", display);
+        }
     }
     // `console.interactive` / `console.headless` say where the guest's console
     // goes in each mode; the caller may also have captured it to a file.
@@ -298,6 +343,7 @@ fn uses_mmio(definition: &Definition) -> bool
     || definition.keyboard.as_ref().is_some_and(|keyboard| mmio(&keyboard.transport))
     || definition.pointer.as_ref().is_some_and(|pointer| mmio(&pointer.transport))
     || definition.entropy.as_ref().is_some_and(|entropy| mmio(&entropy.transport))
+    || definition.clipboard.as_ref().is_some_and(|clipboard| mmio(&clipboard.transport))
     || definition.disks.as_ref().is_some_and(|disks| disks.transport() == DiskTransport::VirtioMmio)
 }
 
@@ -308,10 +354,11 @@ fn attach_disks(definition: &Definition, platform: &Platform, dist: &Path, media
     // The record's attachments are the machine's own. A caller that names media
     // is describing a different machine for one run, so it replaces them rather
     // than adding to them.
-    let (given, declared): (&[PathBuf], Vec<(&str, Option<u32>)>) = match media
+    let (given, declared, writable): (&[PathBuf], Vec<(&str, Option<u32>)>, bool) = match media
     {
-        Media::Declared => (&[], definition.attachments().collect()),
-        Media::Given(paths) => (paths, Vec::new())
+        Media::Declared => (&[], definition.attachments().collect(), false),
+        Media::Given(paths) => (paths, Vec::new(), false),
+        Media::GivenWritable(paths) => (paths, Vec::new(), true)
     };
     let Some(disks) = &definition.disks
     else
@@ -382,7 +429,7 @@ fn attach_disks(definition: &Definition, platform: &Platform, dist: &Path, media
         push(args,
              "-drive",
              format!("if=none,id={drive},readonly={},format={},file={}",
-                     if disks.readonly() { "on" } else { "off" },
+                     if !writable && disks.readonly() { "on" } else { "off" },
                      format,
                      path.display()));
         match disks.transport()

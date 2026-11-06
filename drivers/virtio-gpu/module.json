@@ -3,7 +3,7 @@
   "stack_bytes": 16384,
   "interfaces": [
     { "class": "VIDO", "version": 1, "request_schema": 1, "reply_schema": 1,
-      "max_request": 24, "max_reply": 48, "exclusive": true, "serialized": true,
+      "max_request": 512, "max_reply": 48, "exclusive": true, "serialized": true,
       "capabilities": 1 }
   ],
   "services": [ { "class": "VDEV", "version": 1 } ],

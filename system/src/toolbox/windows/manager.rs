@@ -845,6 +845,8 @@ pub struct WindowManager
     // around definition drawing callbacks. The manager remains Send behind the
     // resident service lock; callers never share it without that admission.
     visibility:            RefCell<super::visibility::Scratch>,
+    selection_damage:      Vec<(WindowId, Region)>,
+    selection_redraw:      bool,
     // A single bounded memo, never an authority or a payload pin. Successful
     // window-list changes invalidate it; cached IDs still validate on lookup.
     front_cache:           Cell<Option<(u64, Option<WindowId>)>>,
@@ -913,6 +915,8 @@ impl WindowManager
         #[cfg(target_arch = "riscv64")]
         let work_notice = crate::toolbox::resources::definitions::callbacks::Notice::new()?;
         Ok(Self { visibility: RefCell::new(Default::default()),
+                  selection_damage: Vec::new(),
+                  selection_redraw: false,
                   front_cache: Cell::new(None),
                   windows: Store::owned_prepared(kinds.0, kinds.1).map_err(|cause| {
                       crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(cause))
@@ -1865,6 +1869,111 @@ impl WindowManager
         Ok(id)
     }
 
+    /// Selection changes retained pixels without invalidating application drawing.
+    fn queue_selection_damage(&mut self, id: WindowId, region: Result<Region, RegionError>)
+    {
+        let Ok(region) = region
+        else
+        {
+            self.selection_redraw = true;
+            return;
+        };
+        if region.is_empty() || self.selection_redraw
+        {
+            return;
+        }
+        if self.selection_damage.try_reserve(1).is_err()
+        {
+            self.selection_redraw = true;
+            return;
+        }
+        self.selection_damage.push((id, region));
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn pop_selection_damage(&mut self) -> Option<(WindowId, Region)>
+    {
+        self.selection_damage.pop()
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn take_selection_redraw(&mut self) -> bool
+    {
+        core::mem::take(&mut self.selection_redraw)
+    }
+
+    fn focus_damage(&mut self, id: WindowId)
+    {
+        let Some(window) = self.window(id).filter(|window| !window.hidden).copied()
+        else
+        {
+            return;
+        };
+        let frame = window.frame_rects();
+        if frame.iter().all(|rect| rect.is_empty())
+        {
+            return;
+        }
+        let screen =
+            Rect::new(self.screen.left, MENU_BAR_BOTTOM, self.screen.right, self.screen.bottom);
+        InvocationGate::with_system_allocation(|| {
+            let pieces =
+                window.structure_pieces().iter().flat_map(|piece| {
+                                                    frame.into_iter().filter_map(move |part| {
+                    let mut chrome = Rect::ZERO;
+                    let mut visible = Rect::ZERO;
+                    (sect_rect(part, *piece, &mut chrome)
+                     && sect_rect(chrome, screen, &mut visible)).then_some(visible)
+                })
+                                                });
+            let damage = Self::local_selection_region(&window, pieces);
+            self.queue_selection_damage(id, damage);
+        });
+    }
+
+    fn local_selection_region(window: &Window, pieces: impl Iterator<Item = Rect>)
+                              -> Result<Region, RegionError>
+    {
+        let region = Region::from_rectangles(pieces)?;
+        if region.is_empty()
+        {
+            return Ok(region);
+        }
+        region.offset(window.bounds.left.checked_neg().ok_or(RegionError::CoordinateOverflow)?,
+                      window.bounds.top.checked_neg().ok_or(RegionError::CoordinateOverflow)?)
+    }
+
+    /// Raising one window can expose only that window. Intersect the original
+    /// occluders with its structure, including the frame outside its content.
+    fn raise_damage(&self, id: WindowId, index: usize) -> Result<Region, RegionError>
+    {
+        let Some(window) = self.window(id).filter(|window| !window.hidden)
+        else
+        {
+            return Ok(Region::new());
+        };
+        let screen =
+            Rect::new(self.screen.left, MENU_BAR_BOTTOM, self.screen.right, self.screen.bottom);
+        let covered =
+            self.order[index + 1..self.len].iter()
+                                           .filter_map(|id| self.window(*id))
+                                           .filter(|higher| !higher.hidden)
+                                           .flat_map(|higher| {
+                                               higher.structure_pieces().iter().copied()
+                                           })
+                                           .flat_map(|cover| {
+                                               window.structure_pieces()
+                                                     .iter()
+                                                     .filter_map(move |piece| {
+                                                         let mut overlap = Rect::ZERO;
+                                                         let mut visible = Rect::ZERO;
+                                                         (sect_rect(*piece, cover, &mut overlap)
+                                   && sect_rect(overlap, screen, &mut visible)).then_some(visible)
+                                                     })
+                                           });
+        Self::local_selection_region(window, covered)
+    }
+
     fn refresh_active(&mut self, previous: Option<WindowId>)
     {
         if previous == self.active
@@ -1906,11 +2015,12 @@ impl WindowManager
     pub fn select_window(&mut self, id: WindowId, events: &mut EventManager, when: u32)
     {
         if self.window(id).is_some_and(|window| window.stay_in_back)
+           || self.order[..self.len].last() == Some(&id)
         {
             self.activate_in_place(id, events, when);
             return;
         }
-        if self.front_window() == Some(id) && self.active == Some(id)
+        if self.active == Some(id) && self.front_window() == Some(id)
         {
             return;
         }
@@ -1919,27 +2029,29 @@ impl WindowManager
         {
             return;
         };
-        let previous = self.active;
-        let mut old_order = core::mem::take(&mut self.order_scratch);
-        old_order.clear();
-        old_order.extend_from_slice(&self.order);
-        self.front_cache.set(None);
-        self.hit_revision = self.hit_revision.and_then(|revision| revision.checked_add(1));
-        self.order.copy_within(index + 1..self.len, index);
-        self.order[self.len - 1] = id;
-        self.active = Some(id);
-        self.refresh_active(previous);
-        if previous != Some(id)
-        {
-            Self::activation(previous, false, events, when);
-            Self::activation(Some(id), true, events, when);
-        }
-        self.invalidate_order_exposure(&old_order);
-        self.order_scratch = old_order;
+        InvocationGate::with_system_allocation(|| {
+            let exposed = self.raise_damage(id, index);
+            self.front_cache.set(None);
+            self.hit_revision = self.hit_revision.and_then(|revision| revision.checked_add(1));
+            self.order.copy_within(index + 1..self.len, index);
+            self.order[self.len - 1] = id;
+            match &exposed
+            {
+                Ok(region) => self.invalidate_region(id, region),
+                Err(_) =>
+                {
+                    if let Some(bounds) = self.window(id).map(Window::local_bounds)
+                    {
+                        self.invalidate(id, bounds);
+                    }
+                }
+            }
+            self.queue_selection_damage(id, exposed);
+        });
+        self.activate_in_place(id, events, when);
     }
 
-    /// Activation without a z-order change, for stay-in-back windows. Windows
-    /// above it lose focus but keep their place and visibility.
+    /// Activation without a z-order change.
     fn activate_in_place(&mut self, id: WindowId, events: &mut EventManager, when: u32)
     {
         if self.active == Some(id) || self.window(id).is_none()
@@ -1949,6 +2061,11 @@ impl WindowManager
         let previous = self.active;
         self.active = Some(id);
         self.refresh_active(previous);
+        if let Some(previous) = previous
+        {
+            self.focus_damage(previous);
+        }
+        self.focus_damage(id);
         Self::activation(previous, false, events, when);
         Self::activation(Some(id), true, events, when);
     }

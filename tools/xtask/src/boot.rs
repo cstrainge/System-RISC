@@ -202,7 +202,7 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
         boots: bool)
         -> Result<Value>
 {
-    case_within(workspace, directory, name, media, expected, boots, None)
+    run_case(workspace, directory, name, media, expected, boots, None)
 }
 
 /// `timeout` overrides the platform's startup budget for a case whose own
@@ -217,9 +217,9 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf], 
 /// an earlier run of the same tree did time out at 60 s. That earlier timeout
 /// was this budget gap, not an intermittent fault, and the 180 s budget here is
 /// the fix; the ordinary cases keep the platform's 60 s.
-fn case_within(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf],
-               expected: &[&str], boots: bool, timeout: Option<std::time::Duration>)
-               -> Result<Value>
+fn run_case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBuf],
+            expected: &[&str], boots: bool, timeout: Option<std::time::Duration>)
+            -> Result<Value>
 {
     let serial = directory.join(format!("{name}.serial.log"));
     let stderr = directory.join(format!("{name}.qemu.log"));
@@ -408,6 +408,24 @@ fn altered_system(workspace: &Workspace, image: &Path, alteration: &str) -> Resu
     disk::edit(image, |volume| {
         let folder = volume.blessed_folder()?.id;
         let old = volume.lookup(folder, "System")?;
+        if alteration == "large-fork"
+        {
+            // The System keeps its identity and its existing extents. Removing
+            // and re-importing a 9 MiB fork writes it in 64 KiB chunks into
+            // whatever free space happens to exist, and the resulting read
+            // pattern made this case's boot vary between 49 and 132 seconds —
+            // over the platform readiness budget on a cold host cache, which is
+            // a measurement of the disk layout rather than of the assertion.
+            // Growing the existing fork states the same property without that
+            // lottery: `write_fork` reuses every allocated page and allocates
+            // only for the bytes the growth actually needs.
+            hfs_b::write_stream(volume,
+                                old.id,
+                                mac_hfs_b::ForkKind::Resource,
+                                file.resources.as_slice(),
+                                hfs_b::now()?)?;
+            return Ok(());
+        }
         volume.remove(old.id, hfs_b::now()?)?;
         hfs_b::import_macbinary(volume, folder, &file)?;
         Ok(())
@@ -487,11 +505,6 @@ fn pipes_probe_image(workspace: &Workspace, destination: &Path) -> Result<()>
         let old = volume.lookup(folder, "Finder")?;
         volume.remove(old.id, hfs_b::now()?)?;
         hfs_b::import_macbinary(volume, folder, &probe)?;
-        // The boot-check medium is attached read-only, so the folder the probe
-        // enumerates has to exist already. It is the same directory the guest
-        // would create, and the probe still creates it when a writable volume
-        // lacks one.
-        volume.create(folder, "Pipes", true, hfs_b::now()?)?;
         Ok(())
     })
 }
@@ -583,7 +596,8 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               &[raw.clone()],
                               // The catalog number is not asserted: it shifts whenever
                               // the volume's contents change, and what matters is that a
-                              // blessed System Folder was found at all.
+                              // blessed System Folder was found at all. The pipes probe
+                              // case below is where the folder itself is checked.
                               &["System RISC Boot ROM v1 at 0x200",
                                 "blessed folder 'System Folder' CNID=",
                                 "System: native service table ready", "BOOT_SYSTEM_READY:"],
@@ -610,15 +624,16 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &[probe_image.clone()],
                     // The pipe transport and the Pipes folder are one guest
                     // case: the folder markers are the added coverage, not a
-                    // separate boot-check case.
+                    // separate boot-check case. The folder comes from the built
+                    // image, so the probe must find it, not create it.
                     &["PIPES_PROBE_ECHO_OK", "PIPES_PROBE_BLOCK_OK",
                       "PIPES_PROBE_WOULD_BLOCK_OK", "PIPES_PROBE_EOF_OK",
                       "PIPES_PROBE_BROKEN_OK", "PIPES_PROBE_NAME_OK", "PIPES_WRITER_FIRST_OK",
                       "PIPES_WRITER_SECOND_REFUSED", "PIPES_WRITER_RELEASE_OK",
-                      "PIPES_WRITER_CLOSED_OK", "PIPES_FOLDER_LIST_OK items=1",
-                      "PIPES_FOLDER_LOOKUP_OK", "PIPES_FOLDER_STABLE_OK",
-                      "PIPES_FOLDER_ANON_ABSENT_OK", "PIPES_FOLDER_REFUSED_OK refusals=11",
-                      "PIPES_PROBE_PASS cases=5"],
+                      "PIPES_WRITER_CLOSED_OK", "PIPES_FOLDER_PRESENT volume=",
+                      "PIPES_FOLDER_LIST_OK items=1", "PIPES_FOLDER_LOOKUP_OK",
+                      "PIPES_FOLDER_STABLE_OK", "PIPES_FOLDER_ANON_ABSENT_OK",
+                      "PIPES_FOLDER_REFUSED_OK refusals=11", "PIPES_PROBE_PASS cases=5"],
                     true)?);
     if converted.is_some()
     {
