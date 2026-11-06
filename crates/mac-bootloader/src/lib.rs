@@ -12,6 +12,7 @@ extern crate alloc;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub mod completion;
+pub mod image_regions;
 pub mod virtio_blk;
 pub mod volume;
 

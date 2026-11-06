@@ -95,71 +95,9 @@ impl core::error::Error for Error
 /// Each actual segment memory extent retains its permissions, including an
 /// explicit BSS-only segment. Reservation padding and inter-segment holes do not
 /// become mappings. Physical reservation ownership remains in BootInfo.
-pub fn system_regions(image: &mac_formats::native::image::Image,
-                      descriptor: &mac_formats::native::Descriptor, physical_base: u64, page: u64)
-                      -> Result<Vec<mac_abi::boot::execution::Region>, Error>
-{
-    use mac_abi::{BootMemoryRange,
-                  boot::execution::{EXECUTE, READ, Region, WRITE}};
-    use mac_formats::Error as FormatError;
-    let invalid = || {
-        Error::Image(FormatError::Malformed("System mapping segments must be page aligned, \
-                                             nonoverlapping and inside the native reservation"))
-    };
-    if descriptor.role != mac_formats::native::Role::System
-       || !page.is_power_of_two()
-       || page < 4096
-       || !physical_base.is_multiple_of(page)
-    {
-        return Err(invalid());
-    }
-    let extent = descriptor.load_limit.checked_sub(descriptor.load_base).ok_or_else(invalid)?;
-    if extent == 0
-       || !extent.is_multiple_of(page)
-       || !descriptor.load_base.is_multiple_of(page)
-       || physical_base.checked_add(extent).is_none()
-    {
-        return Err(invalid());
-    }
-    let mut regions = Vec::new();
-    regions.try_reserve_exact(image.segments.len())
-        .map_err(|_|Error::Image(FormatError::AllocationFailed("System mapping record allocation failed")))?;
-    let mut last = 0;
-    for segment in &image.segments
-    {
-        let end = segment.offset
-                         .checked_add(segment.memory_length)
-                         .and_then(|end| end.checked_add(page - 1))
-                         .map(|end| end / page * page)
-                         .ok_or_else(invalid)?;
-        if segment.memory_length == 0
-           || segment.length as u64 > segment.memory_length
-           || segment.flags & !7 != 0
-           || segment.flags & 3 == 3
-           || !segment.offset.is_multiple_of(page)
-           || segment.offset < last
-           || end > extent
-           || end <= segment.offset
-        {
-            return Err(invalid());
-        }
-        let flags = (if segment.flags & 4 != 0 { READ } else { 0 })
-                    | (if segment.flags & 2 != 0 { WRITE } else { 0 })
-                    | (if segment.flags & 1 != 0 { EXECUTE } else { 0 });
-        regions.push(Region { physical:
-                                  BootMemoryRange { base:
-                                                        physical_base.checked_add(segment.offset)
-                                                                     .ok_or_else(invalid)?,
-                                                    length: end - segment.offset },
-                              virtual_base: descriptor.load_base
-                                                      .checked_add(segment.offset)
-                                                      .ok_or_else(invalid)?,
-                              flags,
-                              reserved: 0 });
-        last = end;
-    }
-    Ok(regions)
-}
+/// Re-exported so this bootstrap and the aarch64 one cannot derive the
+/// mapping record differently.
+pub use mac_bootloader::image_regions::system_regions;
 
 #[repr(C, align(4096))]
 struct Table([u64; 512]);

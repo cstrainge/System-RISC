@@ -397,8 +397,9 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
         account.exclude_mmio(BootMemoryRange { base,
                                                length: bytes })?;
     }
-    let mut regions = translation::system_regions(&startup.image,
-                                                  descriptor,
+    let mut regions = translation::system_regions(&startup.image.segments,
+                                                  descriptor.load_base,
+                                                  descriptor.load_limit,
                                                   memory::IMAGE_BASE,
                                                   memory::PAGE_BYTES)?;
     regions.try_reserve_exact(3).map_err(|_|mac_formats::Error::AllocationFailed("firmware mapping-record allocation failed"))?;
