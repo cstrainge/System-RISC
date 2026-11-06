@@ -417,6 +417,44 @@ fn altered_system(workspace: &Workspace, image: &Path, alteration: &str) -> Resu
 /// Replace Finder with the pipe transport probe on a clone of the built image.
 /// The probe is built through the public SDK here so the gate cannot pass on a
 /// stale artifact.
+/// Package a probe fixture over a clone of the boot volume, so the System runs
+/// it in place of Finder.
+fn probe_image(workspace: &Workspace, destination: &Path, fixture: &str) -> Result<()>
+{
+    let manifest =
+        workspace.root().join(format!("crates/mac-toolbox/tests/fixtures/{fixture}/Cargo.toml"));
+    let target = workspace.target().join(fixture);
+    let mut build = workspace.cargo();
+    build.args(["build", "--locked", "--release", "--target", &workspace.platform.rust_target,
+                "--target-dir"])
+         .arg(&target)
+         .arg("--manifest-path")
+         .arg(&manifest)
+         .args(["--bin", "Finder"]);
+    mac_build::platform::configure_for(&workspace.platform, &mut build);
+    run_command(&mut build)?;
+    let elf = target.join(&workspace.platform.rust_target).join("release").join("Finder");
+    let packaged = workspace.dist().join(fixture);
+    let mut package = workspace.cargo();
+    package.args(["run", "--locked", "--manifest-path"])
+           .arg(&manifest)
+           .args(["--bin", "package", "--target-dir"])
+           .arg(&target)
+           .arg("--")
+           .arg(&elf)
+           .arg(&packaged);
+    run_command(&mut package)?;
+    let probe = macbinary::decode(&fs::read(packaged.join("Finder.bin"))?)?;
+    clone_raw(&workspace.dist().join("system7.hfsb"), destination)?;
+    disk::edit(destination, |volume| {
+        let folder = volume.blessed_folder()?.id;
+        let old = volume.lookup(folder, "Finder")?;
+        volume.remove(old.id, hfs_b::now()?)?;
+        hfs_b::import_macbinary(volume, folder, &probe)?;
+        Ok(())
+    })
+}
+
 fn pipes_probe_image(workspace: &Workspace, destination: &Path) -> Result<()>
 {
     let manifest =
@@ -533,30 +571,37 @@ pub fn check(workspace: &Workspace) -> Result<Value>
             None
         }
     };
-    let mut cases =
-        vec![case(workspace,
-                  &directory,
-                  "no-disk",
-                  &[],
-                  &["BOOT_NO_SYSTEM: searched 0 disk(s)"],
-                  false)?,
-             case(workspace,
-                  &directory,
-                  "raw-hfs-b",
-                  &[raw.clone()],
-                  // The catalog number is not asserted: it shifts whenever
-                  // the volume's contents change, and what matters is that a
-                  // blessed System Folder was found at all.
-                  &["System RISC Boot ROM v1 at 0x200", "blessed folder 'System Folder' CNID=",
-                    "System: native service table ready", "BOOT_SYSTEM_READY:",
-                    // The imported families must be reachable by name, not
-                    // merely admitted: each line is a real selection that
-                    // resolved to a face.
-                    "FONT_SELECT name=\"Klang MT\" family=13008 size=12 style=0",
-                    "FONT_SELECT name=\"Espy Sans\" family=13026 size=12 style=0",
-                    "FONT_SELECT name=\"VT100\" family=13035 size=12 style=1",
-                    "FONT_SELECT name=\"American Heritage\" family=13021 size=12 style=0"],
-                  true)?];
+    let mut cases = vec![case(workspace,
+                              &directory,
+                              "no-disk",
+                              &[],
+                              &["BOOT_NO_SYSTEM: searched 0 disk(s)"],
+                              false)?,
+                         case(workspace,
+                              &directory,
+                              "raw-hfs-b",
+                              &[raw.clone()],
+                              // The catalog number is not asserted: it shifts whenever
+                              // the volume's contents change, and what matters is that a
+                              // blessed System Folder was found at all.
+                              &["System RISC Boot ROM v1 at 0x200",
+                                "blessed folder 'System Folder' CNID=",
+                                "System: native service table ready", "BOOT_SYSTEM_READY:"],
+                              true)?];
+    // A second probe replaces Finder on a clone to exercise font selection the
+    // way an application does: by name, through the public client.
+    let fonts_image = directory.join("fonts-probe.hfsb");
+    probe_image(workspace, &fonts_image, "fonts-probe")?;
+    cases.push(case(workspace,
+                    &directory,
+                    "fonts-probe",
+                    &[fonts_image.clone()],
+                    &["FONTS_PROBE_CATALOG families=", "FONTS_PROBE_SELECT name=\"Klang MT\"",
+                      "FONTS_PROBE_SELECT name=\"Espy Sans\"",
+                      "FONTS_PROBE_SELECT name=\"VT100\" size=9 style=1",
+                      "FONTS_PROBE_SELECT name=\"American Heritage\"", "FONTS_PROBE_STYLE_OK",
+                      "FONTS_PROBE_PASS cases=4"],
+                    true)?);
     let probe_image = directory.join("pipes-probe.hfsb");
     pipes_probe_image(workspace, &probe_image)?;
     cases.push(case(workspace,

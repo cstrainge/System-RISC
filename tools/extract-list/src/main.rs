@@ -221,10 +221,14 @@ fn build_command(args: &[String]) -> Result<ExitCode>
     }
     let paths: Vec<String> = disc_sources.iter().map(|file| file.path.clone()).collect();
     let mut report = classify(std::slice::from_ref(&package), &iso_side);
-    let take: Vec<String> = options(args, "--take-all").into_iter().map(String::from).collect();
-    if !take.is_empty()
+    for kind in options(args, "--take-all").into_iter().map(String::from)
     {
-        take_all(&mut report, &iso_side, &package, &take, Form::File);
+        take_all(&mut report, &iso_side, &package, &[kind], Form::File, None);
+    }
+    // Outline-first: take this type only from sources that carry no outline.
+    for kind in options(args, "--take-without-outline").into_iter().map(String::from)
+    {
+        take_all(&mut report, &iso_side, &package, &[kind], Form::File, Some("sfnt"));
     }
     print_report(&report);
     let keys: Vec<usage::Key> =

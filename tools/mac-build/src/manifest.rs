@@ -361,6 +361,33 @@ impl Manifest
         Ok(manifest)
     }
 
+    /// Read a package manifest without resolving its includes.
+    ///
+    /// For a consumer that has to run *before* the includes exist — the
+    /// extraction step, whose own output is one of them. The include entries are
+    /// left out of `resources` and reported through [`Self::include_files`], so
+    /// the caller sees the hand-authored resources and knows what is deferred.
+    /// A consumer that builds resources must use [`Self::read`]; this view is
+    /// incomplete by construction.
+    pub fn read_deferred(path: &Path) -> Result<Self>
+    {
+        let invalid = |cause: serde_json::Error| {
+            error(format!("invalid resource project {}: {cause}; update resources.json for the                            current SDK and rebuild",
+                          path.display()))
+        };
+        let bytes = fs::read(path)?;
+        let mut document: serde_json::Value = serde_json::from_slice(&bytes).map_err(invalid)?;
+        let deferred = include::defer(path, &mut document)?;
+        let mut manifest: Self = serde_json::from_value(document).map_err(invalid)?;
+        manifest.includes = deferred;
+        if !manifest.archive
+        {
+            manifest.cargo_version = package_version(path)?;
+        }
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
     /// The included resources files this manifest expanded, in read order.
     pub fn include_files(&self) -> &[PathBuf]
     {

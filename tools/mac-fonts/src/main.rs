@@ -6,19 +6,20 @@
 //! we own — identity and associations only, never a copy of the disc's own
 //! family data.
 //!
-//! Two shapes are handled:
-//!
-//!  * outline families: one association per imported face, size 0 (scalable), style bits read from
-//!    the face name;
-//!  * families with no outline: one association per imported strike at the size it was cut at.
-//!    Those sizes and styles are the one piece of information the extract list does not carry, so
-//!    `BITMAP_FAMILIES` records them, read once from the disc's own associations and kept here for
-//!    reproducibility.
+//! Families are read from the extract list, not from a table in this file: each
+//! imported face carries the size, style and family name the disc's own FOND
+//! declares for it, and the generator groups faces by that name. An outline
+//! face is associated at size 0 (scalable); a strike at the size it was cut at.
+//! Nothing here repeats that data, so a corrected association or a renumbered
+//! face flows through without editing this tool.
 //!
 //! `verify` then proves, against the packaged System fork, that every generated
 //! family is admitted by the same rules the resident catalog applies.
 
-use std::{collections::BTreeSet, fs, path::PathBuf, process::ExitCode};
+use std::{collections::{BTreeMap, BTreeSet},
+          fs,
+          path::PathBuf,
+          process::ExitCode};
 
 use serde::{Deserialize, Serialize};
 
@@ -46,57 +47,22 @@ struct ExtractSource
 struct ExtractEntry
 {
     #[serde(rename = "type")]
-    kind:  String,
-    id:    i16,
-    name:  Option<String>,
+    kind:   String,
+    id:     i16,
+    name:   Option<String>,
     #[serde(default)]
-    taken: bool
+    taken:  bool,
+    #[serde(default)]
+    size:   Option<i16>,
+    #[serde(default)]
+    style:  Option<u16>,
+    #[serde(default)]
+    family: Option<String>
 }
 
-/// One family with no outline: the disc cut these strikes at these sizes, and
-/// the styles they cover. Read once from the disc's FOND associations; no
-/// FOND bytes are copied.
-struct BitmapFamily
-{
-    /// Source file basename on the disc.
-    suit:  &'static str,
-    /// Family name we publish.
-    name:  &'static str,
-    /// Our FOND resource ID.
-    id:    i16,
-    /// (size, style, imported resource ID) in the order the associations appear.
-    faces: &'static [(i16, u16, i16)]
-}
-
-const BITMAP_FAMILIES: &[BitmapFamily] =
-    &[BitmapFamily { suit:  "American Heritage Font",
-                     name:  "American Heritage",
-                     id:    13021,
-                     faces: &[(9, 0, 13021),
-                              (10, 0, 13022),
-                              (12, 0, 13023),
-                              (14, 0, 13024),
-                              (18, 0, 13025)] },
-      BitmapFamily { suit:  "eWorld Fonts",
-                     name:  "Espy Sans",
-                     id:    13026,
-                     faces: &[(9, 0, 13026), (10, 0, 13027), (12, 0, 13028)] },
-      BitmapFamily { suit:  "eWorld Fonts",
-                     name:  "Espy Sans Bold",
-                     id:    13029,
-                     faces: &[(9, 0, 13029), (10, 0, 13030), (12, 0, 13031)] },
-      BitmapFamily { suit:  "eWorld Fonts",
-                     name:  "eWorld Tight",
-                     id:    13032,
-                     faces: &[(18, 0, 13032)] },
-      BitmapFamily { suit:  "TTYFont",
-                     name:  "TTYFont",
-                     id:    13033,
-                     faces: &[(9, 0, 13033), (12, 0, 13034)] },
-      BitmapFamily { suit:  "VT102Font",
-                     name:  "VT100",
-                     id:    13035,
-                     faces: &[(9, 0, 13035), (9, 1, 13036), (12, 0, 13037), (12, 1, 13038)] }];
+/// Family records live in their own block, above the faces, so the two
+/// allocations cannot push each other around.
+const FIRST_ASSIGNED_FOND_ID: i16 = 13400;
 
 #[derive(Deserialize, Serialize)]
 struct ManifestEntry
@@ -259,47 +225,76 @@ fn record(id: i16, name: &str, faces: &[(i16, u16, i16)]) -> Result<Vec<u8>>
     Ok(data)
 }
 
+/// One imported face as the extract list describes it.
+struct Face
+{
+    outline: bool,
+    name:    Option<String>,
+    id:      i16,
+    size:    Option<i16>,
+    style:   Option<u16>
+}
+
 fn generate(args: &[String]) -> Result<ExitCode>
 {
     let list_path = PathBuf::from(required(args, "--list")?);
     let assets = PathBuf::from(required(args, "--assets")?);
     let entries_path = PathBuf::from(required(args, "--entries")?);
     let list: ExtractList = serde_json::from_slice(&fs::read(&list_path)?)?;
-    let mut families: Vec<(i16, String, Vec<(i16, u16, i16)>)> = Vec::new();
-    let mut used: BTreeSet<i16> = [0, 2, 3, 4, 16, 20, 21, 22, 23].into_iter().collect();
+    // Group the imported faces by the family the disc's own FOND gives them.
+    // Everything here comes from the list, so a renumbered face or a corrected
+    // association flows through without editing this tool.
+    let mut grouped: BTreeMap<(String, String), Vec<Face>> = BTreeMap::new();
     for source in &list.sources
     {
-        let suit = source.path.rsplit('/').next().unwrap_or_default();
-        let taken: Vec<&ExtractEntry> =
-            source.resources.iter().filter(|entry| entry.taken).collect();
-        if taken.is_empty()
+        let suit = source.path.rsplit('/').next().unwrap_or_default().to_string();
+        for entry in source.resources.iter().filter(|entry| entry.taken)
         {
-            continue;
+            let family = entry.family.clone().unwrap_or_else(|| suit.clone());
+            grouped.entry((suit.clone(), family)).or_default().push(Face { outline: entry.kind
+                                                                                    == "sfnt",
+                                                                           name:    entry.name
+                                                                                         .clone(),
+                                                                           id:      entry.id,
+                                                                           size:    entry.size,
+                                                                           style:   entry.style });
         }
-        if taken[0].kind == "NFNT"
-        {
-            for family in BITMAP_FAMILIES.iter().filter(|family| family.suit == suit)
-            {
-                if !used.insert(family.id)
-                {
-                    return Err(error(format!("FOND {} is allocated twice", family.id)));
-                }
-                families.push((family.id, family.name.to_string(), family.faces.to_vec()));
-            }
-            continue;
-        }
-        let id = taken.iter().map(|entry| entry.id).min().unwrap_or_default();
-        if !used.insert(id)
-        {
-            return Err(error(format!("FOND {id} is allocated twice")));
-        }
-        let name = suit.to_string();
-        let faces: Vec<(i16, u16, i16)> =
-            taken.iter()
-                 .map(|entry| (0, face_style(entry.name.as_deref(), taken.len() == 1), entry.id))
-                 .collect();
-        families.push((id, name, faces));
     }
+    let resident: BTreeSet<i16> = report_ids(&list);
+    let mut families = Vec::new();
+    let mut next = FIRST_ASSIGNED_FOND_ID;
+    for ((_, family), faces) in grouped
+    {
+        while resident.contains(&next)
+        {
+            next += 1;
+        }
+        let id = next;
+        next += 1;
+        let single = faces.len() == 1;
+        let mut associations: Vec<(i16, u16, i16)> =
+            faces.iter()
+                 .map(|face| {
+                     if face.outline
+                     {
+                         // An outline renders at any size, so it is
+                         // associated as scalable. A suitcase of outlines
+                         // has no strike table, so its style comes from the
+                         // face's own name.
+                         (0, face_style(face.name.as_deref(), single), face.id)
+                     }
+                     else
+                     {
+                         // A strike is associated at the size and style the
+                         // disc's own FOND gave it, which the list carries.
+                         (face.size.unwrap_or(0), face.style.unwrap_or(0), face.id)
+                     }
+                 })
+                 .collect();
+        associations.sort_by_key(|(size, style, face)| (*size, *style, *face));
+        families.push((id, family, associations));
+    }
+    families.sort_by_key(|(id, _, _)| *id);
     let mut resources = Vec::new();
     for (id, name, faces) in &families
     {
@@ -309,7 +304,7 @@ fn generate(args: &[String]) -> Result<ExitCode>
         resources.push(ManifestEntry { kind:       "FOND".to_string(),
                                        id:         *id,
                                        symbol:     symbol(name, *id),
-                                       name:       name.clone(),
+                                       name:       name.to_string(),
                                        attributes: 0,
                                        payload:    Payload::File { path: format!("assets/fonts/\
                                                                                   {file}") } });
@@ -329,12 +324,27 @@ fn generate(args: &[String]) -> Result<ExitCode>
                       .collect::<Vec<_>>()
                       .join(" "));
     }
-    resources.sort_by_key(|entry| entry.id);
     fs::write(&entries_path,
               format!("{}\n", serde_json::to_string_pretty(&Entries { resources })?))?;
     println!("\nwrote {} FOND records and {}", families.len(), entries_path.display());
     Ok(ExitCode::SUCCESS)
 }
+
+/// Family IDs the package already installs. They keep their own numbers; a new
+/// family is never assigned one of them.
+fn report_ids(list: &ExtractList) -> BTreeSet<i16>
+{
+    let mut ids = BTreeSet::from([0, 2, 3, 4, 16, 20, 21, 22, 23]);
+    for source in &list.sources
+    {
+        for entry in source.resources.iter().filter(|entry| entry.taken)
+        {
+            ids.insert(entry.id);
+        }
+    }
+    ids
+}
+
 
 fn symbol(name: &str, id: i16) -> String
 {
@@ -444,6 +454,41 @@ fn verify(args: &[String]) -> Result<ExitCode>
         if faces == 0
         {
             failures.push(format!("FOND {id} ({name}) has no usable face and would be omitted"));
+        }
+        // A strike's own header states a line height, which has to track the
+        // size the family claims it for: a strike cut at 9pt does not have a
+        // 12pt line height. Associations are not sorted by size (the bundled
+        // families are not), so each is checked on its own, against a band
+        // measured across the strikes this disc carries. It catches a gross
+        // mispairing only — a swap between two nearby sizes can fall inside the
+        // band — which is why the association is derived from the disc's own
+        // FOND rather than retyped.
+        for index in 0..count as usize
+        {
+            let at = 54 + index * 6;
+            let size = i16::from_be_bytes([data[at], data[at + 1]]);
+            let face = i16::from_be_bytes([data[at + 4], data[at + 5]]);
+            if size == 0
+            {
+                continue;
+            }
+            let Some(strike) = find(b"NFNT", face).or_else(|| find(b"FONT", face))
+            else
+            {
+                continue;
+            };
+            let Some(height) =
+                strike.data.get(14..16).map(|bytes| i16::from_be_bytes([bytes[0], bytes[1]]))
+            else
+            {
+                continue;
+            };
+            if !(-3..=8).contains(&(height - size))
+            {
+                failures.push(format!("FOND {id} ({name}): the {size}pt association points at a \
+                                       strike whose line height is {height}, which does not \
+                                       belong to that size"));
+            }
         }
         let named = fond.name.as_deref().map(mac_formats::text::decode).unwrap_or_default();
         if named != *name

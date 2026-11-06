@@ -38,6 +38,7 @@ pub fn stage(workspace: &Workspace, name: &str) -> Result<()>
         {
             sdk::applications(workspace, &applications(workspace)?)?;
         }
+        "extract" => extract(workspace)?,
         "package" => package_all(workspace)?,
         "image" =>
         {
@@ -48,6 +49,41 @@ pub fn stage(workspace: &Workspace, name: &str) -> Result<()>
     let stamps = workspace.dist().join("ninja").join("stamps");
     fs::create_dir_all(&stamps)?;
     crate::stamp(&stamps.join(name), workspace.dist())
+}
+
+/// Build the resources each package takes from the disc.
+///
+/// A package that has an `extract-list.json` beside its `resources.json` takes
+/// resources from the disc that list names, so it also has a generated
+/// `extracted_resources.json` that its manifest includes. Producing it here is
+/// what keeps a fresh checkout buildable: the include is a build product, so the
+/// build makes it. Nothing names System or Finder — a package is a manifest, a
+/// list and the outputs beside them.
+fn extract(workspace: &Workspace) -> Result<()>
+{
+    let crates = Crates::read(workspace)?;
+    let mut packages: Vec<&crate::crates::Crate> =
+        crates.packages_with_extract_list().into_iter().collect();
+    packages.sort_by(|left, right| left.relative.cmp(&right.relative));
+    for entry in packages
+    {
+        let manifest = entry.manifest.as_ref().ok_or_else(|| {
+                                                   error(format!("package '{}' has an extract \
+                                                                  list but no resources.json",
+                                                                 entry.name))
+                                               })?;
+        let list = manifest.with_file_name("extract-list.json");
+        println!("Extracting resources for {} from {}", entry.name, list.display());
+        let code = mac_extract::extract(manifest, &list, false)?;
+        if code != std::process::ExitCode::SUCCESS
+        {
+            return Err(error(format!("extraction for package '{}' reported a parity failure; \
+                                      the generated resources would not match the classic \
+                                      payloads the manifest compiles, so nothing was replaced",
+                                     entry.name)));
+        }
+    }
+    Ok(())
 }
 
 /// Every package this platform's guest images are compiled from: the installed
