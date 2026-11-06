@@ -13,21 +13,21 @@ use linked_list_allocator::LockedHeap;
 
 mod devicetree;
 
-/// The filesystem code above the block device needs storage for its own
-/// bookkeeping. This is a bounded firmware heap in the image's own BSS, not a
-/// claim about the machine's RAM.
-const HEAP_BYTES: usize = 256 * 1024;
-
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
 
-static mut HEAP_STORAGE: [u8; HEAP_BYTES] = [0; HEAP_BYTES];
-
+/// The record declares where the loader may work, and the loader uses exactly
+/// that region. It is not an in-image array: System's code resource is several
+/// megabytes, so a fixed buffer inside the boot window cannot hold it, and a
+/// heap the memory map does not know about is a region the kernel could hand to
+/// something else.
 fn init_heap()
 {
     // SAFETY: the bootrom is single-threaded on the primary CPU and this runs
-    // once before any allocation; no reference to the storage escapes.
-    unsafe { HEAP.lock().init(core::ptr::addr_of_mut!(HEAP_STORAGE) as *mut u8, HEAP_BYTES) };
+    // once before any allocation; the region is the record's declared firmware
+    // heap, reserved in the same memory account the kernel receives, and no
+    // reference to it escapes this function.
+    unsafe { HEAP.lock().init(FW_HEAP_BASE as *mut u8, FW_HEAP_BYTES as usize) };
 }
 
 #[alloc_error_handler]
@@ -481,6 +481,103 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     1
 }
 
+/// Reads System's code and ABI resources and builds the load plan the kernel
+/// will be admitted with.
+///
+/// The plan is the shared one the RISC-V loader uses: the code resource is
+/// decoded with the native image format rather than an ELF reader, and the
+/// relocation records come from the same crate. Nothing here is aarch64-specific
+/// beyond the container it finds, so a defect in the plan is a defect on both
+/// platforms.
+fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volume<D>,
+                                               file: mac_filesystem::File)
+{
+    use mac_formats::{native::{Descriptor, Role, image},
+                      resource};
+    let mut fork = file.resources;
+    let budget = resource::stream::Budget { payload_bytes: 256 * 1024 * 1024,
+                                            ..Default::default() };
+    let resources =
+        match resource::stream::read_selected(fork.length,
+                                              budget,
+                                              |kind, id| {
+                                                  id == 0
+                                                  && matches!(&kind, b"NABI" | b"RV64" | b"RLOC")
+                                              },
+                                              |offset, output| {
+                                                  let n = volume.read(&mut fork, offset, output)?;
+                                                  if n == output.len()
+                                                  {
+                                                      Ok(())
+                                                  }
+                                                  else
+                                                  {
+                                                      Err(mac_formats::Error::Malformed("short \
+                                                                                         System \
+                                                                                         resource \
+                                                                                         read"))
+                                                  }
+                                              })
+        {
+            Ok(resources) => resources,
+            Err(error) =>
+            {
+                puts("BOOT_AARCH64_SYSTEM_REFUSED: resources unreadable: ");
+                puts(match error
+                {
+                    _ => "resource stream refused"
+                });
+                puts("\n");
+                return;
+            }
+        };
+    let find = |kind: [u8; 4]| resources.iter().find(|row| row.kind == kind && row.id == 0);
+    let Some(abi) = find(*b"NABI")
+    else
+    {
+        puts("BOOT_AARCH64_SYSTEM_REFUSED: no native ABI resource\n");
+        return;
+    };
+    let descriptor = match Descriptor::decode(&abi.data)
+    {
+        Ok(descriptor) => descriptor,
+        Err(_) =>
+        {
+            puts("BOOT_AARCH64_SYSTEM_REFUSED: the ABI resource is malformed\n");
+            return;
+        }
+    };
+    if descriptor.role != Role::System || descriptor.abi_version != mac_abi::ABI_VERSION
+    {
+        puts("BOOT_AARCH64_SYSTEM_REFUSED: the executable is not a compatible System\n");
+        return;
+    }
+    let Some(code) = find(*b"RV64")
+    else
+    {
+        puts("BOOT_AARCH64_SYSTEM_REFUSED: no code resource\n");
+        return;
+    };
+    let plan = match image::LoadPlan::new(&code.data, &descriptor, None, descriptor.load_base)
+    {
+        Ok(plan) => plan,
+        Err(_) =>
+        {
+            puts("BOOT_AARCH64_SYSTEM_REFUSED: the code resource does not match its ABI record\n");
+            return;
+        }
+    };
+    puts("BOOT_AARCH64_PLAN: entry=");
+    puthex(plan.entry());
+    puts(" length=");
+    puthex(plan.length() as u64);
+    puts(" load_base=");
+    puthex(descriptor.load_base);
+    puts(" load_limit=");
+    puthex(descriptor.load_limit);
+    puts("\n");
+}
+
 /// Locates the blessed System Folder on the card. The partition table, the
 /// volume and the folder are all read through the shared filesystem stack, so
 /// this exercises the same code the kernel uses rather than a bootloader-only
@@ -586,6 +683,7 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D)
                 puts(" resource=");
                 puthex(file.resources.length);
                 puts("\n");
+                load_system(&mut volume, file);
             }
             Err(_) => puts("BOOT_AARCH64_SYSTEM_REFUSED: no System file in the blessed folder\n")
         }
