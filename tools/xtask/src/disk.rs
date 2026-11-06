@@ -236,7 +236,7 @@ fn build_system7(workspace: &Workspace, path: &Path, size: u64, installed: &[Ins
     }
     let system = *folders.get(&install.folders.system)
                          .ok_or_else(|| error("the system folder was not created"))?;
-    for name in ["Fonts", "Control Panels", "Preferences"]
+    for name in ["Fonts", "Control Panels", "Preferences", mac_abi::files::PIPES_FOLDER_NAME]
     {
         let folder = create_folder(&mut folders,
                                    &mut volume,

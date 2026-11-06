@@ -1,0 +1,158 @@
+System 7.5.1 Performa 5200 series restore CD
+disc:    System-7.5.1-Performa-5200-Restore-CD.iso
+source:  Hard Disk Files/System Folder Files/Finder
+package: finder (apps/finder/resources.json)
+rip-out shape: whole-package and atomic. The generated include covers every extracted resource of the package, so the include's granularity is the rip-out's granularity; a per-family check is verification over that set, not a gating step.
+ours: 195 resources — extract 159, keep ours 4 customised, 32 ours-only, 0 ambiguous, 0 held, 0 native-code
+disc: 693 resources, 530 whose (type, id) we do not name
+
+by type
+  type   ours  extract  customised  ours-only  ambiguous   held  native
+  ALRT      8        7           0          1          0      0       0
+  CURS      7        7           0          0          0      0       0
+  DITL     12       11           0          1          0      0       0
+  DLOG      3        3           0          0          0      0       0
+  ICN#      9        8           0          1          0      0       0
+  MENU      5        0           0          5          0      0       0
+  PICT     23       23           0          0          0      0       0
+  SICN      7        7           0          0          0      0       0
+  SIZE      1        0           1          0          0      0       0
+  STR       8        4           0          4          0      0       0
+  STR#      9        1           1          7          0      0       0
+  WIND      2        0           0          2          0      0       0
+  acur      1        1           0          0          0      0       0
+  cicn      7        7           0          0          0      0       0
+  cpUI      1        0           0          1          0      0       0
+  dctb      1        1           0          0          0      0       0
+  fdmn      4        4           0          0          0      0       0
+  fmap     13       12           1          0          0      0       0
+  fmnu     22       22           0          0          0      0       0
+  fvew      4        3           1          0          0      0       0
+  gInf      4        0           0          4          0      0       0
+  gSum      1        0           0          1          0      0       0
+  icl4      6        5           0          1          0      0       0
+  icl8      6        5           0          1          0      0       0
+  ics#     10        9           0          1          0      0       0
+  ics4     10        9           0          1          0      0       0
+  ics8     10        9           0          1          0      0       0
+  pltt      1        1           0          0          0      0       0
+
+keep ours
+  ours-only   ALRT     2001  Native Finder error ALRT     ERROR_ALRT  ()
+  ours-only   DITL     2001  Native Finder error DITL     ERROR_DITL  ()
+  ours-only   ICN#     3967                               ORIGINAL_VISUAL_49434E23_3967  ()
+  ours-only   MENU     1252  Native Finder File menu      FILE_MENU  ()
+  ours-only   MENU     1253  Native Finder Edit menu      EDIT_MENU  ()
+  ours-only   MENU     1254  Native Finder View menu      VIEW_MENU  ()
+  ours-only   MENU     1255  Native Finder Special menu   SPECIAL_MENU  ()
+  ours-only   MENU     1256  Native Finder Label menu     LABEL_MENU  ()
+  customised  SIZE       -1                               MEMORY_REQUIREMENTS  (payload differs)
+  ours-only   STR       128  Product name                 PRODUCT_NAME  ()
+  ours-only   STR      2005  Transfer recovery pending    TRANSFER_RECOVERY_PENDING  ()
+  ours-only   STR      2006  Transfer committed cleanup pending TRANSFER_COMMITTED_CLEANUP  ()
+  ours-only   STR     20022  Unknown Trash Allocation     UNKNOWN_TRASH_ALLOCATION  ()
+  ours-only   STR#      128                               DESKTOP_LABELS  ()
+  ours-only   STR#     2000  Native Finder interface strings UI_TEXT  ()
+  ours-only   STR#     2003                               GET_INFO_STRINGS  ()
+  customised  STR#     8750  Copy and Move Messages       COPY_WINDOW_STRINGS  (payload, name and attributes differ)
+  ours-only   STR#     8752  Copy and Move Window Titles  COPY_WINDOW_TITLES  ()
+  ours-only   STR#    20020  ERROR_ACTIONS                ERROR_ACTIONS  ()
+  ours-only   STR#    20021  ERROR_CAUSES                 ERROR_CAUSES  ()
+  ours-only   STR#    20030  Multiple Items information   MULTIPLE_INFO_STRINGS  ()
+  ours-only   WIND     2002  Clipboard native Finder layout CLIPBOARD_LAYOUT  ()
+  ours-only   WIND     2003  Font suitcase native Finder layout FONT_SUITCASE_LAYOUT  ()
+  ours-only   cpUI     8751  Copy Window (Finder 7.6.1 layout) COPY_WINDOW_LAYOUT  ()
+  customised  fmap    11330                               ORIGINAL_VISUAL_666D6170_11330  (payload differs)
+  customised  fvew    11511                               GET_INFO_DISK_FVEW  (attributes differ)
+  ours-only   gInf    11261                               GET_INFO_LAYOUT_11261  ()
+  ours-only   gInf    11511                               GET_INFO_DISK_GINF  ()
+  ours-only   gInf    12761                               GET_INFO_LAYOUT_12761  ()
+  ours-only   gInf    17011                               GET_INFO_LAYOUT_17011  ()
+  ours-only   gSum    20031  Multiple Items window layout MULTIPLE_INFO_LAYOUT  ()
+  ours-only   icl4     3967                               ORIGINAL_VISUAL_69636C34_3967  ()
+  ours-only   icl8     3967                               ORIGINAL_VISUAL_69636C38_3967  ()
+  ours-only   ics#     3967                               ORIGINAL_VISUAL_69637323_3967  ()
+  ours-only   ics4     3967                               ORIGINAL_VISUAL_69637334_3967  ()
+  ours-only   ics8     3967                               ORIGINAL_VISUAL_69637338_3967  ()
+
+held out of the list
+  none
+
+ambiguous — kept as ours, not extracted
+  none
+
+usage — static scan of 1272 Rust source files
+  extracted 159
+    referenced by name, literal or symbol    20
+    reachable from another extracted resource 8
+    cannot be ruled out (type looked up with a computed id) 110
+    no reference found at all                 21
+  of the referenced, 11 are named only by test code
+  excluded from the extract list on this basis: 21 (listed below; they are not extracted at all and stay in resources.json)
+  ambiguous 0 — referenced 0, no reference found 0
+  how: a resources.json symbol, a (type, id) literal in the same expression (or, where the id is computed, an id literal in the same file), or a quoted resource name, anywhere in the repository's Rust sources. Tests are included and counted separately.
+  not searchable this way: ids computed at runtime, ids read from data or from another resource, names built at runtime, classic software asking for a resource by number, and anything outside this repository. A type that is ever looked up with a computed id is therefore reported as 'cannot be ruled out', never as unused. 'No reference found' is not proof of disuse and must not be treated as one.
+
+  sample references
+    ALRT     6012  ORIGINAL_VISUAL_414C5254_6012 crates/mac-toolbox/tests/conformance/ownership.rs:672  (literal ALRT 6012)
+    CURS     6500  ORIGINAL_VISUAL_43555253_6500 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS 6500 (same file))
+    CURS     6501  ORIGINAL_VISUAL_43555253_6501 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS 6501 (same file))
+    CURS     6502  ORIGINAL_VISUAL_43555253_6502 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS 6502 (same file))
+    CURS     6503  ORIGINAL_VISUAL_43555253_6503 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS 6503 (same file))
+    CURS     6504  ORIGINAL_VISUAL_43555253_6504 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS 6504 (same file))
+    CURS     6505  ORIGINAL_VISUAL_43555253_6505 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS 6505 (same file))
+    CURS     6506  ORIGINAL_VISUAL_43555253_6506 crates/mac-toolbox/tests/cursors.rs:171  (literal CURS 6506 (same file))
+    DITL     6012  ORIGINAL_VISUAL_4449544C_6012 crates/mac-toolbox/tests/dialogs.rs:18  (literal DITL 6012)
+    ICN#    12500  ORIGINAL_VISUAL_49434E23_12500 system/examples/icons_reference.rs:22  (literal ICN# 12500 (same file))
+    ICN#    14000  ORIGINAL_VISUAL_49434E23_14000 system/examples/icons_reference.rs:22  (literal ICN# 14000 (same file))
+    PICT      128  ORIGINAL_VISUAL_50494354_128 system/tests/resource_manager_api.rs:62  (literal PICT 128)
+
+  reachable from another extracted resource
+    DITL     1260  ORIGINAL_VISUAL_4449544C_1260 read with DLOG 1260
+    DITL     5066  ORIGINAL_VISUAL_4449544C_5066 read with DLOG 5066
+    DITL     6010  ORIGINAL_VISUAL_4449544C_6010 named by ALRT 6010
+    DITL     6011  ORIGINAL_VISUAL_4449544C_6011 named by ALRT 6011
+    DITL     6013  ORIGINAL_VISUAL_4449544C_6013 named by ALRT 6013
+    DITL     6014  ORIGINAL_VISUAL_4449544C_6014 named by ALRT 6014
+    DITL     6015  ORIGINAL_VISUAL_4449544C_6015 named by ALRT 6015
+    DITL    12801  ORIGINAL_VISUAL_4449544C_12801 named by ALRT 12801
+
+  no reference found at all (review, do not delete on this alone)
+    dctb    12250                               ORIGINAL_VISUAL_64637462_12250
+    fdmn     5000                               ORIGINAL_VISUAL_66646D6E_5000
+    fdmn     5001                               ORIGINAL_VISUAL_66646D6E_5001
+    fdmn     5003                               ORIGINAL_VISUAL_66646D6E_5003
+    fdmn     5004                               ORIGINAL_VISUAL_66646D6E_5004
+    fmap      128                               ORIGINAL_VISUAL_666D6170_128
+    fmap      129                               ORIGINAL_VISUAL_666D6170_129
+    fmap      151                               ORIGINAL_VISUAL_666D6170_151
+    fmap      152                               ORIGINAL_VISUAL_666D6170_152
+    fmap     5010                               ORIGINAL_VISUAL_666D6170_5010
+    fmap     5011                               ORIGINAL_VISUAL_666D6170_5011
+    fmap     7010                               ORIGINAL_VISUAL_666D6170_7010
+    fmap    10517                               ORIGINAL_VISUAL_666D6170_10517
+    fmap    11331                               ORIGINAL_VISUAL_666D6170_11331
+    fmap    12761                               ORIGINAL_VISUAL_666D6170_12761
+    fmap    14510                               ORIGINAL_VISUAL_666D6170_14510
+    fmap    17010                               ORIGINAL_VISUAL_666D6170_17010
+    fvew    11261                               ORIGINAL_GET_INFO_VIEW_11261
+    fvew    12761                               ORIGINAL_GET_INFO_VIEW_12761
+    fvew    17011                               ORIGINAL_GET_INFO_VIEW_17011
+    pltt      128                               ORIGINAL_VISUAL_706C7474_128
+
+  cannot be ruled out, by type (count of extracted resources)
+    ALRT  6
+    DITL  2
+    DLOG  3
+    ICN#  6
+    PICT  22
+    SICN  7
+    STR   4
+    STR#  1
+    cicn  6
+    fmnu  22
+    icl4  3
+    icl8  3
+    ics#  9
+    ics4  9
+    ics8  7

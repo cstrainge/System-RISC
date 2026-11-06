@@ -70,6 +70,8 @@ pub fn generate(workspace: &Workspace) -> Result<PathBuf>
                    modules\n  restat = 1\n");
     text.push_str("\nrule apps\n  command = $xtask stage apps\n  description = applications\n  \
                    restat = 1\n");
+    text.push_str("\nrule extract\n  command = $xtask stage extract\n  description = extracted \
+                   resources\n  restat = 1\n");
     text.push_str("\nrule package\n  command = $xtask stage package\n  description = packages \
                    and boot payload\n  restat = 1\n");
     text.push_str("\nrule image\n  command = $xtask stage image\n  description = storage \
@@ -89,11 +91,18 @@ pub fn generate(workspace: &Workspace) -> Result<PathBuf>
     let definitions = borrow(&definitions);
     let guest = borrow(&guest);
     let apps = borrow(&apps);
+    // Extraction feeds every stage that compiles a package whose manifest
+    // includes generated resources: the include must exist before the package's
+    // build script reads the manifest. So the graph orders it first.
+    let extracted = extraction(workspace, &crates, &stamps)?;
+    let extract = path(&stamps.join("extract"));
+    text.push_str(&format!("\nbuild {extract}: extract | {extracted}\n"));
     for (name, roots) in [("definitions", &definitions), ("guest", &guest), ("apps", &apps)]
     {
         let inputs = source_files(workspace, &crates, roots)?;
         let inputs = inputs.iter().map(|input| path(input)).collect::<Vec<_>>().join(" ");
-        text.push_str(&format!("\nbuild {}: {name} | {inputs}\n", path(&stamps.join(name))));
+        let order = if name == "definitions" { String::new() } else { format!(" || {extract}") };
+        text.push_str(&format!("\nbuild {}: {name} | {inputs}{order}\n", path(&stamps.join(name))));
     }
     // The package stage consumes what the compile stages produced, plus the
     // resource manifests it packages and the platform record that names the
@@ -119,11 +128,14 @@ pub fn generate(workspace: &Workspace) -> Result<PathBuf>
     packaged.sort();
     packaged.dedup();
     let inputs = packaged.iter().map(|input| path(input)).collect::<Vec<_>>().join(" ");
-    text.push_str(&format!("\nbuild {}: package | {} {} {} {inputs}\n",
+    // Extraction feeds packaging: the generated include is a build product, so
+    // the graph orders it rather than asking a developer to run it.
+    text.push_str(&format!("\nbuild {}: package | {} {} {} {} {inputs}\n",
                            path(&stamps.join("package")),
                            path(&stamps.join("definitions")),
                            path(&stamps.join("guest")),
-                           path(&stamps.join("apps"))));
+                           path(&stamps.join("apps")),
+                           path(&stamps.join("extract"))));
     match image(workspace)?
     {
         Some(image) =>
@@ -203,6 +215,63 @@ fn source_files(workspace: &Workspace, crates: &Crates, roots: &[&str]) -> Resul
     files.sort();
     files.dedup();
     Ok(files)
+}
+
+/// The inputs of the extraction step: every package's extract list and the disc
+/// it names, plus the extractor's own sources so changing it re-runs the step.
+///
+/// A list names its disc by filename in the repository's `iso` directory, so a
+/// clone without the disc fails here, naming the disc and where to put it,
+/// rather than much later in a package that cannot find its include.
+fn extraction(workspace: &Workspace, crates: &Crates, stamps: &Path) -> Result<String>
+{
+    let mut packages: Vec<&crate::crates::Crate> = crates.packages_with_extract_list();
+    packages.sort_by(|left, right| left.relative.cmp(&right.relative));
+    let mut inputs = Vec::new();
+    for entry in &packages
+    {
+        let manifest = entry.manifest.as_ref().ok_or_else(|| {
+                                                   error(format!("package '{}' has an extract \
+                                                                  list but no resources.json",
+                                                                 entry.name))
+                                               })?;
+        let list = manifest.with_file_name("extract-list.json");
+        let parsed: mac_extract::ExtractList =
+            serde_json::from_slice(&fs::read(&list).map_err(|cause| {
+                                                       error(format!("cannot read {}: {cause}",
+                                                                     list.display()))
+                                                   })?).map_err(|cause| {
+                                                           error(format!("{} is not an extract \
+                                                                          list: {cause}",
+                                                                         list.display()))
+                                                       })?;
+        let disc = workspace.root().join(mac_extract::DISC_DIRECTORY).join(&parsed.iso);
+        if !disc.is_file()
+        {
+            return Err(error(format!("package '{}' takes its resources from the {}, and that \
+                                      disc is not present: expected {} in the repository's {} \
+                                      directory ({}). Download the {}, save it under exactly \
+                                      that filename there, and run the build again; it \
+                                      continues once the disc is in place",
+                                     entry.name,
+                                     parsed.description,
+                                     parsed.iso,
+                                     mac_extract::DISC_DIRECTORY,
+                                     disc.display(),
+                                     parsed.description)));
+        }
+        inputs.push(list);
+        inputs.push(disc);
+    }
+    // The extractor is an input: changing it must re-run the step.
+    if let Ok(entry) = crates.get("mac-extract")
+    {
+        inputs.extend(crate::crates::files(&entry.directory)?);
+    }
+    inputs.sort();
+    inputs.dedup();
+    let _ = stamps;
+    Ok(inputs.iter().map(|input| path(input)).collect::<Vec<_>>().join(" "))
 }
 
 /// The platform record and everything it includes.

@@ -76,6 +76,10 @@ pub const RESOLVE_PATH: u32 = 48;
 pub const OPEN_PATH: u32 = 49;
 /// Query the actual executable alias; output/transferred contain UTF-8 bytes.
 pub const CURRENT_EXECUTABLE_PATH: u32 = 50;
+/// Item name of the named-pipe folder under the volume's blessed folder. One
+/// spelling shared by the image builder, which creates it, and the resident
+/// File Manager, which enumerates it and records its identity.
+pub const PIPES_FOLDER_NAME: &str = "Pipes";
 pub const OPEN_READ: u32 = 1;
 pub const OPEN_WRITE: u32 = 2;
 pub const OPEN_APPEND: u32 = 4;
@@ -156,7 +160,13 @@ pub struct DirectoryScanCursor
     pub index:     u32,
     pub traversed: u32,
     pub state:     u32,
-    pub reserved:  u32
+    /// Revision of the resident pipe registry for a scan of the Pipes folder,
+    /// zero for every ordinary directory. A registration or destruction while
+    /// the enumeration is open makes the continuation stale.
+    pub reserved:  u32,
+    /// Row offset into the pipe registry once the catalog portion of the Pipes
+    /// folder is exhausted. Zero until then, and unused elsewhere.
+    pub registry:  u32
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]

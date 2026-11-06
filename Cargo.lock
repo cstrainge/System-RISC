@@ -45,6 +45,7 @@ dependencies = [
  "mac-build",
  "mac-filesystem",
  "mac-hfs",
+ "mac-sdhci",
  "serde_json",
 ]
 
@@ -210,6 +211,18 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "extract-list"
+version = "0.1.0"
+dependencies = [
+ "hfs-b",
+ "mac-build",
+ "mac-formats",
+ "mac-hfs",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -514,6 +527,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-extract"
+version = "0.1.0"
+dependencies = [
+ "hfs-b",
+ "mac-formats",
+ "mac-hfs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mac-file-source-interface"
 version = "0.1.0"
 dependencies = [
@@ -550,6 +574,15 @@ dependencies = [
  "mac-toolbox",
  "spinning_top",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "mac-fonts"
+version = "0.1.0"
+dependencies = [
+ "mac-formats",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -658,6 +691,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-sdhci"
+version = "0.1.0"
+dependencies = [
+ "mac-block",
+]
+
+[[package]]
 name = "mac-sit"
 version = "0.1.0"
 dependencies = [
@@ -753,6 +793,7 @@ dependencies = [
  "toolbox-inspection",
  "toolbox-memory",
  "toolbox-menus",
+ "toolbox-pipes",
  "toolbox-power",
  "toolbox-processes",
  "toolbox-quickdraw",
@@ -781,6 +822,10 @@ version = "0.1.0"
 dependencies = [
  "mac-module",
 ]
+
+[[package]]
+name = "mac-videocore-fb"
+version = "0.1.0"
 
 [[package]]
 name = "mac-virtio-console"
@@ -1360,6 +1405,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "toolbox-pipes"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+]
+
+[[package]]
 name = "toolbox-power"
 version = "0.1.0"
 dependencies = [
@@ -1499,6 +1552,18 @@ dependencies = [
  "mac-driver",
  "mac-host-protocol",
  "mac-virtio-console",
+ "spinning_top",
+]
+
+[[package]]
+name = "videocore-framebuffer"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-video-interface",
+ "mac-videocore-fb",
  "spinning_top",
 ]
 
@@ -1658,6 +1723,7 @@ dependencies = [
  "mac-abi",
  "mac-build",
  "mac-entropy-interface",
+ "mac-extract",
  "mac-file-types",
  "mac-formats",
  "mac-hfs-b",

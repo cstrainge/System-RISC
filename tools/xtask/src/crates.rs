@@ -215,6 +215,21 @@ impl Crates
             .ok_or_else(|| error(format!("'{name}' is not a package in this workspace")))
     }
 
+    /// Packages that declare an extract list beside their manifest. The list's
+    /// presence is what says a package takes resources from a disc, so a new
+    /// package needs a file, not a change to the build.
+    pub fn packages_with_extract_list(&self) -> Vec<&Crate>
+    {
+        self.packages
+            .values()
+            .filter(|entry| {
+                entry.manifest
+                     .as_ref()
+                     .is_some_and(|manifest| manifest.with_file_name("extract-list.json").is_file())
+            })
+            .collect()
+    }
+
     /// The named packages, in the order given, after checking each exists.
     pub fn select(&self, names: &[String]) -> Result<Vec<&Crate>>
     {

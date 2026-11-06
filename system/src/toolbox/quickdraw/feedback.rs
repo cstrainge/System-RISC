@@ -465,7 +465,7 @@ impl Feedback
     }
 
     pub(crate) fn transition(&self, previous: &Self, scene: &[u32], front: &mut [u32],
-                             width: usize, rect: Rect)
+                             width: usize, rect: Rect, mut damage: impl FnMut(Rect))
                              -> usize
     {
         if self == previous
@@ -473,6 +473,7 @@ impl Feedback
             return 0;
         }
         let mut changed = 0;
+        let mut run = Rect::ZERO;
         // Visit only each changed object's actual pixels. Repeated overlap is
         // idempotent: compute from clean scene, never XOR a pixel twice.
         let mut pixel = |x, y| {
@@ -482,6 +483,33 @@ impl Feedback
             {
                 front[at] = next;
                 changed += 1;
+                let (x, y) = (x as i16, y as i16);
+                // The tracking pattern touches alternate pixels. Report narrow
+                // edge spans, including the one-pixel gaps in the pattern.
+                if !run.is_empty()
+                   && run.top == y
+                   && run.bottom == y + 1
+                   && x >= run.left
+                   && i32::from(x) <= i32::from(run.right) + 1
+                {
+                    run.right = run.right.max(x + 1);
+                }
+                else if !run.is_empty()
+                          && run.left == x
+                          && run.right == x + 1
+                          && y >= run.top
+                          && i32::from(y) <= i32::from(run.bottom) + 1
+                {
+                    run.bottom = run.bottom.max(y + 1);
+                }
+                else
+                {
+                    if !run.is_empty()
+                    {
+                        damage(run);
+                    }
+                    run = Rect::new(x, y, x + 1, y + 1);
+                }
             }
         };
         for value in [previous, self]
@@ -507,6 +535,10 @@ impl Feedback
                     outline.visit(rect, &mut pixel);
                 }
             }
+        }
+        if !run.is_empty()
+        {
+            damage(run);
         }
         changed
     }

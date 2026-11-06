@@ -12,6 +12,7 @@ mac-host-clipboard.workspace = true
 mac-module.workspace = true
 mac-entropy-interface.workspace = true
 mac-build.workspace = true
+mac-extract = { path = "../mac-extract" }
 mac-formats.workspace = true
 serde_json.workspace = true
 serde.workspace = true
