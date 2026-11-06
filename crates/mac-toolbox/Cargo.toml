@@ -12,6 +12,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("systemr
 
 [dependencies]
 toolbox-entropy = { path = "../../toolbox/entropy" }
+toolbox-pipes = { path = "../../toolbox/pipes" }
 toolbox-power = { path = "../../toolbox/power" }
 toolbox-inspection = { path = "../../toolbox/inspection" }
 toolbox-drag = { path = "../../toolbox/drag" }

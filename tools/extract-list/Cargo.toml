@@ -1,0 +1,14 @@
+[package]
+name = "extract-list"
+description = "TEMPORARY list-builder scaffolding (spec A2/A3); deleted once extract-list.json exists"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mac-build.workspace = true
+mac-formats.workspace = true
+mac-hfs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hfs-b = { path = "../hfs-b" }

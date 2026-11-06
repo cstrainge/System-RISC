@@ -82,7 +82,6 @@
       "slots": [
         0,
         3,
-        4,
         7
       ],
       "attach": [
@@ -124,6 +123,12 @@
     },
     "network": {
       "kind": "none"
+    },
+    "clipboard": {
+      "transport": {
+        "kind": "virtio-mmio",
+        "slot": 4
+      }
     },
     "screen": {
       "interactive": "window",

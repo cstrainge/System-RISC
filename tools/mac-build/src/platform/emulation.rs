@@ -170,6 +170,15 @@ pub struct Entropy
     pub transport: Option<Transport>
 }
 
+/// Host clipboard connection for graphical launches. Windowless launches have
+/// no host clipboard peer and omit this device.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Clipboard
+{
+    pub transport: Transport
+}
+
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetworkKind
@@ -482,6 +491,8 @@ pub struct Definition
     #[serde(default)]
     pub entropy:     Option<Entropy>,
     #[serde(default)]
+    pub clipboard:   Option<Clipboard>,
+    #[serde(default)]
     pub network:     Network,
     pub screen:      Screen,
     pub console:     Console,
@@ -742,7 +753,8 @@ impl Definition
             [("display", self.display.as_ref().and_then(|device| device.transport.as_ref())),
              ("keyboard", self.keyboard.as_ref().map(|device| &device.transport)),
              ("pointer", self.pointer.as_ref().map(|device| &device.transport)),
-             ("entropy", self.entropy.as_ref().and_then(|device| device.transport.as_ref()))];
+             ("entropy", self.entropy.as_ref().and_then(|device| device.transport.as_ref())),
+             ("clipboard", self.clipboard.as_ref().map(|device| &device.transport))];
         for (field, transport) in
             devices.into_iter().filter_map(|(field, transport)| Some((field, transport?)))
         {

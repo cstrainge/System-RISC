@@ -1,6 +1,10 @@
 # QEMU Cocoa scaling
 
-The macOS launcher uses `-display cocoa,zoom-to-fit=off,scale=2` only when the
+The `cargo xtask` macOS launcher uses
+`-display cocoa,zoom-to-fit=off,scale=1.5` for fixed 1.5x window zoom.
+Headless launches do not use this option.
+
+The legacy Python macOS launcher uses `-display cocoa,zoom-to-fit=off,scale=2` only when the
 whole 1600×1200 window content area fits on the active screen. It queries
 AppKit once at launch, excludes the menu bar and Dock, and reserves the Cocoa
 window's title bar. Otherwise it requests `scale=1` for an 800×600 content area.

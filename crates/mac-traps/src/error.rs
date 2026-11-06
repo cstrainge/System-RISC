@@ -86,6 +86,10 @@ pub enum Error
     Cancelled,
     CorruptData,
     StorageUnavailable,
+    /// The pipe could not proceed without blocking.
+    WouldBlock,
+    /// The pipe's readers are gone; a write cannot be accepted.
+    BrokenPipe,
     Archive(archive::ArchiveError),
     ServiceRequirement(ServiceRequirementFailure),
     EventNotEnabled,
@@ -124,6 +128,8 @@ impl Error
             OPERATION_CANCELLED => Self::Cancelled,
             CORRUPT_DATA => Self::CorruptData,
             STORAGE_UNAVAILABLE => Self::StorageUnavailable,
+            WOULD_BLOCK => Self::WouldBlock,
+            BROKEN_PIPE => Self::BrokenPipe,
             events::EVENT_NOT_ENABLED => Self::EventNotEnabled,
             scrap::NO_TYPE_ERR => Self::ScrapTypeUnavailable,
             memory::MEM_FULL_ERR => Self::MemoryFull,
@@ -166,6 +172,8 @@ impl Error
             Self::Cancelled => OPERATION_CANCELLED,
             Self::CorruptData => CORRUPT_DATA,
             Self::StorageUnavailable => STORAGE_UNAVAILABLE,
+            Self::WouldBlock => WOULD_BLOCK,
+            Self::BrokenPipe => BROKEN_PIPE,
             Self::Archive(error) => error.status(),
             Self::ServiceRequirement(error) => error.cause.error().status(),
             Self::EventNotEnabled => events::EVENT_NOT_ENABLED,
@@ -209,6 +217,11 @@ impl core::fmt::Display for Error
             Self::Cancelled => f.write_str("operation cancelled"),
             Self::CorruptData => f.write_str("file or catalog data is damaged or malformed"),
             Self::StorageUnavailable => f.write_str("backing storage is unavailable"),
+            Self::WouldBlock =>
+            {
+                f.write_str("pipe has no space or no data in non-blocking mode; retry")
+            }
+            Self::BrokenPipe => f.write_str("pipe has no readers; the write cannot be accepted"),
             Self::Archive(error) => core::fmt::Display::fmt(error, f),
             Self::ServiceRequirement(error) => error.fmt(f),
             Self::EventNotEnabled => f.write_str("event type is disabled by the OS event mask"),

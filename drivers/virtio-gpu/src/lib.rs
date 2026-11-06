@@ -227,7 +227,10 @@ impl Engine
     fn service(&mut self, device: &mut impl Hardware, input: &[u8], output: &mut [u8])
                -> Result<Completion>
     {
-        let damage = Damage::decode(input).ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        if input.len() > Damage::BYTES * Damage::MAX_RECTS || input.len() % Damage::BYTES != 0
+        {
+            return Err(Error(mac_abi::BAD_ARGUMENT));
+        }
         let (_, debounce) = self.attached.as_mut().ok_or(Error(mac_abi::NOT_FOUND))?;
         if output.len() < Poll::BYTES
         {
@@ -238,9 +241,9 @@ impl Engine
         {
             debounce.observe(host, now);
         }
-        if damage.width != 0 && damage.height != 0
+        for rect in input.chunks_exact(Damage::BYTES)
         {
-            device.present(damage)?;
+            device.present(Damage::decode(rect).ok_or(Error(mac_abi::BAD_ARGUMENT))?)?;
         }
         let poll = Poll { settled: debounce.settled(now) };
         output[..Poll::BYTES].copy_from_slice(&poll.encode());
