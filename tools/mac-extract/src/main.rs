@@ -42,13 +42,11 @@ fn run() -> mac_extract::Result<ExitCode>
         "extract" =>
         {
             let rest = &args[1..];
-            let package = option(rest, "--package").ok_or_else(|| {
-                                                       mac_extract::error("--package is required")
-                                                   })?;
             let list =
                 option(rest, "--list").ok_or_else(|| mac_extract::error("--list is required"))?;
             let check = rest.iter().any(|argument| argument == "--check");
-            mac_extract::extract(&PathBuf::from(package), &PathBuf::from(list), check)
+            mac_extract::extract(&PathBuf::from(list), check)?;
+            Ok(ExitCode::SUCCESS)
         }
         "help" | "--help" | "-h" =>
         {

@@ -56,46 +56,6 @@ pub(super) fn expand(path: &Path, document: &mut Value) -> Result<Vec<PathBuf>>
     Ok(state.files)
 }
 
-/// Remove every include entry from a resources array without resolving it,
-/// reporting the paths named. Used by a consumer that must read the manifest
-/// before the includes exist; the entries are dropped because a deferred view has
-/// no resources to expand them into.
-pub(super) fn defer(path: &Path, document: &mut Value) -> Result<Vec<PathBuf>>
-{
-    let Some(object) = document.as_object_mut()
-    else
-    {
-        return Ok(Vec::new());
-    };
-    let Some(Value::Array(entries)) = object.get_mut(RESOURCES)
-    else
-    {
-        return Ok(Vec::new());
-    };
-    let directory = path.parent().unwrap_or(Path::new(""));
-    let mut files = Vec::new();
-    let mut kept = Vec::with_capacity(entries.len());
-    for entry in entries.drain(..)
-    {
-        match entry.as_object().and_then(|map| map.get(INCLUDE))
-        {
-            Some(Value::String(include)) =>
-            {
-                files.push(directory.join(include));
-            }
-            Some(_) =>
-            {
-                return Err(error(format!("the '{INCLUDE}' entry in {} must be a string path \
-                                          to a resources file",
-                                         path.display())));
-            }
-            None => kept.push(entry)
-        }
-    }
-    *entries = kept;
-    Ok(files)
-}
-
 struct State
 {
     /// The package manifest's directory; included payload paths are rebased onto it.
@@ -434,39 +394,6 @@ mod tests
         assert_eq!(Path::new(path), Path::new("extracted").join("asset.bin"), "{path}");
         assert_eq!(fs::read(root.join("resources.json").parent().unwrap().join(path)).unwrap(),
                    b"hello");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_deferred_read_skips_the_include_and_reports_it()
-    {
-        let root = workspace("deferred");
-        write(&root,
-              "extracted_resources.json",
-              &format!("{{\"resources\":[{}]}}",
-                       resource("STR ", 1, "GENERATED", r#"{"format":"hex","hex":"41"}"#)));
-        write(&root,
-              "resources.json",
-              r#"{"archive":true,"name":"Test","file_type":"RSRC","creator":"TEST",
-                  "role":"code_resource","abi_version":1,"description":"deferred fixture",
-                  "resources":[{"include":"extracted_resources.json"},
-                               {"type":"STR ","id":2,"symbol":"OURS","payload":{"format":"hex","hex":"42"}}]}"#);
-        let path = root.join("resources.json");
-        let deferred = crate::Manifest::read_deferred(&path).unwrap();
-        assert_eq!(deferred.resources.len(),
-                   1,
-                   "the include contributes nothing to a deferred view");
-        assert_eq!(deferred.resources[0].symbol, "OURS");
-        assert_eq!(deferred.include_files(),
-                   [root.join("extracted_resources.json")].as_slice(),
-                   "the deferred file is reported so the caller knows what it did not see");
-        // A deferred read works when the include is absent, which is the state a
-        // fresh checkout is in before extraction has run.
-        fs::remove_file(root.join("extracted_resources.json")).unwrap();
-        let again = crate::Manifest::read_deferred(&path).unwrap();
-        assert_eq!(again.resources.len(), 1);
-        assert!(crate::Manifest::read(&path).is_err(),
-                "the complete read still requires the include");
         fs::remove_dir_all(root).unwrap();
     }
 

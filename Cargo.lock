@@ -485,7 +485,6 @@ name = "mac-extract"
 version = "0.1.0"
 dependencies = [
  "hfs-b",
- "mac-build",
  "mac-formats",
  "mac-hfs",
  "serde",
