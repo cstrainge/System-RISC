@@ -3,7 +3,8 @@
 Status: incremental implementation, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
 The bounded [native File Manager foundation](NATIVE-FILE-IO.md) has finite target
 observations. Basic std File/cwd adapters and the deliberate GUI null-stream
-profile are under target qualification; real CLAP streams and pipes remain future work.
+profile are under target qualification; CLAP streams remain future work, while
+the pipes facility they will bind to ships and is proven in the guest.
 The goal is ordinary `std` for every native userspace application, including
 Finder and all `apps/*`; userspace applications must no longer need `#![no_std]`,
 `#![no_main]`, a handwritten `_start` or a panic-handler macro. Toolbox libraries
@@ -430,13 +431,14 @@ qualification; earlier silent-Err observations describe the previous policy.
 
 These semantics are the graphical application contract, not a real output
 stream, interactive input, serial console or CLAP acceptance. A future CLAP
-profile must bind actual session endpoints before it is supported. Full pipe
-functionality is specified in [Pipes](PIPES.md). There is no resident or kernel
+profile must bind actual session endpoints before it is supported. Byte transport
+already exists: [Pipes](PIPES.md) is a resident Toolbox facility with its own
+native trap, not a second kernel implementation, and its transport, `Pipes`
+folder and open-as-connect are exercised in the guest by `cargo xtask boot-check`.
+There is no resident or kernel
 pipe stub in this tree to replace: the only stub is the null standard-stream
-profile above, and it stays for the graphical profile. Pipes are a resident
-Toolbox facility with its own native trap and are not a second kernel
-implementation. Redirection, pipe readiness/backpressure and lifecycle remain
-deferred to that specification.
+profile above, and it stays for the graphical profile. What remains deferred is
+the std-side binding: redirection, pipe readiness/backpressure and lifecycle.
 
 
 ### Combined Control Suite observation — 2026-11-02

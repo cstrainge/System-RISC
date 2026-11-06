@@ -101,16 +101,34 @@ bound by type rather than extracted from an original resource.
 
 ## What this means for a Pipes folder
 
-A `Pipes` folder is one entry in that table — a folder type, a parent, and an
-icon ID — and nothing in the Finder. It should not be an eighth string in the
-existing match, because that would add a row to the table that has to be
-duplicated before anything outside the Finder can recognise the folder.
+A `Pipes` folder shipped before the type-based design did. It is a real directory
+the image builder creates under the blessed folder, and it draws its own glyph —
+family `-30002` — from the same name-keyed table the other System folders use,
+via `quickdraw::icons::standard::for_blessed_folder`. Its items are named pipes,
+which draw family `-30003` through a `PIPE`/`PIPE` `BNDL`/`FREF` type bundle
+rather than through any Finder-side table. `docs/PIPES.md` is the facility's
+contract and `docs/APPLICATION-ICONS.md` records the families.
 
-It is not added now. There is no producer of such a folder in this tree: the pipes
-facility is specified and not implemented, so a type and an icon for it would be a
-registration with no consumer — dead configuration, which this project removes
-rather than adds. The table is the right place for it on the day the folder is
-created by the facility that owns it.
+So the entry in the name-keyed table is the eighth string this section said it
+should not be. That is a deliberate, recorded step and not the design's end
+state: it was the change that fits the folder the System actually creates today,
+and it costs one line, where a type would have cost a new folder attribute, the
+writer and reader of that attribute, and a migration for every existing volume.
+
+**The type-based design remains open.** The gain it offered is real and unclaimed:
+a type survives a rename, is not claimed by a same-named folder elsewhere, and
+works at any depth, none of which a name under one parent gives. Two things are
+needed before it can replace the name: the folder attribute itself, and a decision
+about what an untyped `System Folder/Fonts` on an existing volume means. Until
+then the name is the identity for all eight folders, and the authority for each
+name lives in the table.
+
+**Seven of those eight names have no declared constant.** `Pipes` uses
+`mac_abi::files::PIPES_FOLDER_NAME`, but `Drivers`, `Fonts`, `Extensions`,
+`Control Panels`, `Preferences`, `Startup Items` and `Apple Menu Items` are
+literals in the table *and* again at the creation site in
+`tools/xtask/src/disk.rs`, so each pair has to agree by inspection. A rename in
+one place silently stops matching; nothing fails to compile.
 
 ## Renaming, decided
 
