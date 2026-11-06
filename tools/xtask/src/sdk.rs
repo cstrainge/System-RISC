@@ -173,24 +173,24 @@ fn pin(root: &Path, platform: &mac_build::platform::Platform) -> Result<Pin>
                                         })?;
 
     let mut pin: Pin = serde_json::from_str(&text).map_err(|cause| {
-                                                        error(format!("{} is not a valid compiler \
-                                                                       pin: {cause}",
-                                                                      path.display()))
-                                                    })?;
+                                                      error(format!("{} is not a valid compiler \
+                                                                     pin: {cause}",
+                                                                    path.display()))
+                                                  })?;
     // A platform states which standard-library target it needs; the pin states
     // which ones it can build. Selecting here keeps every later step working
     // against one target and one private sysroot, and refuses a platform whose
     // target this pin cannot produce rather than building a foreign library.
     let selected = platform.std_target.clone().ok_or_else(|| {
-                                                       error(format!("platform {} declares no std \
-                                                                      target, so it cannot install \
-                                                                      a standard library",
-                                                                     platform.name))
-                                                   })?;
+                                                   error(format!("platform {} declares no std \
+                                                                  target, so it cannot install a \
+                                                                  standard library",
+                                                                 platform.name))
+                                               })?;
     if !pin.targets.iter().any(|candidate| *candidate == selected)
     {
-        return Err(error(format!("platform {} declares std target {selected} but {} builds only \
-                                  {}",
+        return Err(error(format!("platform {} declares std target {selected} but {} builds \
+                                  only {}",
                                  platform.name,
                                  path.display(),
                                  pin.targets.join(", "))));
@@ -222,45 +222,60 @@ pub fn installed(listing: &str, toolchain: &str) -> bool
 /// if it is not already current.
 ///
 /// This is the only place the build mutates the developer's rustup
-/// installation, so it takes the workspace's toolchain lock and only writes
-/// when something is actually missing.
+/// installation, and that installation belongs to the machine rather than to a
+/// checkout. Several worktrees of this repository build at once, so one
+/// `rustup` install running against the shared toolchain deletes files another
+/// install is writing; an interrupted pair leaves a subset of the toolchain
+/// gone, which reads as "can't find crate for core" long afterwards. The lock
+/// therefore lives beside the toolchain it protects, and what is missing is read
+/// again under it, because that answer can change while a process waits.
 pub fn prerequisites(workspace: &Workspace) -> Result<()>
 {
     let pin = pin(workspace.root(), &workspace.platform)?;
 
-    let listing = run_output(rustup(workspace.root(), &["toolchain", "list"]))?;
-    let missing_toolchain = !installed(&listing, &pin.rustup_toolchain);
-
-    if missing_toolchain
+    // A healthy toolchain is the common case, and needing nothing is not a
+    // decision that can race, so the fast path takes no lock.
+    if let Some(damage) = incomplete(workspace, &pin)?
     {
-        let _lock = toolchain_lock(workspace.root())?;
-
-        println!("installing the pinned toolchain {}", pin.rustup_toolchain);
-
-        let mut command = rustup(workspace.root(),
-                                 &["toolchain", "install", &pin.rustup_toolchain, "--profile",
-                                   "minimal"]);
-        command.args(["--component", "rust-src"]);
-
-        let _ = run(&mut command)?;
+        // A damaged toolchain is refused, not reinstalled here. This program is
+        // running under the very toolchain it would have to remove, and the
+        // running compiler holds those files open, so the uninstall fails with
+        // "access is denied" instead of repairing anything. Saying what is wrong
+        // and what fixes it is the only thing this process can do from inside.
+        return Err(damaged(workspace, &pin, &damage));
     }
-    else
+
+    // A target this checkout needs but does not have is added rather than
+    // repaired by reinstalling: `target add` is additive and leaves the other
+    // targets alone, so a checkout that builds two platforms alternately
+    // installs each one once instead of reinstalling the toolchain back and
+    // forth.
+    if !standard_library(&guest_library(workspace, &pin)?)
     {
-        // The target is a JSON specification this repository owns, so it is
-        // built from source rather than added as a rustup target; what rustup
-        // has to supply is that source.
-        let components = run_output(rustup(workspace.root(),
-                                           &["component", "list", "--installed", "--toolchain",
-                                             &pin.rustup_toolchain]))?;
-        if !components.lines().any(|line| line.trim() == "rust-src")
+        // Two worktrees building different platforms would otherwise install
+        // targets at the same time, which is the same write-write race the
+        // toolchain install has.
+        let _lock = toolchain_lock()?;
+
+        let library = guest_library(workspace, &pin)?;
+        if !standard_library(&library)
         {
-            let _lock = toolchain_lock(workspace.root())?;
+            println!("installing the {} standard library", workspace.platform.rust_target);
 
-            println!("installing the rust-src component for {}", pin.rustup_toolchain);
+            let _ = run(&mut add_target(workspace, &pin))?;
 
-            let _ = run(&mut rustup(workspace.root(),
-                                    &["component", "add", "rust-src", "--toolchain",
-                                      &pin.rustup_toolchain]))?;
+            // `target add` answers from rustup's own record, and that record
+            // outlives deleted files: it reports "up to date" over a library
+            // that is gone. Only reinstalling the toolchain can restore that,
+            // and by then it has to happen outside this build.
+            if !standard_library(&library)
+            {
+                return Err(damaged(workspace,
+                                   &pin,
+                                   &format!("the {} standard library is missing from {}",
+                                            workspace.platform.rust_target,
+                                            library.display())));
+            }
         }
     }
 
@@ -282,16 +297,172 @@ pub fn prerequisites(workspace: &Workspace) -> Result<()>
     Ok(())
 }
 
-fn toolchain_lock(root: &Path) -> Result<fs::File>
+/// What the pinned toolchain is missing, read from the filesystem.
+///
+/// `rustup component list` answers from its own record, and that record outlives
+/// deleted files: an interrupted install leaves `rust-std-… (installed)` over an
+/// empty `lib` directory, after which `component add` reports "up to date" and
+/// `component remove` rolls back on a missing file. The compiler is asked where
+/// its libraries are instead, and the answer is checked, because that is what a
+/// build will actually find.
+fn incomplete(workspace: &Workspace, pin: &Pin) -> Result<Option<String>>
 {
-    let path = mac_build::paths::build_dir(root).join("toolchain.lock");
+    let listing = run_output(rustup(workspace.root(), &["toolchain", "list"]))?;
+    if !installed(&listing, &pin.rustup_toolchain)
+    {
+        return Ok(Some(format!("the {} toolchain is not installed", pin.rustup_toolchain)));
+    }
 
-    fs::create_dir_all(path.parent().expect("the build directory has a parent"))?;
+    let sysroot = PathBuf::from(run_output(print(workspace, pin, &["sysroot"]))?.trim());
+    let host = PathBuf::from(run_output(print(workspace, pin, &["target-libdir"]))?.trim());
 
-    let file = fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path)?;
+    if !standard_library(&host)
+    {
+        return Ok(Some(format!("the host standard library is missing from {}", host.display())));
+    }
+
+    let source = sysroot.join("lib").join("rustlib").join("src");
+    if !source.is_dir()
+    {
+        return Ok(Some(format!("the rust-src source tree is missing from {}", source.display())));
+    }
+
+    // The library this build links guests against is a rustup target, supplied
+    // separately from the compiler. A missing one is added by `prerequisites`
+    // rather than repaired here, because installing a target is additive and
+    // does not cost a reinstall.
+
+    Ok(None)
+}
+
+/// Install the guest standard library this platform links against.
+fn add_target(workspace: &Workspace, pin: &Pin) -> Command
+{
+    rustup(workspace.root(),
+           &["target", "add", &workspace.platform.rust_target, "--toolchain",
+             &pin.rustup_toolchain])
+}
+
+/// The directory holding the standard library this platform's guest code links
+/// against, which rustup supplies as a target separate from the compiler.
+fn guest_library(workspace: &Workspace, pin: &Pin) -> Result<PathBuf>
+{
+    let sysroot = PathBuf::from(run_output(print(workspace, pin, &["sysroot"]))?.trim());
+
+    Ok(sysroot.join("lib").join("rustlib").join(&workspace.platform.rust_target).join("lib"))
+}
+
+/// Ask the pinned compiler one of its `--print` questions.
+fn print(workspace: &Workspace, pin: &Pin, question: &[&str]) -> Command
+{
+    let mut arguments = vec!["run", pin.rustup_toolchain.as_str(), "rustc", "--print"];
+    arguments.extend_from_slice(question);
+
+    rustup(workspace.root(), &arguments)
+}
+
+/// Whether `libdir` holds the compiled `core` a build links against.
+fn standard_library(libdir: &Path) -> bool
+{
+    fs::read_dir(libdir).map(|entries| {
+                            entries.flatten().any(|entry| {
+                                                 let name = entry.file_name()
+                                                                 .to_string_lossy()
+                                                                 .into_owned();
+                                                 name.starts_with("libcore-")
+                                                 && name.ends_with(".rlib")
+                                             })
+                        })
+                        .unwrap_or(false)
+}
+
+/// The message a damaged toolchain deserves: what is wrong, and the commands
+/// that put it right.
+///
+/// `component add` cannot help — rustup compares its record, finds the component
+/// installed, and reports "up to date" while the files stay absent — so the
+/// remedy is a reinstall, which cannot happen here for the reason given where
+/// this is called.
+fn damaged(workspace: &Workspace, pin: &Pin, damage: &str) -> Box<dyn std::error::Error>
+{
+    let toolchain = &pin.rustup_toolchain;
+    let components =
+        declared_components(workspace.root()).unwrap_or_default()
+                                             .iter()
+                                             .map(|component| format!(" --component {component}"))
+                                             .collect::<String>();
+
+    error(format!("the pinned toolchain {toolchain} is incomplete: {damage}\n\nRepair it outside \
+                   any build, then run this again:\n\x20   rustup toolchain uninstall \
+                   {toolchain}\n\x20   rustup toolchain install {toolchain} --profile \
+                   minimal{components}\n\x20   rustup target add {} --toolchain {toolchain}",
+                  workspace.platform.rust_target))
+}
+
+/// The components `rust-toolchain.toml` declares.
+///
+/// That file is the declared contract, so it decides what a reinstall restores:
+/// adding a component to the pin is then enough here, rather than a second list
+/// in this program drifting from it.
+fn declared_components(root: &Path) -> Result<Vec<String>>
+{
+    let path = root.join("rust-toolchain.toml");
+    let text = fs::read_to_string(&path).map_err(|why| {
+                                            error(format!("cannot read {}: {why}", path.display()))
+                                        })?;
+    let document: toml::Value =
+        toml::from_str(&text).map_err(|why| {
+                                 error(format!("{} is not valid TOML: {why}", path.display()))
+                             })?;
+
+    Ok(document.get("toolchain")
+               .and_then(|toolchain| toolchain.get("components"))
+               .and_then(toml::Value::as_array)
+               .map(|entries| {
+                   entries.iter().filter_map(toml::Value::as_str).map(str::to_owned).collect()
+               })
+               .unwrap_or_default())
+}
+
+/// The machine-wide lock guarding the developer's rustup installation.
+///
+/// It sits beside the toolchain rather than in the build directory, because the
+/// toolchain is shared by every checkout. A per-checkout lock gave each worktree
+/// its own permission to write, and concurrent installs then deleted each
+/// other's files.
+fn toolchain_lock() -> Result<fs::File>
+{
+    let home = rustup_home()?;
+
+    fs::create_dir_all(&home)?;
+
+    let file = fs::OpenOptions::new().create(true)
+                                     .write(true)
+                                     .truncate(false)
+                                     .open(home.join("sr-toolchain.lock"))?;
     file.lock()?;
 
     Ok(file)
+}
+
+/// The rustup home, which is where the toolchain the lock protects lives.
+fn rustup_home() -> Result<PathBuf>
+{
+    if let Some(home) = env::var_os("RUSTUP_HOME")
+    {
+        return Ok(PathBuf::from(home));
+    }
+
+    let home =
+        env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")).ok_or_else(|| {
+                                                                       error("neither RUSTUP_HOME \
+                                                                              nor USERPROFILE/\
+                                                                              HOME is set, so the \
+                                                                              toolchain lock has \
+                                                                              no home")
+                                                                   })?;
+
+    Ok(PathBuf::from(home).join(".rustup"))
 }
 
 /// Prepare the private SDK and return it, reusing a prepared tree whose inputs
@@ -626,7 +797,12 @@ pub(super) fn build_std(workspace: &Workspace, sdk: &Private) -> Result<()>
            // Every guest crate's build script resolves its platform from this
            // variable. A std build started without it would compile against the
            // default platform's record, which is a different machine.
-           .env(mac_build::platform::PLATFORM_ENV, &workspace.platform.name);
+           .env(mac_build::platform::PLATFORM_ENV, &workspace.platform.name)
+           // A nested cargo must not install a component on its own: the toolchain
+           // is shared by every checkout, so an install from inside a build races
+           // every other build and deletes their components. Installation happens
+           // once, under the lock in the rustup home.
+           .env("RUSTUP_AUTO_INSTALL", "0");
 
     for variable in SCRUBBED
     {
@@ -897,6 +1073,7 @@ pub(super) fn applications(workspace: &Workspace, apps: &[App]) -> Result<Vec<Va
            .env(PROXY_ENV, &sdk.rustc)
            .env(SYSROOT_ENV, &sdk.sysroot)
            .env("RUSTUP_TOOLCHAIN", &workspace.toolchain)
+           .env("RUSTUP_AUTO_INSTALL", "0")
            .env("RUST_TARGET_PATH", sdk.target.parent().expect("the target spec has a parent"))
            .env("CARGO_ENCODED_RUSTFLAGS", "-C\u{1f}relocation-model=pic")
            .env("CARGO_BUILD_RUSTFLAGS", "")
