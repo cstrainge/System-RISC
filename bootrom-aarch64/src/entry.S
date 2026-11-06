@@ -76,11 +76,21 @@ physmap_bad:
     adr x0, physmap_bad_marker
     bl uart_puts
 physmap_done:
+    // The machine's device tree arrives in x0 and was captured at entry. A
+    // refusal is not recoverable: the probe names its reason and returns zero,
+    // and printing READY after that is how a named refusal used to scroll past
+    // as a green boot.
+    mov x0, x19
     bl sdhci_probe
+    cbz x0, refused
     adr x0, ready_marker
     bl uart_puts
 2:  wfe
     b 2b
+
+refused:
+4:  wfe
+    b 4b
 
 el_bad:
     adr x0, el_bad_marker

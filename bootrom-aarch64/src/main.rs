@@ -12,7 +12,6 @@ use core::panic::PanicInfo;
 use linked_list_allocator::LockedHeap;
 use mac_sdhci::Disk;
 
-mod devicetree;
 
 /// The filesystem code above the block device needs storage for its own
 /// bookkeeping. This is a bounded firmware heap in the image's own BSS, not a
@@ -43,10 +42,45 @@ core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardwar
 
 include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
 
-/// The machine description, generated from the platform record at build time and
-/// linked in read-only. The bootloader is a consumer of this tree, not its
-/// author, so nothing here hardcodes a peripheral address.
-static DEVICE_TREE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devicetree.dtb"));
+/// The machine's device tree, as a checked slice.
+///
+/// The pointer comes from the board's firmware, so nothing about it is trusted:
+/// it must be non-zero, eight-byte aligned as the specification requires, carry
+/// the header magic, and state a total size that fits inside the reservation the
+/// record declares. A board whose firmware supplies nothing is a named refusal,
+/// never a reason to build a tree of our own.
+fn firmware_tree(address: usize) -> Option<&'static [u8]>
+{
+    if address == 0 || address % 8 != 0
+    {
+        return None;
+    }
+    let header = address as *const u8;
+    // SAFETY: the firmware handed us this address and the header is the first
+    // thing a blob must contain; the reads are bounded by the two words of the
+    // header, and the full slice is only taken once `total` is known to fit the
+    // reservation.
+    let magic = u32::from_be(unsafe { core::ptr::read_volatile(header as *const u32) });
+    if magic != 0xd00d_feed
+    {
+        return None;
+    }
+    let total = u32::from_be(unsafe { core::ptr::read_volatile(header.add(4) as *const u32) })
+        as usize;
+    if total < 40 || total as u64 > FDT_TAIL_BYTES
+    {
+        return None;
+    }
+    puts("BOOT_AARCH64_DT_MAGIC: magic=");
+    puthex(magic as u64);
+    puts(" bytes=");
+    puthex(total as u64);
+    puts("\n");
+    // SAFETY: `total` was read from the header and bounded by the declared
+    // reservation, and the firmware guarantees the blob is resident for the
+    // bootloader's lifetime.
+    Some(unsafe { core::slice::from_raw_parts(header, total) })
+}
 
 // Translation tables live inside the declared boot window, clear of the loaded
 // image and of the stack. The stack grows down from `__stack_top` (0x101040 in
@@ -181,24 +215,35 @@ fn puthex(value: u64)
 /// it actually found. A card that answers but returns the wrong sector still
 /// reaches here, so the signature is the evidence rather than the call returning.
 #[unsafe(no_mangle)]
-pub extern "C" fn sdhci_probe() -> u64
+pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
 {
     use mac_block::BlockDevice;
     init_heap();
-    // Peripheral addresses come from the generated tree, not from constants, so
-    // the record remains the only place this board's hardware is written down.
-    let tree = match devicetree::Tree::new(DEVICE_TREE)
+    // Peripheral addresses come from the machine's tree, not from constants, so
+    // the record is a declaration to be checked rather than the runtime source.
+    let Some(bytes) = firmware_tree(tree_address)
+    else
     {
-        Some(tree) => tree,
-        None =>
+        puts("BOOT_AARCH64_DT_REFUSED: the machine supplied no usable device tree\n");
+        return 0;
+    };
+    let tree = match mac_devicetree::Tree::new(bytes)
+    {
+        Ok(tree) => tree,
+        Err(cause) =>
         {
-            puts("BOOT_AARCH64_DT_REFUSED: the linked tree has no valid header\n");
+            puts("BOOT_AARCH64_DT_REFUSED: ");
+            for byte in alloc::format!("{cause}").bytes()
+            {
+                putc(byte);
+            }
+            puts("\n");
             return 0;
         }
     };
     let sdhci = match tree.window("sdhci")
     {
-        Some((base, bytes)) =>
+        Ok(Some((base, bytes))) =>
         {
             puts("BOOT_AARCH64_DT_SDHCI: base=");
             puthex(base);
@@ -207,7 +252,7 @@ pub extern "C" fn sdhci_probe() -> u64
             puts("\n");
             base as usize
         }
-        None =>
+        _ =>
         {
             puts("BOOT_AARCH64_DT_REFUSED: no sdhci window in the tree\n");
             return 0;
@@ -215,7 +260,7 @@ pub extern "C" fn sdhci_probe() -> u64
     };
     match tree.window("pl011")
     {
-        Some((base, _)) =>
+        Ok(Some((base, _))) =>
         {
             puts("BOOT_AARCH64_DT_PL011: base=");
             puthex(base);
@@ -230,7 +275,7 @@ pub extern "C" fn sdhci_probe() -> u64
                 return 0;
             }
         }
-        None =>
+        _ =>
         {
             puts("BOOT_AARCH64_DT_REFUSED: no pl011 window in the tree\n");
             return 0;

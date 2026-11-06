@@ -11,7 +11,6 @@ use core::panic::PanicInfo;
 
 use linked_list_allocator::LockedHeap;
 
-mod devicetree;
 mod memory;
 mod monitor;
 
@@ -328,19 +327,24 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     // could be read, so the first thing the tree is asked is whether it agrees
     // with the console actually in use. A divergence is reported by name rather
     // than discovered later as garbled output.
-    let tree = match devicetree::Tree::new(bytes)
+    let tree = match mac_devicetree::Tree::new(bytes)
     {
-        Some(tree) => tree,
-        None =>
+        Ok(tree) => tree,
+        Err(cause) =>
         {
-            puts("BOOT_AARCH64_DT_REFUSED: the machine's tree has no valid header\n");
+            puts("BOOT_AARCH64_DT_REFUSED: ");
+            for byte in alloc::format!("{cause}").bytes()
+            {
+                putc(byte);
+            }
+            puts("\n");
             return 0;
         }
     };
     let (pl011, _) = match tree.window(PL011_COMPATIBLE)
     {
-        Some(window) => window,
-        None =>
+        Ok(Some(window)) => window,
+        _ =>
         {
             puts("BOOT_AARCH64_DT_REFUSED: no console window in the tree\n");
             return 0;
@@ -357,7 +361,7 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     // Every peripheral address now comes from the tree. The loader holds no
     // address of its own, so the record is the only place this machine's
     // hardware is written down.
-    let Some((virtio, _)) = tree.window("virtio,mmio")
+    let Ok(Some((virtio, _))) = tree.window("virtio,mmio")
     else
     {
         puts("BOOT_AARCH64_DT_REFUSED: no virtio-mmio window in the tree\n");
@@ -383,13 +387,18 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     // its RAM at a different base has it there.
     let mut harts = 0u64;
     let mut primary_hart = 0u64;
-    tree.cpus(|hart| {
-          if harts == 0
-          {
-              primary_hart = hart;
-          }
-          harts += 1;
-      });
+    let counted = tree.cpus(|hart| {
+                        if harts == 0
+                        {
+                            primary_hart = hart;
+                        }
+                        harts += 1;
+                    });
+    if counted.is_err()
+    {
+        puts("BOOT_AARCH64_DT_REFUSED: the machine's tree is malformed while reading CPUs\n");
+        return 0;
+    }
     puts("BOOT_AARCH64_CPUS: count=");
     puthex(harts);
     puts(" first=");
@@ -403,14 +412,19 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     let mut ram_base = 0u64;
     let mut ram_bytes = 0u64;
     let mut banks = 0u64;
-    tree.memory(|base, bytes| {
-          if banks == 0
-          {
-              ram_base = base;
-              ram_bytes = bytes;
-          }
-          banks += 1;
-      });
+    if tree.memory(|base, bytes| {
+               if banks == 0
+               {
+                   ram_base = base;
+                   ram_bytes = bytes;
+               }
+               banks += 1;
+           })
+           .is_err()
+    {
+        puts("BOOT_AARCH64_DT_REFUSED: the machine's tree is malformed while reading RAM\n");
+        return 0;
+    }
     puts("BOOT_AARCH64_RAM: banks=");
     puthex(banks);
     puts(" base=");
@@ -442,7 +456,8 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
                 memory::Error::Reservation => "a reservation is empty, unaligned or outside RAM",
                 memory::Error::Duplicate => "two reservations overlap",
                 memory::Error::TreeOutsideRam => "the tree lies outside the RAM it describes",
-                memory::Error::Allocation => "allocation failed"
+                memory::Error::Allocation => "allocation failed",
+                memory::Error::TreeUnreadable => "the machine's tree could not be walked"
             });
             puts("\n");
             return 0;
@@ -467,7 +482,7 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     // route it can publish and check, and inventing one would be a claim about
     // hardware this platform may not have.
     let mut controller = (0u64, 0u64);
-    tree.for_each_node(|node| {
+    let _ = tree.for_each_node(|node| {
           if controller.1 == 0
              && node.compatible.is_some_and(|name| {
                  name == "arm,cortex-a15-gic" || name == "arm,gic-400"
@@ -485,7 +500,7 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     puts("\n");
     // Sorted enabled harts, as the kernel's topology check requires.
     let mut cpus: alloc::vec::Vec<mac_abi::boot::topology::Cpu> = alloc::vec::Vec::new();
-    tree.cpus(|hart| cpus.push(mac_abi::boot::topology::Cpu { hart }));
+    let _ = tree.cpus(|hart| cpus.push(mac_abi::boot::topology::Cpu { hart }));
     cpus.sort_unstable_by_key(|cpu| cpu.hart);
     if mac_abi::boot::topology::Topology::checked(&cpus, primary_hart).is_err()
     {
@@ -532,11 +547,16 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     // declares rather than assuming a bank of a fixed size. A machine that
     // models one node per slot and one that models a single bank are both
     // answered by the same walk.
-    tree.visit_nodes(|compatible, base, _bytes| {
-          if compatible != "virtio,mmio"
+    let _ = tree.for_each_node(|node| {
+          if node.compatible != Some("virtio,mmio") || !node.enabled()
           {
               return;
           }
+          let Some((base, _bytes)) = node.window()
+          else
+          {
+              return;
+          };
           if !mac_bootloader::virtio_blk::is_block(base as usize)
           {
               return;

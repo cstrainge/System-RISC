@@ -4,6 +4,7 @@ exclude = ["vendor/skrifa", "vendor/ab_glyph_rasterizer"]
 members = [
     "crates/mac-abi",
     "crates/mac-bootloader",
+    "crates/mac-devicetree",
     "crates/mac-definition",
     "crates/sr-control-reflow-handling",
     "crates/mac-definition-macros",
@@ -95,6 +96,7 @@ mac-sit = { path = "crates/mac-sit" }
 mac-object-table = { path = "crates/mac-object-table" }
 mac-traps = { path = "crates/mac-traps" }
 mac-abi = { path = "crates/mac-abi" }
+mac-devicetree = { path = "crates/mac-devicetree" }
 mac-toolbox = { path = "crates/mac-toolbox" }
 mac-formats = { path = "crates/mac-formats" }
 mac-hfs = { path = "crates/mac-hfs" }
