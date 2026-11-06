@@ -231,13 +231,17 @@ The disc's VT100 family carries a 9-point regular strike and a 9-point bold
 strike; being fixed-pitch, they report the same ascent, descent and width and
 differ only in content. Measured equality therefore says nothing about which
 face was chosen, and a probe that required two styles to measure differently
-would fail on a correct implementation. Selecting a face is proved instead by
-the rules the manager states: both styles resolve, an unassociated style falls
-back to the closest match with synthesis (the resolver scores exact style match
-first, then face kind), and a face value outside `0..=0x7f` is refused rather
-than treated as plain. Proving which specific face an associated style returned
-would need a client accessor for the resolved source, which the public API does
-not expose.
+would fail on a correct implementation. The resolver's scoring does prefer an
+exact style match, but that is a property of the resident implementation, not
+something the probe observes.
+
+**Known gap.** An application can ask for bold and will get a face, but nothing
+in the public font API can currently report *which* face a selection resolved
+to — `Fonts` exposes the family, its name, metrics and widths, not the selected
+resource. Until a client accessor for the resolved source exists, "the bold
+strike was chosen" cannot be asserted from an application or a guest probe, and
+the probe records `FONTS_PROBE_STYLE_UNPROVEN` rather than claiming otherwise.
+Adding that accessor is the follow-up.
 
 
 ## Delivery and acceptance

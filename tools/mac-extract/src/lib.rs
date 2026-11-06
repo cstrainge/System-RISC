@@ -24,7 +24,7 @@
 //!    observes. Entries taken by policy (`taken`) have no counterpart of ours and are exempt, as
 //!    are the repeated IDs they create.
 
-use std::{collections::BTreeMap, fs, path::Path, process::ExitCode};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use hfs_b::Image;
 use mac_formats::resource::Resource;
@@ -103,11 +103,13 @@ enum Payload
     }
 }
 
-/// Read the package's extract list and write its generated resources.
+/// Read an extract list and write the generated resources beside it.
 ///
-/// The package manifest is read with includes deferred: this step *produces*
-/// one of them, so a complete read would require its own output to exist.
-pub fn extract(package_path: &Path, list_path: &Path, check: bool) -> Result<ExitCode>
+/// The inputs are the list and the disc it names — nothing else. Whether a
+/// resource is the right one to take was settled when the list was authored and
+/// reviewed, and re-deciding it here would make the build depend on a manifest
+/// for a question already answered.
+pub fn extract(list_path: &Path, check: bool) -> Result<()>
 {
     let list: ExtractList = serde_json::from_slice(&fs::read(&list_path).map_err(|cause| {
                                                         error(format!("cannot read extract list \
@@ -132,17 +134,11 @@ pub fn extract(package_path: &Path, list_path: &Path, check: bool) -> Result<Exi
                                  list.description)));
     }
     let output = list_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let manifest = mac_build::Manifest::read_deferred(package_path)?;
-    let ours = ours(&manifest, package_path);
     let mut image = Image::open(&disc, false)?;
     let partition = partition(&mut image, &disc)?;
     let mut volume = Volume::mount(&mut image, partition)?;
     let mut generated = Vec::new();
     let mut payloads: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    let mut replaced = 0;
-    let mut taken = 0;
-    let mut already_extracted = 0;
-    let mut parity_failures = Vec::new();
     let mut by_family: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for source in &list.sources
     {
@@ -171,28 +167,6 @@ pub fn extract(package_path: &Path, list_path: &Path, check: bool) -> Result<Exi
             };
             let file = asset_name(entry);
             payloads.insert(file.clone(), found.data.clone());
-            match (entry.taken, ours.get(&(entry.kind.clone(), entry.id)))
-            {
-                (true, _) => taken += 1,
-                (false, Some(original)) =>
-                {
-                    replaced += 1;
-                    if original != &found.data
-                    {
-                        parity_failures.push(format!("{} {} ({}): the disc's bytes are not the \
-                                                      classic payload our manifest compiles",
-                                                     entry.kind, entry.id, entry.symbol));
-                    }
-                }
-                (false, None) =>
-                {
-                    // The package no longer declares it: the original was ripped
-                    // out and this generated entry is what replaced it. Parity for
-                    // that resource was established before the removal, so absence
-                    // here is the intended state, not a mismatch.
-                    already_extracted += 1;
-                }
-            }
             let family = source.path.rsplit('/').next().unwrap_or_default().to_string();
             let counts = by_family.entry(family).or_default();
             counts.0 += 1;
@@ -217,14 +191,9 @@ pub fn extract(package_path: &Path, list_path: &Path, check: bool) -> Result<Exi
     {
         println!("  {family:<38} {count:>4} resources, {bytes:>9} bytes");
     }
-    println!("total {} resources — {replaced} replace a resource the package still declares, \
-              {already_extracted} already extracted, {taken} new to the package, {} bytes",
+    println!("total {} resources, {} bytes",
              by_family.values().map(|(count, _)| count).sum::<usize>(),
              by_family.values().map(|(_, bytes)| bytes).sum::<usize>());
-    for failure in &parity_failures
-    {
-        eprintln!("parity: {failure}");
-    }
     if !duplicates.is_empty()
     {
         println!("\n{} repeated (type, id) keys: {}", duplicates.len(), duplicates.join(", "));
@@ -246,27 +215,7 @@ pub fn extract(package_path: &Path, list_path: &Path, check: bool) -> Result<Exi
     println!("\nwrote {} and extracted_assets/ ({} assets)",
              output.join("extracted_resources.json").display(),
              payloads.len());
-    Ok(if parity_failures.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
-}
-
-/// The package's own resources as classic payload bytes, by `(type, id)`.
-/// `native_code` entries have no classic payload and are absent here.
-fn ours(manifest: &mac_build::Manifest, path: &Path) -> BTreeMap<(String, i16), Vec<u8>>
-{
-    let mut map = BTreeMap::new();
-    let Ok(payloads) = manifest.classic_payloads(path, None)
-    else
-    {
-        return map;
-    };
-    for (definition, payload) in manifest.resources.iter().zip(payloads)
-    {
-        if let Ok(payload) = payload
-        {
-            map.insert((definition.kind.clone(), definition.id), payload.data);
-        }
-    }
-    map
+    Ok(())
 }
 
 fn asset_name(entry: &ExtractEntry) -> String
@@ -289,8 +238,7 @@ fn duplicate_keys(generated: &[GeneratedResource]) -> Vec<String>
         .collect()
 }
 
-fn check_output(output: &Path, text: &str, payloads: &BTreeMap<String, Vec<u8>>)
-                -> Result<ExitCode>
+fn check_output(output: &Path, text: &str, payloads: &BTreeMap<String, Vec<u8>>) -> Result<()>
 {
     let mut differences = Vec::new();
     let manifest = output.join("extracted_resources.json");
@@ -315,7 +263,7 @@ fn check_output(output: &Path, text: &str, payloads: &BTreeMap<String, Vec<u8>>)
     if differences.is_empty()
     {
         println!("\ncheck: the generated resources still match the disc and the list");
-        return Ok(ExitCode::SUCCESS);
+        return Ok(());
     }
     for difference in &differences
     {

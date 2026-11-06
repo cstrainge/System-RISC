@@ -117,21 +117,20 @@ fn run(system: &System<'_>) -> Result<(), Line>
     let (vt100, _, _, _) = select(system, fonts, "VT100", 9, 0)?;
     select(system, fonts, "VT100", 9, 1)?;
     select(system, fonts, "American Heritage", 12, 0)?;
-    // Two styles of one family both resolve. Their metrics are identical here by
-    // construction, not by misrouting: VT100 is fixed-pitch, and the disc's two
-    // 9-point strikes share an ascent of 9, a descent of 2 and a width of 6
-    // while differing in content. So metrics cannot distinguish the two faces,
-    // and comparing them would prove nothing either way. What the style field
-    // must do is be interpreted: classic face bits are 0 through 6, so bit 7 is
-    // refused rather than silently treated as plain, which a resolver that
-    // dropped the field would not do. Routing to the exact style match is the resolver's first
-    // scoring key, which the two strikes above cannot observe.
+    // Which face a style chose is deliberately not asserted. The disc's two
+    // 9-point VT100 strikes are fixed-pitch: they report the same ascent,
+    // descent and width and differ only in content, so metrics cannot tell them
+    // apart. The public font client has no way to ask which face a selection
+    // resolved to, and an out-of-range style bit is no substitute — refusing one
+    // would prove the field is validated, not that it is honoured. Comparing the
+    // resolved faces needs a client accessor for a selection's source.
     let refused = fonts.metrics(FontSelection { family: vt100, size: 9, face: 0x80 });
     check(refused.is_err(), "an impossible style was accepted")?;
     let mut line = Line::new();
-    let _ = writeln!(line, "FONTS_PROBE_STYLE_OK refused={:?}", refused.err());
+    let _ = writeln!(line, "FONTS_PROBE_STYLE_UNPROVEN refused={:?}", refused.err());
     note(system, line.text());
     note(system, "\n");
+
     Ok(())
 }
 
