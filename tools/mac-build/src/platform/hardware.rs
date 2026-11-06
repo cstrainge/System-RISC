@@ -149,6 +149,32 @@ pub struct Console
     pub baud:   Option<u32>
 }
 
+/// A device tree is supplied by board firmware, shipped as a file, or generated
+/// from this record at build time. Which one is a board fact, not a build
+/// assumption: a board whose firmware passes no tree needs the record to be the
+/// author, so the bootloader and the kernel consume the same declared hardware
+/// rather than each hardcoding it.
+///
+/// This is the board's answer to a question the emulation section answers with a
+/// bare flag, and the two are not the same question. An emulator either synthesises
+/// a tree from its own device list or is handed one, so a boolean covers it. A board
+/// distinguishes firmware supply from a shipped file from generation, because those
+/// are three different arrangements of the same card and a reader of the record
+/// needs to know which one this is. `devicetree::generates` is the single place that
+/// reads both, so no caller decides for itself.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum DeviceTree
+{
+    Firmware,
+    Generated,
+    File
+    {
+        path: String
+    },
+    None
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Region
