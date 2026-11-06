@@ -688,11 +688,16 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                       // must see both pipes.
                       "PIPES_SCAN_OK directory=", "PIPES_SCAN_STALE_OK",
                       "PIPES_SCAN_RESTART_OK entries=2",
+                      // The two glyphs, resolved and drawn: the folder by name
+                      // under the blessed folder, the item through the resident
+                      // type bundle, each compared against the generic glyph.
+                      "PIPES_ICON_FOLDER_OK id=-30002 drawn=",
+                      "PIPES_ICON_ITEM_OK id=-30003 drawn=", "PIPES_ICON_DISTINCT_OK folder=1",
                       // Opening an item is `connect` and launches nothing: the
                       // process count across the open is the witness.
                       "PIPES_OPEN_NO_LAUNCH_OK processes_before=", "PIPES_OPEN_LIMIT_OK",
                       "PIPES_OPEN_DATA_OK bytes=4", "PIPES_OPEN_GONE_OK",
-                      "PIPES_PROBE_PASS cases=10"],
+                      "PIPES_PROBE_PASS cases=11"],
                     true)?);
     if converted.is_some()
     {

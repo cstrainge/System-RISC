@@ -6,7 +6,7 @@
 use core::{fmt::{self, Write},
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
-use mac_toolbox::{Error, System, abi::pipes as wire, files};
+use mac_toolbox::{Error, Rect, System, abi::pipes as wire, files};
 
 static ARMED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
@@ -73,8 +73,9 @@ fn check(condition: bool, cause: &str) -> Result<(), Line>
 /// cannot claim a count the run did not reach.
 fn run(system: &System<'_>) -> Result<u32, Line>
 {
-    let cases: [fn(&System<'_>) -> Result<(), Line>; 10] =
-        [echo, block, reader_park, eof, broken, named, writer_limit, folder, scan, pipe_open];
+    let cases: [fn(&System<'_>) -> Result<(), Line>; 11] = [echo, block, reader_park, eof, broken,
+                                                            named, writer_limit, folder, scan,
+                                                            icons, pipe_open];
     let mut completed = 0;
     for case in cases
     {
@@ -701,7 +702,105 @@ fn drain(files: files::Files<'_>, volume: files::VolumeId, folder: files::Cnid)
     Err(fault("the folder scan never finished"))
 }
 
-/// Opening a pipe item is `connect`, and the item's reserved type and creator
+/// The two glyph families, resolved and drawn. This is the evidence the icon
+/// work needs: an identifier in a table proves nothing, so each glyph is
+/// plotted into an offscreen world and compared, pixel for pixel, with the
+/// generic folder or document it must not be.
+///
+/// The folder is resolved the way the Finder resolves it - by name under the
+/// blessed folder, through the SDK table the Finder itself uses - and the item
+/// through the resident type bundle, which is the path that turns the
+/// `PIPE`/`PIPE` pair into an icon id.
+fn icons(system: &System<'_>) -> Result<(), Line>
+{
+    use mac_toolbox::quickdraw::icons::standard;
+
+    const ICON: &str = "IconPipe";
+    let files = system.files();
+    let volume = startup_volume(files)?;
+    let folder = files.lookup(volume.id, volume.blessed_folder, "Pipes")
+                      .map_err(|error| failed("lookup Pipes", error))?;
+    check(folder.is_directory(), "Pipes is not a folder")?;
+    check(folder.parent == volume.blessed_folder,
+          "Pipes is not directly inside the blessed folder")?;
+    let folder_id = standard::for_blessed_folder(folder.name()).ok_or_else(|| {
+                                                                   fault("the Pipes folder has no \
+                                                                          icon of its own")
+                                                               })?;
+    check(folder_id == standard::PIPES_FOLDER, "the Pipes folder resolved to another icon")?;
+
+    let (reader, writer) = system.pipes()
+                                 .create_named(ICON, wire::MIN_CAPACITY, 0)
+                                 .map_err(|error| failed("create icon pipe", error))?;
+    let item = files.lookup(volume.id, folder.id, ICON)
+                    .map_err(|error| failed("lookup named pipe item", error))?;
+    let item_id = system.quickdraw()
+                        .icons()
+                        .for_file(item.creator, item.file_type)
+                        .map_err(|error| failed("resolve the pipe type", error))?;
+    check(item_id == standard::NAMED_PIPE, "the named pipe type resolved to another icon")?;
+
+    // A fresh world's own pixels are the background, so no fill and no
+    // assumption about what colour the surface starts as.
+    let mut blank = [0u32; 32 * 32];
+    let background = {
+        let world = system.quickdraw()
+                          .new_gworld(32, 32)
+                          .map_err(|error| failed("create comparison world", error))?;
+        let count = world.pixels(&mut blank).map_err(|error| failed("read blank world", error))?;
+        check(count == blank.len(), "the comparison world is not 32 by 32")?;
+        blank[0]
+    };
+    let mut folder_pixels = [0u32; 32 * 32];
+    let mut item_pixels = [0u32; 32 * 32];
+    let mut other = [0u32; 32 * 32];
+    let generic_folder = draw(system, standard::FOLDER, background, &mut other)?;
+    let pipes_folder = draw(system, folder_id, background, &mut folder_pixels)?;
+    check(pipes_folder > 0, "the Pipes folder glyph drew nothing")?;
+    check(pipes_folder != generic_folder, "the Pipes folder drew the generic folder")?;
+    note(system, line_of("PIPES_ICON_FOLDER_OK", folder_id, pipes_folder).text());
+    note(system, "\n");
+
+    let generic_document = draw(system, standard::DOCUMENT, background, &mut other)?;
+    let named_pipe = draw(system, item_id, background, &mut item_pixels)?;
+    check(named_pipe > 0, "the named pipe glyph drew nothing")?;
+    check(named_pipe != generic_document, "the named pipe drew the generic document")?;
+    check(folder_pixels != item_pixels, "the folder and the named pipe drew the same glyph")?;
+    note(system, line_of("PIPES_ICON_ITEM_OK", item_id, named_pipe).text());
+    note(system, "\n");
+    note(system, "PIPES_ICON_DISTINCT_OK folder=1 item=1\n");
+
+    drop(writer);
+    drop(reader);
+    Ok(())
+}
+
+fn line_of(marker: &str, id: i16, drawn: u32) -> Line
+{
+    let mut line = Line::new();
+    let _ = writeln!(line, "{marker} id={id} drawn={drawn}");
+    line
+}
+
+/// Plot `id` into a fresh 32 by 32 world, leave the pixels in `output`, and
+/// return how many of them differ from `background`.
+fn draw(system: &System<'_>, id: i16, background: u32, output: &mut [u32]) -> Result<u32, Line>
+{
+    use mac_toolbox::quickdraw::icons::IconFlags;
+
+    let world = system.quickdraw()
+                      .new_gworld(32, 32)
+                      .map_err(|error| failed("create icon world", error))?;
+    let target = world.graphics().target();
+    system.quickdraw()
+          .icons()
+          .plot(target, id, Rect::new(0, 0, 32, 32), IconFlags::default())
+          .map_err(|error| failed("plot icon", error))?;
+    let count = world.pixels(output).map_err(|error| failed("read icon world", error))?;
+    check(count == output.len(), "the icon world is not 32 by 32")?;
+    Ok(output.iter().filter(|pixel| **pixel != background).count() as u32)
+}
+
 /// keep it away from application launch. The witness for "no application was
 /// launched" is the process count across the open: the item carries no fork, so
 /// the File Manager resolves it and the pipe facility attaches a writer.

@@ -300,17 +300,11 @@ fn folder_icon(volume: &VolumeInfo, entry: &CatalogInfo) -> i16
     }
     if entry.parent == blessed
     {
-        match entry.name()
+        // The System's own folders are recognised by name; the table lives with
+        // the constants it returns so every caller shares it.
+        if let Some(id) = standard::for_blessed_folder(entry.name())
         {
-            "Drivers" => return standard::DRIVERS_FOLDER,
-            "Fonts" => return standard::FONTS_FOLDER,
-            "Extensions" => return standard::EXTENSIONS_FOLDER,
-            "Control Panels" => return standard::CONTROL_PANELS_FOLDER,
-            "Preferences" => return standard::PREFERENCES_FOLDER,
-            "Startup Items" => return standard::STARTUP_FOLDER,
-            "Apple Menu Items" => return standard::APPLE_MENU_FOLDER,
-            _ =>
-            {}
+            return id;
         }
     }
     standard::FOLDER
