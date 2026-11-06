@@ -1192,6 +1192,14 @@ impl Browser
             {
                 system.processes().launch(entry.volume, entry.id)?;
             }
+            else if crate::named_pipe::candidate(entry)
+            {
+                // A named pipe is opened by connecting, never by launching an
+                // application: it has no fork, so no document association can
+                // claim it. The File Manager performs the connect, so the writer
+                // limit and endpoint ownership stay the resident ones.
+                crate::named_pipe::open(system, entry)?;
+            }
             else if !crate::font_suitcase::candidate(entry)
                       && let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
             {
