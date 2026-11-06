@@ -4,6 +4,18 @@
 board did with one binary. It does not define how storage is wired, and it does
 not replace the platform record or the SDHCI register documentation.
 
+## The harness, and why its paths no longer resolve
+
+The program that produced these observations was throwaway scaffolding for
+board bring-up: it brought up UART and the mailbox framebuffer, ran a rotation
+of cache, MMU, DMA and SPI0 checks, and encoded the results into a QR on the
+panel. It has been removed from the tree — that work was scaffolding, not a
+product. It remains in history at `e54b4e21` under `selftest-aarch64/`, so the
+paths quoted below resolve there and nowhere else.
+
+The observations are the durable part and stand on their own. Re-running any of
+them would mean rebuilding that harness first.
+
 ## What was observed
 
 - **Board:** a physical Raspberry Pi 3 (BCM2837-class SoC), card in the slot,
@@ -42,7 +54,7 @@ The self-test called `Disk::probe(SDHCI_BASE, ...)` and then read sector zero.
 `SDHCI_BASE` is the base of the platform record's storage device:
 
 ```
-platforms/qemu_arm64.json
+platforms/raspi3b.json
   hardware.devices[kind = "storage", model = "sdhci"].base = 0x3f300000
 ```
 

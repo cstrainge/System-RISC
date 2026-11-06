@@ -80,6 +80,12 @@ pub struct Allocation
     pub handle:  u64,
     /// CPU address System draws at. It is also what `Surface::address` reports.
     pub address: u64,
+    /// The same storage as the GPU must name it. The Device service derives this
+    /// from the resident heap's bus alias and refuses an allocation it cannot
+    /// prove, so a successful allocation always has one. It is carried here so
+    /// it survives to the release, which must hand back the allocation the
+    /// service issued rather than a reconstructed one.
+    pub device_address: u64,
     pub length:  u64
 }
 

@@ -272,10 +272,43 @@ fn a_commit_for_an_unknown_allocation_is_refused()
                                               observed:   9 }));
 }
 
+/// The device address issued at allocation must survive the engine's bookkeeping
+/// and reach the release unchanged.
+///
+/// Scope: this covers the engine and the `Platform` seam, which is where the
+/// record is copied. It does not cover `native.rs` — that module is
+/// `#[cfg(target_arch = "aarch64")]` and is not compiled into a host test — so
+/// the machine adapter's own carry is evidenced by the target build and by the
+/// absence of a substituted value in the source, not by this test.
+#[test]
+fn the_issued_device_address_reaches_the_release()
+{
+    let mut device = attached(Firmware::qemu());
+    let old = device.holds_geometry(SURFACE).expect("attached");
+    let issued = device.platform()
+                       .allocations
+                       .get(&old)
+                       .expect("the surface is held")
+                       .device_address;
+    assert_ne!(issued, 0, "the Device service refuses an allocation it cannot address");
+    assert_ne!(issued,
+               device.platform().address_of(old),
+               "the bus and CPU addresses are different numbers on this platform");
+
+    let prepared = device.prepare(WIDE, 2).expect("within bounds");
+    let candidate = prepared.surface.expect("applied").allocation;
+    device.commit(candidate, 2).expect("committed");
+    device.release(old, 1).expect("retired storage is released");
+
+    assert_eq!(device.platform().released,
+               [(old, issued)],
+               "the release must hand back the address the allocation issued");
+}
+
 #[test]
 fn releasing_twice_is_idempotent_but_the_active_surface_cannot_be_released()
 {
-    let mut device = attached(Firmware::qemu());
+  let mut device = attached(Firmware::qemu());
     let old = device.holds_geometry(SURFACE).expect("attached");
     let prepared = device.prepare(WIDE, 2).expect("within bounds");
     let candidate = prepared.surface.expect("applied").allocation;

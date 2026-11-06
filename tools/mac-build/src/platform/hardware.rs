@@ -26,6 +26,14 @@ pub struct Definition
     /// The SoC, when the board name alone does not identify it.
     #[serde(default)]
     pub soc:               Option<String>,
+    /// The application cores the board presents to the OS.
+    ///
+    /// A board fact, and the only place a non-emulated platform can state it:
+    /// scheduling policy caps how many harts may run at once, and a cap with no
+    /// machine count behind it cannot be checked. The emulator states the same
+    /// number for a virtual machine, and neither may supply the other's.
+    #[serde(default)]
+    pub harts:       Option<std::num::NonZeroUsize>,
     pub boot:              Boot,
     /// The medium this board is given, by the name of a `storage` image. The
     /// layout itself lives at the platform level so the same described medium
