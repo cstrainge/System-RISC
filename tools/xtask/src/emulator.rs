@@ -100,11 +100,7 @@ pub enum Media<'a>
     /// The disks the platform record attaches.
     Declared,
     /// Exactly these disks, in order, replacing the record's attachments.
-    Given(&'a [PathBuf]),
-    /// The same, attached writable. A case that must observe the guest writing
-    /// to its own disk states this instead of relying on the record's shipping
-    /// read-only policy, which exists so a check cannot damage the real medium.
-    GivenWritable(&'a [PathBuf])
+    Given(&'a [PathBuf])
 }
 
 pub fn invocation(platform: &Platform, root: &Path, dist: &Path, media: Media<'_>, mode: Mode,
@@ -357,8 +353,7 @@ fn attach_disks(definition: &Definition, platform: &Platform, dist: &Path, media
     let (given, declared, writable): (&[PathBuf], Vec<(&str, Option<u32>)>, bool) = match media
     {
         Media::Declared => (&[], definition.attachments().collect(), false),
-        Media::Given(paths) => (paths, Vec::new(), false),
-        Media::GivenWritable(paths) => (paths, Vec::new(), true)
+        Media::Given(paths) => (paths, Vec::new(), false)
     };
     let Some(disks) = &definition.disks
     else

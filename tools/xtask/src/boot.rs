@@ -647,13 +647,13 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     let large = directory.join("large-system-fork.hfsb");
     clone_raw(&raw, &large)?;
     altered_system(workspace, &large, "large-fork")?;
-    cases.push(case_within(workspace,
-                           &directory,
-                           "system-resource-fork-over-4mib",
-                           &[large.clone()],
-                           &["BOOT_SYSTEM_READY:", "DESKTOP_READY:"],
-                           true,
-                           Some(std::time::Duration::from_secs(180)))?);
+    cases.push(run_case(workspace,
+                        &directory,
+                        "system-resource-fork-over-4mib",
+                        &[large.clone()],
+                        &["BOOT_SYSTEM_READY:", "DESKTOP_READY:"],
+                        true,
+                        Some(std::time::Duration::from_secs(180)))?);
     let classic = workspace.root.join("crates/mac-toolbox/tests/data/files/dates-2026.hfs");
     cases.push(case(workspace,
                     &directory,
