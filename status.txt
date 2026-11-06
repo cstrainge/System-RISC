@@ -1141,3 +1141,59 @@ space layout at fixture-build time.
 
 Still open: Finder open-as-connect; icon families -30002/-30003 with the
 allowlist extension.
+
+Pipes: the folder moves to image build time; the branch is landable
+====================================================================
+[Pipes / facilities agent] 2026-11-05
+
+Layer correction, as directed. `System Folder/Pipes` is created by the image
+builder, not at boot.
+
+What changed
+------------
+tools/xtask/src/disk.rs: `Pipes` is one more entry in the list that already
+creates `System Folder/{Fonts, Control Panels, Preferences}` for the platform's
+installed layout. The name comes from one constant,
+`mac_abi::files::PIPES_FOLDER_NAME`, which the resident File Manager also uses,
+so the builder and the enumerator cannot disagree about the spelling.
+
+Deleted: `ensure_folder()`, the `Boot` outcome enum, the PENDING/DONE/RETRY/
+REFUSED state machine and its call from `installed_fonts::pump()`, the
+`PIPES_FOLDER_READY`/`SKIPPED`/`PENDING`/`REFUSED`/`MISMATCH` markers, the
+`pipes-folder-boot` boot case, `Media::GivenWritable`, `writable_case` and the
+`seed_folder` flag. One creator, one path.
+
+Answer to the question this turned on: on a volume we did not build, the folder
+is absent, and so are `Fonts`, `Control Panels` and `Extensions`. Nothing creates
+any of them at boot — `installed_fonts` asks with `FIND_FOLDER` and create=0, so a
+missing `Fonts` folder means no fonts folder, not a created one. `Pipes` follows
+that rule with no special case: absent, and named pipes still register and connect
+by name with no Finder item.
+
+Evidence
+--------
+  cargo xtask build --platform qemu_riscv      exit 0
+  image contains /System Folder/Pipes          CNID 26, directory
+  cargo xtask boot-check --platform qemu_riscv 18 of 18 passed
+
+The probe's own lookup agrees with the mount record and with the image:
+  PIPES_FOLDER_PRESENT volume=66113 blessed=17 cnid=26
+  PIPES_FOLDER_LIST_OK items=1 / LOOKUP_OK / STABLE_OK / ANON_ABSENT_OK /
+  REFUSED_OK refusals=11 / PIPES_PROBE_PASS cases=5
+CNID 26 is the value the builder wrote, so the built folder reaches the mount
+record and the identity contract still holds. The case count returns to 18 because
+the boot-creation case is gone; no assertion was weakened, the folder is now
+asserted present rather than asserted created.
+
+Risks stated, not covered
+-------------------------
+docs/PIPES.md 10.1 and 15 now say plainly: the transport contract is proven; a
+lost wake under load is unexercised; cancellation of a blocked caller by process
+exit is written but never executed. Either would hang rather than fail, so a
+consumer — a Terminal — must not block indefinitely: bounded waits, with a stall
+reported as a defect. The earlier wording that read as though these blocked the
+facility is gone.
+
+Also still open, and neither is a Terminal blocker: Finder open-as-connect
+(double-click currently falls through to the document path) and the folder and
+PIPE/PIPE icon families with the allowlist extension. Section 15 says so.
