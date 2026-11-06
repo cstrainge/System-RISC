@@ -322,6 +322,11 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
 {
     use mac_block::BlockDevice;
     init_heap();
+    // The banner and the conditions below are the shared vocabulary; only the
+    // stage markers carry this architecture's name.
+    puts(mac_bootloader::report::BANNER);
+    puthex(BOOT_BASE);
+    puts("\n");
     let Some(bytes) = firmware_tree(tree_address)
     else
     {
@@ -594,7 +599,7 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
       });
     if disks.is_empty()
     {
-        puts("BOOT_AARCH64_NO_DISK: the virtio-MMIO bank presents no block device\n");
+        puts(&alloc::format!("{}\n", mac_bootloader::report::no_system(disks.len())));
         return 0;
     }
     let mut loaded: Option<Loaded> = None;
@@ -828,6 +833,12 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
         puts("\n");
         if volume.format != Format::HfsB
         {
+            // Reported rather than skipped: a volume that mounted but is not in
+            // the native format is a different answer from a disk with nothing
+            // on it, and the shared vocabulary is how the gate can tell them
+            // apart on either machine.
+            puts(mac_bootloader::report::NOT_NATIVE_VOLUME);
+            puts("\n");
             continue;
         }
         let folder = match volume.blessed_folder()
@@ -835,10 +846,16 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
             Ok(folder) => folder,
             Err(_) =>
             {
-                puts("BOOT_AARCH64_SYSTEM_REFUSED: no blessed System Folder\n");
+                puts("BOOT_AARCH64_SYSTEM_REFUSED: the blessed System Folder is missing\n");
                 return None;
             }
         };
+        // The same condition the RISC-V bootstrap reports, in the same words: a
+        // gate that had to know two vocabularies could not compare two boots.
+        puts(&alloc::format!("{}\n",
+                             mac_bootloader::report::blessed_folder(core::str::from_utf8(&folder.name)
+                                                                        .unwrap_or("?"),
+                                                                    folder.id)));
         puts("BOOT_AARCH64_BLESSED: cnid=");
         puthex(u64::from(folder.id));
         puts(" name=");
@@ -868,7 +885,7 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
                               loaded
                           });
             }
-            Err(_) => puts("BOOT_AARCH64_SYSTEM_REFUSED: no System file in the blessed folder\n")
+            Err(_) => puts("startup file is missing\n")
         }
         return None;
     }

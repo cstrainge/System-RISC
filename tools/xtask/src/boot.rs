@@ -615,7 +615,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               &directory,
                               "no-disk",
                               &[],
-                              &["BOOT_NO_SYSTEM: searched 0 disk(s)"],
+                              &[mac_bootloader::report::NO_SYSTEM_PREFIX],
                               false)?,
                          case(workspace,
                               &directory,
@@ -625,8 +625,8 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               // the volume's contents change, and what matters is that a
                               // blessed System Folder was found at all. The pipes probe
                               // case below is where the folder itself is checked.
-                              &["System RISC Boot ROM v1 at 0x200",
-                                "blessed folder 'System Folder' CNID=",
+                              &[mac_bootloader::report::BANNER,
+                                mac_bootloader::report::BLESSED_FOLDER_PREFIX,
                                 "System: native service table ready", "BOOT_SYSTEM_READY:"],
                               true)?];
     // A second probe replaces Finder on a clone to exercise font selection the
@@ -686,7 +686,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &directory,
                     "classic-hfs-is-not-native-startup",
                     &[classic.clone()],
-                    &["native boot requires HFS-B; recreate System disk", "BOOT_NO_SYSTEM:"],
+                    &[mac_bootloader::report::NOT_NATIVE_VOLUME, mac_bootloader::report::NO_SYSTEM_PREFIX],
                     false)?);
     let renamed = directory.join("renamed.hfsb");
     clone_raw(&raw, &renamed)?;
@@ -699,7 +699,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &directory,
                     "renamed-blessed-folder",
                     &[renamed.clone()],
-                    &["blessed folder 'Renamed Startup' CNID=", "BOOT_SYSTEM_READY:"],
+                    &[mac_bootloader::report::BLESSED_FOLDER_PREFIX, "BOOT_SYSTEM_READY:"],
                     true)?);
     let unblessed = directory.join("unblessed.hfsb");
     clone_raw(&raw, &unblessed)?;

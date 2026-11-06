@@ -162,15 +162,16 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     let mut volume = Volume::mount(disk, partition)?;
     if volume.format != mac_filesystem::Format::HfsB
     {
-        return Err(Error::Malformed("native boot requires HFS-B; recreate System disk"));
+        return Err(Error::Malformed(mac_bootloader::report::NOT_NATIVE_VOLUME));
     }
     serial!("HFS-B: volume '{}' at sector {}",
             core::str::from_utf8(&volume.name).unwrap_or("?"),
             partition.start);
     let folder = volume.blessed_folder()?;
-    serial!("HFS-B: blessed folder '{}' CNID={}",
-            core::str::from_utf8(&folder.name).unwrap_or("?"),
-            folder.id);
+    serial!("{}",
+            mac_bootloader::report::blessed_folder(core::str::from_utf8(&folder.name)
+                                                       .unwrap_or("?"),
+                                                   folder.id));
     let file = volume.find_file(folder.id, b"System")?;
     if file.file_type != *b"zsys"
     {
@@ -664,7 +665,9 @@ extern "C" fn boot_main(tree_address: usize) -> !
             memory.ram[0].length,
             memory.ram.len(),
             memory.reserved.len());
-    serial!("System RISC Boot ROM v1 at 0x{:x}", boot_main as *const () as usize);
+    serial!("{}{:x}",
+            mac_bootloader::report::BANNER,
+            boot_main as *const () as usize);
     if let Err(error) = screen::init(&memory, monitor.directory.timebase_hz)
     {
         serial!("BOOT_VIDEO_OWNERSHIP_REJECTED: {error}; DMA quiescence is unproven; refusing \
@@ -741,7 +744,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
             fatal_shutdown();
         }
     }
-    serial!("BOOT_NO_SYSTEM: searched {} disk(s); no bootable native System found", disks.len());
+    serial!("{}", mac_bootloader::report::no_system(disks.len()));
     halt()
 }
 
