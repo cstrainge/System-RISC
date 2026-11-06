@@ -10,8 +10,11 @@ use super::{Error, Event, Result, Tree, cells, cpu_cells, set_cpu_cell, set_cpu_
 
 pub struct MonitorRoute
 {
-    pub hart: u64,
-    pub msip: u64
+    pub hart:   u64,
+    /// On this platform an inter-processor signal is a write to a CLINT cell, so
+    /// the route is that cell's address. It is published as the entry's
+    /// platform-encoded signalling target, which is what the ABI carries.
+    pub signal: u64
 }
 pub struct MonitorRoutes
 {
@@ -577,10 +580,10 @@ impl Tree<'_>
               .map_err(|_| Error::AllocationFailed("monitor route allocation failed"))?;
         for cpu in controllers.into_iter().filter(|cpu| cpu.enabled)
         {
-            routes.push(MonitorRoute { hart: cpu.hart,
-                                       msip: cpu.msip
-                                                .ok_or(Error::Missing("monitor enabled CPU has no \
-                                                                       CLINT route"))? });
+            routes.push(MonitorRoute { hart:   cpu.hart,
+                                       signal: cpu.msip
+                                                   .ok_or(Error::Missing("monitor enabled CPU has \
+                                                                          no CLINT route"))? });
         }
         Ok(MonitorRoutes { timebase_hz,
                            routes })

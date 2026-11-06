@@ -51,7 +51,7 @@ __monitor_park:
     addi t2,t2,-1
     bnez t2,3b
     j __monitor_fatal
-4:  ld t4,{entry_msip}(t1)
+4:  ld t4,{entry_signal}(t1)
     li t2,{clint_base}
     bltu t4,t2,__monitor_fatal
     li t2,{clint_end}-4
@@ -73,7 +73,7 @@ __monitor_park:
     bltu t6,t5,__monitor_fatal
     ld t6,{hart}(t0)
     bne t6,t3,__monitor_fatal
-    ld t6,{msip}(t0)
+    ld t6,{signal}(t0)
     bne t6,t4,__monitor_fatal
     mv sp,t5
     csrw mscratch,t0
@@ -182,7 +182,7 @@ __monitor_vector:
     sd t1,{status}(t0)
     sd t2,{pc}(t0)
     j .Lmonitor_restore
-6:  ld t1,{msip}(t0)
+6:  ld t1,{signal}(t0)
     sw zero,0(t1)
     fence iorw,iorw
     ld t1,{stop}(t0)
