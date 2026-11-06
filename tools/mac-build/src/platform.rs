@@ -549,6 +549,48 @@ impl Platform
         self.emulation.as_ref().map(|emulation| emulation.harts.get()).unwrap_or(1)
     }
 
+    /// The checked MMIO claims this record declares, empty when it declares
+    /// none.
+    ///
+    /// A claim is the page-granular range a module matches and takes, stated
+    /// apart from the exact register window because the inventory must be page
+    /// aligned and page sized. Both are needed to describe one device to a
+    /// consumer: the window says where the registers are, the claim says what a
+    /// driver binds to.
+    pub(crate) fn claims(&self) -> Result<Vec<devices::Checked>>
+    {
+        if self.mmio_devices.is_empty()
+        {
+            return Ok(Vec::new());
+        }
+        devices::check(&self.mmio_devices, &self.memory()?)
+    }
+
+    /// The claim containing a peripheral window, if the record declares one.
+    ///
+    /// `check_peripheral_windows` refuses a record where a window is contained by
+    /// no claim or by more than one, so at most one claim can match here. A
+    /// peripheral that describes a function rather than a window has no claim,
+    /// which is a fact about the device rather than a gap.
+    pub(crate) fn claim_for<'a>(&self, claims: &'a [devices::Checked], base: u64, bytes: u64)
+                                -> Option<&'a devices::Checked>
+    {
+        let end = base.checked_add(bytes)?;
+        let mut found = None;
+        for claim in claims
+        {
+            if claim.address <= base && end <= claim.address + claim.bytes
+            {
+                if found.is_some()
+                {
+                    return None;
+                }
+                found = Some(claim);
+            }
+        }
+        found
+    }
+
     /// Every peripheral window the record declares. A peripheral that states a
     /// base but no size is refused rather than given a default or looked up in
     /// the MMIO inventory: one window must have one declaration, and a second
