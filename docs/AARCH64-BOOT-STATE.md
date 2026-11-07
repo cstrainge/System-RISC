@@ -175,7 +175,7 @@ leaf cannot be shadowed. That is a second space builder rather than a small
 change, so it was not attempted; the ambiguity is recorded instead of papered
 over. The switch-on fault is still the open puzzle.
 
-## The cause: a writable page is not executable on this core
+## The cause: QEMU's TCG translation refuses write-and-execute
 
 Two single-variable experiments found it.
 
@@ -202,12 +202,20 @@ after:   ESR=0x96000006  ELR=0x4009ab08  data abort, translation, level 2
 translation fault on a data access — the firmware trying to write to a window
 that is now read-only, which is exactly what making it read-only would produce.
 
-So the instruction fetch succeeds once the page is read-only. This core refuses
-to execute a page that is also writable, and it does so with `SCTLR_EL1.WXN`
-clear, which the architecture does not license. That is why no architectural
-input showed it: the spec has no fifth input, and every register that should
-govern the decision said "permitted". It was found only because System mapped
-code writable, which no production OS does.
+So the instruction fetch succeeds once the page is read-only. QEMU's TCG
+translation refuses to execute a page that is also writable, and it does so
+with `SCTLR_EL1.WXN` clear, which the architecture does not license. That is
+why no architectural input showed it: the spec has no fifth input, and every
+register that should govern the decision said "permitted". It was found only
+because System mapped code writable, which no production OS does.
+
+**This is a statement about the emulator, not about silicon.** `cortex-a72`,
+`cortex-a53` and `max` are all TCG CPU models built on the same translation
+code, so an identical result across the three places the behaviour in that
+shared path rather than in any one model — it is not a per-model quirk, and
+none of it is evidence about what an ARMv8 core does. The distinction matters
+because the finding would otherwise be read as a hardware constraint and
+propagated as one.
 
 **The fix is to split the window rather than remove the write**: code pages
 read-only-executable, data pages writable, which is what every mature OS does.
