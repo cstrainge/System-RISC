@@ -23,9 +23,13 @@ pub(crate) fn root() -> usize
 /// and that no in-flight access can observe a stale translation.
 pub(crate) unsafe fn write_root(value: usize)
 {
-    // SAFETY: the caller guarantees the root is live.
+    // SAFETY: the caller guarantees the root is live. Both halves are written
+    // because one root covers both: the kernel's virtual range is in the high
+    // half and its identity RAM and device windows are in the low half, so a
+    // root installed in only one of them would leave the other half resolving
+    // through the previous space.
     unsafe {
-        asm!("msr ttbr0_el1, {}", "isb", in(reg) value);
+        asm!("msr ttbr0_el1, {root}", "msr ttbr1_el1, {root}", "isb", root = in(reg) value);
     }
 }
 
@@ -50,8 +54,8 @@ pub(crate) unsafe fn activate(value: usize)
     // the new root must be visible before the invalidate retires, or a stale
     // entry can survive into the new space.
     unsafe {
-        asm!("dsb ishst", "msr ttbr0_el1, {}", "isb", "tlbi vmalle1is", "dsb ish", "isb",
-             in(reg) value, options(nostack));
+        asm!("dsb ishst", "msr ttbr0_el1, {root}", "msr ttbr1_el1, {root}", "isb",
+             "tlbi vmalle1is", "dsb ish", "isb", root = in(reg) value, options(nostack));
     }
 }
 

@@ -1157,20 +1157,22 @@ fn physical_limit(memory: &memory::Memory, tree: &mac_devicetree::Tree<'_>) -> u
     {
         end = end.max(bank.base.saturating_add(bank.length));
     }
+    // Every peripheral the machine describes, not a list of the parts this
+    // bootstrap happens to know: the kernel derives the same limit from the same
+    // tree, and a limit that disagreed with it would refuse the boot. Naming
+    // parts here would make a machine with an unfamiliar peripheral fail its own
+    // seal.
     let _ = tree.for_each_node(|node| {
-          if !node.enabled()
-          {
-              return;
-          }
-          let named = node.compatible_list.is_some_and(|list| {
-                          list.split(|&byte| byte == 0)
-                              .any(|entry| entry == b"arm,pl011" || entry == b"virtio,mmio")
-                      });
-          if named && let Some((base, bytes)) = node.window()
-          {
-              end = end.max(base.saturating_add(bytes));
-          }
-      });
+                                if !node.enabled()
+                                {
+                                    return;
+                                }
+                                if let Some((base, bytes)) = node.window()
+                                   && bytes != 0
+                                {
+                                    end = end.max(base.saturating_add(bytes));
+                                }
+                            });
     end
 }
 
