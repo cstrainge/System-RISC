@@ -315,6 +315,37 @@ code at a correct address under an executable leaf remains unexplained.
 vector was installed. This is a separate root cause and is not a consequence of
 the mapping work.
 
+Reading the write path makes this much narrower than "unexplained", and it adds
+a candidate the framing above does not consider. `crate::machine::cpu::set_hart_control`
+(`system/src/machine/aarch64/cpu.rs:105`) has exactly two callers, both on the
+primary hart:
+
+* `admit_bootstrap`, `system/src/machine/traps/hart.rs:308` — writes the *cold*
+  control pointer, before the registry exists;
+* registry publication, `hart.rs:472` — rewrites it to
+  `registry.rows[primary_index].control` and then prints `SYSTEM_STACK_READY`
+  with that same `control=` value on the next line. The comment above it states
+  the intent: "Once REGISTRY exists the old cold pointer is invalid".
+
+So `0xffffffe010910000` is the registry control address, written immediately
+before it is printed, and no caller anywhere passes a null value — although
+`set_hart_control`'s own safety note permits null, so the type does not forbid
+it. A zero reading therefore has only two possible mechanisms:
+
+* **It was never written on the hart that read it.** `TPIDR_EL1` is per-core and
+  both writes target the primary only; there is no writer for a secondary hart
+  anywhere in `system/`. A secondary reading zero is then not corruption but the
+  correct value for a hart that has not published identity. This candidate is
+  absent from the framing above, which assumes a single hart.
+* **It was written and then lost** between `hart.rs:472` and the fault — which
+  requires an exception return or context restore that carries a stale copy back
+  into the register, since nothing writes zero.
+
+Deciding between them is a question of which hart reported the fault, and the
+report does not say. That is a smaller question than the one this section
+originally posed, and it is answerable by reading the boot order rather than by
+another experiment. Neither branch is assumed here.
+
 ## Not attempted, deliberately
 
 A typed wrapper that makes a firmware pointer unusable without the switch. The
