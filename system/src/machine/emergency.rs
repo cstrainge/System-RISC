@@ -196,6 +196,41 @@ fn console_write(byte: u8)
     }
 }
 
+/// How long a console write waits for the transmitter before giving up.
+///
+/// Bounded on purpose: a console that never reports ready must not hang the
+/// kernel, and discarding the bytes is better than spinning forever.
+const CONSOLE_SPIN_LIMIT: u32 = 100_000;
+
+/// Writes bytes to System's own console.
+///
+/// Separate from [`serial`] because a caller that already holds bytes should not
+/// round-trip them through formatting. Neither path switches translation roots,
+/// which is what makes this usable from the log path: the firmware callback
+/// could not report a fault inside its own root switch, so a fault there was
+/// silent.
+pub(crate) fn write_bytes(bytes: &[u8])
+{
+    for &byte in bytes
+    {
+        let mut ready = false;
+        for _ in 0..CONSOLE_SPIN_LIMIT
+        {
+            if console_ready()
+            {
+                ready = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if !ready
+        {
+            return;
+        }
+        console_write(byte);
+    }
+}
+
 pub(crate) fn serial(arguments: fmt::Arguments<'_>)
 {
     struct Uart;
@@ -206,7 +241,7 @@ pub(crate) fn serial(arguments: fmt::Arguments<'_>)
             for byte in text.bytes()
             {
                 let mut ready = false;
-                for _ in 0..100_000
+                for _ in 0..CONSOLE_SPIN_LIMIT
                 {
                     if console_ready()
                     {
