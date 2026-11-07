@@ -1076,6 +1076,17 @@ fn enter_system(memory: &memory::Memory,
     puthex(regions.len() as u64);
     puts("\n");
     puts("BOOT_AARCH64_ENTERING: System at EL1\n");
+    // The image must not inherit a return address from here. `br` does not set
+    // LR, so whatever the last `bl` in this bootstrap left in it survives into
+    // System - a bootrom address that the kernel space does not map for
+    // execution. A stray `ret` in the image would then branch straight back
+    // into firmware and take a permission fault there.
+    let link: u64;
+    // SAFETY: reading the link register has no side effects.
+    unsafe { core::arch::asm!("mov {}, x30", out(reg) link, options(nomem, nostack)) };
+    puts("BOOT_AARCH64_LINK: x30=");
+    puthex(link);
+    puts("\n");
     // SAFETY: the image is loaded and mapped at `entry`, the record and its
     // borrowed arrays stay pinned for the System lifetime, and this branch never
     // returns. Interrupts are masked because the kernel installs its own vector
@@ -1087,6 +1098,7 @@ fn enter_system(memory: &memory::Memory,
             "mov x1, {bytes}",
             "mov x2, {role}",
             "mov sp, {stack}",
+            "mov x30, xzr",
             "br {entry}",
             info = in(reg) info_virtual,
             bytes = in(reg) core::mem::size_of::<BootInfo>() as u64,
