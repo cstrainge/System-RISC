@@ -149,6 +149,48 @@ show. This project already validates silicon-specific behaviour on the board
 rather than in QEMU, so the correct next step for this fault is that route, not
 another in-guest candidate. It is left as a named, bounded open defect.
 
+## The no-switch probe: inconclusive, not a withdrawal
+
+A probe mapped every execution region in both spaces, so the firmware window was
+also mapped in the kernel space, and then called the storage callback with no
+translation-root switch at all. Both temporary changes were reverted.
+
+| configuration | TTBR0 | result |
+| --- | --- | --- |
+| switch on (shipped) | `0x5092a000` firmware root | `ESR 0x8600000f` at `0x4009aad4` |
+| switch off (probe) | `0x1000040007000` kernel root | `ESR 0x8600000f` at `0x4009aad4` |
+
+**This does not exonerate the switch, and must not be recorded as doing so.**
+The probe did not verify that the kernel-space leaf for the faulting address
+became executable. The RAM bank is mapped before the execution regions and may
+still own those pages, in which case the no-switch call ran against a
+read/write/no-execute page and a level-3 permission fault is exactly what that
+produces — expected, and no evidence about the switch either way. Both
+configurations faulting looks like a shared cause only if the probe actually
+made the page executable, and that was not shown.
+
+A clean version of this test would need a third root mapping only the firmware
+window, the image and the stack, with no RAM bank in it, so that an executable
+leaf cannot be shadowed. That is a second space builder rather than a small
+change, so it was not attempted; the ambiguity is recorded instead of papered
+over. The switch-on fault is still the open puzzle.
+
+## The loaded image contains the code the symbols claim
+
+The faulting address was read back from the running guest and compared with the
+bootrom image on disk:
+
+```
+runtime CODE=f240085fd65f03c0 fa401804fa400844
+ELF at 0x4009aad0:  d65f03c0 f240085f fa400844 fa401804
+```
+
+They are identical: `ret` at `0x4009aad0`, then `tst x2, #7` at `0x4009aad4`,
+which is the entry of `mac_bootloader::volume::disk_info`. So the code is where
+the symbol table says it is, `BootInfo::disk_info` points at it, and the loaded
+image matches the file byte for byte. A permission fault on a fetch of correct
+code at a correct address under an executable leaf remains unexplained.
+
 ## Named separately, not explained
 
 `TPIDR_EL1` reads zero at the fault even though `SYSTEM_STACK_READY` reports
