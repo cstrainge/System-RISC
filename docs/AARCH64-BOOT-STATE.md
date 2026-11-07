@@ -175,7 +175,46 @@ leaf cannot be shadowed. That is a second space builder rather than a small
 change, so it was not attempted; the ambiguity is recorded instead of papered
 over. The switch-on fault is still the open puzzle.
 
-## The walk is not the mechanism either
+## The cause: a writable page is not executable on this core
+
+Two single-variable experiments found it.
+
+**Not CPU-model-specific.** The failing case was run unchanged on `-cpu
+cortex-a72`, `-cpu cortex-a53` and `-cpu max`. All three produce an identical
+fault: same ESR, same ELR, same FAR, same registers. So this is not a
+`cortex-a72` modelling gap and the CPU model is eliminated as a variable.
+
+**Write-and-execute is refused even with `WXN=0`.** The firmware window's leaf
+was `AP[2]=0`, that is writable and executable — a combination no shipping OS
+produces, because Linux maps kernel text read-only-executable and honours
+`EFI_MEMORY_RO`/`XP` rather than inventing permissions. Dropping `WRITE` from
+the region's flags, so the leaf becomes `AP[2]=1` read-only-executable, changes
+the fault completely:
+
+```
+before:  ESR=0x8600000f  ELR=0x4009aad4  instruction abort, permission, level 3
+after:   ESR=0x96000006  ELR=0x4009ab08  data abort, translation, level 2
+                                       FAR=0x524301d0
+```
+
+`EC` moved from `0x21` (instruction abort) to `0x25` (data abort), `ELR` is now
+*past* the address that previously faulted, and the new fault is an ordinary
+translation fault on a data access — the firmware trying to write to a window
+that is now read-only, which is exactly what making it read-only would produce.
+
+So the instruction fetch succeeds once the page is read-only. This core refuses
+to execute a page that is also writable, and it does so with `SCTLR_EL1.WXN`
+clear, which the architecture does not license. That is why no architectural
+input showed it: the spec has no fifth input, and every register that should
+govern the decision said "permitted". It was found only because System mapped
+code writable, which no production OS does.
+
+**The fix is to split the window rather than remove the write**: code pages
+read-only-executable, data pages writable, which is what every mature OS does.
+The experiment above made the whole window read-only, which is why the next
+fault is a write to it; the shipped fix needs the two halves mapped separately.
+
+
 
 Two further inputs were measured, and both were the last architectural facts
 nobody had checked.

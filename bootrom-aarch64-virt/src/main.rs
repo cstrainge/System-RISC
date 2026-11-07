@@ -978,7 +978,7 @@ fn enter_system(memory: &memory::Memory,
     regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE,
                                                            length: BOOT_BYTES },
                           virtual_base: BOOT_BASE,
-                          flags:        READ | WRITE | EXECUTE | FIRMWARE_ONLY,
+                          flags:        READ | EXECUTE | FIRMWARE_ONLY,
                           reserved:     0 });
     let execution = Execution { hart: 0,
                                 // TTBR0_EL1 is the root the kernel authenticates;
