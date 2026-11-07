@@ -142,11 +142,13 @@ __system_trap_no_control:
     mrs x19, esr_el1
     mrs x20, elr_el1
     mrs x21, far_el1
-    // Which hart faulted without a control block. A report that names no hart
-    // cannot distinguish the admitted primary - whose control block was
-    // published before this vector was installed - from a secondary that never
-    // admitted, and those are different defects.
     mrs x22, mpidr_el1
+    // VBAR says which table took this exception; SP says which stack the handler
+    // is on; x30 is the faulting context's link register, still intact because
+    // nothing has called anything yet on this path.
+    mrs x23, vbar_el1
+    mov x24, sp
+    mov x25, x30
     ldr x0, =no_control_text
     bl no_control_puts
     mov x0, x22
@@ -162,6 +164,18 @@ __system_trap_no_control:
     ldr x0, =no_control_far_text
     bl no_control_puts
     mov x0, x21
+    bl no_control_hex
+    ldr x0, =no_control_vbar_text
+    bl no_control_puts
+    mov x0, x23
+    bl no_control_hex
+    ldr x0, =no_control_sp_text
+    bl no_control_puts
+    mov x0, x24
+    bl no_control_hex
+    ldr x0, =no_control_lr_text
+    bl no_control_puts
+    mov x0, x25
     bl no_control_hex
     ldr x0, =no_control_nl
     bl no_control_puts
@@ -233,5 +247,11 @@ no_control_elr_text:
     .asciz " ELR="
 no_control_far_text:
     .asciz " FAR="
+no_control_vbar_text:
+    .asciz " VBAR="
+no_control_sp_text:
+    .asciz " SP="
+no_control_lr_text:
+    .asciz " LR="
 no_control_nl:
     .asciz "\n"
