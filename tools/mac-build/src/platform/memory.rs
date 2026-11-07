@@ -108,6 +108,14 @@ pub(super) struct Definition
     application_primary_base:    String,
     definitions:                 Region,
     fdt_tail_bytes:              String,
+    /// How much of the boot window is code rather than data.
+    ///
+    /// The window holds both, and one permission cannot be right for both: code
+    /// must be read-only and executable, data writable and not executable. The
+    /// boundary is declared here so the region table states it and no mapping
+    /// code has to infer it. Absent means the machine has not split its window.
+    #[serde(default)]
+    firmware_code_bytes:         String,
     boot_stack_bytes:            String,
     monitor_stack_bytes:         String,
     /// The monitor's reset/transport binding. Only the RISC-V legacy CLINT

@@ -975,10 +975,35 @@ fn enter_system(memory: &memory::Memory,
     // the call took a permission fault at level 3 - the memory was mapped, the
     // fetch was not permitted - which is a fault the declaration caused rather
     // than one the machine had.
+    // The firmware window holds code and data, and one permission cannot be
+    // right for both. Code is read-only and executable; data is writable and
+    // not executable. The boundary is the record's `firmware_code_bytes`, which
+    // is where the linker places .data, so it is declared rather than guessed
+    // from a section symbol at run time.
+    //
+    // This matters beyond hygiene: this core refuses to execute a page that is
+    // also writable, even with SCTLR_EL1.WXN clear. A single writable-and-
+    // executable window made every call into firmware take a permission fault
+    // on fetch, which is why the window is split here.
     regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE,
-                                                           length: BOOT_BYTES },
+                                                           length: FIRMWARE_CODE_BYTES },
                           virtual_base: BOOT_BASE,
                           flags:        READ | EXECUTE | FIRMWARE_ONLY,
+                          reserved:     0 });
+    regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE
+                                                                        + FIRMWARE_CODE_BYTES,
+                                                           length: BOOT_BYTES
+                                                                   - FIRMWARE_CODE_BYTES },
+                          virtual_base: BOOT_BASE + FIRMWARE_CODE_BYTES,
+                          flags:        READ | WRITE | FIRMWARE_ONLY,
+                          reserved:     0 });
+    // The firmware heap the record declares, identity mapped for the same
+    // reason the window above is: the bootstrap allocates from it by its own
+    // address, and the physmap alias is not where its allocator points.
+    regions.push(Region { physical:     BootMemoryRange { base:   FW_HEAP_BASE,
+                                                           length: FW_HEAP_BYTES },
+                          virtual_base: FW_HEAP_BASE,
+                          flags:        READ | WRITE | FIRMWARE_ONLY,
                           reserved:     0 });
     let execution = Execution { hart: 0,
                                 // TTBR0_EL1 is the root the kernel authenticates;

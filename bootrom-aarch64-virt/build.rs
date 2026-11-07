@@ -67,6 +67,13 @@ fn main()
     // hold it and the declared region is what the memory map is checked against.
     let heap_base = memory["firmware_heap"]["base"].as_str().expect("memory.firmware_heap.base");
     let heap_bytes = memory["firmware_heap"]["bytes"].as_str().expect("memory.firmware_heap.bytes");
+    // How much of the boot window is code. The window holds both code and data,
+    // and one permission cannot be right for both: code must be read-only and
+    // executable, data writable and not executable. The boundary is declared
+    // here rather than inferred from a section symbol, so the region table states
+    // it and the mapping code never guesses.
+    let firmware_code_bytes = memory["firmware_code_bytes"].as_str()
+                                     .expect("memory.firmware_code_bytes");
     let scratch_base = memory["display_scratch"]["base"].as_str()
                               .expect("memory.display_scratch.base");
     let scratch_bytes = memory["display_scratch"]["bytes"].as_str()
@@ -93,6 +100,7 @@ fn main()
                        // The reservation a machine-supplied tree must fit inside. A blob that\
                        // states a larger size is refused rather than read past its end.\n\
                        pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n\
+                       pub const FIRMWARE_CODE_BYTES: u64 = {firmware_code_bytes};\n\
                        pub const FW_HEAP_BASE: u64 = {heap_base};\n\
                        pub const FW_HEAP_BYTES: u64 = {heap_bytes};\n\
                        pub const BOOT_BASE: u64 = {boot_base};\n\
