@@ -265,3 +265,40 @@ These cases establish the contract, not the emission. Whether the hardware
 emits the waveform the spec describes — the edge placement, the divider
 quantisation, the behaviour at the maximum rate — is a board fact, and a driver
 claiming it must say on which board it was measured.
+
+## The state of the driver, 2026-11-06
+
+`drivers/spi0-wave` provides this class and **advertises no capability**. It is not
+installed: the record's `install.modules` no longer lists it, and the package's
+`module.json` declares no capability and no dependencies.
+
+That is a correction, not a retreat. The driver used to claim a leased DMA channel
+and a Device DMA allocation, and program neither — no transfer descriptor, no
+channel enable, no pacing — while writing a bit it called "DMA enable" that in this
+block's chip-select register is the transmit-FIFO **clear**. It emptied the FIFO and
+reported itself configured, then filled a static buffer the controller was never
+told about. Anything above it would have planned around a serialiser that could not
+shift a byte.
+
+Its release path also forgot the page it had claimed, leaving the window owned by a
+driver with no state pointing at it, so the next attach was refused `SERVICE_BUSY`
+for a reason no caller could see.
+
+**What re-admits it.** Emission needs the transmit FIFO kept supplied, and that is
+one of exactly two things:
+
+1. **A programmed DMA channel**, taken from the set the record declares
+   (`brcm,dma-channel-mask` = 32565, channels 0, 2, 4, 5 and 8–14). The control-block
+   fields, pacing and completion rule are specified in `docs/BCM2837-SPI0-DMA.md`,
+   so this is writable — but nothing in this repository can exercise it. QEMU's
+   `raspi3b` does not pace DMA, so a green emulator run would not witness the
+   property that matters, and an unexercised descriptor is the same class of claim
+   as the bit that was wrong.
+2. **A verified answer to "when may the CPU write the FIFO"**, which would let the
+   driver feed the shift register from a loop. No source this project holds records
+   that handshake's bit positions.
+
+Either is a real piece of work with a real acceptance test, and until one exists the
+honest state is a validated contract and a package that refuses. The code keeps the
+class's request dispatch, the refusal set and the rate arithmetic, so re-admitting
+it is filling in the adapter rather than starting again.

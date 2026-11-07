@@ -156,6 +156,57 @@ impl<P: Platform> Device<P>
         self.platform.acquire(geometry, ALLOCATION_ALIGNMENT)?;
         Ok(())
     }
+
+    /// Hand back every allocation this device holds, for quiesce.
+    ///
+    /// Quiesce ends the module's life, so dropping the records would leak their
+    /// storage: the Device service issued each allocation to this module and
+    /// expects the same module to free it. A refused free keeps its record, as a
+    /// refused RELEASE does, so the storage stays on both sides' books and the
+    /// resident can reclaim or quarantine it rather than losing it silently.
+    pub fn shutdown(&mut self) -> Result<(), Refusal>
+    {
+        // A prepared mode has already been applied to the firmware, so the
+        // display is fetching from the candidate. Put the active mode back
+        // before freeing storage the display still reads.
+        if self.candidate.is_some()
+        {
+            self.restore_active()?;
+        }
+        let mut refusal = None;
+        if let Some(record) = self.candidate
+        {
+            let freed = self.platform.free(record.allocation);
+            match freed
+            {
+                Ok(()) => self.candidate = None,
+                Err(cause) => refusal = Some(cause)
+            }
+        }
+        if let Some(record) = self.retired
+        {
+            let freed = self.platform.free(record.allocation);
+            match freed
+            {
+                Ok(()) => self.retired = None,
+                Err(cause) => refusal = refusal.or(Some(cause))
+            }
+        }
+        if let Some(record) = self.active
+        {
+            let freed = self.platform.free(record.allocation);
+            match freed
+            {
+                Ok(()) => self.active = None,
+                Err(cause) => refusal = refusal.or(Some(cause))
+            }
+        }
+        match refusal
+        {
+            Some(cause) => Err(cause),
+            None => Ok(())
+        }
+    }
 }
 impl<P: Platform> Hardware for Device<P>
 {

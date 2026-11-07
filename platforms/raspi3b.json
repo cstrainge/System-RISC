@@ -24,7 +24,7 @@
     "modules": [
       "mac-system",
       "videocore-framebuffer",
-      "spi0-wave",
+
       "bcm2835-rng"
     ],
     "folders": {
@@ -150,6 +150,7 @@
       "key": "6272636d2c62636d323833352d706d00",
       "address": "0x3f100000",
       "bytes": 4096,
+      "interrupt": 0,
       "flags": 2
     },
     {
@@ -158,6 +159,7 @@
       "key": "61726d2c706c30313100000000000000",
       "address": "0x3f201000",
       "bytes": 4096,
+      "interrupt": 57,
       "flags": 2
     },
     {
@@ -166,6 +168,7 @@
       "key": "6272636d2c7364686369000000000000",
       "address": "0x3f300000",
       "bytes": 4096,
+      "interrupt": 62,
       "flags": 2
     },
     {
@@ -174,6 +177,7 @@
       "key": "6272636d2c6d626f7800000000000000",
       "address": "0x3f00b000",
       "bytes": 4096,
+      "interrupt": 1,
       "flags": 2
     },
     {
@@ -182,6 +186,7 @@
       "key": "6272636d2c62636d323833352d726e67",
       "address": "0x3f104000",
       "bytes": 4096,
+      "interrupt": 61,
       "flags": 2
     },
     {
@@ -190,6 +195,7 @@
       "key": "6272636d2c73797374696d6572000000",
       "address": "0x3f003000",
       "bytes": 4096,
+      "interrupt": 0,
       "flags": 2
     },
     {
@@ -198,6 +204,7 @@
       "key": "6272636d2c6c312d696e746300000000",
       "address": "0x40000000",
       "bytes": 4096,
+      "interrupt": 0,
       "flags": 2
     },
     {
@@ -206,7 +213,8 @@
       "key": "6272636d2c646d610000000000000000",
       "address": "0x3f007000",
       "bytes": 4096,
-      "pool": 32557,
+      "interrupt": 16,
+      "pool": 32565,
       "flags": 2
     },
     {
@@ -215,6 +223,7 @@
       "key": "6272636d2c7370693000000000000000",
       "address": "0x3f204000",
       "bytes": 4096,
+      "interrupt": 54,
       "flags": 2
     },
     {
@@ -223,6 +232,7 @@
       "key": "6272636d2c6175780000000000000000",
       "address": "0x3f215000",
       "bytes": 4096,
+      "interrupt": 29,
       "flags": 2
     },
     {
@@ -231,6 +241,7 @@
       "key": "6272636d2c70776d0000000000000000",
       "address": "0x3f20c000",
       "bytes": 4096,
+      "interrupt": null,
       "flags": 2
     },
     {
@@ -239,6 +250,7 @@
       "key": "6272636d2c6932730000000000000000",
       "address": "0x3f203000",
       "bytes": 4096,
+      "interrupt": null,
       "flags": 2
     },
     {
@@ -247,6 +259,7 @@
       "key": "6272636d2c6370726d616e0000000000",
       "address": "0x3f101000",
       "bytes": 4096,
+      "interrupt": null,
       "flags": 2
     },
     {
@@ -255,6 +268,7 @@
       "key": "6272636d2c6370726d616e0000000000",
       "address": "0x3f102000",
       "bytes": 4096,
+      "interrupt": null,
       "flags": 2
     },
     {
@@ -263,6 +277,7 @@
       "key": "6272636d2c7633640000000000000000",
       "address": "0x3fc00000",
       "bytes": 4096,
+      "interrupt": 10,
       "flags": 2
     }
   ],
@@ -378,7 +393,7 @@
   },
   "hardware": {
     "harts": 4,
-    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware. The 3D engine is declared at ARM 0x3fc00000 (bus 0x7ec00000, translated by the same offset that places the RNG and the HVS) with GPU interrupt 10, and no driver claims it yet: the board has it, so the tree describes it, and a probe that finds no driver loads nothing. Its clock and reset come from the clock-manager and power-management windows declared above, which is the relationship a driver for it will need first. The entropy window is declared one word wider than the board's own description states (0x14 rather than 0x10), because its interrupt-mask register sits at offset 0x10, immediately past that stated extent; a driver that masked the block's interrupt would otherwise write outside the window it was granted. That widening is a fact this project derived from the register layout, not one any document states, so both the window and its reason are recorded here rather than left in a driver. Its DMA controller has fifteen channels, of which the board's own firmware keeps four for itself: the reference hardware description gives the ARM channels 0, 2, 4, 5 and 8 through 14, and that mask is what a driver must take its channels from rather than assuming all fifteen. The controller is therefore shared: the SD host path is served by channel 13 when that controller is driven, and a timed output needs a channel of its own from the same set.",
+    "description": "BCM2837-class SoC board booted from an SD card by the board's own firmware. The 3D engine is declared at ARM 0x3fc00000 (bus 0x7ec00000, translated by the same offset that places the RNG and the HVS) with GPU interrupt 10, and no driver claims it yet: the board has it, so the tree describes it, and a probe that finds no driver loads nothing. Its clock and reset come from the clock-manager and power-management windows declared above, which is the relationship a driver for it will need first. The entropy window is declared one word wider than the board's own description states (0x14 rather than 0x10), because its interrupt-mask register sits at offset 0x10, immediately past that stated extent; a driver that masked the block's interrupt would otherwise write outside the window it was granted. That widening is a fact this project derived from the register layout, not one any document states, so both the window and its reason are recorded here rather than left in a driver. Its DMA controller has fifteen channels, of which the board's own firmware keeps four for itself: the reference hardware description gives the ARM channels 0, 2, 4, 5 and 8 through 14, and that mask is what a driver must take its channels from rather than assuming all fifteen. The controller is therefore shared: the SD host path is served by channel 13 when that controller is driven, and a timed output needs a channel of its own from the same set. That mask is 32565, which is 0x7f35: the board's own firmware tree states it as brcm,dma-channel-mask, and the derivation is checkable against the channels named above, so the value and the description cannot drift apart again. No module that leases one is installed: spi0-wave provides the WAVE class but offers no capability, because its transmit path needs either a programmed DMA channel or a FIFO handshake no source this project holds records, so it is absent from install.modules until one of those exists.",
     "board": "bcm2837-class",
     "soc": "bcm2837",
     "boot": {
