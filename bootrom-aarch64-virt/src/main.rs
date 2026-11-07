@@ -1130,8 +1130,15 @@ fn enter_system(memory: &memory::Memory,
             "mov x1, {bytes}",
             "mov x2, {role}",
             "mov sp, {stack}",
-            "mov x30, xzr",
+            // The image's entry returns a services pointer, so it ends in `ret`.
+            // LR must therefore name somewhere valid: a halt loop here, so a
+            // returned entry stops in firmware instead of jumping to zero. This
+            // was previously zeroed, which made every boot fault at address 0.
+            "adr x30, 1f",
             "br {entry}",
+            "1:",
+            "wfe",
+            "b 1b",
             info = in(reg) info_virtual,
             bytes = in(reg) core::mem::size_of::<BootInfo>() as u64,
             role = in(reg) mac_abi::boot::monitor::ENTRY_PRIMARY,
