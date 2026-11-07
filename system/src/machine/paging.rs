@@ -1056,10 +1056,15 @@ pub(crate) fn with_firmware<R>(call: impl FnOnce() -> R) -> Result<R, Error>
                             // Process roots share hardware ASID0 with firmware. A direct
                             // trusted supervisor caller must flush both entry and restoration,
                             // even when permanent Kernel/FW tags are otherwise distinct.
-                            (spaces.firmware.register,
-                             !spaces.distinct_tags
-                             || (current != spaces.kernel.register
-                                 && current != spaces.firmware.register))
+                            //
+                            // The firmware switch always flushes, because the two roots
+                            // deliberately disagree about the firmware window: the firmware
+                            // root maps it executable so this callback can be called, and the
+                            // kernel root maps the same bytes as ordinary RAM. Identical
+                            // mappings make a flush unnecessary, and these are not identical,
+                            // so a cached translation from the kernel root would be used for
+                            // the call and refused for want of execute permission.
+                            (spaces.firmware.register, true)
                         });
         let _scope = RootScope::from_previous(register, fence, current);
         Ok(call())
