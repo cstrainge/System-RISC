@@ -771,7 +771,7 @@ fn keep_low(base: u64, end: u64, overlap: bool) -> bool
     };
     keep(DEFINITION_BASE, DEFINITION_LIMIT)
     || BOOT_MMIO_REGIONS.iter().any(|&(start, limit)| keep(start, limit))
-    || (0..crate::machine::platform_devices::SLOTS).filter_map(crate::machine::platform_devices::get)
+    || (0..crate::machine::platform_devices::count()).filter_map(crate::machine::platform_devices::get)
                                                   .any(|device| {
                                                       keep(device.registers,
                                                            device.registers + device.register_bytes)

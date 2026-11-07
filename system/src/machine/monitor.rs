@@ -469,8 +469,16 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
     {
         return Err(refuse("tag mask is not a power-of-two span"));
     }
-    if image.physical_limit.load(Ordering::Acquire) != physical_limit(memory)?
+    let sealed = image.physical_limit.load(Ordering::Acquire);
+    let own = physical_limit(memory)?;
+    if sealed != own
     {
+        // Both numbers, because a limit that differs is only actionable if the
+        // report says which side is high and by how much.
+        crate::machine::emergency::serial(format_args!(
+            "BOOT_MONITOR_SEAL_LIMIT: sealed=0x{:x} boot=0x{:x}\n",
+            sealed,
+            own));
         return Err(refuse("sealed physical limit differs from the boot's own"));
     }
     // The bootstrap's fault and return stubs must live in firmware, which is
@@ -885,10 +893,10 @@ fn physical_limit(memory: CheckedMemory<'_>) -> Result<u64, Error>
     {
         end = end.max(limit);
     }
-    for index in 0..super::platform_devices::SLOTS
+    for index in 0..super::platform_devices::count()
     {
         let device = super::platform_devices::get(index).ok_or(Error::Devices(
-            super::platform_devices::Refusal::unresolved(index)))?;
+            super::platform_devices::Refusal::unresolved()))?;
         end = end.max(device.registers
                             .checked_add(device.register_bytes)
                             .ok_or(Error::Image)?);

@@ -133,7 +133,7 @@ fn kind(base: u64, span: Span, heap: (u64, u64)) -> u32
     else if (APPLICATION_PRIMARY_BASE..IMAGE_LIMIT).contains(&base) { wire::TRUSTED_APPLICATION_ARENA }
     else if (VM_MODULE_START..VM_MODULE_END).contains(&base) { wire::TRUSTED_MODULE_ARENA }
     else if super::BOOT_MMIO_REGIONS.iter().any(|&(start,end)| (start..end).contains(&base))
-        || (0..super::super::platform_devices::SLOTS).filter_map(super::super::platform_devices::get)
+        || (0..super::super::platform_devices::count()).filter_map(super::super::platform_devices::get)
                                                     .any(|device| base >= device.registers
                                                                   && base - device.registers
                                                                      < device.register_bytes) { wire::DEVICE }

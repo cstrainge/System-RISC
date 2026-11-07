@@ -15,12 +15,6 @@
 use mac_abi::BootInfo;
 use mac_devicetree::{Node, Tree};
 
-use super::power::platform::{DECLARED_DEVICES, DECLARED_NO_INTERRUPT};
-
-/// How many declared identities the platform has. A capacity, not a machine
-/// fact: the record states it and the tree supplies the contents.
-pub(crate) const SLOTS: usize = DECLARED_DEVICES.len();
-
 /// How far an `interrupt-parent` may be inherited. A real tree states it on the
 /// bus or the root, so a longer chain is a malformed tree rather than a deeper
 /// machine, and walking it would be unbounded work at admission.
@@ -50,11 +44,9 @@ pub(crate) enum Cause
     NoWindow,
     /// The node declares interrupts that cannot be attributed to a controller.
     NoInterruptParent,
-    /// The record states an interrupt the machine's tree does not.
-    InterruptDivergence,
-    /// A slot admission should have published but did not. Admission publishes
-    /// every slot or none, so this is an internal inconsistency rather than a
-    /// machine fact, and it is still reported rather than skipped.
+    /// A peripheral admission should have enumerated was not there. Admission
+    /// walks the machine's tree, so this is an internal inconsistency rather
+    /// than a machine fact, and it is still reported rather than skipped.
     Unpublished
 }
 
@@ -83,15 +75,12 @@ impl Refusal
         self.cause
     }
 
-    /// The refusal for a declared slot the inventory did not publish. The
-    /// declared identity is still named, so the report points at a peripheral
-    /// rather than at an index.
-    pub(crate) fn unresolved(index: usize) -> Self
+    /// The refusal for a peripheral the enumeration was expected to find and
+    /// did not. It names no identity, because the walk that would have supplied
+    /// one is the thing that came up short.
+    pub(crate) fn unresolved() -> Self
     {
-        let key = DECLARED_DEVICES.get(index)
-                                  .map(|&(_, key, _)| key)
-                                  .unwrap_or(NO_KEY);
-        Refusal { key,
+        Refusal { key: NO_KEY,
                   cause: Cause::Unpublished }
     }
 }
@@ -118,31 +107,26 @@ impl core::fmt::Display for Refusal
                         for it",
                        self.name())
             }
-            Cause::InterruptDivergence =>
-            {
-                write!(out,
-                       "`{}` declares an interrupt the machine's device tree does not",
-                       self.name())
-            }
             Cause::Unpublished =>
             {
-                write!(out, "`{}` was not resolved by admission", self.name())
+                write!(out, "a peripheral admission should have enumerated was not there")
             }
         }
     }
 }
 
-struct Inventory
-{
-    devices: [Option<Device>; SLOTS]
-}
-
-static INVENTORY: spin::Once<Inventory> = spin::Once::new();
-
-/// Resolve every declared peripheral through the machine's tree.
+/// The machine's own description, pinned at admission.
 ///
-/// Runs before anything that needs a device window, and publishes nothing if any
-/// identity fails, so a partially resolved inventory is never observable.
+/// The kernel keeps no peripheral list. It keeps the tree the machine supplied
+/// and reads it where a window is needed, so nothing is copied, nothing is
+/// bounded, and a machine that describes more peripherals than another needs no
+/// change here.
+static TREE_BLOB: spin::Once<&'static [u8]> = spin::Once::new();
+
+/// Check that the machine supplied a tree this kernel can read, and pin it.
+///
+/// Runs before anything that needs a device window, so a tree that does not
+/// parse is refused before a window is used rather than after.
 ///
 /// # Safety
 /// The admitted firmware root maps primary RAM in the permanent physmap and the
@@ -150,7 +134,7 @@ static INVENTORY: spin::Once<Inventory> = spin::Once::new();
 /// view live as long as the tree is read.
 pub(crate) unsafe fn admit(info: &BootInfo) -> Result<(), Refusal>
 {
-    if INVENTORY.get().is_some()
+    if TREE_BLOB.get().is_some()
     {
         return Ok(());
     }
@@ -158,62 +142,93 @@ pub(crate) unsafe fn admit(info: &BootInfo) -> Result<(), Refusal>
         super::memory::primary_slice(info, info.device_tree, info.device_tree_bytes)
     }.map_err(|_| Refusal { key: NO_KEY,
                              cause: Cause::Tree })?;
-    let tree = Tree::new(blob).map_err(|_| Refusal { key: NO_KEY,
-                                                     cause: Cause::Tree })?;
-    let mut devices: [Option<Device>; SLOTS] = [None; SLOTS];
-    for (slot, &(bus, key, declared_interrupt)) in devices.iter_mut().zip(DECLARED_DEVICES)
-    {
-        let device = resolve(&tree, bus, key)?;
-        // The record's interrupt is a declaration and the tree is the authority,
-        // so the two are compared rather than one being preferred. A record that
-        // states a line the machine does not is a divergence worth refusing: the
-        // alternative is a driver waiting on an interrupt that never arrives.
-        if declared_interrupt != DECLARED_NO_INTERRUPT
-           && declared_interrupt != device.interrupt
-        {
-            return Err(Refusal { key,
-                                 cause: Cause::InterruptDivergence });
-        }
-        *slot = Some(device);
-    }
-    INVENTORY.call_once(|| Inventory { devices });
+    Tree::new(blob).map_err(|_| Refusal { key: NO_KEY,
+                                          cause: Cause::Tree })?;
+    TREE_BLOB.call_once(|| blob);
     Ok(())
 }
 
-/// The resolved peripheral at `index`, or `None` before admission or past the
-/// declared count.
-pub(crate) fn get(index: usize) -> Option<Device>
+/// The admitted tree, or `None` before admission.
+fn admitted_tree() -> Option<Tree<'static>>
 {
-    INVENTORY.get()?.devices.get(index).copied().flatten()
+    Tree::new(TREE_BLOB.get().copied()?).ok()
 }
 
-fn resolve(tree: &Tree<'_>, bus: [u8; 4], key: [u8; 16]) -> Result<Device, Refusal>
+/// Visit every peripheral the machine describes, in tree order.
+///
+/// A peripheral is an enabled node that names a part and states a window. Which
+/// of them a driver binds is the driver's declaration, matched by bus and key,
+/// not a platform list, so a machine with parts this kernel has never seen needs
+/// no change here.
+fn for_each_device(mut visit: impl FnMut(Device))
 {
-    let refuse = |cause| Refusal { key, cause };
-    // Borrowed from the key rather than copied into a String: admission runs
-    // before the heap exists, and the name is only needed for the match below.
-    let end = key.iter().position(|&byte| byte == 0).unwrap_or(key.len());
-    let name = core::str::from_utf8(&key[..end]).map_err(|_| refuse(Cause::Missing))?;
-    let node = tree.find_compatible(name)
-                   .map_err(|_| refuse(Cause::Tree))?
-                   .ok_or_else(|| refuse(Cause::Missing))?;
-    let (registers, register_bytes) = node.window().ok_or_else(|| refuse(Cause::NoWindow))?;
+    let Some(tree) = admitted_tree()
+    else
+    {
+        return;
+    };
+    let _ = tree.for_each_node(|node| {
+                                if let Some(device) = device_of(&tree, &node)
+                                {
+                                    visit(device);
+                                }
+                            });
+}
+
+/// The peripheral a node describes, or `None` when it describes none.
+fn device_of(tree: &Tree<'_>, node: &Node<'_>) -> Option<Device>
+{
+    if !node.enabled() || node.compatible.is_none() || node.reg.is_none()
+    {
+        return None;
+    }
+    let (registers, register_bytes) = node.window()?;
     if register_bytes == 0 || registers == 0
     {
-        return Err(refuse(Cause::NoWindow));
+        return None;
     }
-    let interrupt = interrupt_of(tree, &node).map_err(|_| refuse(Cause::NoInterruptParent))?;
+    let compatible = node.compatible?;
+    let mut key = [0u8; 16];
+    for (slot, byte) in key.iter_mut().zip(compatible.as_bytes())
+    {
+        *slot = *byte;
+    }
+    let interrupt = interrupt_of(tree, node).unwrap_or(0);
     let mut flags = mac_device_interface::MMIO;
     if node.dma_coherent
     {
         flags |= mac_device_interface::COHERENT_DMA;
     }
-    Ok(Device { bus,
-                key,
-                registers,
-                register_bytes,
-                interrupt,
-                flags })
+    Some(Device { bus: *b"MMIO",
+                  key,
+                  registers,
+                  register_bytes,
+                  interrupt,
+                  flags })
+}
+
+/// How many peripherals the machine described.
+pub(crate) fn count() -> usize
+{
+    let mut count = 0;
+    for_each_device(|_| count += 1);
+    count
+}
+
+/// The enumerated peripheral at `index`, or `None` before admission or past the
+/// number the machine described.
+pub(crate) fn get(index: usize) -> Option<Device>
+{
+    let mut found = None;
+    let mut seen = 0usize;
+    for_each_device(|device| {
+        if seen == index && found.is_none()
+        {
+            found = Some(device);
+        }
+        seen += 1;
+    });
+    found
 }
 
 /// The interrupt number a node's first specifier carries.

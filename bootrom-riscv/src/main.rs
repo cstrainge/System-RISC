@@ -320,39 +320,51 @@ entry_from!(Physical, mac_kernel_model::pages::physical::Error);
 entry_from!(Supervisor, supervisor::Error);
 
 /// The register windows of every peripheral the platform record declares,
-/// resolved through the tree the machine supplied.
+/// Every MMIO window the machine describes, as the bootstrap must map and
+/// exclude them.
 ///
-/// The record states which peripherals this platform carries and the machine's
-/// tree states where they are, so the two are tied here rather than by a
-/// compiled-in address. A declared peripheral the tree does not describe is
-/// refused by name: mapping an address the machine does not implement faults
-/// far from its cause.
-fn declared_windows(tree: &bootrom_riscv::devicetree::Tree<'_>)
-                    -> core::result::Result<[(u64, u64); platform::DECLARED_DEVICES.len()],
-                                             mac_formats::Error>
+/// The machine is asked what it has rather than told, so this is the same walk
+/// on every architecture and a board the kernel has never seen needs no change
+/// here. Each enabled node that names a part and states a window contributes
+/// one; a node with no `reg` describes a function rather than a region and has
+/// no window to map.
+fn machine_windows(tree: &bootrom_riscv::devicetree::Tree<'_>, memory: &memory::Memory)
+                   -> core::result::Result<alloc::vec::Vec<(u64, u64)>, mac_formats::Error>
 {
-    let mut windows = [(0u64, 0u64); platform::DECLARED_DEVICES.len()];
-    for (slot, &(_, key, _)) in windows.iter_mut().zip(platform::DECLARED_DEVICES)
-    {
-        let end = key.iter().position(|&byte| byte == 0).unwrap_or(key.len());
-        let name = core::str::from_utf8(&key[..end]).map_err(|_| {
-                                                         mac_formats::Error::Malformed("a \
-                                                                                        declared \
-                                                                                        peripheral \
-                                                                                        identity \
-                                                                                        is not \
-                                                                                        text")
-                                                     })?;
-        let Some(window) = tree.window(name).map_err(bootrom_riscv::devicetree::envelope)?
-        else
-        {
-            serial!("BOOT_DEVICE_REJECTED: the machine's device tree does not describe `{}`",
-                    name);
-            return Err(mac_formats::Error::Malformed("the machine's device tree does not \
-                                                      describe a declared peripheral"));
-        };
-        *slot = window;
-    }
+    let flash_end = memory::FLASH_BASE.saturating_add(memory::FLASH_BYTES);
+    let mut windows: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
+    tree.for_each_node(|node| {
+            if !node.enabled() || node.compatible.is_none()
+            {
+                return;
+            }
+            if let Some((base, bytes)) = node.window()
+               && base != 0
+               && bytes != 0
+            {
+                // The machine states a register block, which is often a few
+                // bytes inside one page. Mapping and exclusion work in pages, so
+                // the extent is rounded out to the pages that contain it - never
+                // in, which would leave part of the block unmapped.
+                let page = memory::PAGE_BYTES;
+                let start = base - base % page;
+                let end = base.saturating_add(bytes).div_ceil(page) * page;
+                // A node can describe something this bootstrap already maps:
+                // the flash part, or a window inside RAM. Those are mapped from
+                // the record's own extents, so adding them again would conflict
+                // with the mapping that already exists.
+                let overlaps = |low: u64, high: u64| start < high && low < end;
+                if overlaps(memory::FLASH_BASE, flash_end)
+                   || memory.ram.iter().any(|bank| {
+                                     overlaps(bank.base, bank.base.saturating_add(bank.length))
+                                 })
+                {
+                    return;
+                }
+                windows.push((start, end - start));
+            }
+        })
+        .map_err(bootrom_riscv::devicetree::envelope)?;
     Ok(windows)
 }
 
@@ -372,7 +384,7 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
     // tree says where they are. Resolving once, here, means the bootloader and
     // the kernel map the same windows, and a declared peripheral the tree does
     // not describe is refused by name instead of given a compiled-in address.
-    let windows = declared_windows(tree)?;
+    let windows = machine_windows(tree, memory)?;
     let descriptor = &startup.descriptor;
     let plan = image::LoadPlan::new(&startup.code, descriptor, None, descriptor.load_base)?;
     memory.reserve(memory::IMAGE_BASE..memory::IMAGE_LIMIT)?;

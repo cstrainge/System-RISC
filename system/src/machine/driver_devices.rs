@@ -11,11 +11,16 @@ use crate::{drivers::{self, ResidentCall, ResidentCompletion,
             state::TryState};
 struct PlatformBus;
 const VIRTIO_SLOTS: u32 = super::memory::VIRTIO_MMIO_SLOTS as u32;
-/// Capacity of the boot device snapshot: the transport's own slots plus one per
-/// peripheral the platform record declares. The declared count is a capacity,
-/// not a claim about the machine - each slot is filled from the machine's tree
-/// and a declared peripheral the tree does not describe is refused by name.
-pub(crate) const DEVICE_SLOTS: usize = VIRTIO_SLOTS as usize + super::platform_devices::SLOTS;
+/// How many board peripherals the boot device snapshot can describe.
+///
+/// This bounds the snapshot table, not the machine: the machine states how many
+/// peripherals it has by describing them, and a machine with more than this is
+/// not silently truncated but cannot be offered here. The bound is the table's
+/// own, so it stays a constant while the enumeration itself holds no list.
+const BOARD_SLOTS: usize = 96;
+/// Capacity of the boot device snapshot: the transport's own slots plus the
+/// board peripherals this table can describe.
+pub(crate) const DEVICE_SLOTS: usize = VIRTIO_SLOTS as usize + BOARD_SLOTS;
 fn board_device(ordinal: u32) -> Result<Description, Status>
 {
     let index = ordinal.checked_sub(VIRTIO_SLOTS).ok_or(NOT_FOUND)? as usize;

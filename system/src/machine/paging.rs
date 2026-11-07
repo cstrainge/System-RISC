@@ -792,12 +792,17 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     {
         if firmware || region.flags & FIRMWARE_ONLY == 0
         {
+            // Global, like every other mapping in a kernel space. A firmware
+            // region usually sits inside RAM the machine described, and that RAM
+            // is already mapped global; mapping the region privately would nest
+            // a private leaf under a global ancestor, which the model refuses
+            // rather than silently sharing a table between the two.
             leaves += map(&mut mapper,
                           region.virtual_base,
                           region.physical.base,
                           region.physical.length,
                           region.flags,
-                          region.flags & FIRMWARE_ONLY == 0)?;
+                          true)?;
         }
     }
     for (ordinal, stack) in stacks.iter().enumerate()
@@ -824,11 +829,31 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     // Every window comes from the machine's tree; admission resolved them all
     // before this root existed, so a missing one is an inconsistency rather
     // than a machine with no peripherals.
-    for index in 0..super::platform_devices::SLOTS
+    for index in 0..super::platform_devices::count()
     {
         let device = super::platform_devices::get(index).ok_or(Error::Devices(
-            super::platform_devices::Refusal::unresolved(index)))?;
-        leaves += map(&mut mapper, device.registers, device.registers, device.register_bytes, READ | WRITE, true)?;
+            super::platform_devices::Refusal::unresolved()))?;
+        // The machine states a register block, which is often smaller than a
+        // page - QEMU's fw-cfg window is 24 bytes - while a mapping is whole
+        // pages. The extent is rounded out to the pages that contain the block;
+        // rounding in would leave part of it unmapped.
+        let start = device.registers - device.registers % super::memory::PAGE_BYTES;
+        let end = device.registers
+                          .saturating_add(device.register_bytes)
+                          .div_ceil(super::memory::PAGE_BYTES)
+                          * super::memory::PAGE_BYTES;
+        // A node can describe something already mapped: the flash part is mapped
+        // as firmware, and the bootstrap windows are mapped just above. Mapping
+        // them a second time is a conflict at the existing entry, not a new
+        // mapping, so they are skipped rather than re-mapped.
+        let flash_end = super::memory::FLASH_BASE.saturating_add(super::memory::FLASH_BYTES);
+        let overlaps = |low: u64, high: u64| start < high && low < end;
+        if overlaps(super::memory::FLASH_BASE, flash_end)
+           || BOOT_MMIO_REGIONS.iter().any(|&(base, limit)| overlaps(base, limit))
+        {
+            continue;
+        }
+        leaves += map(&mut mapper, start, start, end - start, READ | WRITE, true)?;
     }
     let (physical, mut tables) = mapper.into_tables();
     let (root, root_charge) = tables.take_root(physical)?;

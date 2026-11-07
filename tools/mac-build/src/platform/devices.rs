@@ -12,23 +12,6 @@ pub struct Definition
     pub key:       String,
     pub address:   String,
     pub bytes:     u64,
-    /// The ARM interrupt this window raises.
-    ///
-    /// Three states, and they are deliberately three: a number is an interrupt,
-    /// JSON `null` is a window that raises none, and a field that is absent is
-    /// refused. A plain optional field would collapse the last two, so a typo
-    /// that dropped the key would read as "this block has no interrupt" and the
-    /// record would quietly lose a fact. A device with no interrupt has to say
-    /// so on purpose.
-    #[serde(default, deserialize_with = "declared_interrupt")]
-    pub interrupt: Option<Option<u32>>,
-    /// The block's independently usable sub-resources, as a bit mask: the DMA
-    /// channels the board leaves to the ARM, or the pins a controller drives.
-    ///
-    /// A pooled block is one claimable page whose owner hands the individual
-    /// resources to other owners. The mask is the pool, so a resource the board
-    /// does not offer can never be leased, and the resident arbiter needs no
-    /// second copy of that fact.
     #[serde(default)]
     pub pool:      Option<u64>,
     pub flags:     u32
@@ -40,19 +23,10 @@ pub struct Checked
     pub key:       [u8; 16],
     pub address:   u64,
     pub bytes:     u64,
-    pub interrupt: Option<u32>,
     pub pool:      Option<u64>,
     pub flags:     u32
 }
 
-/// Keep "present and null" distinct from "absent": the missing field stays
-/// `None`, while an explicit null becomes `Some(None)`.
-fn declared_interrupt<'de, D>(deserializer: D)
-                             -> std::result::Result<Option<Option<u32>>, D::Error>
-    where D: serde::Deserializer<'de>
-{
-    Option::<u32>::deserialize(deserializer).map(Some)
-}
 pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Result<Vec<Checked>>
 {
     let mut checked: Vec<Checked> = Vec::new();
@@ -106,16 +80,6 @@ pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Res
             return Err(error("platform MMIO device declares an empty pool: a block with no \
                               independently usable resource is not a pooled block"));
         }
-        let interrupt = match d.interrupt
-        {
-            Some(interrupt) => interrupt,
-            None =>
-            {
-                return Err(error("platform MMIO device must declare its interrupt: a number, \
-                                  or null for a block that raises none on the ARM side. The \
-                                  field being absent is not the same statement"));
-            }
-        };
         if checked.iter().any(|other| {
                              other.id == d.id
                              || (address < other.address + other.bytes && other.address < end)
@@ -129,42 +93,21 @@ pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Res
                                key,
                                address,
                                bytes: d.bytes,
-                               interrupt,
                                pool: d.pool,
                                flags: d.flags });
     }
     Ok(checked)
 }
-/// The declared peripheral identities, which is all the kernel is compiled with.
+/// The pooled sub-resources the record declares, and nothing else.
 ///
-/// The addresses, sizes and flags in the record are build-time declarations:
-/// `check` validates them, and the machine's own device tree is the runtime
-/// authority for them, including each peripheral's interrupt. Compiling them in
-/// as well would create a second source that could disagree with the machine,
-/// and a consumer that read it would be reading a claim rather than the
-/// hardware.
-/// What a window with no ARM interrupt carries in the generated table.
-///
-/// The tuple consumers read is a plain integer, so absence needs a value; this
-/// one is outside every interrupt the controller can raise, and the record is
-/// what says which windows mean it.
-pub const NO_INTERRUPT: u32 = u32::MAX;
-
+/// There is deliberately no compiled device table. The machine's tree states
+/// which peripherals exist and where they are, the bootloader maps them by
+/// walking it, and a driver names the parts it binds. A list here would be a
+/// second statement of the same facts, and the only thing it could do is
+/// disagree - which is why it was removed rather than checked.
 pub fn constants(devices: &[Checked]) -> String
 {
-    let mut result = String::from("\npub const DECLARED_DEVICES: \
-                                   &[([u8;4],[u8;16],u32)] = &[\n");
-    for d in devices
-    {
-        result.push_str(&format!("({:?},{:?},{}),\n",
-                                 d.bus,
-                                 d.key,
-                                 d.interrupt.unwrap_or(NO_INTERRUPT)));
-    }
-    result.push_str("];\n");
-    // The sentinel is emitted so a consumer can tell "the record says this window
-    // raises no ARM interrupt" from "the record states line zero".
-    result.push_str(&format!("\npub const DECLARED_NO_INTERRUPT: u32 = {};\n", NO_INTERRUPT));
+    let mut result = String::new();
     // The pools are a separate table because they answer a different question:
     // the inventory says which windows exist, and this says which of a window's
     // sub-resources an owner may lease. Absent pools are simply not listed, so a

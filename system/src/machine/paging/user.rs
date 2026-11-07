@@ -479,7 +479,7 @@ impl Mapping
                             next = next.max(limit as usize);
                         }
                     }
-                    for index in 0..crate::machine::platform_devices::SLOTS
+                    for index in 0..crate::machine::platform_devices::count()
                     {
                         let Some(device) = crate::machine::platform_devices::get(index)
                         else

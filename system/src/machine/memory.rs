@@ -70,12 +70,20 @@ pub(crate) unsafe fn validate_boot(
     // The machine's tree is the authority for where its peripherals are, so the
     // inventory is resolved before any window is excluded from the pool.
     unsafe { super::platform_devices::admit(info) }.map_err(BootError::Devices)?;
-    for index in 0..super::platform_devices::SLOTS
+    for index in 0..super::platform_devices::count()
     {
         let device = super::platform_devices::get(index).ok_or(BootError::Devices(
-            super::platform_devices::Refusal::unresolved(index)))?;
-        memory = memory.exclude_mmio(mac_abi::BootMemoryRange { base:   device.registers,
-                                                                length: device.register_bytes })?;
+            super::platform_devices::Refusal::unresolved()))?;
+        // A device's `reg` states a register block, which is often a few bytes
+        // inside one page. The account works in pages, so the exclusion is
+        // rounded out to the pages that contain the block - rounding in would
+        // leave part of it claimable by the pool.
+        let start = device.registers - device.registers % PAGE_BYTES;
+        let end = device.registers
+                          .saturating_add(device.register_bytes)
+                          .div_ceil(PAGE_BYTES) * PAGE_BYTES;
+        memory = memory.exclude_mmio(mac_abi::BootMemoryRange { base:   start,
+                                                                length: end - start })?;
     }
     // Every entry mode protects the same build-defined firmware/platform
     // owners before a pool can allocate. Graphical only adds the scratch loan.
