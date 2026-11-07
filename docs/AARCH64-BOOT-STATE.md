@@ -175,7 +175,49 @@ leaf cannot be shadowed. That is a second space builder rather than a small
 change, so it was not attempted; the ambiguity is recorded instead of papered
 over. The switch-on fault is still the open puzzle.
 
-## The four inputs to an execute verdict, all measured
+## The walk is not the mechanism either
+
+Two further inputs were measured, and both were the last architectural facts
+nobody had checked.
+
+**`TCR_EL1 = 0x0000000280193519`** — the register that actually governs the
+walk, as opposed to the geometry the bootstrap claimed:
+
+```
+T0SZ [5:0]    = 25   -> 39-bit VA, start level 1 for a 4 KiB granule
+EPD0 [7]      = 0    -> TTBR0 walks enabled
+IRGN0 [9:8]   = 01   -> Normal, write-back, write-allocate, non-transient
+ORGN0 [11:10] = 01
+SH0 [13:12]   = 11   -> inner shareable
+TG0 [15:14]   = 00   -> 4 KiB granule
+T1SZ [21:16]  = 25   EPD1 [23] = 0
+IPS [34:32]   = 2    -> 40-bit physical addresses
+AS [36] = 0   TBI0 [37] = 0
+```
+
+So the geometry every read-back assumed is correct: 39-bit, 4 KiB, three levels,
+walk starting at level 1, TTBR0 walks enabled. The level-1 index of `0x4009aad4`
+is 1 and the level-3 index is 154, as used throughout.
+
+**The leaf was re-read at the fault**, from the handler, by walking from the
+`TTBR0` value the handler itself had read, and reaching the tables through the
+physmap alias:
+
+```
+WALK = 0080000040928003  008000004092a003  000000004009a743
+```
+
+That is the same level-1 table descriptor, the same level-2 table descriptor and
+the same level-3 leaf as the setup-time read. The tables were not rewritten
+between setup and fault, and the walk hardware performs lands on the descriptor
+this investigation decoded: valid, page, access flag set, `AttrIndx 0`, `PXN=0`,
+`UXN=0`. The architecture's own walk therefore reaches an executable leaf and
+still raises a level-3 permission fault.
+
+That closes the last hypothesis with a measurement rather than an inference, and
+it leaves the contradiction intact rather than explaining it away.
+
+
 
 A level-3 permission fault on an instruction fetch can only come from a small
 set of inputs. All four have now been measured at the fault, and all four say the
