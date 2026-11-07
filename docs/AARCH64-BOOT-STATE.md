@@ -175,7 +175,7 @@ leaf cannot be shadowed. That is a second space builder rather than a small
 change, so it was not attempted; the ambiguity is recorded instead of papered
 over. The switch-on fault is still the open puzzle.
 
-## The cause: QEMU's TCG translation refuses write-and-execute
+## Dropping WRITE changed the fault, and what that does not prove
 
 Two single-variable experiments found it.
 
@@ -202,28 +202,44 @@ after:   ESR=0x96000006  ELR=0x4009ab08  data abort, translation, level 2
 translation fault on a data access — the firmware trying to write to a window
 that is now read-only, which is exactly what making it read-only would produce.
 
-So the instruction fetch succeeds once the page is read-only. QEMU's TCG
-translation refuses to execute a page that is also writable, and it does so
-with `SCTLR_EL1.WXN` clear, which the architecture does not license. That is
-why no architectural input showed it: the spec has no fifth input, and every
-register that should govern the decision said "permitted". It was found only
-because System mapped code writable, which no production OS does.
+So the instruction fetch succeeds once the page is read-only, on this boot.
 
-**This is a statement about the emulator, not about silicon.** `cortex-a72`,
-`cortex-a53` and `max` are all TCG CPU models built on the same translation
-code, so an identical result across the three places the behaviour in that
-shared path rather than in any one model — it is not a per-model quirk, and
-none of it is evidence about what an ARMv8 core does. The distinction matters
-because the finding would otherwise be read as a hardware constraint and
-propagated as one.
+**What this does not establish — and it was claimed too strongly.** On
+2026-11-07 the `raspi3b` bootrom was audited and found to map all of RAM
+writable and executable with `SCTLR_EL1.WXN` cleared, in exactly the
+configuration described above. QEMU executed that mapping without complaint and
+reached its terminal marker (`BOOT_AARCH64_PROBE_FAILED`, no card attached).
+That is the same TCG translation path, on `cortex-a53` — one of the three CPU
+models already tested here — so a writable page *was* fetched from without
+fault.
 
-That distinction is not merely academic here: the commit that first recorded
-this result is titled "Find the cause: `this core` will not execute a writable
-page" (`318c9bbb`), so the git log itself asserts the superseded framing. The
-commit is left as written rather than rewritten — rewriting landed history to
-correct a word would cost more than it repays — and this section is the
-authoritative statement. A reader who greps the log will find both, and should
-trust this one.
+The consequence is that "QEMU's TCG refuses to execute a writable page" is
+neither a QEMU-wide nor a TCG-wide property: it did not reproduce. What the
+`qemu_arm64` experiment establishes is narrower — that changing that leaf from
+writable-executable to read-only-executable turned an instruction abort into a
+data abort past the faulting instruction, so the fetch began to succeed. Why
+the same permissions faulted on one boot and not the other is **unexplained**,
+and the record says so rather than carrying a mechanism it has no evidence for.
+Untested candidates, none assumed: a difference in the leaf's other attribute
+bits when `AP[2]` changes; a stage-1 interaction with privilege level or `PAN`;
+or something in how each boot reaches its first fetch from a writable leaf.
+
+**What the fix rests on instead.** Code read-only-executable, data
+writable-non-executable, `WXN` set rather than cleared. That is what every
+shipping OS does after enabling the MMU, and it is correct whether or not any
+emulator requires it. The fault that disappeared is evidence for the change,
+not its justification — a distinction worth keeping, because a fix justified
+only by an unreproduced observation is a fix the next person undoes when they
+fail to reproduce it.
+
+**None of this is a statement about silicon.** `cortex-a72`, `cortex-a53` and
+`max` are all TCG CPU models built on the same translation code, so an
+identical result across them identifies that shared path and says nothing about
+an ARMv8 core. Two earlier statements to the contrary are now withdrawn: this
+section was headed "The cause: QEMU's TCG translation refuses
+write-and-execute", and the commit that first recorded the result is titled
+"Find the cause: `this core` will not execute a writable page" (`318c9bbb`).
+History is left as written; this section supersedes both.
 
 **The fix is to split the window rather than remove the write**: code pages
 read-only-executable, data pages writable, which is what every mature OS does.
