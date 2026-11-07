@@ -315,7 +315,49 @@ impl<T: Tables> Mapper<T>
                     self.tables.store(table, index, branch).map_err(MapError::Storage)?;
                     table = next;
                 }
-                EntryKind::Leaf { .. } | EntryKind::Invalid =>
+                EntryKind::Leaf { physical: base,
+                                  size_bytes: covered,
+                                  permissions: existing,
+                                  ownership: existing_ownership } =>
+                {
+                    // A block already covers this address. Splitting it into the
+                    // next finer level is what lets a page be mapped inside it:
+                    // without this, the answer depends on which mapping happened
+                    // to be written first, and every caller has to know the
+                    // right order to avoid a conflict it cannot see coming.
+                    if existing.global && !permissions.global
+                    {
+                        return Err(MapError::GlobalAncestor { virtual_address,
+                                                              level: current as u8 });
+                    }
+                    if existing_ownership == PageOwnership::CopyOnWrite
+                    {
+                        return Err(MapError::CopyOnWriteTable { virtual_address,
+                                                                level: current as u8 });
+                    }
+                    let child = T::Layout::leaf_at(current - 1)
+                        .ok_or_else(|| geometry(virtual_address, size_bytes))?;
+                    let next = self.tables.allocate_zeroed().map_err(MapError::Storage)?;
+                    // Every child inherits the covering leaf exactly, so the
+                    // split changes granularity and nothing else.
+                    for slot in 0..(covered / child) as usize
+                    {
+                        let entry = T::Descriptor::leaf(PhysicalAddress(base.0
+                                                                        + slot as u64 * child),
+                                                        child,
+                                                        existing,
+                                                        existing_ownership)
+                            .map_err(MapError::Encoding)?;
+                        self.tables.store(next, slot, entry).map_err(MapError::Storage)?;
+                    }
+                    let branch = T::Descriptor::table(next,
+                                                      existing.global,
+                                                      existing_ownership)
+                        .map_err(MapError::Encoding)?;
+                    self.tables.store(table, index, branch).map_err(MapError::Storage)?;
+                    table = next;
+                }
+                EntryKind::Invalid =>
                 {
                     return Err(MapError::Conflict { virtual_address,
                                                     level: current as u8,
