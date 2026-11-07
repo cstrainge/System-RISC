@@ -149,6 +149,12 @@ __system_trap_no_control:
     mrs x23, vbar_el1
     mov x24, sp
     mov x25, x30
+    // Both translation base registers as they stood when the fetch faulted. A
+    // report that does not say which root was active cannot distinguish "the
+    // switch did not hold" from "the switch held and the tables are wrong", and
+    // those are different defects.
+    mrs x26, ttbr0_el1
+    mrs x27, ttbr1_el1
     ldr x0, =no_control_text
     bl no_control_puts
     mov x0, x22
@@ -168,6 +174,14 @@ __system_trap_no_control:
     ldr x0, =no_control_vbar_text
     bl no_control_puts
     mov x0, x23
+    bl no_control_hex
+    ldr x0, =no_control_ttbr0_text
+    bl no_control_puts
+    mov x0, x26
+    bl no_control_hex
+    ldr x0, =no_control_ttbr1_text
+    bl no_control_puts
+    mov x0, x27
     bl no_control_hex
     ldr x0, =no_control_sp_text
     bl no_control_puts
@@ -251,6 +265,10 @@ no_control_vbar_text:
     .asciz " VBAR="
 no_control_sp_text:
     .asciz " SP="
+no_control_ttbr0_text:
+    .asciz " TTBR0="
+no_control_ttbr1_text:
+    .asciz " TTBR1="
 no_control_lr_text:
     .asciz " LR="
 no_control_nl:

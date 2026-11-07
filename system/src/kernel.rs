@@ -29,7 +29,6 @@ impl Write for Serial
 }
 #[global_allocator]
 static HEAP: crate::allocator::ResidentHeap = crate::allocator::ResidentHeap::empty();
-static BOOT_LOG: Once<Option<LogFn>> = Once::new();
 static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::new();
 static FONTS: Once<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>> = Once::new();
 static INSTALLED_FONTS:
@@ -577,34 +576,19 @@ pub(crate) unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
     {
         return BAD_ARGUMENT;
     }
-    let Some(callback) = BOOT_LOG.get().copied().flatten()
-    else
+    if length == 0
     {
         return OK;
-    };
-    // End application-byte borrows before switching roots. Only bounded
-    // resident scratch, mapped identically in both roots, crosses the callback.
-    let mut scratch = [0u8; 256];
-    let mut offset = 0;
-    while offset < length
-    {
-        let count = (length - offset).min(scratch.len());
-        {
-            let source = unsafe { core::slice::from_raw_parts(bytes.add(offset), count) };
-            scratch[..count].copy_from_slice(source);
-        }
-        match crate::machine::paging::with_firmware(|| unsafe { callback(scratch.as_ptr(), count) })
-        {
-            Ok(OK) => (),
-            Ok(status) => return status,
-            Err(error) =>
-            {
-                crate::machine::paging::report_refusal(&error);
-                return BAD_ABI;
-            }
-        }
-        offset += count;
     }
+    // System's own console, not the firmware callback. Routing log lines through
+    // firmware meant every line switched translation roots, and the switch could
+    // not itself report a fault: logging inside it recursed into this function,
+    // and a fault during the switch was silent. The console needs no root switch,
+    // so the whole hazard is gone rather than worked around.
+    //
+    // SAFETY: the caller supplies a readable buffer of `length` bytes.
+    let text = unsafe { core::slice::from_raw_parts(bytes, length) };
+    crate::machine::emergency::write_bytes(text);
     OK
 }
 // Mutable state never exposes unchecked static references. These guards do not
@@ -1487,7 +1471,6 @@ pub unsafe extern "C" fn start(payload: *const (), bytes: usize, role: u64)
     {
         return ptr::null();
     }
-    BOOT_LOG.call_once(|| info.log);
     let (memory, mapped) = match crate::machine::paging::memory()
     {
         Ok(memory) => memory,
