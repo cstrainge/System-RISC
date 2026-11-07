@@ -923,7 +923,7 @@ fn enter_system(memory: &memory::Memory,
     use mac_abi::{BootInfo,
                   BootMemoryRange,
                   Header,
-                  boot::execution::{Execution, FIRMWARE_ONLY, READ, Region, WRITE}};
+                  boot::execution::{Execution, EXECUTE, FIRMWARE_ONLY, READ, Region, WRITE}};
     let account = match memory.checked(memory::PAGE_BYTES)
     {
         Ok(account) => account,
@@ -968,10 +968,17 @@ fn enter_system(memory: &memory::Memory,
     // where an identity mapping at this address is not inside the image window.
     // Its virtual base equals its physical base because the low half is an
     // identity map, which is what a firmware-only region requires.
+    //
+    // `EXECUTE` because this window is code the kernel calls into: `kernel::log`
+    // hands bytes to the firmware callback through `with_firmware`, which
+    // switches to the firmware root for exactly that call. Declared without it,
+    // the call took a permission fault at level 3 - the memory was mapped, the
+    // fetch was not permitted - which is a fault the declaration caused rather
+    // than one the machine had.
     regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE,
                                                            length: BOOT_BYTES },
                           virtual_base: BOOT_BASE,
-                          flags:        READ | WRITE | FIRMWARE_ONLY,
+                          flags:        READ | WRITE | EXECUTE | FIRMWARE_ONLY,
                           reserved:     0 });
     let execution = Execution { hart: 0,
                                 // TTBR0_EL1 is the root the kernel authenticates;
