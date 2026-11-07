@@ -1,6 +1,16 @@
 fn main()
 {
     println!("cargo:rustc-check-cfg=cfg(systemrisc)");
+    // The native half of every `#[cfg(systemrisc)]` split in this crate. Every
+    // other guest crate emits this and this one did not, so the host branch of
+    // all 795 sites was compiled into the guest build. The visible consequence
+    // was that `firmware_call` took its `#[cfg(not(systemrisc))]` arm and called
+    // firmware pointers without the translation-root switch `with_firmware`
+    // exists to provide, which faulted on the first storage callback.
+    if std::env::var("TARGET") != std::env::var("HOST")
+    {
+        println!("cargo:rustc-cfg=systemrisc");
+    }
     println!("cargo:rerun-if-env-changed={}", mac_build::platform::PLATFORM_ENV);
     let platform = mac_build::platform::current();
     let definition =

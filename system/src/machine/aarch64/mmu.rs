@@ -29,6 +29,9 @@ pub(crate) unsafe fn write_root(value: usize)
     // restore the other. The low half is where firmware, devices and identity
     // RAM live, which is what a scope like this switches for. The one-time
     // transition to a kernel space is `activate`, which sets both.
+    unsafe {
+        asm!("msr ttbr0_el1, {root}", "isb", root = in(reg) value);
+    }
 }
 
 /// Discards every cached translation for the current address space.
