@@ -243,11 +243,14 @@ impl Entry
     pub fn table(address: PhysicalAddress, global: bool, ownership: PageOwnership)
                  -> Result<Self, Error>
     {
-        // A table pointer is 4 KiB aligned with the leaf bit clear. AArch64 has
-        // no global bit on a table descriptor, so `global` only records the
-        // caller's intent for the entries that table will hold.
+        // A table pointer is 4 KiB aligned and carries bit 1, which is what
+        // separates it from a block: clear at this level means a block that maps
+        // its own size, so a table written without it is read by hardware as a
+        // block over the table's own page. AArch64 has no global bit on a table
+        // descriptor, so `global` only records the caller's intent for the
+        // entries that table will hold.
         let _ = global;
-        Ok(Self(output_bits(address, 1 << 12)? | VALID | ownership_bits(ownership)))
+        Ok(Self(output_bits(address, 1 << 12)? | VALID | LEAF | ownership_bits(ownership)))
     }
 
     pub fn leaf(address: PhysicalAddress, size: LeafSize, permissions: Permissions,
@@ -442,5 +445,62 @@ mod tests
                     2 << 30,
                     geometry(),
                     &reversed).is_err());
+    }
+
+    #[test]
+    fn every_leaf_encodes_and_decodes_to_the_same_kind()
+    {
+        // Bit 1 separates a table pointer from a leaf only at the page level.
+        // Above it the encoding inverts: clear is a block, set is a table
+        // pointer. This crate had it one way on both sides, so every 1 GiB and
+        // 2 MiB leaf was written as a page-style descriptor that hardware
+        // followed as a table pointer to the block's own output address - a
+        // synchronous external abort, not a translation failure. Nothing
+        // noticed, because nothing ever decoded what it had encoded.
+        use mac_kernel_model::pages::{Access, Descriptor, EntryKind, PageOwnership, Permissions};
+        let permissions = Permissions { read:    true,
+                                         write:   true,
+                                         execute: true,
+                                         access:  Access::Supervisor,
+                                         global:  true };
+        for size in [LeafSize::Page, LeafSize::Large, LeafSize::Huge]
+        {
+            let address = PhysicalAddress(size.bytes() * 3);
+            let entry = Entry::leaf(address, size, permissions, PageOwnership::Manual)
+                .expect("an aligned leaf encodes");
+            let bits = Descriptor::bits(entry);
+            let page = size == LeafSize::Page;
+            assert_eq!(bits & (1 << 1) != 0,
+                       page,
+                       "{size:?} must {} bit 1",
+                       if page { "set" } else { "clear" });
+            match Entry::decode(bits, size.level()).expect("what it wrote, it can read")
+            {
+                EntryKind::Leaf { physical, size_bytes, .. } =>
+                {
+                    assert_eq!(physical, address, "{size:?} must decode to its own address");
+                    assert_eq!(size_bytes, size.bytes());
+                }
+                other => panic!("{size:?} decoded as {other:?}, not a leaf"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_table_pointer_is_not_mistaken_for_a_block()
+    {
+        // The other direction: an entry with bit 1 set above the page level is a
+        // pointer to the next level, and decoding it as a leaf is what made the
+        // mapper descend through real blocks.
+        use mac_kernel_model::pages::{Descriptor, EntryKind, PageOwnership};
+        let next = PhysicalAddress(0x4000_1000);
+        let table = Entry::table(next, false, PageOwnership::Manual).expect("a table encodes");
+        match Entry::decode(Descriptor::bits(table), LeafSize::Large.level())
+            .expect("a table decodes")
+        {
+            EntryKind::Table { physical, .. } =>
+                assert_eq!(physical, next, "the table pointer must survive the round trip"),
+            other => panic!("a table pointer decoded as {other:?}"),
+        }
     }
 }

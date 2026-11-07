@@ -69,6 +69,17 @@ pub enum MapError<E, F>
         virtual_address: u64,
         alignment:       u64
     },
+    /// A leaf was requested at a physical address that cannot hold one.
+    ///
+    /// Both addresses and the size, because the offending address alone does not
+    /// say who asked: a leaf that cannot be placed is a caller's mistake, and the
+    /// virtual address is what names the mapping it came from.
+    UnalignedLeaf
+    {
+        virtual_address: u64,
+        physical:        u64,
+        size_bytes:      u64
+    },
     /// The layout and the request disagree about the leaf sizes this format
     /// has. That is a broken geometry contract, not a bad address.
     Geometry
@@ -129,6 +140,14 @@ impl<E: fmt::Display, F: fmt::Display> fmt::Display for MapError<E, F>
                                alignment } =>
             {
                 write!(f, "virtual address {virtual_address:#x} is not {alignment:#x} aligned")
+            }
+            Self::UnalignedLeaf { virtual_address,
+                                  physical,
+                                  size_bytes } =>
+            {
+                write!(f,
+                       "mapping VA {virtual_address:#x} to PA {physical:#x} requests a \
+                        {size_bytes:#x}-byte leaf at an address that cannot hold one")
             }
             Self::Geometry { virtual_address,
                              size_bytes } =>
@@ -258,6 +277,13 @@ impl<T: Tables> Mapper<T>
                                                                       size_bytes:      size };
         let requested = T::Descriptor::leaf(physical, size_bytes, permissions, ownership)
             .map_err(MapError::Encoding)?;
+        if !virtual_address.is_multiple_of(size_bytes)
+           || !physical.0.is_multiple_of(size_bytes)
+        {
+            return Err(MapError::UnalignedLeaf { virtual_address,
+                                                 physical: physical.0,
+                                                 size_bytes });
+        }
         if !virtual_address.is_multiple_of(size_bytes)
         {
             return Err(MapError::Misaligned { virtual_address,
