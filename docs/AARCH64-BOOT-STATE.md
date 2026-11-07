@@ -217,6 +217,14 @@ none of it is evidence about what an ARMv8 core does. The distinction matters
 because the finding would otherwise be read as a hardware constraint and
 propagated as one.
 
+That distinction is not merely academic here: the commit that first recorded
+this result is titled "Find the cause: `this core` will not execute a writable
+page" (`318c9bbb`), so the git log itself asserts the superseded framing. The
+commit is left as written rather than rewritten — rewriting landed history to
+correct a word would cost more than it repays — and this section is the
+authoritative statement. A reader who greps the log will find both, and should
+trust this one.
+
 **The fix is to split the window rather than remove the write**: code pages
 read-only-executable, data pages writable, which is what every mature OS does.
 The experiment above made the whole window read-only, which is why the next
