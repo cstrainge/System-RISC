@@ -17,7 +17,6 @@ bench = false
 [dependencies]
 mac-abi.workspace = true
 mac-driver = { path = "../../crates/mac-driver" }
-mac-pool-interface.workspace = true
 mac-wave-interface.workspace = true
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]

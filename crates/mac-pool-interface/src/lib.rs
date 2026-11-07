@@ -43,9 +43,9 @@ impl Request_
     pub const ANY_RESOURCE: u32 = u32::MAX;
     pub const BYTES: usize = 20;
 
-    pub fn encode(&self) -> [u8; 24]
+    pub fn encode(&self) -> [u8; Self::BYTES]
     {
-        let mut bytes = [0; 24];
+        let mut bytes = [0; Self::BYTES];
         bytes[..16].copy_from_slice(&self.key);
         bytes[16..20].copy_from_slice(&self.requirement.to_le_bytes());
         bytes
@@ -74,9 +74,9 @@ impl Lease
 {
     pub const BYTES: usize = 12;
 
-    pub fn encode(&self) -> [u8; 16]
+    pub fn encode(&self) -> [u8; Self::BYTES]
     {
-        let mut bytes = [0; 16];
+        let mut bytes = [0; Self::BYTES];
         bytes[..8].copy_from_slice(&self.handle.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.resource.to_le_bytes());
         bytes
@@ -93,5 +93,8 @@ impl Lease
     }
 }
 
+/// AVAILABLE reply: the free resources of one pool, as a mask.
 pub const AVAILABLE_BYTES: usize = 8;
-pub const MAX_REPLY: usize = 16;
+/// The largest reply this class returns, derived so it cannot drift from the
+/// record it must hold.
+pub const MAX_REPLY: usize = Lease::BYTES;

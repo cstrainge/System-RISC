@@ -371,6 +371,82 @@ fn cross_check_tree(workspace: &Workspace) -> Result<()>
     Ok(())
 }
 
+/// One artifact a report says the image was built from.
+struct Claimed
+{
+    /// How a diagnostic names it: the image member the artifact was installed as.
+    label:    String,
+    artifact: String,
+    sha256:   String
+}
+
+/// Every artifact a report claims it embedded, whichever layout it describes.
+///
+/// A partitioned Medium nests them under `partitions[].system7.files`; a bare System7
+/// volume records the same fields at the top level. Exactly one of those shapes
+/// applies, and this reads exactly one: collecting from both would count every
+/// artifact twice if a report ever carried both keys, and a doubled list is a doubled
+/// verdict.
+fn claimed(report: &Value) -> Vec<Claimed>
+{
+    let mut claims = Vec::new();
+    match report["partitions"].as_array()
+    {
+        Some(partitions) =>
+        {
+            for partition in partitions
+            {
+                collect(&partition["system7"], &mut claims);
+            }
+        }
+        None => collect(report, &mut claims)
+    }
+    claims
+}
+
+fn collect(section: &Value, claims: &mut Vec<Claimed>)
+{
+    let Some(files) = section["files"].as_array()
+    else
+    {
+        return;
+    };
+    for file in files
+    {
+        let (Some(artifact), Some(sha256)) =
+            (file["artifact"].as_str(), file["artifact_sha256"].as_str())
+        else
+        {
+            continue;
+        };
+        claims.push(Claimed { label: file["path"].as_str().unwrap_or(artifact).to_string(),
+                              artifact: artifact.to_string(),
+                              sha256: sha256.to_string() });
+    }
+}
+
+/// Compare the claimed artifacts against what the checkout now holds.
+///
+/// `hash` is supplied so a test can witness both report shapes without a workspace or
+/// a build. Returns how many were checked and a message per stale one, so a caller
+/// can distinguish "no claims" from "claims that all agree".
+fn stale_claims(report: &Value, hash: impl Fn(&str) -> String) -> (usize, Vec<String>)
+{
+    let claims = claimed(report);
+    let mut stale = Vec::new();
+    for claim in &claims
+    {
+        let current = hash(&claim.artifact);
+        if current != claim.sha256
+        {
+            stale.push(format!("the image holds {} built from {}, which has changed since the \
+                                image was written (recorded {}, current {})",
+                               claim.label, claim.artifact, claim.sha256, current));
+        }
+    }
+    (claims.len(), stale)
+}
+
 /// Refuse an image that no longer matches the artifacts it claims to contain.
 ///
 /// The image records, in its own provenance, the hash of every artifact it
@@ -453,33 +529,21 @@ pub fn verify(workspace: &Workspace) -> Result<()>
                     }
                 }
             }
-            // A System7 partition records the packaged artifact each installed
-            // file came from.
-            if let Some(files) = partition["system7"]["files"].as_array()
-            {
-                for file in files
-                {
-                    let (Some(artifact), Some(recorded)) =
-                        (file["artifact"].as_str(), file["artifact_sha256"].as_str())
-                    else
-                    {
-                        continue;
-                    };
-                    let path = workspace.dist().join(artifact);
-                    checked += 1;
-                    let current = fs::read(&path)
-                        .map(|bytes| package::sha256(&bytes))
-                        .unwrap_or_else(|_| "<missing>".into());
-                    if current != recorded
-                    {
-                        stale.push(format!("the System volume holds {} built from {}, which has \
-                                            changed since the image was written",
-                                           file["path"].as_str().unwrap_or_default(), artifact));
-                    }
-                }
-            }
         }
     }
+    // Artifacts the image says it embedded, whichever layout the report describes.
+    //
+    // A partitioned Medium records them inside each partition; a bare System7 volume
+    // records the same fields at the top level. This used to read only the partitioned
+    // shape, so a bare image produced no verdict at all — verify reported that
+    // provenance was missing when it was present under another key, which is a check
+    // that silently did not apply to half the platforms it serves.
+    let (artifacts, stale_artifacts) = stale_claims(&report, |artifact| {
+        fs::read(workspace.dist().join(artifact)).map(|bytes| package::sha256(&bytes))
+                                                 .unwrap_or_else(|_| "<missing>".into())
+    });
+    checked += artifacts;
+    stale.extend(stale_artifacts);
     if checked == 0
     {
         return Err(error(format!("{} records no artifact provenance, so an image that predates \
@@ -757,5 +821,81 @@ mod tests
             volume.check()?;
             Ok(())
         }).unwrap();
+    }
+    /// A bare System7 image must reach a verdict, not be skipped.
+    ///
+    /// The defect: `verify` walked `partitions[].system7.files`, and a bare image has
+    /// no `partitions` key at all — it records `files` at the top level. So the one
+    /// shape that the RISC-V platform produces was never checked, and the check that
+    /// was supposed to catch a stale payload reported "no provenance" instead. These
+    /// two tests run the real function over the real shapes, with a supplied hasher,
+    /// so neither needs a workspace or a build.
+    #[test]
+    fn a_bare_image_is_checked_like_a_partitioned_one()
+    {
+        let bare = serde_json::json!({
+            "volume_name": "System RISC",
+            "filesystem": "hfsb",
+            "files": [
+                { "path": "System Folder/Finder", "artifact": "Finder.bin",
+                  "artifact_sha256": "aaaa" },
+                { "path": "Applications/Cursor Test", "artifact": "Cursor Test.bin",
+                  "artifact_sha256": "bbbb" }
+            ]
+        });
+        // The first artifact now hashes differently, the second still agrees.
+        let (checked, stale) = stale_claims(&bare, |artifact| {
+            if artifact == "Finder.bin" { "cccc".to_string() } else { "bbbb".to_string() }
+        });
+        assert_eq!(checked, 2, "a bare image must be checked, not skipped");
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(stale[0].contains("System Folder/Finder"), "{stale:?}");
+        assert!(stale[0].contains("Finder.bin"), "{stale:?}");
+    }
+
+    #[test]
+    fn a_partitioned_image_is_checked_the_same_way()
+    {
+        let partitioned = serde_json::json!({
+            "layout": "mbr",
+            "partitions": [
+                { "files": [] },
+                { "system7": { "files": [
+                    { "path": "System Folder/System", "artifact": "System.bin",
+                      "artifact_sha256": "dddd" }
+                ] } }
+            ]
+        });
+        let (checked, stale) = stale_claims(&partitioned, |_| "eeee".to_string());
+        assert_eq!(checked, 1, "the partitioned shape is still read");
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(stale[0].contains("System.bin"), "{stale:?}");
+    }
+
+    #[test]
+    fn one_shape_is_read_and_never_both()
+    {
+        // A report carrying both keys must not have its artifacts counted twice: a
+        // doubled list would double every verdict built on it.
+        let both = serde_json::json!({
+            "partitions": [ { "system7": { "files": [
+                { "path": "System Folder/System", "artifact": "System.bin",
+                  "artifact_sha256": "dddd" } ] } } ],
+            "files": [ { "path": "System Folder/Finder", "artifact": "Finder.bin",
+                         "artifact_sha256": "aaaa" } ]
+        });
+        let (checked, _) = stale_claims(&both, |_| "zzzz".to_string());
+        assert_eq!(checked, 1, "the partitioned shape wins and the other is not also read");
+    }
+    #[test]
+    fn an_image_whose_artifacts_all_agree_is_not_reported_stale()
+    {
+        let bare = serde_json::json!({
+            "files": [ { "path": "System Folder/Finder", "artifact": "Finder.bin",
+                         "artifact_sha256": "aaaa" } ]
+        });
+        let (checked, stale) = stale_claims(&bare, |_| "aaaa".to_string());
+        assert_eq!(checked, 1);
+        assert!(stale.is_empty(), "an agreeing image must not be reported stale: {stale:?}");
     }
 }

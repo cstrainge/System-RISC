@@ -55,7 +55,6 @@ impl core::fmt::Display for Cause
 
 struct Machine
 {
-    host:    Client,
     service: DeviceService,
     claim:   u64,
     base:    usize,
@@ -67,8 +66,7 @@ impl Machine
 {
     fn new(host: Client) -> DriverResult<Self>
     {
-        Ok(Self { host,
-                  service: DeviceService::new(host)?,
+        Ok(Self { service: DeviceService::new(host)?,
                   claim: 0,
                   base: 0,
                   source: Rng::new(),

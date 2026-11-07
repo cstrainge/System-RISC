@@ -1,22 +1,26 @@
-//! External timed-output driver: an SPI shift register fed by a leased DMA
-//! channel.
+//! External timed-output driver: the SPI0 shift register, as the WAVE class.
 //!
 //! System selects this driver by its `WAVE` interface, never by file name, and
-//! matches it to the SPI window the platform record declares. The class's reason
-//! for existing is that no application thread can hold a sub-microsecond
-//! deadline on a preemptive system, so this driver makes the *hardware* hold it:
-//! a buffer computed by the caller is shifted out at a divided clock while a DMA
-//! channel keeps the shift register supplied.
+//! matches it to the SPI window the platform record declares.
 //!
-//! Two claims, both exclusive, both leased rather than assumed: the SPI page from
-//! the device inventory, and one channel from the DMA channel pool. The channel
-//! is requested as "any", so a second serialiser takes a different one instead of
-//! being refused the whole controller.
+//! **This build provides the class and advertises no capability.** It used to
+//! claim a leased DMA channel and a Device DMA allocation, and program neither: no
+//! transfer descriptor, no channel enable. The bit it wrote as "DMA enable" is not
+//! that at all — in the chip-select register at bit 4 it clears the transmit FIFO —
+//! so the driver emptied the FIFO and reported itself configured. A capability that
+//! is advertised and never exercised is worse than a missing one, because everything
+//! above it plans around it.
 //!
-//! The engine, the rate arithmetic and the refusal set are safe Rust and are
-//! exercised on the host against a simulated serialiser. Register programming,
-//! the channel lease and the cache maintenance live in one audited adapter
-//! (`native`).
+//! Emitting needs the transmit FIFO kept supplied, and that is one of two things
+//! this project does not have: a programmed DMA channel, or a verified answer to
+//! "when may the CPU write the FIFO". No source here records that handshake's bit
+//! positions, so writing it would repeat the mistake above with different bits. The
+//! adapter therefore holds nothing, offers nothing, and refuses a submission by
+//! name. `docs/TIMED-OUTPUT-CLASS.md` records what would re-admit it.
+//!
+//! The engine, the rate arithmetic and the refusal set remain safe Rust and are
+//! exercised on the host; the adapter is one audited file that currently performs no
+//! register writes at all.
 #![no_std]
 #![deny(unsafe_code)]
 
@@ -69,6 +73,16 @@ pub enum Refusal
     Retry,
     NotAttached,
     AlreadyAttached,
+    /// This build cannot shift a single element out, and says so rather than
+    /// accepting a submission it would drop.
+    ///
+    /// Emitting needs the transmit FIFO kept supplied. That is either a programmed
+    /// DMA channel — which this driver does not have, because a channel it never
+    /// programs is the defect this refusal replaces — or a verified answer to "when
+    /// may the CPU write the FIFO", whose bit positions no source this project has
+    /// records. A driver that accepted the submission and emitted nothing would put
+    /// a serialiser on the board that no caller can use.
+    TransmitPathUnavailable,
     /// The page or the channel could not be claimed.
     ResourceUnavailable
     {
@@ -117,6 +131,12 @@ impl fmt::Display for Refusal
             Self::Retry => write!(f, "the previous frame finished; submit again"),
             Self::NotAttached => write!(f, "nothing is attached"),
             Self::AlreadyAttached => write!(f, "this serialiser already holds an attachment"),
+            Self::TransmitPathUnavailable =>
+            {
+                write!(f, "this build cannot shift elements out: no DMA channel is programmed and \
+                           the transmit-FIFO handshake is not established, so nothing is emitted \
+                           rather than accepting a frame that would never leave")
+            }
             Self::ResourceUnavailable { what } => write!(f, "{what} is unavailable"),
             Self::Hardware { status } => write!(f, "the serialiser reported status {status:#x}"),
             Self::Dma(status) => write!(f, "the device DMA service refused with status {status}"),

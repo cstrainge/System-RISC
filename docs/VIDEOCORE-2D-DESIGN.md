@@ -6,10 +6,15 @@ which parts of it this OS can use, and records the conflict between what the
 primary documentation says and what working software actually does. It contains
 no code, no pseudo-code and no proposed data structures; those are designed from
 this description at implementation time.
-Scope is the `raspi3b` platform (`platforms/raspi3b.json`) - the board QEMU's
-`raspi3b` machine supplies when run under emulation - and the physical part it
-models: a BCM2837-class SoC with four
-Cortex-A53 cores, 1 GiB of RAM and a VideoCore IV VPU. The question it answers
+Scope is the `raspi3b` platform (`platforms/raspi3b.json`) — the Raspberry Pi 3
+board and the physical part it models: a BCM2837-class SoC with four
+Cortex-A53 cores, 1 GiB of RAM and a VideoCore IV VPU. That record describes the
+board only and declares no emulation, so there is no emulated `raspi3b` profile
+to run this design against; the emulated aarch64 machine is its own record,
+`platforms/qemu_arm64.json`, which is a QEMU virt board rather than a modelled
+Pi. The measurements in section 10 were taken against QEMU's `raspi3b` machine
+directly and remain evidence about that model; they are not a platform this
+project builds or boots. The question it answers
 is how much of QuickDraw's work can be moved off the CPU, with the minimum
 acceptable outcome being hardware composition of the desktop rather than
 software composition into one linear framebuffer.
@@ -89,8 +94,12 @@ rather than adding a hardcoded offset.
 peripheral at bus address 0x7Ennnnnn is at ARM physical 0x20nnnnnn on the
 256 MiB part. The same 0x7E000000 offset applies on the 1 GiB part. Every
 address in the device tree is a bus address, so the mailbox is at bus
-0x7E00B880 / ARM 0x3F00B880, the HVS at bus 0x7E400000 / ARM 0x3F400000, and the
-V3D at bus 0x7EC00000 / ARM 0x3FEC0000.
+0x7E00B880 / ARM 0x3F00B880 and the HVS at bus 0x7E400000 / ARM 0x3F400000. The
+V3D's window is deliberately not restated here: `platforms/raspi3b.json`
+declares it (`hardware.devices`, entry `bcm2835-v3d`), and this document cites
+that declaration instead of repeating a constant that would drift from it. The
+record is authoritative for every peripheral window; where this document and the
+record disagree, the record is right and the document is the defect.
 
 **RAM bus aliases.** §1.2.3 states that RAM's bus addresses map onto the
 uncached bus range starting at 0xC0000000. The 0x0-based alias and the ARM
@@ -651,7 +660,9 @@ old behaviour, so the difference between the two is the measurement.
 The V3D is the 3D pipeline: a binner, primitive setup, and a shader core made of
 quad processors (QPUs). Its registers are at bus 0x7EC00000 on this part
 (*VideoCore IV 3D Architecture Reference Guide*, Appendix B, Table 95, which
-lists 0x7ec00000 for BCM2835), 0x1000 bytes, GPU interrupt 10. The pipeline is
+lists 0x7ec00000 for BCM2835), 0x1000 bytes, GPU interrupt 10. The ARM-side
+window and the interrupt are the platform record's declaration
+(`bcm2835-v3d`), cited rather than restated. The pipeline is
 driven by control lists in memory which the control list executor walks, feeding
 primitives and state changes to the hardware; the guide's section 9 defines the
 control record formats, and section 3 defines the QPU instruction set.
@@ -795,9 +806,10 @@ RAM.
 0x3F004000, so its registers read as zero and writes are discarded.
 
 **V3D.** A placeholder only. QEMU instantiates an unimplemented device for the
-V3D, but at 0x3FC00000 rather than the silicon's 0x3FEC0000, and reads return
-zero. It is not a model of the block in any useful sense, and its address does
-not match the datasheet's.
+V3D at the same ARM address the platform record declares — its `V3D_OFFSET` is
+the correct bus offset — and reads return zero. It is not a model of the block
+in any useful sense: a probe that identifies the block by register read cannot
+distinguish it from an absent one.
 
 **Display output.** The model does implement a single linear framebuffer
 (`bcm2835-fb`) driven by the property channel: geometry, depth, pixel order,
@@ -1217,10 +1229,11 @@ Each of these is specific, and each names what would resolve it.
 
 **QEMU 11.1.0, cited for what the model does**
 
-* `hw/arm/bcm2835_peripherals.c` — the modelled device set (no HVS, no pixel
-  valve, a V3D placeholder), the four RAM aliases in the VideoCore bus address
-  space, and the framebuffer and property channel placed on mailbox channels 1
-  and 8.
+* `hw/arm/bcm2835_peripherals.c`, `include/hw/arm/raspi_platform.h` — the
+  modelled device set (no HVS, no pixel valve, a V3D placeholder), the V3D
+  offset from the peripheral base, the four RAM aliases in the VideoCore bus
+  address space, and the framebuffer and property channel placed on mailbox
+  channels 1 and 8.
 * `hw/display/bcm2835_fb.c`, `hw/misc/bcm2835_property.c` — the single linear
   framebuffer and the implemented property tags; the framebuffer base is
   recomputed as the VC RAM base plus a fixed 1 MiB offset on every reconfigure

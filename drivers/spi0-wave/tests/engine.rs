@@ -301,3 +301,91 @@ fn release_ends_the_claim_and_the_next_attach_succeeds()
     assert_eq!(engine.attached(), None);
     engine.attach(&mut sim, attach(8, 400_000, 512)).expect("attach again");
 }
+
+
+// ---------------------------------------------------------------------------
+// What the driver offers, which is the part that was false.
+//
+// The adapter used to advertise six capabilities while programming no DMA, so the
+// engine would accept an attach and a submission for a frame nothing ever shifted
+// out. `abilities()` now offers nothing, and these two tests are what make that
+// claim checkable on the host: an adapter that reported even one capability would
+// let `attach` through, and would fail the first test.
+struct Offering(Abilities);
+
+impl Platform for Offering
+{
+    fn abilities(&self) -> Abilities
+    {
+        self.0
+    }
+
+    fn attach(&mut self, _: &Attach) -> Result<Granted, Refusal>
+    {
+        panic!("nothing is offered, so attach must be refused before it is reached")
+    }
+
+    fn submit(&mut self, _: &[u8], _: &Submission, _: &Granted) -> Result<(), Refusal>
+    {
+        panic!("nothing is offered, so submit must never be reached")
+    }
+
+    fn status(&mut self) -> Result<Progress, Refusal>
+    {
+        Err(Refusal::NotAttached)
+    }
+
+    fn cancel(&mut self) -> Result<Progress, Refusal>
+    {
+        Err(Refusal::NotAttached)
+    }
+
+    fn release(&mut self) -> Result<(), Refusal>
+    {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_serialiser_that_offers_nothing_cannot_be_attached()
+{
+    // The refusal must carry the offered width, not a bare "unsupported": a caller
+    // that reads `offered: 0` learns nothing is available here and can degrade,
+    // which is the whole reason refusals name numbers.
+    let mut engine = Engine::new();
+    let mut platform = Offering(Abilities { capabilities: 0,
+                                            maximum_hz:   0,
+                                            minimum_hz:   0,
+                                            element_bits: 0,
+                                            max_elements: 0 });
+    match engine.attach(&mut platform, attach(8, 800_000, 512))
+    {
+        Err(Refusal::ElementWidth { offered, requested }) =>
+        {
+            assert_eq!(offered, 0, "nothing is offered");
+            assert_eq!(requested, 8, "the request is reported unchanged");
+        }
+        Err(other) => panic!("expected a width refusal naming the offer, got {other:?}"),
+        Ok(_) => panic!("a platform that offers nothing must not be attachable")
+    }
+    assert_eq!(engine.attached(), None, "nothing was attached");
+}
+
+#[test]
+fn a_transmit_path_that_does_not_exist_is_reported_as_such()
+{
+    // The adapter's own refusal. It exists as a value rather than a status code so
+    // that a caller and a diagnostic build both see why nothing was emitted.
+    let refusal = Refusal::TransmitPathUnavailable;
+    let mut text = alloc_string();
+    core::fmt::Write::write_fmt(&mut text, format_args!("{refusal}")).expect("formats");
+    assert!(text.contains("cannot shift elements out"), "{text}");
+    assert!(text.contains("DMA"), "the message names what is missing: {text}");
+}
+
+/// A tiny `core::fmt::Write` sink, so the refusal text can be inspected without
+/// pulling an allocator into a `no_std` crate's test build.
+fn alloc_string() -> String
+{
+    String::new()
+}
