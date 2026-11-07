@@ -1046,18 +1046,19 @@ fn enter_system(memory: &memory::Memory,
                           write_sector:            Some(mac_bootloader::volume::write_sector),
                           flush_disk:              Some(mac_bootloader::volume::flush_disk),
                           startup_disk:            loaded.disk_index as u32,
-                          // Not graphical: this bootstrap has no framebuffer
-                          // handoff, and claiming one it cannot describe would
-                          // make the kernel validate a display that does not
-                          // exist.
-                          flags:                   0,
+                          // Derived from the record's declared display, not
+                          // hardcoded: a machine that declares no display gets a
+                          // headless boot, and one that declares a virtio GPU
+                          // gets a graphical one. Whether the display path then
+                          // works is the driver's question, not this flag's.
+                          flags:                   BOOT_FLAGS,
                           startup_partition_start: loaded.partition_start,
                           ram_regions:             memory.ram.as_ptr(),
                           ram_region_count:        memory.ram.len(),
                           reservations:            memory.reserved.as_ptr(),
                           reservation_count:       memory.reserved.len(),
-                          display_scratch:         BootMemoryRange { base:   0,
-                                                                     length: 0 },
+                          display_scratch:         BootMemoryRange { base:   DISPLAY_SCRATCH_BASE,
+                                                                     length: DISPLAY_SCRATCH_BYTES },
                           execution:               &execution,
                           cpus:                    cpus.as_ptr(),
                           cpu_count:               cpus.len(),

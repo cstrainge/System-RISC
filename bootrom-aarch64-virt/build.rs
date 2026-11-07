@@ -61,6 +61,13 @@ fn main()
     // Nothing is generated here. This machine supplies its own device tree and
     // the bootloader reads the pointer it passes, so embedding a second
     // description would give one machine two trees and a consumer a choice.
+    // Whether this machine declares a display. The flag the kernel receives is
+    // derived from that declaration rather than hardcoded per machine: a boot
+    // that claims a graphical start while the record declares no display would
+    // ask the kernel to launch a Finder onto nothing.
+    let graphical = record["emulation"]["display"]["kind"].as_str()
+                          .is_some_and(|kind| kind != "none");
+    let boot_flags = if graphical { "mac_abi::BOOT_GRAPHICAL" } else { "0" };
     let fdt_tail_bytes = memory["fdt_tail_bytes"].as_str().expect("memory.fdt_tail_bytes");
     // The firmware heap is a region the record declares, not a BSS array: the
     // code resource is several megabytes, so a fixed in-image buffer cannot
@@ -101,6 +108,7 @@ fn main()
                        // states a larger size is refused rather than read past its end.\n\
                        pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n\
                        pub const FIRMWARE_CODE_BYTES: u64 = {firmware_code_bytes};\n\
+                       pub const BOOT_FLAGS: u32 = {boot_flags};\n\
                        pub const FW_HEAP_BASE: u64 = {heap_base};\n\
                        pub const FW_HEAP_BYTES: u64 = {heap_bytes};\n\
                        pub const BOOT_BASE: u64 = {boot_base};\n\
