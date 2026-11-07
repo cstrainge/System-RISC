@@ -142,7 +142,16 @@ __system_trap_no_control:
     mrs x19, esr_el1
     mrs x20, elr_el1
     mrs x21, far_el1
+    // Which hart faulted without a control block. A report that names no hart
+    // cannot distinguish the admitted primary - whose control block was
+    // published before this vector was installed - from a secondary that never
+    // admitted, and those are different defects.
+    mrs x22, mpidr_el1
     ldr x0, =no_control_text
+    bl no_control_puts
+    mov x0, x22
+    bl no_control_hex
+    ldr x0, =no_control_esr_text
     bl no_control_puts
     mov x0, x19
     bl no_control_hex
@@ -217,7 +226,9 @@ __system_trap_gateway:
 
 .section .rodata
 no_control_text:
-    .asciz "SYSTEM_TRAP_NO_CONTROL ESR="
+    .asciz "SYSTEM_TRAP_NO_CONTROL hart="
+no_control_esr_text:
+    .asciz " ESR="
 no_control_elr_text:
     .asciz " ELR="
 no_control_far_text:
