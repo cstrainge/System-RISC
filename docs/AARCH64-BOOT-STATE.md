@@ -360,7 +360,11 @@ it. A zero reading therefore has only two possible mechanisms:
   both writes target the primary only; there is no writer for a secondary hart
   anywhere in `system/`. A secondary reading zero is then not corruption but the
   correct value for a hart that has not published identity. This candidate is
-  absent from the framing above, which assumes a single hart.
+  absent from the framing above, which assumes a single hart — and the framing
+  is demonstrably wrong. The `qemu_arm64` launch uses `-smp 4`, and the serial
+  log records `CPU_TOPOLOGY enabled=4 primary=0 admission=primary-only`, so
+  three secondaries exist and are never admitted. Any fault attributed to one of
+  them reads `TPIDR_EL1 == 0` by construction.
 * **It was written and then lost** between `hart.rs:472` and the fault — which
   requires an exception return or context restore that carries a stale copy back
   into the register, since nothing writes zero.
@@ -369,6 +373,74 @@ Deciding between them is a question of which hart reported the fault, and the
 report does not say. That is a smaller question than the one this section
 originally posed, and it is answerable by reading the boot order rather than by
 another experiment. Neither branch is assumed here.
+
+## Virtio-MMIO enumeration: the record's stride disagreed with the machine
+
+The abort at `0xa004000` (`ESR=0x96000010`, `FSC 0x10`, synchronous external
+abort) was first attributed to a probe reaching an unpopulated slot. That
+attribution was wrong, and the correction is worth recording because it was
+reached by assumption rather than measurement.
+
+The platform record declared `virtio_mmio` with stride `0x1000` and 8 slots.
+QEMU 11.1 places **32 transports of `0x200` bytes in a `0x4000` aperture**. The
+declared stride was consumed as an address *formula*, so ordinal 4 computed
+`0xa000000 + 4 * 0x1000 = 0xa004000` — inside no mapped window at all. The fault
+was arithmetic, not an absent device. All three virtio drivers independently
+asserted `register_bytes == 4096`, which is the record's stride mistaken for the
+machine's window: the same value derived from the same wrong source in four
+places, and nothing compared any of them to the tree.
+
+The fix enumerates transports from the device tree and establishes presence from
+the **ID register**, not from node presence. That distinction is load-bearing and
+contradicts a claim this project made in its own tasking: *every* transport
+position in the aperture has a node, attached or not — 32 on arm64, 8 on riscv.
+Node presence is not device presence. The claim that a tree lists a node only
+for an existing transport is false on both machines and is recorded here so it is
+not re-derived.
+
+The regression test is `crates/mac-device-interface/tests/virtio.rs`: it probes a
+transport set with an occupied and an unoccupied entry, asserts the empty entry
+is reported absent, and asserts only the set's windows are read. Removing the
+identity and absence checks makes all three tests fail — it can fail, which is
+the requirement for it to count.
+
+**Still latent:** `bootrom-riscv` performs the same arithmetic probe. It is
+hidden only because the riscv aperture is fully mapped, exactly as the arm64 one
+appeared to be.
+
+**`dma-coherent`, unresolved and now ruled on.** The aarch64 tree states it; the
+RISC-V tree states it nowhere; yet the bus reports `COHERENT_DMA` for virtio
+transports on both. The ruling is that virtio-MMIO is coherent by the virtio
+specification and simple-bus convention — which is what Linux's `virtio_mmio`
+assumes, and it sets a coherent mask rather than reading a property — so the
+reported value is correct. But it is currently correct *by accident* if it is
+inferred from the tree's silence, because silence and assertion are being
+treated alike. It must rest on the specification, in a comment that says so.
+
+## Where the boot now stops
+
+After the enumeration change there is **no fault at all** on `qemu_arm64`: the
+serial log contains no `ESR=`, no `BOOT_TRAP` and no `SYSTEM_PANIC`. It reaches
+
+```
+MMU_READY ... SYSTEM_HEAP_READY ... SYSTEM_STACK_READY control=0xffffffe010914000
+BOOT_EMERGENCY_KIT_REJECTED: no framebuffer is available on this platform
+```
+
+`raw-hfs-b` still fails, but on the readiness marker timing out rather than on an
+exception, which is a different class of failure and an honest one.
+
+The cause is a contradiction, not a crash. `system/src/machine/aarch64/display.rs`
+is a stub that reports no framebuffer; `start_services` treats that as fatal;
+while the adapter's own documentation says a machine with no display still boots
+and reports through serial. One of those two statements is wrong, nothing
+compares them, and the disagreement surfaced as a rejected boot. This is the
+recurring shape of this project yet again, and it is not worked around.
+
+Worth recording alongside it: `emergency::prepare()` runs `input::prepare_terminal()`
+before `display::prepare_terminal()`, so the original `0xa004000` abort was
+inside *resident input* enumeration, not the display path it was first guessed
+to be.
 
 ## Not attempted, deliberately
 
