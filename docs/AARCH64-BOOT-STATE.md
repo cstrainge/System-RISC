@@ -127,6 +127,27 @@ Do not re-run these; each was tested and failed.
   produces output, and it shows the exception without the walk.
 - `-singlestep` is too slow to reach the first serial output, so it cannot be
   used to test whether the abort is speculative.
+- The monitor's `info tlb` and `info mem` are both **attempted and
+  unavailable**. Querying them over `-monitor tcp:...,server,nowait` after the
+  guest has reached the fault returns `Command 'info tlb' not available until
+  machine initialization has completed` — while `info status` on the same
+  connection reports `VM status: running`. Both commands are therefore refused
+  by this build for this target rather than merely inconvenient to reach, and
+  the MMU's own view of the faulting translation cannot be obtained here.
+
+## What the three contradicting facts imply
+
+Everything measurable from inside the guest now agrees with itself, and three
+facts contradict the level-3 permission verdict: the firmware root is active,
+the leaf is executable by descriptor, and `SCTLR_EL1.WXN` is clear. Every
+in-guest instrument that could break the tie has been tried and is either
+unavailable or impractical, as listed above.
+
+That combination is the signature of a defect that is not visible from inside
+the guest: either an emulator modelling gap, or something only silicon will
+show. This project already validates silicon-specific behaviour on the board
+rather than in QEMU, so the correct next step for this fault is that route, not
+another in-guest candidate. It is left as a named, bounded open defect.
 
 ## Named separately, not explained
 
