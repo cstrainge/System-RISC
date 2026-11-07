@@ -86,27 +86,53 @@ fn firmware_tree(address: usize) -> Option<&'static [u8]>
 
 // The bootstrap translation tables. They are not a section — the entry code
 // writes them with plain stores, so the linker cannot place them — so their
-// address comes from `link.ld`, which owns it and asserts that the four pages
+// address comes from `link.ld`, which owns it and asserts that the five pages
 // clear the stack window and stop short of the firmware heap. That ordering
 // matters because the stack grows down from `__stack_top`: tables inside the
 // stack window are overwritten by the first deep call, and the result is a data
 // abort inside whatever function forced the walk rather than anything that names
 // the tables. Stating the address here as well is what once let a comment carry
 // one build's stack top into another build.
+//
+// The boot window and the code boundary inside it are linker symbols for the
+// same reason: `link.ld` asserts that `.data` begins at the declared boundary,
+// so the page tables and the assertion read one value rather than two copies of
+// it that can disagree.
 unsafe extern "C"
 {
     // The script's own symbol; its address is the table base.
     static __tables_start: u8;
+    static __platform_BOOT_START: u8;
+    static __platform_BOOT_END: u8;
+    static __platform_FIRMWARE_CODE_BYTES: u8;
 }
 
 /// One translation table: 512 descriptors of eight bytes.
 const TABLE_BYTES: u64 = 4096;
 const BLOCK: u64 = 0x20_0000;
+const PAGE: u64 = 4096;
 const TABLE: u64 = 0x3;
-// Valid block, AttrIndx 0 (normal write-back), inner shareable, AF.
-const NORMAL: u64 = 0x701;
+// Descriptor type bits. They differ by walk level and nothing else about the
+// entry does: a level-2 block is 0b01 and a level-3 page is 0b11. Reusing one
+// level's constant at the other produces a reserved descriptor, which faults on
+// the first fetch rather than anywhere that names the mistake.
+const BLOCK_TYPE: u64 = 0x1;
+const PAGE_TYPE: u64 = 0x3;
+// AttrIndx 0 (normal write-back), inner shareable, access flag, writable at EL1.
+const NORMAL: u64 = 0x700;
+// AP[2]=1: read-only at EL1. With neither PXN nor UXN set, a fetch is permitted.
+const READ_ONLY: u64 = 0x80;
+// PXN and UXN: never executable at either exception level.
+const NEVER_EXECUTE: u64 = (1 << 54) | (1 << 53);
+// Code: read-only and executable. It is a page because the boot window is not
+// block aligned.
+const CODE: u64 = NORMAL | PAGE_TYPE | READ_ONLY;
+// Data: writable and never executable. The boot window's data half uses this
+// page form; RAM outside the window is one 2 MiB block per entry below.
+const DATA: u64 = NORMAL | PAGE_TYPE | NEVER_EXECUTE;
+const DATA_BLOCK: u64 = NORMAL | BLOCK_TYPE | NEVER_EXECUTE;
 // Valid block, AttrIndx 1 (Device-nGnRnE), AF, never executable.
-const DEVICE: u64 = 0x405 | (1 << 54) | (1 << 53);
+const DEVICE: u64 = 0x405 | NEVER_EXECUTE;
 // 39-bit VA at both halves, 4 KiB granule at both halves, 32-bit physical.
 const TCR: u64 = 0x8019_0019;
 // MAIR[0] normal write-back, MAIR[1] Device-nGnRnE.
@@ -138,6 +164,33 @@ pub extern "C" fn mmu_init()
     // extent rather than any individual peripheral address.
     assert!(PHYSICAL_RAM_BYTES % BLOCK == 0, "RAM must end on a block boundary");
     assert!(physmap_index < 512, "the physmap must sit inside the kernel half");
+    // The boot window holds code and data, and one permission cannot be right
+    // for both: code must be read-only and executable, data writable and not
+    // executable. The boundary is the record's `firmware_code_bytes`, which
+    // `link.ld` asserts is where the linker places `.data`, so the mapping and
+    // the declaration cannot drift apart when the payload grows.
+    //
+    // This is what a shipping OS does after it turns the MMU on, and it is what
+    // lets SCTLR_EL1.WXN below be set rather than cleared: with the split, no
+    // executable page is writable, so the architectural rule enforces the intent
+    // instead of being switched off to permit it. The instruction-permission
+    // fault that made the virt bootloader split its window belongs to QEMU's
+    // shared TCG translation path - not to a CPU model, and not to silicon - and
+    // it did not reproduce here on `-machine raspi3b` with the unsplit mapping;
+    // this is a correctness change, not a fix for that fault.
+    let boot_start = core::ptr::addr_of!(__platform_BOOT_START) as u64;
+    let boot_end = core::ptr::addr_of!(__platform_BOOT_END) as u64;
+    let code_bytes = core::ptr::addr_of!(__platform_FIRMWARE_CODE_BYTES) as u64;
+    assert!(boot_start % PAGE == 0 && boot_end % PAGE == 0 && code_bytes % PAGE == 0,
+            "the boot window and its declared code boundary must be page aligned");
+    assert!(boot_start >= PHYSICAL_RAM_BASE
+            && code_bytes != 0
+            && boot_start + code_bytes <= boot_end,
+            "the declared code boundary must lie inside the boot window");
+    assert!(boot_end - PHYSICAL_RAM_BASE <= BLOCK,
+            "the boot window must fit the first block, which is walked at page granularity");
+    let boot_page = ((boot_start - PHYSICAL_RAM_BASE) / PAGE) as usize;
+    let code_pages = (code_bytes / PAGE) as usize;
     // A 39-bit regime with a 4 KiB granule starts its walk at level 1, so
     // TTBR0/TTBR1 name the level-1 tables directly. Every descriptor we touch
     // sets AF; a table walker that reaches a descriptor without AF faults on
@@ -146,25 +199,47 @@ pub extern "C" fn mmu_init()
     let l2_low = l1_low + TABLE_BYTES;
     let l1_high = l1_low + 2 * TABLE_BYTES;
     let l2_physmap = l1_low + 3 * TABLE_BYTES;
+    let l3_boot = l1_low + 4 * TABLE_BYTES;
     unsafe
     {
-        for table in [l1_low, l2_low, l1_high, l2_physmap]
+        for table in [l1_low, l2_low, l1_high, l2_physmap, l3_boot]
         {
             clear(table);
         }
-        entry(l1_low, 0, l2_low | TABLE);
-        for index in 0..ram_blocks
+        // The first block holds the boot window, so it is walked at page
+        // granularity and each page gets the permission its contents need.
+        // Nothing else in RAM is executed, so every other page is writable and
+        // non-executable.
+        for index in 0..512
         {
-            entry(l2_low, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
+            let permission = if index >= boot_page && index < boot_page + code_pages
+            {
+                CODE
+            }
+            else
+            {
+                DATA
+            };
+            entry(l3_boot, index, PHYSICAL_RAM_BASE + index as u64 * PAGE | permission);
+        }
+        // One page table serves both roots: the identity map and the physmap
+        // alias describe the same physical pages with the same permissions, so a
+        // second copy of it would be a second thing to keep in agreement.
+        entry(l1_low, 0, l2_low | TABLE);
+        entry(l2_low, 0, l3_boot | TABLE);
+        for index in 1..ram_blocks
+        {
+            entry(l2_low, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | DATA_BLOCK);
         }
         for index in ram_blocks..512
         {
             entry(l2_low, index, index as u64 * BLOCK | DEVICE);
         }
         entry(l1_high, physmap_index, l2_physmap | TABLE);
-        for index in 0..ram_blocks
+        entry(l2_physmap, 0, l3_boot | TABLE);
+        for index in 1..ram_blocks
         {
-            entry(l2_physmap, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | NORMAL);
+            entry(l2_physmap, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | DATA_BLOCK);
         }
         core::arch::asm!(
             "dsb sy",
@@ -181,7 +256,7 @@ pub extern "C" fn mmu_init()
         );
         core::arch::asm!(
             "mrs {sctlr}, sctlr_el1",
-            "bic {sctlr}, {sctlr}, #0x80000",
+            "orr {sctlr}, {sctlr}, #0x80000",
             "orr {sctlr}, {sctlr}, #1",
             "orr {sctlr}, {sctlr}, #4",
             "orr {sctlr}, {sctlr}, #4096",

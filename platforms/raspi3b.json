@@ -45,6 +45,7 @@
       "base": "0x80000",
       "bytes": "0xb0000"
     },
+    "firmware_code_bytes": "0x1c000",
     "firmware_heap": {
       "base": "0x130000",
       "bytes": "0x800000"

@@ -58,14 +58,23 @@ fn main()
                        pub const PL011_BASE: u64 = {pl011};\n\
                        pub const FDT_TAIL_BYTES: u64 = {fdt_tail_bytes};\n"))
         .expect("memory constants");
+    // How much of the boot window is code. The window holds both code and data,
+    // and one permission cannot be right for both, so the boot page tables split
+    // it at this boundary. It is a declared value: `link.ld` asserts that `.data`
+    // begins exactly here, so the mapping and the record cannot drift apart when
+    // the payload grows.
+    let firmware_code_bytes = memory["firmware_code_bytes"].as_str()
+                                     .expect("memory.firmware_code_bytes");
     // The link layout is the platform record's, not a second copy of it: the
     // checked memory map is turned into linker symbols and the script beside
     // this build file places every section and the stack in that one window.
+    // The code boundary is a linker symbol too, so the mapping code reads the
+    // same value the assertion checks rather than a second copy of it.
     let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("link.ld");
     println!("cargo:rerun-if-changed={}", template.display());
     let (_, symbols) = mac_build::platform::firmware_artifacts().expect("checked boot window");
     let script = out.join("boot.ld");
-    let contents = format!("{symbols}{}",
+    let contents = format!("{symbols}__platform_FIRMWARE_CODE_BYTES = {firmware_code_bytes};\n{}",
                            fs::read_to_string(&template).expect("boot linker template"));
     if fs::read(&script).ok().as_deref() != Some(contents.as_bytes())
     {

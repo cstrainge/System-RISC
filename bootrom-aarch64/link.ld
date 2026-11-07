@@ -37,10 +37,20 @@ SECTIONS {
  * function forced the walk. Both bounds are relative to symbols, so they move
  * with the image instead of pinning a build. */
 __tables_start = 0x110000;
-__tables_end = __tables_start + 0x4000;
+__tables_end = __tables_start + 0x5000;
 ASSERT(__stack_top <= __tables_start,
        "BOOT_TABLES_OVERLAP_STACK: the translation tables sit inside the stack window")
 ASSERT(__tables_end <= __platform_FIRMWARE_HEAP_START,
        "BOOT_TABLES_OVERLAP_HEAP: the translation tables reach the firmware heap")
 ASSERT(__tables_start < ORIGIN(ram) + LENGTH(ram),
        "BOOT_TABLES_OUTSIDE_WINDOW: the translation tables leave the boot window")
+
+/* The boot window holds code and data, and the page tables give each half its
+ * own permission: code read-only and executable, data writable and not
+ * executable. That only works if the boundary the record declares is where the
+ * linker actually stops placing code, so it is asserted rather than trusted.
+ * Without this, growing the payload past the declared extent would leave the
+ * tail of .text inside the writable region - silently, and only a boot would
+ * show it. */
+ASSERT(ADDR(.data) == ORIGIN(ram) + __platform_FIRMWARE_CODE_BYTES,
+       "BOOT_CODE_BOUNDARY_STALE: .data does not begin at the record's firmware_code_bytes; the code/data split would put code in the writable region or data in the executable one")
