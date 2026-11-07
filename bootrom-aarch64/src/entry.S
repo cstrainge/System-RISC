@@ -77,6 +77,9 @@ physmap_bad:
     bl uart_puts
     b idle
 physmap_done:
+    // The tree captured at entry is the probe's only source of peripheral
+    // addresses; nothing about it is trusted, so the probe checks it.
+    mov x0, x19
     bl sdhci_probe
     cbz x0, sdhci_bad
     adr x0, ready_marker
