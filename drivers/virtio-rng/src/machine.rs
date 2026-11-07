@@ -18,6 +18,10 @@ use mac_entropy_interface as entropy;
 // positive device acknowledgement; this deadline never grants reclamation.
 const SOURCE_TIMEOUT_MICROSECONDS: u64 = 30_000_000;
 
+/// The transport's own register file. This driver reads no configuration space,
+/// so the machine's window only has to carry the registers themselves.
+const WINDOW_BYTES: u64 = 0x100;
+
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Descriptor
@@ -459,7 +463,7 @@ impl Device
         }
         self.diagnostic = Diagnostic::Profile;
         let required = interface::COHERENT_DMA | interface::MMIO;
-        if description.register_bytes != 4096
+        if description.register_bytes < WINDOW_BYTES
            || description.registers == 0
            || description.registers % 4 != 0
            || description.flags != required

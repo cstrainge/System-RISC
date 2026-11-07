@@ -325,18 +325,36 @@ fn fence()
 static mut QUEUES: [Queue; DEVICE_COUNT] = [Queue::new(), Queue::new()];
 static mut COUNT: usize = 0;
 
+/// The virtio device type of an input device.
+const VIRTIO_INPUT: u32 = 18;
+/// The transport registers and configuration this driver reads end at the
+/// absolute-axis maximum, so a shorter window cannot be driven.
+const INPUT_WINDOW_BYTES: u64 = 0x110;
+
 fn devices(mut visit: impl FnMut(usize))
 {
-    for slot in 0..super::memory::VIRTIO_MMIO_SLOTS
-    {
-        let base =
-            (super::memory::VIRTIO_MMIO_BASE + slot * super::memory::VIRTIO_MMIO_STRIDE) as usize;
+    // The machine places its transports; this asks the tree where they are
+    // rather than assuming an index-to-address formula. A transport the machine
+    // describes but no device answers on reports nothing, which is absence.
+    super::platform_devices::for_each_transport(|transport| {
+        let Ok(base) = usize::try_from(transport.registers)
+        else
+        {
+            return;
+        };
+        if transport.register_bytes < INPUT_WINDOW_BYTES
+        {
+            return;
+        }
         let read = |offset| unsafe { u32::from_le(read_volatile((base + offset) as *const u32)) };
-        if read(0) == 0x7472_6976 && read(8) == 18
+        // The version is checked by `validate_device` below, which reports it,
+        // so a transport of the wrong generation is rejected with its identity
+        // rather than silently skipped here.
+        if read(0) == mac_device_interface::VIRTIO_MAGIC && read(8) == VIRTIO_INPUT
         {
             visit(base);
         }
-    }
+    });
 }
 
 pub fn initialize() -> usize

@@ -1524,10 +1524,19 @@ reset alone does not make a running CPU user's pointer safe to reclaim.
 All coupled VDEV/VIDO producers and consumers must be rebuilt together.
 
 The board bus class is `VMMI`; its match key is device ID u32, vendor ID u32,
-then eight zero bytes. Probe ordinals 0..7 describe the board's eight 4 KiB
-virtio-MMIO windows. Boot storage and input stay resident-owned until their
-explicit extraction milestones; declaring a matching DABI key cannot steal
-them. Claim publication re-probes the exact authorized descriptor.
+then eight zero bytes. Probe ordinals are the machine's: ordinals `0..n-1` are
+its virtio-MMIO transports in the order its device tree lists them, and the
+ordinals after those are the other peripherals it describes. A transport's
+register window, its length and its interrupt are the node's `reg` and
+`interrupts`, never a compiled-in base plus an ordinal times a stride, so a
+machine that places its transports unevenly is described as it is. An ordinal
+that names a transport no device answers on is `NOT_FOUND`: the window the tree
+stated is read and answers zero, which is a lookup result and not a probe of an
+address the machine never described. `COUNT` reports how many ordinals the
+machine has, and the boot snapshot is that long. Boot storage and input stay
+resident-owned until their explicit extraction milestones; declaring a matching
+DABI key cannot steal them. Claim publication re-probes the exact authorized
+descriptor.
 
 Initialization is staged. No interface is visible until entry and callback-address
 validation succeed and every interface is registered transactionally. Registry

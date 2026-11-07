@@ -2,29 +2,54 @@
 //! operations; authorization, claim generations and DMA lifetimes remain safe.
 use core::ptr::{read_volatile, write_volatile};
 
-use mac_abi::{BAD_ARGUMENT, NOT_FOUND, NOT_SUPPORTED, Status};
+use mac_abi::{BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, Status};
 use mac_device_interface::{self as wire, Description};
 use mac_module::{ClassId, Offer, abi};
 
 use crate::{drivers::{self, ResidentCall, ResidentCompletion,
                       devices::{Bus, Devices}},
+            machine::platform_devices::{self, Transport},
             state::TryState};
 struct PlatformBus;
-const VIRTIO_SLOTS: u32 = super::memory::VIRTIO_MMIO_SLOTS as u32;
-/// How many board peripherals the boot device snapshot can describe.
+/// The virtio device type of a block device, and of an input device. Both stay
+/// resident-owned until their explicit extraction milestones.
+const VIRTIO_BLOCK: u32 = 2;
+const VIRTIO_INPUT: u32 = 18;
+/// The transport's status register, which states whether it is stopped.
+const VIRTIO_STATUS: usize = 0x70;
+
+/// One ordinal on this bus: a virtio-MMIO transport the machine places, or a
+/// peripheral it describes some other way.
 ///
-/// This bounds the snapshot table, not the machine: the machine states how many
-/// peripherals it has by describing them, and a machine with more than this is
-/// not silently truncated but cannot be offered here. The bound is the table's
-/// own, so it stays a constant while the enumeration itself holds no list.
-const BOARD_SLOTS: usize = 96;
-/// Capacity of the boot device snapshot: the transport's own slots plus the
-/// board peripherals this table can describe.
-pub(crate) const DEVICE_SLOTS: usize = VIRTIO_SLOTS as usize + BOARD_SLOTS;
-fn board_device(ordinal: u32) -> Result<Description, Status>
+/// The machine's tree decides the split. Nothing here is a compiled-in device
+/// list, and no ordinal is turned into an address.
+enum Slot
 {
-    let index = ordinal.checked_sub(VIRTIO_SLOTS).ok_or(NOT_FOUND)? as usize;
-    let device = super::platform_devices::get(index).ok_or(NOT_FOUND)?;
+    Transport(Transport),
+    Board(usize)
+}
+
+fn slot(ordinal: u32) -> Result<Slot, Status>
+{
+    let index = ordinal as usize;
+    if let Some(transport) = platform_devices::transport(index)
+    {
+        return Ok(Slot::Transport(transport));
+    }
+    let board = index.checked_sub(platform_devices::transport_count()).ok_or(NOT_FOUND)?;
+    Ok(Slot::Board(board))
+}
+
+/// How many ordinals this bus answers for: the machine's transports, then the
+/// other peripherals it describes.
+fn device_count() -> usize
+{
+    platform_devices::transport_count() + platform_devices::count()
+}
+
+fn board_device(index: usize) -> Result<Description, Status>
+{
+    let device = platform_devices::get(index).ok_or(NOT_FOUND)?;
     Ok(Description { handle: 0,
                      bus: ClassId(device.bus),
                      key: device.key,
@@ -33,20 +58,48 @@ fn board_device(ordinal: u32) -> Result<Description, Status>
                      interrupt: device.interrupt,
                      flags: device.flags })
 }
-fn base(ordinal: u32) -> Result<usize, Status>
-{
-    if ordinal >= VIRTIO_SLOTS
-    {
-        return Err(NOT_FOUND);
-    }
-    Ok((super::memory::VIRTIO_MMIO_BASE + u64::from(ordinal) * super::memory::VIRTIO_MMIO_STRIDE)
-       as usize)
-}
 fn read(base: usize, offset: usize) -> u32
 {
-    // Only board-described 4 KiB virtio MMIO windows reach this adapter.
+    // Only windows the machine's tree describes reach this adapter, so a read
+    // here is always inside a register block the machine said exists.
     unsafe { u32::from_le(read_volatile((base + offset) as *const u32)) }
 }
+
+/// What a transport window holds, decided from the window's own registers.
+///
+/// The machine states that the window exists, so reading it is a lookup rather
+/// than a probe of an address that may not answer: an unoccupied transport
+/// answers zero, and `None` is the absence. Nothing here derives a window from
+/// an ordinal, and an address the machine did not describe is never touched.
+fn describe(transport: Transport, read: impl Fn(usize) -> u32) -> Option<Description>
+{
+    let (device, vendor) = wire::virtio_identity(transport.register_bytes, read)?;
+    let mut key = [0; 16];
+    key[..4].copy_from_slice(&device.to_le_bytes());
+    key[4..8].copy_from_slice(&vendor.to_le_bytes());
+    // Firmware still owns block I/O, and System still owns input. Their
+    // extraction is a separate milestone; a module cannot reset them here.
+    let reserved =
+        if matches!(device, VIRTIO_BLOCK | VIRTIO_INPUT) { wire::RESIDENT_OWNED } else { 0 };
+    // Placement comes from the tree. `COHERENT_DMA` does not: it is this
+    // adapter's statement about the virtio-MMIO transport the resident input
+    // driver already performs DMA through, and a machine whose tree is silent
+    // about `dma-coherent` (QEMU's RISC-V virt) would otherwise be refused the
+    // DMA it actually performs.
+    Some(Description { handle: 0,
+                       bus: ClassId(*b"VMMI"),
+                       key,
+                       registers: transport.registers,
+                       register_bytes: transport.register_bytes,
+                       interrupt: transport.interrupt,
+                       flags: wire::COHERENT_DMA | wire::MMIO | reserved })
+}
+
+fn transport_address(transport: Transport) -> Result<usize, Status>
+{
+    usize::try_from(transport.registers).map_err(|_| NOT_SUPPORTED)
+}
+
 impl Bus for PlatformBus
 {
     fn dma_address(&self, cpu_address: u64, bytes: u64) -> Result<u64, Status>
@@ -56,85 +109,87 @@ impl Bus for PlatformBus
 
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>
     {
-        if ordinal >= VIRTIO_SLOTS
+        match slot(ordinal)?
         {
-            return board_device(ordinal);
+            Slot::Transport(transport) =>
+            {
+                let address = transport_address(transport)?;
+                describe(transport, |offset| read(address, offset)).ok_or(NOT_FOUND)
+            }
+            Slot::Board(index) => board_device(index)
         }
-        let address = base(ordinal)?;
-        if read(address, 0) != 0x7472_6976 || read(address, 4) != 2
-        {
-            return Err(NOT_FOUND);
-        }
-        let device = read(address, 8);
-        if device == 0
-        {
-            return Err(NOT_FOUND);
-        }
-        let mut key = [0; 16];
-        key[..4].copy_from_slice(&device.to_le_bytes());
-        key[4..8].copy_from_slice(&read(address, 12).to_le_bytes());
-        // Firmware still owns block I/O, and System still owns input. Their
-        // extraction is a separate milestone; a module cannot reset them here.
-        let reserved = if matches!(device, 2 | 18) { wire::RESIDENT_OWNED } else { 0 };
-        Ok(Description { handle: 0,
-                         bus: ClassId(*b"VMMI"),
-                         key,
-                         registers: address as u64,
-                         register_bytes: 4096,
-                         interrupt: ordinal + super::memory::VIRTIO_INTERRUPT_BASE as u32,
-                         flags: wire::COHERENT_DMA | wire::MMIO | reserved })
     }
 
     fn request_reset(&mut self, ordinal: u32) -> Result<(), Status>
     {
-        if ordinal >= VIRTIO_SLOTS
+        match slot(ordinal)?
         {
-            return if board_device(ordinal)?.flags & wire::COHERENT_DMA == 0
+            Slot::Transport(transport) =>
             {
+                let address = transport_address(transport)?;
+                unsafe {
+                    write_volatile((address + VIRTIO_STATUS) as *mut u32, 0);
+                    crate::machine::cpu::barrier();
+                }
                 Ok(())
             }
-            else
+            Slot::Board(index) =>
             {
-                Err(NOT_SUPPORTED)
-            };
+                if board_device(index)?.flags & wire::COHERENT_DMA == 0
+                {
+                    Ok(())
+                }
+                else
+                {
+                    Err(NOT_SUPPORTED)
+                }
+            }
         }
-        let address = base(ordinal)?;
-        unsafe {
-            write_volatile((address + 0x70) as *mut u32, 0);
-            crate::machine::cpu::barrier();
-        }
-        Ok(())
     }
 
     fn stopped(&mut self, ordinal: u32) -> Result<bool, Status>
     {
-        if ordinal >= VIRTIO_SLOTS
+        match slot(ordinal)?
         {
-            return if board_device(ordinal)?.flags & wire::COHERENT_DMA == 0
+            Slot::Transport(transport) =>
             {
-                Ok(true)
+                let address = transport_address(transport)?;
+                Ok(read(address, VIRTIO_STATUS) == 0)
             }
-            else
+            Slot::Board(index) =>
             {
-                Err(NOT_SUPPORTED)
-            };
+                if board_device(index)?.flags & wire::COHERENT_DMA == 0
+                {
+                    Ok(true)
+                }
+                else
+                {
+                    Err(NOT_SUPPORTED)
+                }
+            }
         }
-        Ok(read(base(ordinal)?, 0x70) == 0)
     }
 }
 static DEVICES: TryState<Devices<PlatformBus>> = TryState::new();
 /// Boot discovery takes one bounded snapshot. Match policy stays in the generic
-/// loader; only this adapter knows the board's MMIO slots.
-pub(crate) fn inventory() -> Result<[Option<Description>; DEVICE_SLOTS], Status>
+/// loader; only this adapter knows how to read the machine's transports.
+///
+/// The snapshot is as long as the machine is: an unoccupied transport is a
+/// `None` at its own ordinal, so absence is a lookup result and never a probe of
+/// an address the machine did not describe.
+pub(crate) fn inventory() -> Result<alloc::vec::Vec<Option<Description>>, Status>
 {
     with(|devices| {
-        let mut result = [None; DEVICE_SLOTS];
-        for (ordinal, slot) in result.iter_mut().enumerate()
+        let count = device_count();
+        let mut result = alloc::vec::Vec::new();
+        result.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
+        for ordinal in 0..count
         {
-            match devices.probe(ordinal as u32)
+            let ordinal = u32::try_from(ordinal).map_err(|_| NOT_SUPPORTED)?;
+            match devices.probe(ordinal)
             {
-                Ok(description) => *slot = Some(description),
-                Err(NOT_FOUND) => (),
+                Ok(description) => result.push(Some(description)),
+                Err(NOT_FOUND) => result.push(None),
                 Err(error) => return Err(error)
             }
         }
@@ -269,7 +324,8 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
             {
                 return Err(BAD_ARGUMENT);
             }
-            output[..4].copy_from_slice(&(DEVICE_SLOTS as u32).to_le_bytes());
+            let count = u32::try_from(device_count()).unwrap_or(u32::MAX);
+            output[..4].copy_from_slice(&count.to_le_bytes());
             Ok(4)
         }
         wire::PROBE | wire::CLAIM =>

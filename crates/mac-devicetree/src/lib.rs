@@ -601,6 +601,28 @@ impl<'a> Tree<'a>
         self.find(|node| node.enabled() && names(node, compatible))
     }
 
+    /// Every enabled node whose `compatible` list names `compatible`, in tree
+    /// order, and how many there were.
+    ///
+    /// A class of device is often several: a machine describes as many windows
+    /// of a kind as it has, and the count is the machine's fact rather than
+    /// something a consumer may bound. `find_compatible` answers "the one", so
+    /// enumerating a plural device needs this instead.
+    pub fn for_each_compatible(&self, compatible: &str,
+                               mut visit: impl FnMut(&Node<'a>))
+                               -> Result<usize, Error>
+    {
+        let mut count = 0;
+        self.for_each_node(|node| {
+                if node.enabled() && names(node, compatible)
+                {
+                    visit(&node);
+                    count += 1;
+                }
+            })?;
+        Ok(count)
+    }
+
     /// Whether any enabled node declares `compatible`, so a consumer can tell a
     /// device the machine does not model from one it models under another name.
     pub fn has_compatible(&self, compatible: &str) -> Result<bool, Error>
@@ -1241,6 +1263,49 @@ mod tests
         let tree = Tree::new(&blob).expect("valid envelope");
         assert!(tree.has_compatible("arm,primecell").expect("walk"));
         assert_eq!(tree.window("arm,primecell").expect("walk"), Some((0x0900_0000, 0x1000)));
+    }
+
+    #[test]
+    fn every_node_of_a_compatible_class_is_visited_in_tree_order()
+    {
+        // A machine describes one window per transport it has, so a consumer
+        // that enumerated a class through `find_compatible` would silently see
+        // only the first. The windows here are deliberately not evenly spaced:
+        // a consumer that reconstructed them from an index and a stride would
+        // report addresses the machine never stated.
+        let blob = {
+            let mut b = Blob::new();
+            root(&mut b);
+            for (name, address) in [("transport@1000", 0x1000u32),
+                                    ("transport@3000", 0x3000),
+                                    ("transport@5000", 0x5000)]
+            {
+                b.begin(name);
+                b.text("compatible", "virtio,mmio");
+                b.prop("reg",
+                       &[0, 0, 0, 0,
+                         (address >> 24) as u8, (address >> 16) as u8, (address >> 8) as u8,
+                         address as u8, 0, 0, 0, 0, 0, 0, 0x02, 0]);
+                b.end();
+            }
+            b.begin("disabled@7000")
+             .text("compatible", "virtio,mmio")
+             .text("status", "disabled")
+             .prop("reg", &[0, 0, 0, 0, 0, 0, 0x70, 0, 0, 0, 0, 0, 0, 0, 0x02, 0])
+             .end();
+            b.begin("other@9000").text("compatible", "example,other").end();
+            b.end();
+            b.finish()
+        };
+        let tree = Tree::new(&blob).expect("valid envelope");
+        let mut windows = Vec::new();
+        let count = tree.for_each_compatible("virtio,mmio", |node| {
+                        windows.push(node.window().expect("reg stated"));
+                    })
+                        .expect("walk");
+        assert_eq!(count, 3);
+        assert_eq!(windows, [(0x1000, 0x200), (0x3000, 0x200), (0x5000, 0x200)]);
+        assert_eq!(tree.for_each_compatible("example,absent", |_| ()).expect("walk"), 0);
     }
 
     #[test]

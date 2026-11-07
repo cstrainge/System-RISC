@@ -22,6 +22,10 @@ const QUEUE: usize = 8;
 /// Command completion deadline; the host services the queue from its main loop.
 const COMMAND_TIMEOUT_MICROSECONDS: u64 = 2_000_000;
 const RESET_TIMEOUT_MICROSECONDS: u64 = 1_000_000;
+/// The transport registers this driver uses and the configuration field it
+/// reads end here. The machine states the window's length; a shorter one cannot
+/// carry the device this driver drives.
+const WINDOW_BYTES: u64 = 0x108;
 
 const GET_DISPLAY_INFO: u32 = 0x100;
 const RESOURCE_CREATE_2D: u32 = 0x101;
@@ -302,7 +306,7 @@ impl Device
                 continue;
             }
             let required = interface::COHERENT_DMA | interface::MMIO;
-            if description.register_bytes != 4096
+            if description.register_bytes < WINDOW_BYTES
                || description.registers == 0
                || description.registers % 4 != 0
                || description.flags != required

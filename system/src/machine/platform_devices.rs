@@ -32,6 +32,29 @@ pub(crate) struct Device
     pub flags:          u32
 }
 
+/// The compatible string a virtio-MMIO transport declares.
+const VIRTIO_MMIO: &str = "virtio,mmio";
+
+/// The virtio-MMIO register file: the transport's own registers occupy the
+/// first `0x100` bytes of its window, and device-specific configuration follows.
+/// A window shorter than that cannot carry the protocol the transport is
+/// written in, so a node that declares one is not a transport.
+const VIRTIO_MMIO_REGISTERS: u64 = 0x100;
+
+/// A virtio-MMIO transport as the machine places it.
+///
+/// The window and the interrupt are the machine's facts, read from the node that
+/// declares them. A transport is not identified by its position in this list:
+/// the machine places windows where it places them, and the order is only the
+/// tree's order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Transport
+{
+    pub registers:      u64,
+    pub register_bytes: u64,
+    pub interrupt:      u32
+}
+
 /// Why a declared peripheral could not be resolved.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Cause
@@ -213,6 +236,71 @@ pub(crate) fn count() -> usize
     let mut count = 0;
     for_each_device(|_| count += 1);
     count
+}
+
+/// The transport a node describes, or `None` when it describes none.
+///
+/// Only the node's own `reg` states where a transport is. Nothing here derives a
+/// window from an index: a machine that places its transports unevenly, or
+/// leaves the positions between them empty, is described exactly as it is.
+fn transport_of(tree: &Tree<'_>, node: &Node<'_>) -> Option<Transport>
+{
+    let (registers, register_bytes) = node.window()?;
+    if registers == 0
+       || register_bytes < VIRTIO_MMIO_REGISTERS
+       || registers.checked_add(register_bytes).is_none()
+    {
+        return None;
+    }
+    Some(Transport { registers,
+                     register_bytes,
+                     interrupt: interrupt_of(tree, node).unwrap_or(0) })
+}
+
+/// Visit every virtio-MMIO transport the machine describes, in tree order, and
+/// report how many there were.
+///
+/// This is a filtered view of the same walk `for_each_device` uses, not a second
+/// reading of the tree: a transport's window and interrupt are resolved exactly
+/// as any other peripheral's are.
+pub(crate) fn for_each_transport(mut visit: impl FnMut(Transport)) -> usize
+{
+    let Some(tree) = admitted_tree()
+    else
+    {
+        return 0;
+    };
+    let mut count = 0;
+    let _ = tree.for_each_compatible(VIRTIO_MMIO, |node| {
+                  if let Some(transport) = transport_of(&tree, node)
+                  {
+                      visit(transport);
+                      count += 1;
+                  }
+              });
+    count
+}
+
+/// How many virtio-MMIO transports the machine describes.
+pub(crate) fn transport_count() -> usize
+{
+    for_each_transport(|_| ())
+}
+
+/// The transport at `index` in tree order, or `None` when the machine describes
+/// fewer transports than that.
+pub(crate) fn transport(index: usize) -> Option<Transport>
+{
+    let mut found = None;
+    let mut seen = 0usize;
+    for_each_transport(|transport| {
+        if seen == index && found.is_none()
+        {
+            found = Some(transport);
+        }
+        seen += 1;
+    });
+    found
 }
 
 /// The enumerated peripheral at `index`, or `None` before admission or past the

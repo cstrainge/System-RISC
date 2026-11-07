@@ -79,14 +79,8 @@ pub(crate) fn discover(boot: &mut crate::boot_screen::BootScreen) -> Result<(), 
             }
         }
     }
-    let inventory = if needs_devices
-    {
-        crate::machine::driver_devices::inventory()?
-    }
-    else
-    {
-        [None; crate::machine::driver_devices::DEVICE_SLOTS]
-    };
+    let inventory =
+        if needs_devices { crate::machine::driver_devices::inventory()? } else { Vec::new() };
     while !waiting.is_empty()
     {
         let mut progress = false;

@@ -24,6 +24,38 @@ pub const COHERENT_DMA: u32 = 1;
 pub const MMIO: u32 = 2;
 pub const RESIDENT_OWNED: u32 = 4;
 
+/// The magic word a virtio-MMIO transport states first.
+pub const VIRTIO_MAGIC: u32 = 0x7472_6976;
+/// The transport version this contract drives: the modern register layout.
+pub const VIRTIO_VERSION: u32 = 2;
+/// How many bytes of identity a transport states: magic, version, device type,
+/// then vendor.
+pub const VIRTIO_IDENTITY_BYTES: u64 = 16;
+
+/// The device type and vendor a virtio-MMIO window states, or `None` when the
+/// window holds no device.
+///
+/// `register_bytes` is the window's length as the machine stated it, and no read
+/// goes past it. An unoccupied transport answers zero rather than not answering,
+/// so absence is this returning `None`. The caller must still only pass a window
+/// the machine described: reading an address nothing answers on is a fault, and
+/// this function cannot tell the two apart.
+pub fn virtio_identity(register_bytes: u64, read: impl Fn(usize) -> u32) -> Option<(u32, u32)>
+{
+    if register_bytes < VIRTIO_IDENTITY_BYTES
+       || read(0) != VIRTIO_MAGIC
+       || read(4) != VIRTIO_VERSION
+    {
+        return None;
+    }
+    let device = read(8);
+    if device == 0
+    {
+        return None;
+    }
+    Some((device, read(12)))
+}
+
 /// Only these operations have a no-deferred-state contract. Reset must retain
 /// its explicit request ticket until hardware acknowledges quiescence.
 pub const fn synchronous(operation: u32) -> bool

@@ -18,6 +18,10 @@ use crate::{Channel, Diagnostic, FRAGMENT, QUEUE_INDICES,
             lifetime::{Authority, Lifetime},
             validate_profile};
 const N: usize = 8;
+/// The transport registers and the configuration word this driver reads end
+/// here. The machine states the window's length; a shorter one cannot carry a
+/// console.
+const WINDOW_BYTES: u64 = 0x108;
 /// Four unique arena banks: selected port 1 uses device queues 4/5, controls
 /// use 2/3. Reserved/uninstantiated port 0 queues 0/1 are never configured.
 fn hardware_queue(bank: usize) -> u32
@@ -650,7 +654,7 @@ impl Device
         {
             return Ok(false);
         }
-        if info.register_bytes != 4096
+        if info.register_bytes < WINDOW_BYTES
            || info.flags & (interface::COHERENT_DMA | interface::MMIO)
               != interface::COHERENT_DMA | interface::MMIO
         {
