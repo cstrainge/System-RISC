@@ -23,14 +23,12 @@ pub(crate) fn root() -> usize
 /// and that no in-flight access can observe a stale translation.
 pub(crate) unsafe fn write_root(value: usize)
 {
-    // SAFETY: the caller guarantees the root is live. Both halves are written
-    // because one root covers both: the kernel's virtual range is in the high
-    // half and its identity RAM and device windows are in the low half, so a
-    // root installed in only one of them would leave the other half resolving
-    // through the previous space.
-    unsafe {
-        asm!("msr ttbr0_el1, {root}", "msr ttbr1_el1, {root}", "isb", root = in(reg) value);
-    }
+    // SAFETY: the caller guarantees the root is live. TTBR0 only, because that
+    // is the half `root()` reads and the half this scope restores: a reader and
+    // a writer that disagree about what "the root" is will compare one half and
+    // restore the other. The low half is where firmware, devices and identity
+    // RAM live, which is what a scope like this switches for. The one-time
+    // transition to a kernel space is `activate`, which sets both.
 }
 
 /// Discards every cached translation for the current address space.
