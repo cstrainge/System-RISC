@@ -263,9 +263,15 @@ impl Entry
         let ap1 = if permissions.access == Access::Supervisor { 1 << 6 } else { 0 };
         let ap2 = if permissions.write { 0 } else { 1 << 7 };
         let never_execute = if permissions.execute { 0 } else { PXN | UXN };
+        // Bit 1 separates a table pointer from a leaf only at the page level.
+        // A block descriptor at a coarser level must have it clear: hardware
+        // reads a block with bit 1 set as a table pointer and walks to the
+        // output address as if a table were there, which faults rather than
+        // mapping anything.
+        let leaf = if size == LeafSize::Page { LEAF } else { 0 };
         Ok(Self(output_bits(address, size.bytes())?
                  | VALID
-                 | LEAF
+                 | leaf
                  | AF
                  | SH_INNER
                  | ATTR_NORMAL
@@ -293,11 +299,32 @@ impl Entry
         }
         if bits & LEAF == 0
         {
-            // A table pointer is only meaningful above the finest leaf.
+            // At the page level bit 1 must be set; a page descriptor without it
+            // maps nothing. Above it, bit 1 clear is a block, not a table: a
+            // block is a leaf that maps `size` bytes, and only bit 1 set makes
+            // the entry a pointer to the next level.
             if size == LeafSize::Page
             {
                 return Err(Error::Level { level });
             }
+            return Ok(Decoded::Leaf { physical: output_address(bits),
+                                      size,
+                                      permissions: Permissions { read:    true,
+                                                                  write:   bits & (1 << 7) == 0,
+                                                                  execute: bits & (PXN | UXN) == 0,
+                                                                  access:  if bits & (1 << 6) != 0
+                                                                  {
+                                                                      Access::Supervisor
+                                                                  }
+                                                                  else
+                                                                  {
+                                                                      Access::User
+                                                                  },
+                                                                  global:  bits & (1 << 11) == 0 },
+                                      ownership: ownership_from(bits) });
+        }
+        if size != LeafSize::Page
+        {
             return Ok(Decoded::Table { physical:  output_address(bits),
                                        global:    bits & (1 << 11) == 0,
                                        ownership: ownership_from(bits) });
