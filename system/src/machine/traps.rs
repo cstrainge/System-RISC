@@ -131,7 +131,12 @@ fn definition_request<T>(mut run: impl FnMut(&mut crate::toolbox::runtime::Toolb
 
 /// Local CSR installation only. Warm entry uses this while its Control stays
 /// poisoned; it must not initialize global tracing or use firmware logging.
-fn install_local()
+///
+/// Also called before the kernel root is activated, because until the vector is
+/// installed the CPU takes every exception through whatever table the firmware
+/// left in place - and that table is in the bootstrap, which a kernel space does
+/// not map. A fault in that window therefore loops with no report at all.
+pub(crate) fn install_local()
 {
     // SAFETY: `__system_trap_vector` is this crate's own trap entry.
     unsafe {
