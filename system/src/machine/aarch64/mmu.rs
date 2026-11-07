@@ -6,6 +6,12 @@
 //! which register holds the root.
 use core::arch::asm;
 
+/// The physical address of a translation root, without the ASID tag.
+///
+/// TTBR0_EL1[63:48] is the ASID; TTBR1_EL1[63:48] is RES0 without FEAT_ASID2.
+/// One mask, used by both writers, so the difference is stated once.
+const ADDRESS_MASK: usize = (1 << 48) - 1;
+
 /// The current root register value, as last written.
 pub(crate) fn root() -> usize
 {
@@ -51,12 +57,19 @@ pub(crate) fn flush_translations()
 /// root after this call.
 pub(crate) unsafe fn activate(value: usize)
 {
+    // TTBR0 carries the ASID in bits 63:48. TTBR1 does not: without FEAT_ASID2
+    // those bits are RES0, and the two halves share one ASID for the whole
+    // regime. Writing the tagged value to both would ask for two ASIDs in one
+    // regime, which the architecture does not offer, so the address goes to
+    // TTBR1 clean and the tagged value to TTBR0.
+    let address = value & ADDRESS_MASK;
     // SAFETY: the caller guarantees the root is live. The barrier order matters:
     // the new root must be visible before the invalidate retires, or a stale
     // entry can survive into the new space.
     unsafe {
-        asm!("dsb ishst", "msr ttbr0_el1, {root}", "msr ttbr1_el1, {root}", "isb",
-             "tlbi vmalle1is", "dsb ish", "isb", root = in(reg) value, options(nostack));
+        asm!("dsb ishst", "msr ttbr0_el1, {tagged}", "msr ttbr1_el1, {address}", "isb",
+             "tlbi vmalle1is", "dsb ish", "isb",
+             tagged = in(reg) value, address = in(reg) address, options(nostack));
     }
 }
 
