@@ -876,6 +876,11 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
     {
         return Err(Error::AlreadyActive);
     }
+    // Before any of the work below can fault. The vector lives in this image, so
+    // it resolves under the bootstrap root already active and under the kernel
+    // root installed further down; the firmware's table resolves under neither
+    // once the kernel root is in place.
+    crate::machine::traps::install_local();
     let boot = BOOT.get().ok_or(Error::Missing)?;
     let cpus = boot.topology.cpus();
     check_stack_slots(cpus.len())?;
