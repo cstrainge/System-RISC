@@ -175,6 +175,34 @@ leaf cannot be shadowed. That is a second space builder rather than a small
 change, so it was not attempted; the ambiguity is recorded instead of papered
 over. The switch-on fault is still the open puzzle.
 
+## The four inputs to an execute verdict, all measured
+
+A level-3 permission fault on an instruction fetch can only come from a small
+set of inputs. All four have now been measured at the fault, and all four say the
+fetch is permitted:
+
+| input | value | verdict |
+| --- | --- | --- |
+| translation root | `TTBR0 = 0x5092a000`, firmware root | correct root active |
+| descriptor `PXN`/`UXN` | `0x4009a743`: `PXN=0`, `UXN=0` | executable by descriptor |
+| `SCTLR_EL1.WXN` | `0xc5183d`, bit 19 clear | not overridden by WXN |
+| `MAIR_EL1` at the leaf's `AttrIndx` | `0xff`, so `AttrIndx 0 = 0xff` | Normal write-back, not Device |
+
+`MAIR_EL1 = 0x00000000000000ff` decodes as:
+
+```
+AttrIndx 0 = 0xff  Normal, write-back non-transient, RW-allocate
+AttrIndx 1 = 0x00  Device-nGnRnE
+AttrIndx 2 = 0x00  Device-nGnRnE
+AttrIndx 3 = 0x00  Device-nGnRnE
+```
+
+The firmware window's leaf uses `AttrIndx 0`, and so does the kernel's own text —
+the encoder emits attribute index 0 for every leaf. Both are therefore Normal,
+and instruction fetch from Normal memory is permitted. Device memory would have
+produced exactly this fault, which is why it was worth re-testing after the
+`systemrisc` cfg change; it is not Device.
+
 ## The loaded image contains the code the symbols claim
 
 The faulting address was read back from the running guest and compared with the
