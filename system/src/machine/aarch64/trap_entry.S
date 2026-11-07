@@ -155,6 +155,10 @@ __system_trap_no_control:
     // those are different defects.
     mrs x26, ttbr0_el1
     mrs x27, ttbr1_el1
+    // SCTLR_EL1: bit 19 is WXN, which forces every writable page execute-never
+    // and overrides PXN. A writable, descriptor-executable page that still
+    // faults on fetch is exactly that signature.
+    mrs x28, sctlr_el1
     ldr x0, =no_control_text
     bl no_control_puts
     mov x0, x22
@@ -190,6 +194,10 @@ __system_trap_no_control:
     ldr x0, =no_control_lr_text
     bl no_control_puts
     mov x0, x25
+    bl no_control_hex
+    ldr x0, =no_control_sctlr_text
+    bl no_control_puts
+    mov x0, x28
     bl no_control_hex
     ldr x0, =no_control_nl
     bl no_control_puts
@@ -271,5 +279,7 @@ no_control_ttbr1_text:
     .asciz " TTBR1="
 no_control_lr_text:
     .asciz " LR="
+no_control_sctlr_text:
+    .asciz " SCTLR="
 no_control_nl:
     .asciz "\n"
