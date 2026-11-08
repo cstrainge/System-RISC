@@ -61,12 +61,17 @@ fn main()
     // Nothing is generated here. This machine supplies its own device tree and
     // the bootloader reads the pointer it passes, so embedding a second
     // description would give one machine two trees and a consumer a choice.
-    // Whether this machine declares a display. The flag the kernel receives is
-    // derived from that declaration rather than hardcoded per machine: a boot
-    // that claims a graphical start while the record declares no display would
-    // ask the kernel to launch a Finder onto nothing.
-    let graphical = record["emulation"]["display"]["kind"].as_str()
-                          .is_some_and(|kind| kind != "none");
+    // Whether this machine declares an emulated display. The flag the kernel
+    // receives is read from the validated record rather than a second time from
+    // the raw JSON, so this build script cannot derive a different answer from
+    // the record the rest of the build checked. A record with no `emulation`
+    // section is a board, and its silence means headless; a record with one must
+    // state its display, and `emulation::Definition::check` refuses it by name
+    // otherwise. A boot that claims a graphical start while the record declares
+    // no display would ask the kernel to launch a Finder onto nothing.
+    let graphical = platform.emulation()
+                           .and_then(|emulation| emulation.display.as_ref())
+                           .is_some();
     let boot_flags = if graphical { "mac_abi::BOOT_GRAPHICAL" } else { "0" };
     let fdt_tail_bytes = memory["fdt_tail_bytes"].as_str().expect("memory.fdt_tail_bytes");
     // The firmware heap is a region the record declares, not a BSS array: the
