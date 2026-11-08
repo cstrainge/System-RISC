@@ -223,9 +223,11 @@ impl<'a> LoadPlan<'a>
             return Err(WriteError::Format(Error::Malformed("native destination has wrong \
                                                             length")));
         }
-        // Clear BSS, inter-segment holes and trailing reservation bytes before
-        // copying initialized payload. Unpublished owner survives any refusal.
-        output.clear().map_err(WriteError::Destination)?;
+        // Initialize BSS, holes and owned padding. Storage that knows the plan
+        // can leave file prefixes for the complete writes below, avoiding a
+        // redundant clear before copying them. No image is publishable until
+        // every write and relocation succeeds; refusal retains its owner.
+        output.prepare(&self.image.segments).map_err(WriteError::Destination)?;
         for segment in &self.image.segments
         {
             if segment.length == 0
@@ -352,7 +354,7 @@ mod tests
             self.length
         }
 
-        fn clear(&mut self) -> core::result::Result<(), StorageRefusal>
+        fn prepare(&mut self, _segments: &[Segment]) -> core::result::Result<(), StorageRefusal>
         {
             self.clears += 1;
             for (index, page) in self.pages.iter_mut().enumerate()

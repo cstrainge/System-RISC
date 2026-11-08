@@ -10,7 +10,14 @@ pub trait Destination
 {
     type Error;
     fn length(&self) -> usize;
-    fn clear(&mut self) -> Result<(), Self::Error>;
+    /// Prepare the validated plan's segment storage. Bytes outside the file
+    /// prefixes (`offset..offset + length`) must become zero, including owned
+    /// padding. Prefixes may remain uninitialized because `LoadPlan` overwrites
+    /// each completely before relocation or successful publication. On refusal
+    /// the owner must retain or discard the unpublished storage, never read or
+    /// publish a partially written prefix. Clearing the entire storage is also
+    /// valid for destinations that do not distinguish these ranges.
+    fn prepare(&mut self, segments: &[super::Segment]) -> Result<(), Self::Error>;
     fn write(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Self::Error>;
 }
 #[derive(Debug)]
@@ -54,7 +61,7 @@ impl Destination for Slice<'_>
         self.0.len()
     }
 
-    fn clear(&mut self) -> crate::Result<()>
+    fn prepare(&mut self, _segments: &[super::Segment]) -> crate::Result<()>
     {
         self.0.fill(0);
         Ok(())

@@ -438,16 +438,33 @@ impl Destination for Payload
         self.extent
     }
 
-    fn clear(&mut self) -> Result<(), Error>
+    fn prepare(&mut self, planned: &[image::Segment]) -> Result<(), Error>
     {
-        for segment in &self.segments
+        if planned.len() != self.segments.len()
         {
-            // SAFETY: actual unpublished exclusive PageBlock; no execution VA
-            // or borrowed source slice is used as writable storage.
+            return Err(Error::State);
+        }
+        for (segment, planned) in self.segments.iter().zip(planned)
+        {
+            // These are the same preflighted segments that allocated the
+            // unpublished backing. Keep this checked at the write boundary;
+            // a different plan must never leave readable bytes uninitialized.
+            if segment.offset != planned.offset || segment.memory != planned.memory_length
+               || planned.length as u64 > segment.memory
+               || segment.memory > segment.backing.bytes()
+            {
+                return Err(Error::State);
+            }
+            let bytes = usize::try_from(segment.backing.bytes()).map_err(|_| Error::State)?;
+            let address = segment.backing.cpu_base()
+                                 .checked_add(planned.length)
+                                 .ok_or(Error::State)?;
+            // SAFETY: actual unpublished exclusive backing. LoadPlan writes
+            // the entire file prefix before relocation/publication; clear BSS
+            // and all physical padding here, including the unmapped buddy tail.
+            // No reference is formed to the uninitialized file prefix.
             unsafe {
-                core::ptr::write_bytes(segment.backing.cpu_base() as *mut u8,
-                                       0,
-                                       segment.backing.bytes() as usize);
+                core::ptr::write_bytes(address as *mut u8, 0, bytes - planned.length);
             }
         }
         Ok(())
@@ -960,7 +977,7 @@ impl Mapping
                             .map_err(Error::Recovery)?.size() as u64;
                             // Preflight the original account before consuming raw storage.
                             // Commit only after its real normalized extent is owned;
-                            // LoadPlan clears it before any PTE publication.
+                            // LoadPlan initializes it before any PTE publication.
                             let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
                             let backing = permit.reserve_uninitialized_backing(layout)
                                                 .map_err(Error::Recovery)?;
