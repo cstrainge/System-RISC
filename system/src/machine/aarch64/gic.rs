@@ -110,11 +110,25 @@ fn write_byte(address: u64, value: u8)
 /// can be forwarded to it, and the source itself is enabled last.
 pub(crate) fn admit(distributor: u64, cpu_interface: u64, timer: u32)
 {
+    let typer = read(distributor + GICD_TYPER);
+    let security = typer & TYPER_SECURITY != 0;
     write(distributor + GICD_CTLR, 0);
-    // Every interrupt in group 1. A non-secure kernel can only be delivered
-    // group 1, and a controller without the security extensions ignores the
-    // register, so this is the same write on both machines.
-    write(distributor + GICD_IGROUPR0, !0);
+    // Which group the sources go in is only a choice on a controller that
+    // implements the security extensions.
+    //
+    // With them, this kernel runs at non-secure EL1 and can only be delivered
+    // group 1, so every source is moved there and the enable bit it writes below
+    // is the non-secure view's alias of EnableGrp1.
+    //
+    // Without them there are no groups at all: every source is group 0, the
+    // group register is not writable, and the enable bit is EnableGrp0. Writing
+    // "all group 1" on such a controller would put every source in a group
+    // nothing enables, and the distributor would then forward nothing - silently,
+    // with every register reading back exactly what was written.
+    if security
+    {
+        write(distributor + GICD_IGROUPR0, !0);
+    }
     write_byte(distributor + GICD_IPRIORITYR + u64::from(timer), PRIORITY);
     write_byte(distributor + GICD_ITARGETSR + u64::from(timer), TARGET_PRIMARY);
     write(distributor + GICD_CTLR, 1);
@@ -128,13 +142,26 @@ pub(crate) fn admit(distributor: u64, cpu_interface: u64, timer: u32)
     // The configuration has to be visible before an `eret` can take an
     // interrupt, and the stores above cross a device window.
     crate::machine::cpu::barrier();
-    let typer = read(distributor + GICD_TYPER);
+    // What the machine reports after the writes, not what was written: a
+    // register that did not take is otherwise indistinguishable from a source
+    // that never fired, and that is exactly how a boot comes to wait forever
+    // with a correct-looking configuration.
+    let control = read(distributor + GICD_CTLR);
+    let group = read(distributor + GICD_IGROUPR0);
+    let enabled = read(distributor + GICD_ISENABLER0);
+    let priority = read(distributor + GICD_IPRIORITYR + u64::from(timer & !3));
+    let target = read(distributor + GICD_ITARGETSR + u64::from(timer & !3));
+    let interface = read(cpu_interface + GICC_CTLR);
+    let threshold = read(cpu_interface + GICC_PMR);
     crate::machine::emergency::serial(format_args!("INTERRUPTS_READY: controller=gic-v2 \
                                                     distributor={distributor:#x} \
                                                     cpu_interface={cpu_interface:#x} timer={} \
-                                                    security={} lines={}\n",
+                                                    security={} lines={} ctlr={control:#x} \
+                                                    group={group:#x} enabled={enabled:#x} \
+                                                    prio={priority:#x} target={target:#x} \
+                                                    gicc_ctlr={interface:#x} pmr={threshold:#x}\n",
                                                    timer,
-                                                   u32::from(typer & TYPER_SECURITY != 0),
+                                                   u32::from(security),
                                                    (typer & TYPER_LINES) + 1));
 }
 

@@ -27,7 +27,29 @@ pub(crate) fn set_timer_deadline(deadline: u64)
         core::arch::asm!("msr cntp_cval_el0, {deadline}", "msr cntp_ctl_el0, {enable}",
             deadline = in(reg) deadline, enable = in(reg) 1u64);
     }
+    // The first deadline this boot programs, with what the timer reports
+    // afterwards. A deadline in the past, a deadline that never arrives and a
+    // counter that is not the one the compare is written against all look the
+    // same from the scheduler: silence. Reported once, so a tick loop does not
+    // pay for it.
+    if !ARMED_ONCE.swap(true, core::sync::atomic::Ordering::Relaxed)
+    {
+        let control: u64;
+        let compare: u64;
+        let count: u64;
+        // SAFETY: reads of this CPU's own timer registers have no side effects.
+        unsafe {
+            core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) control);
+            core::arch::asm!("mrs {}, cntp_cval_el0", out(reg) compare);
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) count);
+        }
+        crate::machine::emergency::serial(format_args!("TIMER_ARMED: requested={deadline:#x} \
+                                                        cval={compare:#x} ctl={control:#x} \
+                                                        count={count:#x} freq={frequency:#x}\n"));
+    }
 }
+
+static ARMED_ONCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Masks the timer interrupt, leaving other interrupt sources untouched.
 pub(crate) fn disable_timer_interrupt()
