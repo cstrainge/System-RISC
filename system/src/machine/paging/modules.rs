@@ -1767,9 +1767,21 @@ impl Plan
             // Existing bootstrap branches can cover neighboring System/firmware
             // addresses. Reuse only a real retained table, never overwrite a
             // large leaf or manufacture ownership from an arbitrary PPN.
+            //
+            // `Decoded::Table` is the whole test for "this slot already holds a
+            // table". The encoder decides it from the descriptor's own leaf bit,
+            // which is the only thing that separates a table pointer from a
+            // block at these levels, and retention is established below by the
+            // branch registry or by the space's own table owner. It must not be
+            // qualified by `global`: AArch64 has no global bit on a table
+            // descriptor, so its decoder reports every table as global and a
+            // `global: false` pattern can never match there. Requiring it made
+            // the firmware root refuse every definition publication, because
+            // that root's 1 GiB branch for the firmware heap is a bootstrap
+            // table and the plan could not recognise it as reusable.
             let Decoded::Table { physical,
-                                 global: false,
-                                 ownership } =
+                                 ownership,
+                                 .. } =
                 Entry::decode_raw(observed, key.level + 1).map_err(Error::Encoding)?
             else
             {
