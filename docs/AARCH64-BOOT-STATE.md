@@ -148,6 +148,61 @@ calls arrive with `SPSR 0x60000000` and `SPSR 0x0`, both `M[3:0] = 0b0000`
 (EL0t). Before this change every one of those frames reported `M[3:0] = 0`.
 
 
+## The arm64 machine has no poweroff register, so Shut Down and Restart stay disabled
+
+Finder prints `FINDER_POWER_CAPABILITIES shutdown=false restart=false` and
+disables both Special-menu items because no `POWR` provider is live. That is the
+correct answer for this record, and it is not a record that forgot a field: this
+machine has no device to declare.
+
+`platforms/qemu_riscv.json` installs `qemu-power-device`, and
+`platforms/riscv_base.json` declares both the MMIO window that driver claims
+(`mmio_devices`, `test@100000`, compatible `sifive,test1`) and the
+`fatal_shutdown` block the terminal path writes. Both describe QEMU's
+`hw/misc/sifive_test.c`, which the RISC-V `virt` machine creates and the AArch64
+`virt` machine does not.
+
+Measured on the installed QEMU 11.1.0:
+
+| check | RISC-V `virt` | AArch64 `virt` |
+| --- | --- | --- |
+| `-machine virt,dumpdtb=` device tree | `test@100000`, `compatible = "sifive,test1"` | no such node |
+| `-device sifive_test` | accepted | `'sifive_test' is not a valid device model name` |
+
+The address and the two values the RISC-V record holds therefore have no
+counterpart to copy. Declaring one anyway would name a register the machine does
+not answer, and the menu items would be enabled and do nothing — the failure the
+disabled state avoids. Records describe machines; this is a machine without that
+device.
+
+AArch64 `virt` powers off the way the architecture does: PSCI. The machine's own
+tree states it, `psci { method = "hvc"; }`, and the guest already runs at EL1
+with QEMU's implementation above it at EL2. `SYSTEM_OFF` is function
+`0x84000008`, `SYSTEM_RESET` `0x84000009`, both called with `hvc #0`.
+
+That is a different mechanism from a finisher register, and enabling the items
+needs it to exist rather than a record correction:
+
+- `fatal_shutdown` is the panic-time terminal signal, not the ordinary power
+  path. Even on RISC-V the menu is enabled by the external `POWR` module that
+  claims the declared window, not by `fatal_shutdown`.
+- A PSCI provider needs the record to state which conduit the machine offers and
+  the build to emit it, plus a module that offers `POWR` without claiming a
+  device. A match-free module is admitted — `drivers/stuffit-filesystem` is one —
+  so the module side is possible, but the record and build side does not exist.
+- `drivers/qemu-power-device` cannot serve it as written: its `build.rs` builds
+  only for `riscv64imac-unknown-none-elf`, and it matches `sifive,test1`.
+
+None of that is implemented. Until it is, the disabled items are the honest
+answer and this section is the reason, so the next reader does not re-derive it
+or reach for an address that is not there.
+
+Shutdown ordering is not the obstacle. `system/src/toolbox/power/mod.rs`
+refuses unfinished file transactions, requires other applications to be closed
+and flushes every writable block device before it calls the provider, so a PSCI
+provider would inherit that ordering rather than bypass it. The hazard would be
+a power path that skipped those gates, not PSCI itself.
+
 ## Defects found and fixed
 
 Each was found by measurement, not by reading.
