@@ -7,7 +7,8 @@ as the list of things fixed.
 ## Position
 
 `cargo xtask boot-check --platform qemu_arm64` builds its private SDK and enters
-the case table. `raw-hfs-b` now reaches the desktop:
+the case table. `raw-hfs-b` reaches the desktop; this is one of the observed
+runs, and the intermittency described below is part of the state:
 
 ```
 INTERRUPTS_READY: controller=gic-v2 distributor=0x8000000 cpu_interface=0x8010000 timer=30 security=0 lines=9 ctlr=0x1 group=0x0 enabled=0x4000ffff prio=0xa00000 target=0x1010101 gicc_ctlr=0x1 pmr=0xf0
@@ -36,21 +37,55 @@ DESKTOP_READY: Finder and native Window Manager
 
 The data abort on Finder's own stack is gone. Before the page-protection fix it
 was a permission fault on a write, `ESR 0x9200004f`, `FAR 0xfa8fe0`, from EL0;
-there is no fault line at all now, so the fault address did not move — it stopped
-happening. The *first* Finder instance still exits after the menu stage with a
-published crash report (`kind=abort code=255`), and the System's replacement
-instance then completes the whole startup. That first-instance exit is a
-separate, unresolved AArch64 defect: it produces no fault, no `SYSTEM_TRAP` and
-no serial diagnostic, so what it is has not been established — only that it is
-an application-level failure report rather than a memory-protection failure.
+that fault no longer occurs at all.
 
-The gate does not yet report green on this platform for a reason that is not
-Finder's: `raw-hfs-b` asserts `BOOT: entering System`, the RISC-V bootstrap's
-wording, and the AArch64 bootstrap used to say `BOOT_AARCH64_ENTERING`. The
-words are now shared (`mac_bootloader::report::ENTERING_SYSTEM`) so the case can
-judge the boot instead of the spelling.
+What remains is a different fault, and it is intermittent. With supervisor pages
+genuinely unreachable from EL0, Finder sometimes takes a level-3 permission
+fault on a **read** of a physmap address:
+
+```
+Taking exception 4 [Data Abort] on CPU 0
+...from EL0 to EL1
+...with ESR 0x24/0x9200000d      <- data abort from lower EL, permission fault, level 3, READ
+...with FAR 0xffffffe010914002
+...with SPSR 0x60000000          <- EL0t
+...with ELR 0x43c600             <- Browser::draw_items+0x284
+```
+
+A second instance of the same fault in that run is `FAR 0xffffffe010914040`,
+`ELR 0x43a97c` (`Browser::desktop::Browser::change_desktop_selection+0x124`); a
+third, captured in the crash report of another run, is `ELR 0x42d270`
+(`Startup::advance+0x7b0`). `0xffffffe010914000` is the per-hart monitor control
+block — `SYSTEM_STACK_READY` prints it as `control=0xffffffe010914000` — so an
+application is dereferencing a kernel-half pointer into it, at different offsets
+and from different call sites. The inverted `AP[1]` had been letting that read
+succeed.
+
+That is the finding, and it is an application/ABI defect rather than a
+protection one: the page tables are doing exactly what they now say. Its
+intermittency is why the boot sometimes completes — of seven arm64 runs made
+while establishing this, five printed `FINDER_FOLDER_LAYOUT window=` and four
+printed `DESKTOP_READY`. The failing instance is replaced by the System, and the
+replacement does not always repeat the access.
+
+The gate does not report green on this platform for two reasons, neither of them
+Finder's page protection:
+
+- `raw-hfs-b` asserts `BOOT: entering System`, the RISC-V bootstrap's wording,
+  and the AArch64 bootstrap used to say `BOOT_AARCH64_ENTERING`. The words are
+  now shared (`mac_bootloader::report::ENTERING_SYSTEM`), so the case can judge
+  the boot instead of the spelling.
+- The case's readiness marker is `DESKTOP_READY:` with a 60 s budget, and an
+  arm64 run that hits the physmap read above twice never prints it.
 
 `qemu_riscv` passes 19/19 and is the gate that matters for landing.
+
+**Evidence that System now runs at EL1.** With `-d int` on the same image, the
+saved status of every privileged trap is `M[3:0] = 0b0101` — the idle loop's
+timer interrupts arrive with `SPSR 0x5` (EL1h, DAIF unmasked), and the resident
+gateway's own calls with `SPSR 0x…3c5` (EL1h, DAIF masked) — while application
+calls arrive with `SPSR 0x60000000` and `SPSR 0x0`, both `M[3:0] = 0b0000`
+(EL0t). Before this change every one of those frames reported `M[3:0] = 0`.
 
 
 ## Defects found and fixed
