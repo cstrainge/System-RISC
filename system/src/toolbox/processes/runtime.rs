@@ -2161,6 +2161,14 @@ impl Toolbox
            || binding.ledger().owner() != owner.owner()
            || binding.image().map(crate::images::Binding::id) != Some(image.id())
         {
+            serial!("NATIVE_EXIT_REFUSED app={} thread={thread} stage=normal-binding \
+                     finder={} ledger_owner={} owner={} binding_image={:?} image={}",
+                    id,
+                    id == crate::context::finder_app().0,
+                    binding.ledger().owner().incarnation(),
+                    owner.owner().incarnation(),
+                    binding.image().map(crate::images::Binding::id),
+                    image.id());
             return Err(ACCESS_DENIED);
         }
         let file = self.processes.snapshot(id)?;

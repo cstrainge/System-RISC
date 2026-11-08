@@ -1353,11 +1353,13 @@ impl Default for Manager
 }
 
 /// Non-consuming readiness for the caller's retained child result receipt.
-pub(crate) fn child_readiness(child: u64)->Result<u32,Status> {
- let caller=crate::context::current_thread_context().identity().app.0;
- crate::kernel::with_toolbox(|t| {
-  let mut query=ProcessCall {id:child,..Default::default()};
-  t.processes.child_status(caller,&mut query)?;
-  Ok(if query.index==CHILD_RUNNING {0}else{mac_abi::readiness::READY})
- }).map_err(|e|e.status())?
+pub(crate) fn child_readiness(child: u64) -> Result<u32, Status>
+{
+    let caller = crate::context::current_thread_context().identity().app.0;
+    crate::kernel::with_toolbox(|t| {
+        let mut query = ProcessCall { id: child,
+                                      ..Default::default() };
+        t.processes.child_status(caller, &mut query)?;
+        Ok(if query.index == CHILD_RUNNING { 0 } else { mac_abi::readiness::READY })
+    }).map_err(|e| e.status())?
 }

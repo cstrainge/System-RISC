@@ -1543,9 +1543,19 @@ wire_struct!(mac_abi::definitions::DefinitionPanic { length:  u32,
 wire_struct!(mac_abi::Header { version: u32,
                                size:    u32 });
 
-wire_struct!(mac_abi::readiness::Source { kind: u32, ready: u32, id: u64, minimum: u64 });
+wire_struct!(mac_abi::readiness::Source { kind:    u32,
+                                          ready:   u32,
+                                          id:      u64,
+                                          minimum: u64 });
 wire_struct!(mac_abi::readiness::Call { operation: u32, notified: u32, thread: u64,
  sources: *mut mac_abi::readiness::Source, count: usize,
  event: mac_abi::events::PositionedEventCall });
 
-wire_struct!(mac_abi::timers::Call {operation:u32,extended:u32,id:u64,delay:i32,state:u32,deadline:u64,remaining:u64,anchor:u64});
+wire_struct!(mac_abi::timers::Call { operation: u32,
+                                     extended:  u32,
+                                     id:        u64,
+                                     delay:     i32,
+                                     state:     u32,
+                                     deadline:  u64,
+                                     remaining: u64,
+                                     anchor:    u64 });

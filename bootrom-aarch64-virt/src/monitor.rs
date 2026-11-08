@@ -13,7 +13,8 @@ use alloc::{alloc::{Layout, alloc_zeroed},
 use core::sync::atomic::Ordering;
 
 use mac_abi::{BootMemoryRange,
-              boot::monitor::{self, BootImage, Control, Directory, Entry, Signalling}};
+              boot::monitor::{self, BootImage, Control, Directory, Entry, SignalTarget,
+                              Signalling}};
 
 use crate::memory::{Memory, PAGE_BYTES};
 
@@ -137,7 +138,9 @@ pub fn prepare(memory: &Memory, cpus: &[mac_abi::boot::topology::Cpu],
 /// On a controller platform this is the platform's own encoding, not an
 /// address: bit N names hart N in a target list. It is never zero, because zero
 /// means "no hart", and the kernel rejects a zero target as an undeclared route.
-fn signal(hart: u64) -> u64
+/// It is published as a [`SignalTarget`], which has no address conversion, so
+/// this encoding cannot be written to as though it were a cell.
+fn signal(hart: u64) -> SignalTarget
 {
-    1u64 << (hart & 31)
+    SignalTarget::new(1u64 << (hart & 31))
 }

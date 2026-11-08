@@ -365,7 +365,19 @@ pub(super) fn initialize() -> Result<(), Error>
     }
     ATTEMPTED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
              .map_err(|_| Error::AlreadyAttempted)?;
-    let peers = topology.len() - 1;
+    // The resident path owns a secondary hart only where it can signal it. A
+    // platform whose route is an interrupt controller cannot be signalled by
+    // this path at all, and cross-hart dispatch is the multi-scheduler
+    // extension's, so the boot admits no peer and schedules on the primary.
+    let active = if monitor::owns_secondary_harts()
+    {
+        topology.len()
+    }
+    else
+    {
+        1
+    };
+    let peers = active.saturating_sub(1);
     // This is real System metadata, not an application's account or a recovery
     // allocation. Reserve every result slot before the first physical release.
     let mut completed = crate::context::without_recovery(|| {
@@ -376,7 +388,7 @@ pub(super) fn initialize() -> Result<(), Error>
                                           Ok(owners)
                                       })
     })?;
-    for (ordinal, cpu) in topology.iter().enumerate()
+    for (ordinal, cpu) in topology.iter().enumerate().take(active)
     {
         if ordinal == primary
         {

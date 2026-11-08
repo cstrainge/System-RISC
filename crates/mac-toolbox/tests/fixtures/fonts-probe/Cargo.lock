@@ -378,7 +378,6 @@ dependencies = [
 name = "toolbox-fonts-probe"
 version = "0.1.0"
 dependencies = [
- "mac-abi",
  "mac-build",
  "mac-toolbox",
 ]

@@ -220,9 +220,12 @@ impl<'a> PipeReader<'a>
 {
     /// Non-owning readiness source. It grants no endpoint access and becomes
     /// invalid when this endpoint closes or is transferred to another owner.
-    pub fn readiness(&self)->mac_abi::readiness::Source {
-        mac_abi::readiness::Source { kind:mac_abi::readiness::PIPE_READ,id:self.handle,
-            minimum:0,ready:0 }
+    pub fn readiness(&self) -> mac_abi::readiness::Source
+    {
+        mac_abi::readiness::Source { kind:    mac_abi::readiness::PIPE_READ,
+                                     id:      self.handle,
+                                     minimum: 0,
+                                     ready:   0 }
     }
 
     /// Hand this reader's handle to another thread of the same process without
@@ -322,9 +325,12 @@ impl<'a> PipeWriter<'a>
 {
     /// Non-owning readiness source. It grants no endpoint access and becomes
     /// invalid when this endpoint closes or is transferred to another owner.
-    pub fn readiness(&self, minimum: usize)->mac_abi::readiness::Source {
-        mac_abi::readiness::Source { kind:mac_abi::readiness::PIPE_WRITE,id:self.handle,
-            minimum:minimum as u64,ready:0 }
+    pub fn readiness(&self, minimum: usize) -> mac_abi::readiness::Source
+    {
+        mac_abi::readiness::Source { kind:    mac_abi::readiness::PIPE_WRITE,
+                                     id:      self.handle,
+                                     minimum: minimum as u64,
+                                     ready:   0 }
     }
 
     /// Hand this writer's handle to another thread of the same process without

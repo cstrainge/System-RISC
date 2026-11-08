@@ -1116,7 +1116,10 @@ fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
     puts(" regions=");
     puthex(regions.len() as u64);
     puts("\n");
-    puts("BOOT_AARCH64_ENTERING: System at EL1\n");
+    puts(mac_bootloader::report::ENTERING_SYSTEM);
+    puts(" at ");
+    puthex(loaded.entry);
+    puts(" privilege=EL1\n");
     // The image must not inherit a return address from here. `br` does not set
     // LR, so whatever the last `bl` in this bootstrap left in it survives into
     // System - a bootrom address that the kernel space does not map for

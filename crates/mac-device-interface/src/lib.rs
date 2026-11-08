@@ -23,6 +23,10 @@ pub const MAPPING_BYTES: usize = 24;
 pub const COHERENT_DMA: u32 = 1;
 pub const MMIO: u32 = 2;
 pub const RESIDENT_OWNED: u32 = 4;
+/// The encoded description states an interrupt. When clear, the interrupt word
+/// is zero padding and the device raises none the bus will route: a driver that
+/// needs an interrupt refuses the device instead of vectoring that zero.
+pub const INTERRUPT_STATED: u32 = 8;
 
 /// The magic word a virtio-MMIO transport states first.
 pub const VIRTIO_MAGIC: u32 = 0x7472_6976;
@@ -71,7 +75,12 @@ pub struct Description
     pub key:            [u8; 16],
     pub registers:      u64,
     pub register_bytes: u64,
-    pub interrupt:      u32,
+    /// The interrupt the machine states for this device, or `None` when the
+    /// machine states none. Absence is a fact and is not encoded as a number:
+    /// the wire carries `INTERRUPT_STATED`, and `decode` refuses a word that
+    /// disagrees with it, so a device with no interrupt is never reported as
+    /// interrupt 0 and interrupt 0 stays representable.
+    pub interrupt:      Option<u32>,
     pub flags:          u32
 }
 impl Description
@@ -84,8 +93,13 @@ impl Description
         out[12..28].copy_from_slice(&self.key);
         out[28..36].copy_from_slice(&self.registers.to_le_bytes());
         out[36..44].copy_from_slice(&self.register_bytes.to_le_bytes());
-        out[44..48].copy_from_slice(&self.interrupt.to_le_bytes());
-        out[48..52].copy_from_slice(&self.flags.to_le_bytes());
+        out[44..48].copy_from_slice(&self.interrupt.unwrap_or(0).to_le_bytes());
+        let flags = match self.interrupt
+        {
+            Some(_) => self.flags | INTERRUPT_STATED,
+            None => self.flags
+        };
+        out[48..52].copy_from_slice(&flags.to_le_bytes());
         out
     }
 
@@ -95,14 +109,31 @@ impl Description
         {
             return None;
         }
+        let stated = u32::from_le_bytes(bytes[48..52].try_into().ok()?);
+        let word = u32::from_le_bytes(bytes[44..48].try_into().ok()?);
+        // A word without the flag is not a number the sender withheld, it is an
+        // encoding that disagrees with itself. An interrupt 0 is stated, so it
+        // still needs the flag.
+        let interrupt = if stated & INTERRUPT_STATED != 0
+        {
+            Some(word)
+        }
+        else if word == 0
+        {
+            None
+        }
+        else
+        {
+            return None;
+        };
         let description =
             Self { handle:         u64::from_le_bytes(bytes[..8].try_into().ok()?),
                    bus:            ClassId(bytes[8..12].try_into().ok()?),
                    key:            bytes[12..28].try_into().ok()?,
                    registers:      u64::from_le_bytes(bytes[28..36].try_into().ok()?),
                    register_bytes: u64::from_le_bytes(bytes[36..44].try_into().ok()?),
-                   interrupt:      u32::from_le_bytes(bytes[44..48].try_into().ok()?),
-                   flags:          u32::from_le_bytes(bytes[48..52].try_into().ok()?) };
+                   interrupt,
+                   flags:          stated & !INTERRUPT_STATED };
         if (description.handle != 0 && description.handle <= u32::MAX as u64)
            || !description.bus.0.iter().all(u8::is_ascii_graphic)
            || description.register_bytes == 0

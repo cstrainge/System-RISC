@@ -687,46 +687,56 @@ impl Definition
                                                                          .into()));
             }
         }
-        if let Some(display) = &self.display
+        // A record with an `emulation` section describes an emulated machine,
+        // and an emulated machine states what its display is. Only a record
+        // without that section — a board — declares that it has no emulated
+        // display, and that absence is a fact the boot flag reads as headless.
+        // A missing key inside a present section is a typo, so it is refused
+        // here rather than becoming a silent headless boot.
+        let Some(display) = &self.display
+        else
         {
-            match (display.kind, &display.transport)
+            return Err(reject("display",
+                              "must be stated: a record with an emulation section describes an \
+                               emulated machine, and only a record without that section \
+                               declares no emulated display"
+                             .into()));
+        };
+        match (display.kind, &display.transport)
+        {
+            (DisplayKind::VirtioGpu, Some(_)) =>
+            {}
+            (DisplayKind::VirtioGpu, None) =>
             {
-                (DisplayKind::VirtioGpu, Some(_)) =>
-                {}
-                (DisplayKind::VirtioGpu, None) =>
-                {
-                    return Err(reject("display.transport",
-                                      "must name the bus a virtio-gpu display sits on".into()));
-                }
-                (DisplayKind::VideoCoreMailbox, None) =>
-                {}
-                (DisplayKind::VideoCoreMailbox, Some(_)) =>
-                {
-                    return Err(reject("display.transport",
-                                      "must be omitted for a display integrated into the SoC"
-                                                                                 .into()));
-                }
+                return Err(reject("display.transport",
+                                  "must name the bus a virtio-gpu display sits on".into()));
             }
-            match (display.kind, display.framebuffer)
+            (DisplayKind::VideoCoreMailbox, None) =>
+            {}
+            (DisplayKind::VideoCoreMailbox, Some(_)) =>
             {
-                (DisplayKind::VideoCoreMailbox, Framebuffer::VideoCoreMailbox) =>
-                {}
-                (DisplayKind::VideoCoreMailbox, other) =>
-                {
-                    return Err(reject("display.framebuffer",
-                                      format!("a VideoCore mailbox display needs framebuffer \
-                                               videocore-mailbox, not {other:?}")));
-                }
-                (DisplayKind::VirtioGpu, Framebuffer::VideoCoreMailbox) =>
-                {
-                    return Err(reject("display.framebuffer",
-                                      "a virtio-gpu display cannot use the SoC mailbox \
-                                       framebuffer"
-                                                   .into()));
-                }
-                _ =>
-                {}
+                return Err(reject("display.transport",
+                                  "must be omitted for a display integrated into the SoC".into()));
             }
+        }
+        match (display.kind, display.framebuffer)
+        {
+            (DisplayKind::VideoCoreMailbox, Framebuffer::VideoCoreMailbox) =>
+            {}
+            (DisplayKind::VideoCoreMailbox, other) =>
+            {
+                return Err(reject("display.framebuffer",
+                                  format!("a VideoCore mailbox display needs framebuffer \
+                                           videocore-mailbox, not {other:?}")));
+            }
+            (DisplayKind::VirtioGpu, Framebuffer::VideoCoreMailbox) =>
+            {
+                return Err(reject("display.framebuffer",
+                                  "a virtio-gpu display cannot use the SoC mailbox framebuffer"
+                                                               .into()));
+            }
+            _ =>
+            {}
         }
         if let Some(entropy) = &self.entropy
         {
@@ -824,5 +834,29 @@ impl Definition
     pub fn disk_capacity(&self) -> usize
     {
         self.disks.as_ref().map(Disks::capacity).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+    /// A record with an `emulation` section describes an emulated machine, so a
+    /// missing `display` inside it is a typo and must be refused where the
+    /// record is read. Only a record with no `emulation` section at all states
+    /// that it has no emulated display, and that absence stays a headless boot.
+    #[test]
+    fn emulation_without_a_display_is_refused_by_name()
+    {
+        let record = super::super::record("qemu_arm64").unwrap();
+        let valid: Definition = serde_json::from_value(record["emulation"].clone()).unwrap();
+        valid.check("qemu_arm64").unwrap();
+        let mut malformed = record["emulation"].clone();
+        malformed.as_object_mut().unwrap().remove("display");
+        let malformed: Definition = serde_json::from_value(malformed).unwrap();
+        let error = malformed.check("qemu_arm64").unwrap_err().to_string();
+        assert!(error.contains("platform 'qemu_arm64' emulation.display"), "{error}");
+        assert!(error.contains("only a record without that section"), "{error}");
     }
 }

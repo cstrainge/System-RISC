@@ -527,7 +527,8 @@ pub(crate) fn file_operation_kinds() -> Result<(KindLease, KindLease), mac_abi::
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }
 
-pub(crate) fn timer_kinds()->Result<(KindLease,KindLease),mac_abi::Status>{
- registry(|r|Ok((r.get(KindCode(*b"TMTK"))?,r.get(KindCode(*b"TMST"))?)))
+pub(crate) fn timer_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|r|Ok((r.get(KindCode(*b"TMTK"))?,r.get(KindCode(*b"TMST"))?)))
  .map_err(|e|e.status())?.map_err(|e|registry_status(&e))
 }

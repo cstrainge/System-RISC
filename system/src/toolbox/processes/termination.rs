@@ -164,7 +164,7 @@ pub(crate) fn queue_user_fault(fault: &scheduler::UserFault) -> Result<(), Statu
         crate::toolbox::native_threads::runtime_admission(&tls, owner).map_err(|cause| {
                                                                           cause.status()
                                                                       })?;
-    let outcome = Outcome::Abort(128 + fault.snapshot().cause.min(127) as i32);
+    let outcome = Outcome::Abort(fault.snapshot().abort_code());
     let first = crate::kernel::with_toolbox(|toolbox| {
                     toolbox.processes.queue_native_failure(owner,
                                                            fault.image(),

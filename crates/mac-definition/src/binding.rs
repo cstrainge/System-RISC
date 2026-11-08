@@ -340,3 +340,4 @@ adapter!(scrollbar_entry, ScrollbarFamily, crate::Scrollbar);
 adapter!(table_entry, TableFamily, crate::Table);
 
 adapter!(splitter_entry, SplitterFamily, crate::Splitter);
+adapter!(separator_entry, SeparatorFamily, crate::Separator);

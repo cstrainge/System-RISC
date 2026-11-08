@@ -39,7 +39,21 @@ pub unsafe extern "C" fn invoke(number: u32, request: *mut (), size: usize) -> i
         }
         result as i64
     }
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        // The AArch64 call convention: the number in `x8`, the request in `x0`
+        // and its length in `x1`, with the result returned in `x0`. The
+        // instruction is emitted here rather than called through a System
+        // symbol, because an application or definition is linked as its own
+        // module and resolves no resident code address.
+        let mut result = request.addr();
+        unsafe {
+            core::arch::asm!("svc #0", in("x8") u64::from(number), inlateout("x0") result,
+                             in("x1") size, clobber_abi("C"));
+        }
+        result as i64
+    }
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
     {
         let _ = (number, request, size);
         NOT_SUPPORTED as i64

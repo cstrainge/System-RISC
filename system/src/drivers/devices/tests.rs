@@ -33,7 +33,7 @@ const DEVICE: Description = Description { handle:         0,
                                           key:            [3; 16],
                                           registers:      0x1000,
                                           register_bytes: 4096,
-                                          interrupt:      4,
+                                          interrupt:      Some(4),
                                           flags:          mac_device_interface::COHERENT_DMA
                                                           | mac_device_interface::MMIO };
 impl Bus for TestBus

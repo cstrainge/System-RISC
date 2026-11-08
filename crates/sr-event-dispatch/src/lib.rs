@@ -86,6 +86,12 @@ impl<T: 'static, E: 'static, R: Runtime, F: FnMut(&mut T, E) -> LocalFuture + 's
                                            (me.handler.borrow_mut())(&mut target, event)
                                        };
                                        operation.await;
+                                       // Fairness is needed only when another delivery is queued.
+                                       // A completed empty mailbox must not wake an idle runtime.
+                                       if me.queue.borrow().is_empty()
+                                       {
+                                           break;
+                                       }
                                        YieldOnce(false).await;
                                    }
                                }))

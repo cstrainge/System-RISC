@@ -46,3 +46,12 @@ pub const NO_SYSTEM_PREFIX: &str = "BOOT_NO_SYSTEM: ";
 /// Not a per-machine judgement: the answer is the same whichever medium carried
 /// it, which is why it is stated once here rather than phrased per bootloader.
 pub const NOT_NATIVE_VOLUME: &str = "native boot requires HFS-B; recreate System disk";
+
+/// The bootstrap is about to branch into the loaded native System.
+///
+/// Also not a per-machine judgement: whether control reached the kernel is the
+/// same fact on every board, and a gate that looked for one board's spelling
+/// would report a boot that reached the desktop as a ROM failure. Each
+/// bootstrap appends its own entry address and privilege wording after this
+/// prefix.
+pub const ENTERING_SYSTEM: &str = "BOOT: entering System";

@@ -142,27 +142,110 @@ impl SecondaryStart
 /// Legacy CLINT MSIP register bank ends before MTIMECMP.
 pub const MSIP_BYTES: u64 = 0x4000;
 
+/// A platform-encoded inter-processor signalling target, exactly as the loader
+/// publishes it in a control block and in an entry.
+///
+/// What the number means is stated once, by [`Directory::signalling`]: on a cell
+/// platform it is the address of that hart's 32-bit `msip` cell, and on a
+/// controller platform it is a target mask the controller decodes. This type
+/// exists so that the two meanings cannot be substituted for one another. It is
+/// deliberately not an integer — there is no conversion to an address — so a
+/// target can only be used after [`Signalling::route`] has interpreted it
+/// against the kind the platform declared. On a controller platform that
+/// interpretation yields a [`ControllerTarget`], which names no address at all.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SignalTarget(u64);
+impl SignalTarget
+{
+    pub const fn new(raw: u64) -> Self
+    {
+        Self(raw)
+    }
+
+    /// The raw record value, for the loader's own bounds and identity checks.
+    /// This is not a route and must not be turned into an address.
+    pub const fn wire(self) -> u64
+    {
+        self.0
+    }
+}
+
+/// The address of one hart's 32-bit cell in a memory-mapped signalling bank.
+/// Only [`Signalling::Cells`] produces one, so holding it is evidence that the
+/// platform's declared kind is a cell bank.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CellAddress(u64);
+impl CellAddress
+{
+    /// The cell's address. Writing 1 posts the interrupt; writing 0 clears it.
+    pub const fn address(self) -> u64
+    {
+        self.0
+    }
+}
+
+/// A controller target mask. It deliberately has no address conversion: the
+/// controller is programmed through its own window, and a kernel with no
+/// controller delivery path has nothing to program it with. The mask is carried
+/// only so a refusal can name the value that must not be written to memory.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ControllerTarget(u64);
+impl ControllerTarget
+{
+    /// The target mask, for diagnostics. Not an address.
+    pub const fn mask(self) -> u64
+    {
+        self.0
+    }
+}
+
+/// One entry's signalling target, interpreted against the kind the platform
+/// declared.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Routed
+{
+    Cell(CellAddress),
+    Controller(ControllerTarget)
+}
+
 /// How a platform delivers an inter-processor interrupt.
 ///
 /// The kernel does not choose this and must not assume it: a platform whose
 /// signalling is a bank of memory-mapped per-hart cells and one whose signalling
 /// is a shared interrupt controller differ in both the encoding of an entry's
-/// `signal` and in what can honestly be checked about it. The loader states
-/// which it is, and the kernel validates against that statement.
+/// target and in what can honestly be checked about it. The loader states which
+/// it is, and the kernel validates against that statement.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub enum Signalling
 {
     /// A memory-mapped bank of 32-bit per-hart cells, four bytes apart, starting
-    /// at the window's base. An entry's `signal` is the address of that hart's
-    /// own cell, so it can be checked for containment, alignment and uniqueness.
+    /// at the window's base. An entry's target is the address of that hart's own
+    /// cell, so it can be checked for containment, alignment and uniqueness.
     Cells(BootMemoryRange),
     /// A shared controller the monitor programs directly, whose target
     /// selection is part of the value written rather than the address written
-    /// to. An entry's `signal` is a target encoding this platform defines, so
-    /// its numeric value cannot be checked; only the window it belongs to, and
-    /// that the harts do not alias each other.
+    /// to. An entry's target is an encoding this platform defines, so its
+    /// numeric value cannot be checked; only the window it belongs to, and that
+    /// the harts do not alias each other.
     Controller(BootMemoryRange)
+}
+impl Signalling
+{
+    /// Interprets one published target as the kind this platform declares. This
+    /// is the only way to obtain a value that can name a cell, and a controller
+    /// target never becomes one.
+    pub const fn route(self, target: SignalTarget) -> Routed
+    {
+        match self
+        {
+            Self::Cells(_) => Routed::Cell(CellAddress(target.wire())),
+            Self::Controller(_) => Routed::Controller(ControllerTarget(target.wire()))
+        }
+    }
 }
 #[repr(C, align(16))]
 pub struct Frame
@@ -177,10 +260,10 @@ pub struct Control
     pub hart:              u64,
     /// This hart's inter-processor signalling target, encoded by the platform.
     /// RISC-V publishes the address of its CLINT `msip` cell; a platform whose
-    /// interrupt controller takes a target number publishes that instead. The
-    /// monitor writes whatever its own platform requires, so nothing that is
-    /// not implementing signalling for that platform may interpret it.
-    pub signal:            u64,
+    /// interrupt controller takes a target number publishes that instead.
+    /// [`SignalTarget`] carries the value without committing to either meaning,
+    /// and only [`Signalling::route`] can turn it into something writable.
+    pub signal:            SignalTarget,
     pub requested:         AtomicU64,
     pub acknowledged:      AtomicU64,
     pub stop:              AtomicU64,
@@ -198,7 +281,7 @@ pub struct Control
 }
 impl Control
 {
-    pub const fn new(hart: u64, signal: u64) -> Self
+    pub const fn new(hart: u64, signal: SignalTarget) -> Self
     {
         Self { hart,
                signal,
@@ -231,7 +314,7 @@ pub struct Entry
     /// The same platform-encoded target the hart's control block carries. The
     /// loader publishes it so the kernel can check that what it was told and
     /// what the monitor will use are the same value.
-    pub signal:  u64,
+    pub signal:  SignalTarget,
     pub storage: BootMemoryRange
 }
 #[repr(C)]
@@ -380,17 +463,21 @@ impl Directory
             }
             if let Some((base, end)) = route
             {
-                if entry.signal < base
-                   || entry.signal.checked_add(4).is_none_or(|cell| cell > end)
-                   || !entry.signal.is_multiple_of(4)
+                let cell = entry.signal.wire();
+                if cell < base
+                   || cell.checked_add(4).is_none_or(|cell| cell > end)
+                   || !cell.is_multiple_of(4)
                 {
                     return Err(Error::Route { hart: entry.hart });
                 }
             }
-            else if entry.signal == 0
+            else if entry.signal.wire() == 0
             {
                 // A controller platform encodes its target itself, so the only
-                // thing that can be said about the value is that it was stated.
+                // thing that can be said about the value here is that it was
+                // stated. Whether this kernel can deliver it at all is a
+                // separate question, answered where the active-hart count is
+                // known.
                 return Err(Error::Route { hart: entry.hart });
             }
             for other in &entries[..index]

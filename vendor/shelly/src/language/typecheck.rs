@@ -680,19 +680,20 @@ fn spaced_call_receiver(expression: &mut AstExpression) -> Option<&mut AstExpres
 }
 
 
-fn check_call(
-    registry: &mut TypeRegistry,
-    call: &mut AstExecuteStatement,
-    names: &Names,
-) -> CompileResult<()>
+fn check_call(registry: &mut TypeRegistry, call: &mut AstExecuteStatement, names: &Names)
+              -> CompileResult<()>
 {
     if let Some(none) = split_spaced_call(&mut call.executable, names)
     { call.arguments.insert(0, none); }
     // Most calls need no argument expansion. Keep their existing storage;
     // rebuild only after the first actual spaced-empty-call split, then finish
     // the remaining arguments in one pass (including any further splits).
-    let split = call.arguments.iter_mut().enumerate().find_map(|(index, argument)|
-        split_spaced_call(argument, names).map(|none| (index, none)));
+    let split =
+        call.arguments.iter_mut().enumerate().find_map(|(index, argument)| {
+                                                 split_spaced_call(argument, names).map(|none| {
+                                                                                       (index, none)
+                                                                                   })
+                                             });
     if let Some((index, none)) = split
     {
         let arguments = take(&mut call.arguments);
@@ -704,7 +705,10 @@ fn check_call(
         {
             let none = split_spaced_call(&mut argument, names);
             call.arguments.push(argument);
-            if let Some(none) = none { call.arguments.push(none); }
+            if let Some(none) = none
+            {
+                call.arguments.push(none);
+            }
         }
     }
     // Command words retain their shell meaning, including names of types.
@@ -734,7 +738,10 @@ fn check_call(
             "Cannot execute a struct as a command".to_string(),
         ));
     }
-    if call.arguments.is_empty() { return Ok(()); }
+    if call.arguments.is_empty()
+    {
+        return Ok(());
+    }
     let type_id = registry.builtin_id("Type");
     let callable = match &call.executable.kind
     {
@@ -743,29 +750,41 @@ fn check_call(
             Some(Cow::Owned(format!("{}::{}", owner, member))),
         _ => None,
     };
-    let parameters = callable.as_ref()
-        .and_then(|name| registry.argument_signatures.get(name.as_ref()));
+    let parameters =
+        callable.as_ref().and_then(|name| registry.argument_signatures.get(name.as_ref()));
     // Argument checking may change the staged registry. Snapshot only the
     // Type-position decisions it consumes, not every matching signature.
-    let mut type_parameters: Vec<bool> = (0..call.arguments.len()).map(|index|
-        parameters.and_then(|parameters| parameters.get(index)).copied().flatten()
-            == type_id).collect();
+    let mut type_parameters: Vec<bool> = (0..call.arguments.len()).map(|index| {
+                                             parameters.and_then(|parameters| parameters.get(index))
+                                                       .copied()
+                                                       .flatten()
+                                             == type_id
+                                         })
+                                         .collect();
     if let AstExpressionKind::Field(_, name, _) = &call.executable.kind
     {
-        let mut candidates = registry.argument_signatures.iter().filter(|(key, _)|
-            key.starts_with("\0method:")
-                && key.strip_suffix(name.as_str()).is_some_and(|prefix| prefix.ends_with(':')));
+        let mut candidates = registry.argument_signatures.iter().filter(|(key, _)| {
+                                                                    key.starts_with("\0method:")
+                && key.strip_suffix(name.as_str()).is_some_and(|prefix| prefix.ends_with(':'))
+                                                                });
         if let Some((_, first)) = candidates.next()
         {
-            let mut all_type: Vec<bool> = (0..call.arguments.len()).map(|index|
-                first.get(index + 1).copied().flatten() == type_id).collect();
+            let mut all_type: Vec<bool> =
+                (0..call.arguments.len()).map(|index| {
+                                             first.get(index + 1).copied().flatten() == type_id
+                                         })
+                                         .collect();
             for (_, parameters) in candidates
             {
                 for (index, is_type) in all_type.iter_mut().enumerate()
-                { *is_type &= parameters.get(index + 1).copied().flatten() == type_id; }
+                {
+                    *is_type &= parameters.get(index + 1).copied().flatten() == type_id;
+                }
             }
             for (is_type, all_type) in type_parameters.iter_mut().zip(all_type)
-            { *is_type |= all_type; }
+            {
+                *is_type |= all_type;
+            }
         }
     }
     for (type_parameter, argument) in type_parameters.into_iter().zip(&mut call.arguments)

@@ -1,8 +1,10 @@
 //! The only native trap entry: register/CSR preservation and checked ABI dispatch.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use mac_abi::{traps::*, *};
 
-use crate::toolbox;
+use crate::{machine::trap_frame as abi, toolbox};
 mod state;
 mod definition_services;
 pub(crate) mod user;
@@ -21,31 +23,48 @@ unsafe extern "C" {
 }
 pub(crate) use __system_trap_gateway as gateway;
 #[repr(C, align(16))]
-#[derive(Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct TrapFrame
 {
-    pub registers:       [usize; 30],
-    pub pc:              usize,
-    pub status:          usize,
-    pub(crate) cause:    usize,
-    pub(crate) value:    usize,
-    pub(crate) floating: [u64; 32],
-    pub(crate) fcsr:     usize,
-    pub(crate) vl:       usize,
-    pub(crate) vtype:    usize,
-    pub(crate) vstart:   usize,
-    pub(crate) vcsr:     usize,
-    pub stack_pointer:   usize,
-    pub prior_depth:     usize
+    pub registers:             [usize; 30],
+    pub pc:                    usize,
+    pub status:                usize,
+    pub(crate) cause:          usize,
+    pub(crate) value:          usize,
+    pub(crate) floating:       [u64; 32],
+    pub(crate) fcsr:           usize,
+    pub(crate) vl:             usize,
+    pub(crate) vtype:          usize,
+    pub(crate) vstart:         usize,
+    pub(crate) vcsr:           usize,
+    pub stack_pointer:         usize,
+    pub prior_depth:           usize,
+    /// Software thread pointer of the interrupted context. RISC-V holds it in
+    /// `tp`, which is `registers[2]` and needs no field of its own; AArch64
+    /// holds it in TPIDR_EL0, a system register that the shared 30-slot
+    /// register file cannot represent. Only the AArch64 entry writes this.
+    pub(crate) thread_pointer: usize,
+    /// Return link of the interrupted context. RISC-V holds it in `ra`, which
+    /// is `registers[0]`; AArch64 holds it in `x30`, which the 30-slot file
+    /// stops short of. Only the AArch64 entry writes this.
+    pub(crate) link_register:  usize,
+    /// Which of the architecture's exception kinds this frame was entered
+    /// through, in the architecture's own encoding.
+    ///
+    /// AArch64 needs it: an IRQ, FIQ or SError writes no `ESR_EL1`, so the
+    /// recorded cause alone cannot say whether the word in it belongs to this
+    /// exception. Without this field a stale exception class from the last
+    /// `svc` would make an interrupt look like a service call. RISC-V's
+    /// `scause` states the kind in the cause word itself, so its entry leaves
+    /// this zero and nothing reads it.
+    pub(crate) exception:      usize
 }
 // Integer offsets remain the assembly gate contract. The extended offsets and
 // fixed frame size are generated above from this one Rust representation.
 const _: () = assert!(core::mem::offset_of!(TrapFrame, pc) == 240
                       && core::mem::offset_of!(TrapFrame, status) == 248);
-pub(crate) const INITIAL_STATUS: usize = 0x120 | 0x6600;
-// FS/VS and SPIE are enabled, while SPP/SUM/MXR remain clear. User frames
-// may only be published after their own executable and stack maps exist.
-pub(crate) const USER_STATUS: usize = (INITIAL_STATUS & !(1 << 8)) & !((1 << 18) | (1 << 19));
+// The frame status words are the architecture's own; see `trap_frame`.
+
 /// Validate the selected sizes against this CPU before allocating pools or
 /// starting services. This is policy admission, not System-stack activation.
 pub(crate) fn validate_stack_configuration(
@@ -263,24 +282,73 @@ enum Dispatch
     Schedule,
     Wake
 }
+
+/// An interrupt this machine delivered, named in terms the shared dispatcher
+/// acts on rather than in one architecture's cause encoding.
+///
+/// The architecture adapters produce these; nothing above them compares a cause
+/// word to a bit pattern to decide whether a trap was an interrupt. That
+/// comparison was RISC-V's `scause` vocabulary leaking into shared code, and it
+/// had no meaning on a machine whose interrupts carry no cause at all.
+pub(crate) enum Interrupt
+{
+    /// The running context's quantum expired: select again.
+    Preempt,
+    /// Another hart asked this one to look at the scheduler.
+    Wake,
+    /// A source nothing in the resident path enabled. It is completed and
+    /// reported, and it is neither a tick nor a fault.
+    Unhandled
+    {
+        number: u32
+    }
+}
+
+/// Whether an unhandled interrupt has already been reported. A stray source
+/// repeats until it is masked, and a terminal report would turn that into a dead
+/// machine while an unbounded log would bury the boot.
+static UNHANDLED_INTERRUPT_REPORTED: AtomicBool = AtomicBool::new(false);
+
 fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
 {
-    if frame.cause == (1usize << 63) | 1
+    // An interrupt is neither a call nor a fault, and the adapter answers which
+    // it is before any cause is decoded: on a machine whose interrupts write no
+    // cause register, reading the recorded cause as an exception class is how
+    // an interrupt comes to look like a service call.
+    match abi::interrupt(frame)
     {
-        // Clear the local hardware source before any ACK observation. No frame
-        // reference or trace/context guard may survive into that ACK.
-        crate::machine::cpu::clear_software_interrupt();
-        return Dispatch::Wake;
+        Some(Interrupt::Wake) => return Dispatch::Wake,
+        Some(Interrupt::Preempt) =>
+        {
+            #[cfg(feature = "event-trace")]
+            hart::observe_entry(frame as *mut TrapFrame as usize);
+            return Dispatch::Schedule;
+        }
+        Some(Interrupt::Unhandled { number }) =>
+        {
+            // The answer every other kernel gives to an interrupt no handler
+            // owns: say so once, complete it, and carry on. Nothing was armed
+            // for it, so there is no work to lose, and reporting it as a
+            // privileged fault would stop a machine that is otherwise healthy.
+            if !UNHANDLED_INTERRUPT_REPORTED.swap(true, Ordering::Relaxed)
+            {
+                serial!("SYSTEM_INTERRUPT_UNHANDLED: number={} pc=0x{:x}; completed and \
+                         ignored",
+                        number, frame.pc);
+            }
+            return Dispatch::Resume;
+        }
+        None => ()
     }
     #[cfg(feature = "event-trace")]
     hart::observe_entry(frame as *mut TrapFrame as usize);
-    if frame.cause == (1usize << 63) | 5
-    {
-        return Dispatch::Schedule;
-    }
 
-    let user_origin = frame.status & (1 << 8) == 0;
-    if user_origin && frame.cause & (1usize << 63) == 0 && frame.cause != 8
+    let user_origin = abi::from_user(frame);
+    // The cause this architecture reports for a service call. A genuine fault
+    // keeps the value the hardware produced, so a fault is never classified as
+    // a call and a call is never classified as a fault.
+    let cause = abi::cause(frame);
+    if user_origin && cause & (1usize << 63) == 0 && cause != 8
     {
         if frame.prior_depth != 0
         {
@@ -298,7 +366,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             }
         }
     }
-    if !matches!((user_origin, frame.cause), (true, 8) | (false, 9))
+    if !matches!((user_origin, cause), (true, 8) | (false, 9))
     {
         crate::machine::emergency::serial(format_args!("SYSTEM_TRAP: cause={} pc=0x{:x} \
                                                         value=0x{:x}",
@@ -312,22 +380,22 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                                                        safely continue.",
                                                       frame.cause, frame.pc, frame.value));
     }
-    let number = frame.registers[15] as u32;
+    let number = abi::number(frame);
     if user_origin
        && (frame.prior_depth != 0
            || number == mac_module::abi::worker::TRAP
            || number == crate::machine::scheduler::service::host::TRAP)
     {
-        frame.registers[8] = ACCESS_DENIED as usize;
-        frame.pc = frame.pc.wrapping_add(4);
+        abi::set_result(frame, ACCESS_DENIED as usize);
+        abi::advance(frame);
         return Dispatch::Resume;
     }
     if execution::policy::deny(execution::policy::Operation::Service)
     {
         // Refuse before a request pointer or an executor-owned trap scope is
         // borrowed. A policy may neither park nor enter ordinary services.
-        frame.registers[8] = ACCESS_DENIED as usize;
-        frame.pc = frame.pc.wrapping_add(4);
+        abi::set_result(frame, ACCESS_DENIED as usize);
+        abi::advance(frame);
         return Dispatch::Resume;
     }
     if number == mac_module::abi::worker::TRAP
@@ -350,8 +418,8 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         Ok(crate::machine::scheduler::service::Entry::Migrate) => return Dispatch::Schedule,
         Err(status) =>
         {
-            frame.registers[8] = status as isize as usize;
-            frame.pc = frame.pc.wrapping_add(4);
+            abi::set_result(frame, status as isize as usize);
+            abi::advance(frame);
             return Dispatch::Resume;
         }
     };
@@ -380,9 +448,9 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         finish_service(frame, completion, SERVICE_BUSY as i64);
         return Dispatch::Resume;
     }
-    let number = frame.registers[15] as u32;
-    let user_pointer = frame.registers[8] as *mut ();
-    let user_size = frame.registers[9];
+    let number = abi::number(frame);
+    let user_pointer = abi::argument(frame);
+    let user_size = abi::bytes(frame);
     let identity = crate::machine::scheduler::service::request_identity(frame);
     let mut user_call = if user_origin
     {
@@ -556,7 +624,11 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         retain_user_call(user_call.take());
         match crate::machine::scheduler::wait_io(job)
         {
-            Ok(true) => return Dispatch::Schedule,
+            Ok(true) =>
+            {
+                abi::rewind(frame);
+                return Dispatch::Schedule;
+            }
             Ok(false) => return Dispatch::Resume, // completion won the race; replay now
             Err(error) =>
             {
@@ -589,7 +661,9 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         retain_user_call(user_call.take());
         // Every Call/executor/manager borrow has ended. The original PC and
-        // request identity remain owned by this same canonical continuation.
+        // request identity remain owned by this same canonical continuation,
+        // and the woken thread executes that call instruction again.
+        abi::rewind(frame);
         return Dispatch::Schedule;
     }
     let result = if action == crate::machine::scheduler::service::RequestAction::Exit
@@ -609,7 +683,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     // to the user. Never inspect request memory for a report.
     if user_origin
        && action == crate::machine::scheduler::service::RequestAction::Return
-       && frame.registers[8] as isize == SERVICE_BUSY as isize
+       && abi::result(frame) as isize == SERVICE_BUSY as isize
        && !thread.traps.terminal_busy_reported()
     {
         let identity = thread.identity();
@@ -665,11 +739,11 @@ fn retain_user_call(call: Option<user::Call>)
 fn finish_service(frame: &mut TrapFrame,
                   completion: Option<crate::machine::scheduler::service::Completion>, result: i64)
 {
-    frame.registers[8] = result as usize;
-    frame.pc = frame.pc.wrapping_add(4);
+    abi::set_result(frame, result as usize);
+    abi::advance(frame);
     if let Err(status) = crate::machine::scheduler::service::complete(completion)
     {
-        frame.registers[8] = status as isize as usize;
+        abi::set_result(frame, status as isize as usize);
     }
 }
 
@@ -680,7 +754,7 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
     use mac_module::abi::{WorkerCall, worker};
     let operation = || -> Result<bool, Status> {
         if frame.prior_depth != 0
-           || frame.status & (1 << 5) == 0
+           || !crate::machine::trap_frame::interrupts_were_enabled(frame)
            || crate::context::critical_active()
         {
             return Err(WRONG_THREAD);
@@ -696,7 +770,7 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
             return Err(WRONG_THREAD);
         }
         let call = unsafe {
-                       request::<WorkerCall>(frame.registers[8] as *mut (), frame.registers[9])
+                       request::<WorkerCall>(abi::argument(frame), abi::bytes(frame))
                    }.ok_or(BAD_ARGUMENT)?;
         if !call.header.valid::<WorkerCall>()
            || call.flags != 0
@@ -743,8 +817,8 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
         }
     };
     let result = operation();
-    frame.pc = frame.pc.wrapping_add(4);
-    frame.registers[8] = result.as_ref().map_or_else(|e| *e, |_| OK) as usize;
+    abi::advance(frame);
+    abi::set_result(frame, result.as_ref().map_or_else(|e| *e, |_| OK) as usize);
     if matches!(result, Ok(true)) { Dispatch::Schedule } else { Dispatch::Resume }
 }
 
@@ -1546,7 +1620,7 @@ pub(crate) fn worker_resume_status(state: &SavedState, status: Status)
     // its execution claim is absent or backed by this hart's complete outer
     // capture. The mutable dispatch borrow has ended; no restore is concurrent.
     unsafe {
-        (*state.frame()).registers[8] = status as usize;
+        abi::set_result(&mut *state.frame(), status as usize);
     }
 }
 pub(crate) fn publish_cpu(state: &SavedState)

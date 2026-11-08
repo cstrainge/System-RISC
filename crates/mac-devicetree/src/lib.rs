@@ -234,6 +234,19 @@ impl Node<'_>
     {
         matches!(self.status, None | Some("okay") | Some("ok"))
     }
+
+    /// Whether this node's `compatible` list names `compatible`.
+    ///
+    /// Any entry matches, not only the most specific one, because a machine's
+    /// tree uses the standard vocabulary (`arm,pl011` rather than a record's
+    /// `pl011`) and a consumer that matched only the first entry would read a
+    /// different answer from the same tree. This is the same predicate the
+    /// class walks use, so a consumer filtering for itself selects what they
+    /// select.
+    pub fn names(&self, compatible: &str) -> bool
+    {
+        names(self, compatible)
+    }
 }
 
 pub struct Tree<'a>

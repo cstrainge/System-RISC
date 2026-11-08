@@ -313,6 +313,16 @@
       }
     },
     {
+      "type": "CDEF",
+      "id": 29,
+      "symbol": "CDEF_SEPARATOR",
+      "name": "Separator",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_SEPARATOR"
+      }
+    },
+    {
       "type": "FOND",
       "id": 0,
       "symbol": "FONT_BUNDLE_FOND_0",

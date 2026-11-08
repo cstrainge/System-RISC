@@ -449,16 +449,16 @@ impl Destination for Payload
             // These are the same preflighted segments that allocated the
             // unpublished backing. Keep this checked at the write boundary;
             // a different plan must never leave readable bytes uninitialized.
-            if segment.offset != planned.offset || segment.memory != planned.memory_length
+            if segment.offset != planned.offset
+               || segment.memory != planned.memory_length
                || planned.length as u64 > segment.memory
                || segment.memory > segment.backing.bytes()
             {
                 return Err(Error::State);
             }
             let bytes = usize::try_from(segment.backing.bytes()).map_err(|_| Error::State)?;
-            let address = segment.backing.cpu_base()
-                                 .checked_add(planned.length)
-                                 .ok_or(Error::State)?;
+            let address =
+                segment.backing.cpu_base().checked_add(planned.length).ok_or(Error::State)?;
             // SAFETY: actual unpublished exclusive backing. LoadPlan writes
             // the entire file prefix before relocation/publication; clear BSS
             // and all physical padding here, including the unmapped buddy tail.
@@ -1784,9 +1784,21 @@ impl Plan
             // Existing bootstrap branches can cover neighboring System/firmware
             // addresses. Reuse only a real retained table, never overwrite a
             // large leaf or manufacture ownership from an arbitrary PPN.
+            //
+            // `Decoded::Table` is the whole test for "this slot already holds a
+            // table". The encoder decides it from the descriptor's own leaf bit,
+            // which is the only thing that separates a table pointer from a
+            // block at these levels, and retention is established below by the
+            // branch registry or by the space's own table owner. It must not be
+            // qualified by `global`: AArch64 has no global bit on a table
+            // descriptor, so its decoder reports every table as global and a
+            // `global: false` pattern can never match there. Requiring it made
+            // the firmware root refuse every definition publication, because
+            // that root's 1 GiB branch for the firmware heap is a bootstrap
+            // table and the plan could not recognise it as reusable.
             let Decoded::Table { physical,
-                                 global: false,
-                                 ownership } =
+                                 ownership,
+                                 .. } =
                 Entry::decode_raw(observed, key.level + 1).map_err(Error::Encoding)?
             else
             {
@@ -2469,6 +2481,7 @@ pub(super) fn monitor_cause(base: u64, stage: Stage, error: &crate::machine::mon
         | E::WakeOrder { .. }
         | E::Wake(_)
         | E::State { .. }
+        | E::Signalling { .. }
         | E::StopUnacknowledged { .. } => MonitorRefusal::Protocol { status: error.status() }
     };
     CleanupCause::Monitor { base,

@@ -363,7 +363,7 @@ fn run_case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBu
     // `boots` is about the guest OS starting, which is a different fact from the
     // ROM reaching a terminal state: a machine with no disk is expected to say
     // so and stop, and that is a pass, not a boot.
-    let started = log.contains("BOOT: entering System");
+    let started = log.contains(mac_bootloader::report::ENTERING_SYSTEM);
     if expected.iter().any(|marker| !log.contains(marker)) || started != boots
     {
         return Err(error(format!("unexpected ROM result for {name}:\n{log}")));
@@ -459,72 +459,21 @@ fn altered_system(workspace: &Workspace, image: &Path, alteration: &str) -> Resu
     })
 }
 
-/// Replace Finder with the pipe transport probe on a clone of the built image.
-/// The probe is built through the public SDK here so the gate cannot pass on a
-/// stale artifact.
-/// Package a probe fixture over a clone of the boot volume, so the System runs
-/// it in place of Finder.
+/// Build one probe fixture through the platform's private SDK, package it, and
+/// install it as Finder on a clone of the boot volume so the System runs it at
+/// boot.
+///
+/// The probe is a separate workspace, so it is built by manifest rather than by
+/// package, but it is the same kind of image the platform installs: the same
+/// target specification, sysroot and code-generation flags. Building it through
+/// the SDK here is also what keeps the gate from passing on a stale artifact.
 fn probe_image(workspace: &Workspace, destination: &Path, fixture: &str) -> Result<()>
 {
-    let manifest =
-        workspace.root().join(format!("crates/mac-toolbox/tests/fixtures/{fixture}/Cargo.toml"));
-    let target = workspace.target().join(fixture);
-    let mut build = workspace.cargo();
-    build.args(["build", "--locked", "--release", "--target", &workspace.platform.rust_target,
-                "--target-dir"])
-         .arg(&target)
-         .arg("--manifest-path")
-         .arg(&manifest)
-         .args(["--bin", "Finder"]);
-    mac_build::platform::configure_for(&workspace.platform, &mut build);
-    run_command(&mut build)?;
-    let elf = target.join(&workspace.platform.rust_target).join("release").join("Finder");
+    let directory = workspace.root().join("crates/mac-toolbox/tests/fixtures").join(fixture);
+    let manifest = directory.join("Cargo.toml");
+    let elf = crate::sdk::standalone_application(workspace, &manifest, "Finder")?;
     let packaged = workspace.dist().join(fixture);
-    let mut package = workspace.cargo();
-    package.args(["run", "--locked", "--manifest-path"])
-           .arg(&manifest)
-           .args(["--bin", "package", "--target-dir"])
-           .arg(&target)
-           .arg("--")
-           .arg(&elf)
-           .arg(&packaged);
-    run_command(&mut package)?;
-    let probe = macbinary::decode(&fs::read(packaged.join("Finder.bin"))?)?;
-    clone_raw(&workspace.dist().join("system7.hfsb"), destination)?;
-    disk::edit(destination, |volume| {
-        let folder = volume.blessed_folder()?.id;
-        let old = volume.lookup(folder, "Finder")?;
-        volume.remove(old.id, hfs_b::now()?)?;
-        hfs_b::import_macbinary(volume, folder, &probe)?;
-        Ok(())
-    })
-}
-
-fn pipes_probe_image(workspace: &Workspace, destination: &Path) -> Result<()>
-{
-    let manifest =
-        workspace.root().join("crates/mac-toolbox/tests/fixtures/pipes-probe/Cargo.toml");
-    let target = workspace.target().join("pipes-probe");
-    let mut build = workspace.cargo();
-    build.args(["build", "--locked", "--release", "--target", &workspace.platform.rust_target,
-                "--target-dir"])
-         .arg(&target)
-         .arg("--manifest-path")
-         .arg(&manifest)
-         .args(["--bin", "Finder"]);
-    mac_build::platform::configure_for(&workspace.platform, &mut build);
-    run_command(&mut build)?;
-    let elf = target.join(&workspace.platform.rust_target).join("release").join("Finder");
-    let packaged = workspace.dist().join("pipes-probe");
-    let mut package = workspace.cargo();
-    package.args(["run", "--locked", "--manifest-path"])
-           .arg(&manifest)
-           .args(["--bin", "package", "--target-dir"])
-           .arg(&target)
-           .arg("--")
-           .arg(&elf)
-           .arg(&packaged);
-    run_command(&mut package)?;
+    package::build(&directory.join("resources.json"), &elf, &packaged)?;
     let probe = macbinary::decode(&fs::read(packaged.join("Finder.bin"))?)?;
     clone_raw(&workspace.dist().join("system7.hfsb"), destination)?;
     disk::edit(destination, |volume| {
@@ -662,12 +611,12 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                       "FONTS_PROBE_STYLE plain=", "FONTS_PROBE_STYLE_OK",
                       "FONTS_PROBE_PASS cases=5"],
                     true)?);
-    let probe_image = directory.join("pipes-probe.hfsb");
-    pipes_probe_image(workspace, &probe_image)?;
+    let pipes_image = directory.join("pipes-probe.hfsb");
+    probe_image(workspace, &pipes_image, "pipes-probe")?;
     cases.push(case(workspace,
                     &directory,
                     "pipes-probe",
-                    &[probe_image.clone()],
+                    &[pipes_image.clone()],
                     // The pipe transport and the Pipes folder are one guest
                     // case: the folder markers are the added coverage, not a
                     // separate boot-check case. The folder comes from the built

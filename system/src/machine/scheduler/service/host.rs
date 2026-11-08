@@ -8,7 +8,7 @@ use core::{           mem::{align_of, size_of},
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, OK, Status};
 
 use super::{Route, ServiceLease};
-use crate::machine::traps::TrapFrame;
+use crate::machine::{trap_frame as abi, traps::TrapFrame};
 
 /// Private System-to-System gate, distinct from public Toolbox services and
 /// the module worker MWRK gate. The sole callsite passes an exclusive live
@@ -83,9 +83,9 @@ fn refuse(frame: &mut TrapFrame, status: Status) -> Outcome
 /// provide arbitrary malicious pointer isolation or privileged-fault recovery.
 pub(crate) unsafe fn dispatch(frame: &mut TrapFrame) -> Outcome
 {
-    let output = frame.registers[8] as *mut Option<ServiceLease>;
-    if frame.pc != __system_primary_service_acquire_ecall as *const () as usize
-       || frame.registers[9] != size_of::<Option<ServiceLease>>()
+    let output = abi::argument(frame) as *mut Option<ServiceLease>;
+    if abi::call_site(frame) != __system_primary_service_acquire_ecall as *const () as usize
+       || abi::bytes(frame) != size_of::<Option<ServiceLease>>()
        || output.is_null()
        || !(output as usize).is_multiple_of(align_of::<Option<ServiceLease>>())
     {
@@ -109,7 +109,7 @@ pub(crate) unsafe fn dispatch(frame: &mut TrapFrame) -> Outcome
     // ordinary result/PC commit are the only subsequent operations, neither is
     // fallible or calls foreign code. The output is initially None, never read.
     unsafe { output.write(Some(lease)) };
-    frame.registers[8] = OK as usize;
-    frame.pc = frame.pc.wrapping_add(4);
+    abi::set_result(frame, OK as usize);
+    abi::advance(frame);
     Outcome::Resume
 }

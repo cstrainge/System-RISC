@@ -54,15 +54,24 @@ impl<'a> Events<'a>
 {
     /// Atomically wait for a native UI event, pipe/child readiness, a deadline,
     /// or a durable thread notification. No new classic event kind is used.
-    pub fn wait_readiness(self, sources: &mut [mac_abi::readiness::Source], timeout_ticks:u32)
-      ->Result<PositionedEvent<'a>> {
-        let mut call=mac_abi::readiness::Call {sources:sources.as_mut_ptr(),count:sources.len(),
-          event:raw::PositionedEventCall {operation:raw::POSITION_WAIT,mask:EventMask::ALL.bits(),timeout_ticks,..Default::default()},
-          ..Default::default()};
+    pub fn wait_readiness(self, sources: &mut [mac_abi::readiness::Source], timeout_ticks: u32)
+                          -> Result<PositionedEvent<'a>>
+    {
+        let mut call =
+            mac_abi::readiness::Call { sources: sources.as_mut_ptr(),
+                                       count: sources.len(),
+                                       event: raw::PositionedEventCall { operation:
+                                                                             raw::POSITION_WAIT,
+                                                                         mask:
+                                                                             EventMask::ALL.bits(),
+                                                                         timeout_ticks,
+                                                                         ..Default::default() },
+                                       ..Default::default() };
         self.client.readiness(&mut call)?;
-        if call.event.waited!=0 {
-          call.event.timeout_ticks=0;
-          self.client.readiness(&mut call)?;
+        if call.event.waited != 0
+        {
+            call.event.timeout_ticks = 0;
+            self.client.readiness(&mut call)?;
         }
         Ok(self.decode_positioned(call.event))
     }

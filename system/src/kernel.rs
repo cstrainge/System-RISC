@@ -1565,6 +1565,14 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
         }
     }
     crate::machine::traps::install();
+    // Delivery is brought up before anything can arm a deadline. A timer the
+    // machine has nowhere to deliver is a scheduler that never ticks again, so a
+    // refused controller is a refused boot rather than a silent wait.
+    if let Err(error) = crate::machine::interrupts::admit(info)
+    {
+        serial!("BOOT_INTERRUPTS_REJECTED: {error}");
+        return ptr::null();
+    }
     let files = match unsafe { crate::toolbox::files::BootStorage::from_boot_info(info) }
     {
         Some(storage) =>

@@ -92,37 +92,23 @@ pub(crate) struct DefinitionFault
 }
 
 /// Captured CPU scalars are diagnostic data, never pointers to dereference.
+///
+/// The whole frame is retained rather than a copy of some of its slots: the
+/// architecture that produced it is the one that can say what its registers are
+/// called, and the two values the shared 30-slot file cannot hold — `x30` and
+/// the thread pointer on AArch64 — are frame fields of their own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FaultSnapshot
 {
-    pub(crate) cause:     usize,
-    pub(crate) pc:        usize,
-    pub(crate) address:   usize,
-    pub(crate) stack:     usize,
-    pub(crate) status:    usize,
-    pub(crate) registers: [usize; 30],
-    definition:           Option<DefinitionFault>
+    frame:      super::TrapFrame,
+    definition: Option<DefinitionFault>
 }
 
 impl core::fmt::Display for FaultSnapshot
 {
     fn fmt(&self, output: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
     {
-        let cause = match self.cause
-        {
-            0 => "misaligned instruction address",
-            1 => "instruction access fault",
-            2 => "illegal or privileged instruction",
-            3 => "breakpoint",
-            4 => "misaligned load",
-            5 => "load access fault",
-            6 => "misaligned store",
-            7 => "store access fault",
-            12 => "instruction page fault",
-            13 => "load page fault",
-            15 => "store page fault",
-            _ => "unhandled user exception"
-        };
+        use crate::machine::trap_frame as abi;
         if let Some(definition) = self.definition
         {
             let kind = core::str::from_utf8(&definition.kind).unwrap_or("????");
@@ -146,18 +132,9 @@ impl core::fmt::Display for FaultSnapshot
         }
         else
         {
-            writeln!(output, "User fault: {cause} (cause {}).", self.cause)?;
+            abi::write_exception(output, &self.frame)?;
         }
-        writeln!(output, "PC: {:#018x}  address: {:#018x}", self.pc, self.address)?;
-        writeln!(output, "SP: {:#018x}  status: {:#018x}", self.stack, self.status)?;
-        for (name, value) in ["ra", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2",
-                              "a3", "a4", "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
-                              "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"].into_iter()
-                                                                               .zip(self.registers)
-        {
-            writeln!(output, "{name}: {value:#018x}")?;
-        }
-        Ok(())
+        abi::write_frame(output, &self.frame)
     }
 }
 
@@ -167,12 +144,20 @@ impl FaultSnapshot
     /// code must not classify the human diagnostic text.
     pub(crate) fn is_access_fault(&self) -> bool
     {
-        self.definition.is_none() && matches!(self.cause, 0 | 1 | 4 | 5 | 6 | 7 | 12 | 13 | 15)
+        self.definition.is_none()
+        && crate::machine::trap_frame::is_access_fault(&self.frame)
     }
 
     pub(crate) fn is_definition_panic(&self) -> bool
     {
         self.definition.is_some()
+    }
+
+    /// The termination code this exception stands for, in the architecture's
+    /// own encoding. It is a summary of the frame, never the frame itself.
+    pub(crate) fn abort_code(&self) -> i32
+    {
+        crate::machine::trap_frame::abort_code(&self.frame)
     }
 }
 
@@ -266,7 +251,8 @@ fn capture(frame: &super::TrapFrame, definition: Option<DefinitionFault>) -> Res
     // including one that is already stopping. Ordinary user-memory/service
     // admission remains stricter; rejection there cannot classify this fault
     // as privileged or permit a dying author to kill the System.
-    if frame.prior_depth != 0 || frame.status & (1 << 8) != 0
+    if frame.prior_depth != 0
+       || !crate::machine::trap_frame::from_user(frame)
     {
         return Err(ACCESS_DENIED);
     }
@@ -295,13 +281,7 @@ fn capture(frame: &super::TrapFrame, definition: Option<DefinitionFault>) -> Res
             *pending = Some(Fault { owner:    executor.owner().clone(),
                                     image:    executor.image(),
                                     thread:   crate::context::ThreadId(executor.thread()),
-                                    snapshot: FaultSnapshot { cause: frame.cause,
-                                                              pc: frame.pc,
-                                                              address: frame.value,
-                                                              stack: frame.stack_pointer,
-                                                              status: frame.status,
-                                                              registers: frame.registers,
-                                                              definition } });
+                                    snapshot: FaultSnapshot { frame: *frame, definition } });
         }
         drop(pending);
         for (_, sibling) in scheduler.iter().filter(|(_, sibling)| {
@@ -372,6 +352,18 @@ pub(crate) fn pump_faults()
         {
             continue;
         };
+        // One bounded line per fault, because the report body is only readable
+        // in the guest's own window: without this a fault names no cause, PC or
+        // address in the serial record at all.
+        let snapshot = fault.snapshot();
+        serial!("USER_FAULT_CAPTURED app={} thread={} cause={} pc=0x{:x} address=0x{:x} \
+                 status=0x{:x}",
+                fault.owner().owner().incarnation(),
+                fault.thread().0,
+                snapshot.frame.cause,
+                snapshot.frame.pc,
+                snapshot.frame.value,
+                snapshot.frame.status);
         if let Err(status) = crate::toolbox::processes::termination::queue_user_fault(&fault)
         {
             // The single pump owns this detached value; the faulted author

@@ -84,12 +84,27 @@ address in bits 47:12 plus attributes:
 | --------- | ----- | ------- |
 | `AttrIndx`| 4:2   | index into `MAIR_EL1` |
 | `NS`      | 5     | non-secure |
-| `AP[2:1]` | 7:6   | access permissions |
+| `AP[2:1]` | 7:6   | access permissions — see below |
 | `SH`      | 9:8   | shareability: `0b11` inner shareable |
 | `AF`      | 10    | access flag — **must be set or the first access faults** |
 | `nG`      | 11    | not-global |
 | `PXN`     | 53    | privileged execute-never |
 | `UXN`     | 54    | unprivileged execute-never |
+
+`AP[1]` is bit 6 and is the **unprivileged**-access bit, not a privileged one:
+
+| `AP[2]` | `AP[1]` | EL0 read | EL0 write | EL1 read | EL1 write |
+| ------- | ------- | -------- | --------- | -------- | --------- |
+| 0       | 0       | no       | no        | yes      | yes       |
+| 1       | 0       | no       | no        | yes      | no        |
+| 0       | 1       | yes      | yes       | yes      | yes       |
+| 1       | 1       | yes      | no        | yes      | no        |
+
+So `Access::User` sets `AP[1]` and `Access::Supervisor` clears it; `AP[2]` is the
+read-only bit. The encoder and the decoder must be read together: they were once
+both inverted, which made every application page EL1-only and every kernel page
+EL0-accessible while the crate's own round trip agreed with itself. The round
+trip now asks the EL0 question of these bits rather than of the input enum.
 
 ### The granularity constraint that broke the image window
 

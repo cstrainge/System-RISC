@@ -11,10 +11,17 @@ static OWNER: Ownership = Ownership::new();
 /// before the configuration is read back.
 ///
 /// The instruction differs per architecture, so it is named here once instead of
-/// at each transfer site, and every machine that runs this binding calls the
-/// same function. A host build links this crate for the packaging tools, where
-/// no device exists; there the compiler fence orders the same accesses in the
-/// same program and claims nothing about hardware it is not running on.
+/// at each transfer site. A host build links this crate for the packaging tools,
+/// where no device exists; there the compiler fence orders the same accesses in
+/// the same program and claims nothing about hardware it is not running on.
+///
+/// This selection is deliberately a second copy of `mac_driver::arch::barrier`,
+/// and the two must stay in step by hand. `mac-boot-screen` depends on `mac-abi`
+/// alone: reaching the driver copy would mean either depending on the kernel
+/// driver crate from the boot screen or adding a fence crate for one fence, and
+/// both are more machinery than this earns. A change to the instructions below
+/// is a change to `crates/mac-driver/src/arch.rs` in the same commit; do not
+/// "fix" the duplication into either dependency.
 #[inline]
 fn barrier()
 {

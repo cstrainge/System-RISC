@@ -9,8 +9,6 @@
 //!
 //! Every outcome is a serial marker; the harness accepts only
 //! `FONTS_PROBE_PASS cases=N`.
-#![no_std]
-#![no_main]
 use core::fmt::{self, Write};
 
 use mac_toolbox::{Error, System,
@@ -150,9 +148,10 @@ fn run(system: &System<'_>) -> Result<(), Line>
     Ok(())
 }
 
-fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
+fn main() -> Result<(), Box<dyn std::error::Error>>
 {
-    match run(system)
+    let system = System::new()?;
+    match run(&system)
     {
         Ok(()) =>
         {
@@ -167,9 +166,7 @@ fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
             system.log(line.text())?;
             system.log("\n")?;
             system.log("DESKTOP_READY: fonts probe failed\n")?;
-            Err(Error::BadArgument)
+            Err(line.text().into())
         }
     }
 }
-
-mac_toolbox::application!(main);

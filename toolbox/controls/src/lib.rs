@@ -28,7 +28,9 @@ pub enum StandardKind
     StaticText         = mac_abi::controls::STATIC_TEXT_PROCEDURE,
     /// Grid container; prefer the typed Table owner for child placement.
     Table              = mac_abi::controls::TABLE_PROCEDURE,
-    Splitter           = mac_abi::controls::SPLITTER_PROCEDURE
+    Splitter           = mac_abi::controls::SPLITTER_PROCEDURE,
+    /// Passive horizontal/vertical rule; labels are not yet supported.
+    Separator          = mac_abi::controls::SEPARATOR_PROCEDURE
 }
 impl TryFrom<i16> for StandardKind
 {
@@ -48,6 +50,7 @@ impl TryFrom<i16> for StandardKind
             mac_abi::controls::STATIC_TEXT_PROCEDURE => Ok(Self::StaticText),
             mac_abi::controls::TABLE_PROCEDURE => Ok(Self::Table),
             mac_abi::controls::SPLITTER_PROCEDURE => Ok(Self::Splitter),
+            mac_abi::controls::SEPARATOR_PROCEDURE => Ok(Self::Separator),
             _ => Err(mac_traps::Error::NotSupported)
         }
     }
@@ -87,7 +90,8 @@ impl Part
         }
     }
 }
-pub use mac_abi::controls::{SCROLL_DOWN, SCROLL_PAGE_DOWN, SCROLL_PAGE_UP, SCROLL_THUMB, SCROLL_UP};
+pub use mac_abi::controls::{SCROLL_DOWN, SCROLL_PAGE_DOWN, SCROLL_PAGE_UP, SCROLL_THUMB,
+                            SCROLL_UP, SEPARATOR_VERTICAL};
 pub use mac_traps::{Client, Error, Result};
 pub struct Controls<'a>
 {

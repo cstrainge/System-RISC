@@ -1,8 +1,6 @@
 //! Guest execution probe for pipes. It replaces Finder on a cloned disk so the
 //! System runs it at boot; every case logs a serial marker and the harness
 //! accepts only `PIPES_PROBE_PASS`.
-#![no_std]
-#![no_main]
 use core::{fmt::{self, Write},
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
@@ -96,10 +94,10 @@ fn echo(system: &System<'_>) -> Result<(), Line>
     Ok(())
 }
 
-unsafe extern "C" fn blocked_writer(_: *mut u8)
+fn blocked_writer()
 {
-    // The platform runtime installed this process's client before entry, so a
-    // native application thread obtains the same routing view without a table.
+    // The platform runtime installed this process's client before main, so an
+    // ordinary Rust child thread obtains the same routing view without a table.
     let Ok(system) = System::new()
     else
     {
@@ -170,11 +168,10 @@ fn block(system: &System<'_>) -> Result<(), Line>
           "fill write was short")?;
     ARMED.store(false, Ordering::Release);
     DONE.store(false, Ordering::Release);
-    // SAFETY: the entry uses the loader table, takes no caller pointer, and the
-    // join right stays on this creating application thread.
-    let right = match unsafe {
-              system.client().create_native_thread(blocked_writer, core::ptr::null_mut(), 64 * 1024)
-          }
+    // The pipe parks this child inside a write, so the creator's read is what
+    // lets it finish. The child is an ordinary Rust thread with the platform's
+    // default stack; nothing here depends on a probe-specific thread mechanism.
+    let right = match std::thread::Builder::new().spawn(blocked_writer)
     {
         Ok(right) => right,
         Err(failure) =>
@@ -238,7 +235,21 @@ fn block(system: &System<'_>) -> Result<(), Line>
 /// for a thread, which the SDK does not expose and which this repository will
 /// not grow production introspection for the sake of one probe. Read the marker
 /// as "the read waited for a writer", not as "the thread was parked".
-unsafe extern "C" fn parked_reader(pointer: *mut u8)
+///
+/// The endpoint token is `!Send` by design: it is the right to one handle, and
+/// the SDK hands it to exactly one thread. The child therefore receives the
+/// address of the creator's slot, which is the same handoff the token's own
+/// contract describes; `Handoff` is only the marker that makes that address
+/// transferable to an ordinary Rust thread.
+struct Handoff(*mut u8);
+// SAFETY: the creator keeps the token alive in `slot` until the child reports
+// ARMED, which it does only after taking the token, and no other reader of the
+// address exists.
+unsafe impl Send for Handoff
+{
+}
+
+fn parked_reader(handoff: Handoff)
 {
     let Ok(system) = System::new()
     else
@@ -247,7 +258,7 @@ unsafe extern "C" fn parked_reader(pointer: *mut u8)
     };
     // The endpoint token was moved onto this thread's argument by the creator;
     // taking it here is the only adoption of that handle.
-    let endpoint = unsafe { core::ptr::read(pointer.cast::<Endpoint<'_>>()) };
+    let endpoint = unsafe { core::ptr::read(handoff.0.cast::<Endpoint<'_>>()) };
     let Ok(mut reader) = system.pipes().adopt_reader(endpoint)
     else
     {
@@ -297,21 +308,17 @@ fn reader_park(system: &System<'_>) -> Result<(), Line>
     // The reader leaves this thread as an endpoint token and is adopted there.
     // Releasing consumes the reader, so the handle has no second owner here.
     let slot = core::mem::ManuallyDrop::new(reader.release());
-    let pointer = (&*slot as *const Endpoint<'_>).cast_mut().cast::<u8>();
-    // SAFETY: `slot` outlives the handoff - this thread keeps it until the
-    // reader reports ARMED, which it does only after taking the token. The
-    // pointer is the entry's own argument and nothing else reads it.
-    let right =
-        match unsafe { system.client().create_native_thread(parked_reader, pointer, 64 * 1024) }
+    let handoff = Handoff((&*slot as *const Endpoint<'_>).cast_mut().cast::<u8>());
+    let right = match std::thread::Builder::new().spawn(move || parked_reader(handoff))
+    {
+        Ok(right) => right,
+        Err(failure) =>
         {
-            Ok(right) => right,
-            Err(failure) =>
-            {
-                let mut line = Line::new();
-                let _ = writeln!(line, "PIPES_PROBE_FAIL reader thread {failure}");
-                return Err(line);
-            }
-        };
+            let mut line = Line::new();
+            let _ = writeln!(line, "PIPES_PROBE_FAIL reader thread {failure}");
+            return Err(line);
+        }
+    };
     let mut spins = 0u32;
     while !ARMED.load(Ordering::Acquire)
     {
@@ -905,9 +912,10 @@ fn pipe_open(system: &System<'_>) -> Result<(), Line>
 }
 
 
-fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
+fn main() -> Result<(), Box<dyn std::error::Error>>
 {
-    match run(system)
+    let system = System::new()?;
+    match run(&system)
     {
         Ok(cases) =>
         {
@@ -925,9 +933,7 @@ fn main(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
             system.log(line.text())?;
             system.log("\n")?;
             system.log("DESKTOP_READY: pipes probe failed\n")?;
-            Err(Error::BadArgument)
+            Err(line.text().into())
         }
     }
 }
-
-mac_toolbox::application!(main);

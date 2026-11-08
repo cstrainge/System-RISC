@@ -100,6 +100,7 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
                                         "StaticText" => Some(quote!(static_text_entry)),
                                         "Table" => Some(quote!(table_entry)),
                                         "Splitter" => Some(quote!(splitter_entry)),
+                                        "Separator" => Some(quote!(separator_entry)),
                                         _ => None
                                     }
                                 })
@@ -111,7 +112,7 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
                        syn::Error::new(state.span(),
                                        format!("unsupported CDEF state type `{}`; expected \
                                                 Button, Scrollbar, Progress, StaticText, Table \
-                                                or Splitter",
+                                                Splitter or Separator",
                                                quote!(#state)))
                    })?;
     Ok(quote! {

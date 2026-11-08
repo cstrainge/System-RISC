@@ -954,13 +954,18 @@ fn main() -> Result<(), Error>
     system.log("TERMINAL_READY\n")?;
     let mut launcher = Launcher::default();
     let mut quitting = false;
+    // Retain wait-set scratch capacity across input and cursor events.
+    let mut sources = Vec::new();
+    let mut owners = Vec::new();
+    let mut ready = Vec::new();
+    let mut timer = Vec::new();
     loop
     {
         // Only actual source changes and real cursor deadlines wake this loop.
         // Launches use a durable notifier; no fallback polling timer remains.
         engine.turn()?;
-        let mut sources = Vec::new();
-        let mut owners = Vec::new();
+        sources.clear();
+        owners.clear();
         for (index, row) in sessions.iter().enumerate()
         {
             let session = row.target.borrow();
@@ -997,9 +1002,11 @@ fn main() -> Result<(), Error>
         {
             router.prune();
         }
-        let mut ready = vec![0u8; sessions.len()];
+        ready.clear();
+        ready.resize(sessions.len(), 0u8);
         let mut retiring_ready = 0u8;
-        let mut timer = vec![false; sessions.len()];
+        timer.clear();
+        timer.resize(sessions.len(), false);
         for (source, (owner, mask)) in sources.iter().zip(&owners)
         {
             if source.ready != 0

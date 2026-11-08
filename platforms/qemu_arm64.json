@@ -54,9 +54,13 @@
       },
       "virtio_mmio": {
         "base": "0xa000000",
-        "stride": "0x1000",
-        "slots": 8,
+        "stride": "0x200",
+        "slots": 32,
         "interrupt_base": 1
+      },
+      "interrupt_controller": {
+        "base": "0x8000000",
+        "bytes": "0x20000"
       }
     },
     "boot_stack_bytes": "0x40000",
@@ -271,16 +275,25 @@
     }
   },
   "install": {
-    "description": "The aarch64 System set: the resident kernel and video driver, the startup Finder, and the applications that build for this architecture",
+    "description": "The aarch64 System set: the resident kernel and the drivers for the video and entropy devices this record attaches, the startup Finder, and the applications the public SDK builds for this architecture",
     "set": "packages",
     "applications": [
       "mac-finder",
+      "quickdraw-test",
+      "text-edit",
+      "cursor-test",
+      "panic-test",
+      "resedit",
       "reactor",
-      "control-suite"
+      "control-suite",
+      "mac-terminal",
+      "shelly-shell",
+      "mac-echo"
     ],
     "modules": [
       "mac-system",
-      "virtio-gpu"
+      "virtio-gpu",
+      "virtio-rng"
     ],
     "folders": {
       "applications": "Applications",
@@ -289,7 +302,10 @@
       "extensions": "System Folder/Extensions"
     },
     "exceptions": {
-      "mac-finder": "System Folder"
+      "mac-finder": "System Folder",
+      "mac-terminal": "Applications/Utility",
+      "shelly-shell": "Applications/Utility/Cli",
+      "mac-echo": "Applications/Utility/Cli"
     }
   }
 }

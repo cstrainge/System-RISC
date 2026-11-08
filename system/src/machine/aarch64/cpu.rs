@@ -1,5 +1,8 @@
 //! CPU primitives the terminal and scheduler paths need: a system-wide barrier,
 //! and entry onto a fresh stack without unwinding the caller's.
+use core::ptr::NonNull;
+
+use crate::machine::traps::hart::Control;
 
 /// Orders all preceding memory accesses before any that follow.
 pub(crate) fn barrier()
@@ -24,7 +27,29 @@ pub(crate) fn set_timer_deadline(deadline: u64)
         core::arch::asm!("msr cntp_cval_el0, {deadline}", "msr cntp_ctl_el0, {enable}",
             deadline = in(reg) deadline, enable = in(reg) 1u64);
     }
+    // The first deadline this boot programs, with what the timer reports
+    // afterwards. A deadline in the past, a deadline that never arrives and a
+    // counter that is not the one the compare is written against all look the
+    // same from the scheduler: silence. Reported once, so a tick loop does not
+    // pay for it.
+    if !ARMED_ONCE.swap(true, core::sync::atomic::Ordering::Relaxed)
+    {
+        let control: u64;
+        let compare: u64;
+        let count: u64;
+        // SAFETY: reads of this CPU's own timer registers have no side effects.
+        unsafe {
+            core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) control);
+            core::arch::asm!("mrs {}, cntp_cval_el0", out(reg) compare);
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) count);
+        }
+        crate::machine::emergency::serial(format_args!("TIMER_ARMED: requested={deadline:#x} \
+                                                        cval={compare:#x} ctl={control:#x} \
+                                                        count={count:#x} freq={frequency:#x}\n"));
+    }
 }
+
+static ARMED_ONCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Masks the timer interrupt, leaving other interrupt sources untouched.
 pub(crate) fn disable_timer_interrupt()
@@ -101,11 +126,15 @@ pub(crate) fn hart_control() -> usize
 /// Sets this CPU's control-block pointer.
 ///
 /// # Safety
-/// `value` must be null or point to the live control block for this CPU.
-pub(crate) unsafe fn set_hart_control(value: usize)
+/// `control` must point to the live control block for this CPU. Non-nullness is
+/// in the type, not in this note: every caller publishes a real control block,
+/// and a hart that named none would only fail on its next trap.
+pub(crate) unsafe fn set_hart_control(control: NonNull<Control>)
 {
-    // SAFETY: the caller guarantees the pointer.
-    unsafe { core::arch::asm!("msr tpidr_el1, {}", in(reg) value, options(nostack)) };
+    // SAFETY: the caller guarantees the pointer; a `NonNull` is never null.
+    unsafe {
+        core::arch::asm!("msr tpidr_el1, {}", in(reg) control.as_ptr(), options(nostack));
+    }
 }
 
 /// Raises a breakpoint, entering the exception handler with a breakpoint cause.
@@ -116,19 +145,16 @@ pub(crate) fn breakpoint() -> !
     unsafe { core::arch::asm!("brk #0", options(noreturn)) };
 }
 
-/// Clears a pending software interrupt so re-entry cannot immediately retrap.
-pub(crate) fn clear_software_interrupt()
+/// Makes the source another hart would wake this one through deliverable.
+///
+/// This machine signals between harts through the interrupt controller, not
+/// through a per-hart pending bit, so the adapter that owns the controller
+/// enables the software-generated bank. The resident scheduler is single-hart
+/// and posts none of them; a hart that has been told it may be woken still has
+/// to have the source enabled, or the wake it waits for cannot arrive.
+pub(crate) fn admit_wake_source()
 {
-    // AArch64 reports a software-generated interrupt through the GIC, not a
-    // pending bit this layer owns; the distributor clear belongs to the
-    // interrupt controller adapter.
-}
-
-/// Unmasks the software-interrupt source, which the scheduler uses to admit a
-/// peer into idle.
-pub(crate) fn enable_software_interrupt()
-{
-    // As `clear_software_interrupt`: the GIC owns this, not the CPU interface.
+    super::gic::admit_wake_source();
 }
 
 /// The interrupt-enable register, whose bits say which sources can interrupt.

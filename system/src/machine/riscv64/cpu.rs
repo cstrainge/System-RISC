@@ -1,5 +1,8 @@
 //! CPU primitives the terminal and scheduler paths need: a system-wide barrier,
 //! and entry onto a fresh stack without unwinding the caller's.
+use core::ptr::NonNull;
+
+use crate::machine::traps::hart::Control;
 
 /// Orders all preceding memory accesses before any that follow.
 pub(crate) fn barrier()
@@ -114,11 +117,15 @@ pub(crate) fn hart_control() -> usize
 /// Sets this hart's control-block pointer.
 ///
 /// # Safety
-/// `value` must be null or point to the live control block for this hart.
-pub(crate) unsafe fn set_hart_control(value: usize)
+/// `control` must point to the live control block for this hart. Non-nullness is
+/// in the type, not in this note: every caller publishes a real control block,
+/// and a hart that named none would only fail on its next trap.
+pub(crate) unsafe fn set_hart_control(control: NonNull<Control>)
 {
-    // SAFETY: the caller guarantees the pointer.
-    unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) value, options(nostack)) };
+    // SAFETY: the caller guarantees the pointer; a `NonNull` is never null.
+    unsafe {
+        core::arch::asm!("csrw sscratch, {}", in(reg) control.as_ptr(), options(nostack));
+    }
 }
 
 /// Raises a breakpoint, entering the trap handler with a breakpoint cause.
@@ -130,15 +137,23 @@ pub(crate) fn breakpoint() -> !
 }
 
 /// Clears a pending software interrupt so re-entry cannot immediately retrap.
+///
+/// This is the completion of the wake source on this machine: the interrupt is a
+/// pending bit in `sip` that this layer owns, so the trap path that classifies it
+/// clears it there rather than a controller doing it. AArch64 has no equivalent
+/// bit - its completion is the controller acknowledgement - which is why this
+/// operation belongs to the architecture that has it.
 pub(crate) fn clear_software_interrupt()
 {
     // SAFETY: clears one pending bit for this hart.
     unsafe { core::arch::asm!("csrci sip, 2", options(nostack)) };
 }
 
-/// Unmasks the software-interrupt source, which the scheduler uses to admit a
-/// peer into idle.
-pub(crate) fn enable_software_interrupt()
+/// Makes the source another hart would wake this one through deliverable.
+///
+/// On this machine that is the supervisor software-interrupt enable bit, which
+/// is a CSR this adapter owns; the scheduler uses it to admit a peer into idle.
+pub(crate) fn admit_wake_source()
 {
     // SAFETY: sets one interrupt-enable bit for this hart.
     unsafe { core::arch::asm!("csrs sie, {}", in(reg) 2usize, options(nomem, nostack)) };

@@ -335,7 +335,8 @@ fn devices(mut visit: impl FnMut(usize))
 {
     // The machine places its transports; this asks the tree where they are
     // rather than assuming an index-to-address formula. A transport the machine
-    // describes but no device answers on reports nothing, which is absence.
+    // describes but no device answers on reports nothing, which is absence. The
+    // walk itself cannot come up short: admission read the tree to its end.
     super::platform_devices::for_each_transport(|transport| {
         let Ok(base) = usize::try_from(transport.registers)
         else

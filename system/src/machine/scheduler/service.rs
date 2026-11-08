@@ -10,6 +10,7 @@ use alloc::sync::Arc;
 use mac_abi::{ACCESS_DENIED, CORRUPT_DATA, OPERATION_CANCELLED, SERVICE_BUSY, Status, WRONG_THREAD};
 
 use super::{HartKey, IDLE, SCHEDULER, Thread, ThreadCore, TrapFrame, current, selected_hart};
+use crate::machine::trap_frame as abi;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Call
@@ -23,10 +24,10 @@ impl Call
 {
     fn new(frame: &TrapFrame) -> Self
     {
-        Self { pc:       frame.pc,
-               number:   frame.registers[15],
-               argument: frame.registers[8],
-               bytes:    frame.registers[9] }
+        Self { pc:       abi::call_site(frame),
+               number:   abi::number(frame) as usize,
+               argument: abi::argument(frame) as usize,
+               bytes:    abi::bytes(frame) }
     }
 }
 #[derive(Clone, Copy)]
@@ -171,7 +172,7 @@ fn fixed_primary() -> bool
 fn movable(frame: &TrapFrame) -> bool
 {
     frame.prior_depth == 0
-    && frame.status & (1 << 5) != 0
+    && crate::machine::trap_frame::interrupts_were_enabled(frame)
     && !super::in_io()
     && !super::critical_active()
 }
@@ -205,7 +206,7 @@ pub(crate) fn enter_ecall(frame: &TrapFrame) -> Result<Entry, Status>
         return Err(WRONG_THREAD);
     }
     let state = thread.state.get();
-    if thread.core.context.is_module_worker() && frame.registers[15] as u32 != mac_abi::traps::LOG
+    if thread.core.context.is_module_worker() && abi::number(frame) != mac_abi::traps::LOG
     {
         // Primary maintenance may synchronously invoke a validated resident
         // definition on this very worker continuation. This only admits the
@@ -222,8 +223,10 @@ pub(crate) fn enter_ecall(frame: &TrapFrame) -> Result<Entry, Status>
         return Err(cause);
     }
     if (state.failure_pending || state.service.retire_pending)
-       && matches!(frame.registers[15] as u32,
-                   mac_abi::traps::WAIT_EVENT | mac_abi::traps::POSITIONED_EVENT)
+       && matches!(abi::number(frame),
+                   mac_abi::traps::WAIT_EVENT
+                   | mac_abi::traps::POSITIONED_EVENT
+                   | mac_abi::traps::READINESS)
     {
         return Err(OPERATION_CANCELLED);
     }
@@ -231,6 +234,11 @@ pub(crate) fn enter_ecall(frame: &TrapFrame) -> Result<Entry, Status>
     {
         if original != Call::new(frame)
         {
+            // Two different calls on one continuation means the first never
+            // committed. Naming both is the difference between a readable
+            // refusal and an unexplained `AccessDenied` for every later call.
+            serial!("NATIVE_CALL_REFUSED thread={} status={} original={:?} arrived={:?}",
+                    thread.id, ACCESS_DENIED, original, Call::new(frame));
             return Err(ACCESS_DENIED);
         }
         if !hart.is_primary()
@@ -337,8 +345,8 @@ pub(crate) fn exit_allowed() -> Result<(), Status>
 pub(super) fn refuse_host(frame: &mut TrapFrame, status: Status)
 {
     let original = Call::new(frame);
-    frame.registers[8] = status as isize as usize;
-    frame.pc = frame.pc.wrapping_add(4);
+    abi::set_result(frame, status as isize as usize);
+    abi::advance(frame);
     let scheduler = SCHEDULER.lock();
     if let Some(thread) = scheduler.thread(current())
        && thread.state.get().claimed_by == Some(selected_hart())
@@ -598,7 +606,7 @@ pub(crate) fn request_identity(frame: &TrapFrame) -> RequestIdentity
 pub(crate) fn request_suspension_allowed(frame: &TrapFrame) -> Result<(), Status>
 {
     if frame.prior_depth != 0
-       || frame.status & (1 << 5) == 0
+       || !crate::machine::trap_frame::interrupts_were_enabled(frame)
        || super::critical_active()
        || super::in_io()
     {
