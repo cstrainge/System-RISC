@@ -54,8 +54,8 @@
       },
       "virtio_mmio": {
         "base": "0xa000000",
-        "stride": "0x1000",
-        "slots": 8,
+        "stride": "0x200",
+        "slots": 32,
         "interrupt_base": 1
       }
     },

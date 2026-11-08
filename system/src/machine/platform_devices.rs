@@ -28,7 +28,10 @@ pub(crate) struct Device
     pub key:            [u8; 16],
     pub registers:      u64,
     pub register_bytes: u64,
-    pub interrupt:      u32,
+    /// The interrupt the machine states, or `None` when the node declares none.
+    /// A driver that needs an interrupt refuses the device rather than vectoring
+    /// a number the machine never stated.
+    pub interrupt:      Option<u32>,
     pub flags:          u32
 }
 
@@ -52,21 +55,26 @@ pub(crate) struct Transport
 {
     pub registers:      u64,
     pub register_bytes: u64,
-    pub interrupt:      u32
+    /// The interrupt the machine states for this transport, or `None` when the
+    /// node declares none.
+    pub interrupt:      Option<u32>
 }
 
 /// Why a declared peripheral could not be resolved.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Cause
 {
-    /// The machine supplied no readable device tree.
+    /// The machine supplied no readable device tree, or the walk over it did not
+    /// reach its end. Both mean the same thing to a caller: the tree could not
+    /// be read, so a short list is a failure rather than a smaller machine.
     Tree,
     /// The machine's tree does not describe this peripheral.
     Missing,
-    /// The node is present but does not describe a usable register window.
-    NoWindow,
     /// The node declares interrupts that cannot be attributed to a controller.
     NoInterruptParent,
+    /// A window the machine describes as a transport is also enumerated as a
+    /// board peripheral, so one device would be offered to a driver twice.
+    Overlap,
     /// A peripheral admission should have enumerated was not there. Admission
     /// walks the machine's tree, so this is an internal inconsistency rather
     /// than a machine fact, and it is still reported rather than skipped.
@@ -108,6 +116,14 @@ impl Refusal
     }
 }
 
+/// The refusal for a tree this kernel could not read to its end. It names no
+/// identity: the defect is the blob, not a peripheral in it.
+fn unreadable_tree() -> Refusal
+{
+    Refusal { key: NO_KEY,
+              cause: Cause::Tree }
+}
+
 impl core::fmt::Display for Refusal
 {
     fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -119,15 +135,18 @@ impl core::fmt::Display for Refusal
             {
                 write!(out, "the machine's device tree does not describe `{}`", self.name())
             }
-            Cause::NoWindow =>
-            {
-                write!(out, "`{}` describes no usable register window", self.name())
-            }
             Cause::NoInterruptParent =>
             {
                 write!(out,
                        "`{}` declares interrupts but no interrupt controller can be resolved \
                         for it",
+                       self.name())
+            }
+            Cause::Overlap =>
+            {
+                write!(out,
+                       "`{}` is enumerated as both a virtio-MMIO transport and a board \
+                        peripheral",
                        self.name())
             }
             Cause::Unpublished =>
@@ -138,13 +157,13 @@ impl core::fmt::Display for Refusal
     }
 }
 
-/// The machine's own description, pinned at admission.
+/// The machine's own description, parsed and pinned at admission.
 ///
 /// The kernel keeps no peripheral list. It keeps the tree the machine supplied
 /// and reads it where a window is needed, so nothing is copied, nothing is
 /// bounded, and a machine that describes more peripherals than another needs no
 /// change here.
-static TREE_BLOB: spin::Once<&'static [u8]> = spin::Once::new();
+static TREE: spin::Once<Tree<'static>> = spin::Once::new();
 
 /// Check that the machine supplied a tree this kernel can read, and pin it.
 ///
@@ -157,104 +176,136 @@ static TREE_BLOB: spin::Once<&'static [u8]> = spin::Once::new();
 /// view live as long as the tree is read.
 pub(crate) unsafe fn admit(info: &BootInfo) -> Result<(), Refusal>
 {
-    if TREE_BLOB.get().is_some()
+    if TREE.get().is_some()
     {
         return Ok(());
     }
     let blob = unsafe {
         super::memory::primary_slice(info, info.device_tree, info.device_tree_bytes)
-    }.map_err(|_| Refusal { key: NO_KEY,
-                             cause: Cause::Tree })?;
-    Tree::new(blob).map_err(|_| Refusal { key: NO_KEY,
-                                          cause: Cause::Tree })?;
-    TREE_BLOB.call_once(|| blob);
+    }.map_err(|_| unreadable_tree())?;
+    let tree = Tree::new(blob).map_err(|_| unreadable_tree())?;
+    verify(&tree)?;
+    TREE.call_once(|| tree);
     Ok(())
 }
 
-/// The admitted tree, or `None` before admission.
-fn admitted_tree() -> Option<Tree<'static>>
-{
-    Tree::new(TREE_BLOB.get().copied()?).ok()
-}
-
-/// Visit every peripheral the machine describes, in tree order.
+/// Read the machine's tree to its end, once, and refuse what a later walk would
+/// otherwise discover one node at a time.
 ///
-/// A peripheral is an enabled node that names a part and states a window. Which
-/// of them a driver binds is the driver's declaration, matched by bus and key,
-/// not a platform list, so a machine with parts this kernel has never seen needs
-/// no change here.
-fn for_each_device(mut visit: impl FnMut(Device))
+/// Three facts are established here, and every enumeration below relies on them:
+/// the structure block is readable to its end, so a walk cannot come up short; a
+/// node that states interrupts states ones this kernel can attribute, so no
+/// device is published with an interrupt the machine never stated; and no node
+/// is enumerated as both a transport and a board peripheral, so a window is
+/// offered to a driver once.
+///
+/// This is the one place a walk over the tree can fail, and it is the place that
+/// can still say so by name: a boot that reaches enumeration has a tree whose
+/// every node was already read.
+fn verify(tree: &Tree<'_>) -> Result<(), Refusal>
 {
-    let Some(tree) = admitted_tree()
-    else
+    let mut refusal = None;
+    tree.for_each_node(|node| {
+            if refusal.is_some()
+            {
+                return;
+            }
+            refusal = match classify(tree, &node)
+            {
+                // A transport is a bus, and the device on it is identified by
+                // the transport's ID register, so the node that declares the
+                // window is a transport and never a board peripheral. A node
+                // that was both would be offered to a driver twice, under two
+                // keys and with two different flag sets.
+                Ok(Some(Classified::Peripheral(device))) if node.names(VIRTIO_MMIO) =>
+                {
+                    Some(Refusal { key: device.key,
+                                   cause: Cause::Overlap })
+                }
+                Ok(_) => None,
+                Err(cause) => Some(cause)
+            };
+        })
+        .map_err(|_| unreadable_tree())?;
+    match refusal
     {
-        return;
-    };
-    let _ = tree.for_each_node(|node| {
-                                if let Some(device) = device_of(&tree, &node)
-                                {
-                                    visit(device);
-                                }
-                            });
+        Some(refusal) => Err(refusal),
+        None => Ok(())
+    }
 }
 
-/// The peripheral a node describes, or `None` when it describes none.
-fn device_of(tree: &Tree<'_>, node: &Node<'_>) -> Option<Device>
+/// What one node of the machine's tree describes.
+///
+/// A node yields at most one of these, which is what keeps the two views this
+/// module publishes disjoint: the classification is one predicate, not a filter
+/// in each view that could drift from the other.
+enum Classified
+{
+    Transport(Transport),
+    Peripheral(Device)
+}
+
+/// The single classification both walks are filtered from.
+fn classify(tree: &Tree<'_>, node: &Node<'_>) -> Result<Option<Classified>, Refusal>
 {
     if !node.enabled() || node.compatible.is_none() || node.reg.is_none()
     {
-        return None;
+        return Ok(None);
     }
-    let (registers, register_bytes) = node.window()?;
-    if register_bytes == 0 || registers == 0
+    if node.names(VIRTIO_MMIO)
     {
-        return None;
+        return transport_of(tree, node).map(|transport| transport.map(Classified::Transport));
     }
-    let compatible = node.compatible?;
-    let mut key = [0u8; 16];
-    for (slot, byte) in key.iter_mut().zip(compatible.as_bytes())
-    {
-        *slot = *byte;
-    }
-    let interrupt = interrupt_of(tree, node).unwrap_or(0);
-    let mut flags = mac_device_interface::MMIO;
-    if node.dma_coherent
-    {
-        flags |= mac_device_interface::COHERENT_DMA;
-    }
-    Some(Device { bus: *b"MMIO",
-                  key,
-                  registers,
-                  register_bytes,
-                  interrupt,
-                  flags })
+    device_of(tree, node).map(|device| device.map(Classified::Peripheral))
 }
 
-/// How many peripherals the machine described.
-pub(crate) fn count() -> usize
+/// The admitted tree.
+///
+/// Admission pins it before anything enumerates it, so a caller that finds it
+/// missing ran before admission rather than found a machine with no peripherals.
+/// The message names that boot-order invariant rather than answering an empty
+/// list, which would be indistinguishable from a machine that describes nothing.
+fn tree() -> &'static Tree<'static>
+{
+    TREE.get().expect("admission pinned the machine's tree before enumeration")
+}
+
+/// Visit every classified node of the admitted tree.
+///
+/// The walk cannot fail here: admission read this blob to its end and resolved
+/// every node in it, which is what the two messages name. Answering with a
+/// shorter list instead would be the defect they exist to prevent.
+fn walk(mut take: impl FnMut(Classified))
+{
+    let tree = tree();
+    tree.for_each_node(|node| {
+            if let Some(classified) =
+                classify(tree, &node).expect("admission resolved every node in the tree")
+            {
+                take(classified);
+            }
+        })
+        .expect("admission read the machine's tree to its end");
+}
+
+/// Visit every peripheral the machine describes, in tree order, and report how
+/// many there were.
+///
+/// A peripheral is an enabled node that names a part and states a window, and is
+/// not a transport. Which of them a driver binds is the driver's declaration,
+/// matched by bus and key, not a platform list, so a machine with parts this
+/// kernel has never seen needs no change here.
+fn for_each_device(mut visit: impl FnMut(Device)) -> usize
 {
     let mut count = 0;
-    for_each_device(|_| count += 1);
+    walk(|classified| {
+        if let Classified::Peripheral(device) = classified
+        {
+            visit(device);
+            count += 1;
+        }
+    });
     count
-}
-
-/// The transport a node describes, or `None` when it describes none.
-///
-/// Only the node's own `reg` states where a transport is. Nothing here derives a
-/// window from an index: a machine that places its transports unevenly, or
-/// leaves the positions between them empty, is described exactly as it is.
-fn transport_of(tree: &Tree<'_>, node: &Node<'_>) -> Option<Transport>
-{
-    let (registers, register_bytes) = node.window()?;
-    if registers == 0
-       || register_bytes < VIRTIO_MMIO_REGISTERS
-       || registers.checked_add(register_bytes).is_none()
-    {
-        return None;
-    }
-    Some(Transport { registers,
-                     register_bytes,
-                     interrupt: interrupt_of(tree, node).unwrap_or(0) })
 }
 
 /// Visit every virtio-MMIO transport the machine describes, in tree order, and
@@ -262,23 +313,52 @@ fn transport_of(tree: &Tree<'_>, node: &Node<'_>) -> Option<Transport>
 ///
 /// This is a filtered view of the same walk `for_each_device` uses, not a second
 /// reading of the tree: a transport's window and interrupt are resolved exactly
-/// as any other peripheral's are.
+/// as any other peripheral's are, and the filter is the classification, so a
+/// window is in one view or the other and never in both.
 pub(crate) fn for_each_transport(mut visit: impl FnMut(Transport)) -> usize
 {
-    let Some(tree) = admitted_tree()
+    let mut count = 0;
+    walk(|classified| {
+        if let Classified::Transport(transport) = classified
+        {
+            visit(transport);
+            count += 1;
+        }
+    });
+    count
+}
+
+/// How many peripherals the machine described.
+pub(crate) fn count() -> usize
+{
+    for_each_device(|_| ())
+}
+
+/// The transport a node describes, or `None` when it describes none.
+///
+/// Only the node's own `reg` states where a transport is. Nothing here derives a
+/// window from an index: a machine that places its transports unevenly, or
+/// leaves the positions between them empty, is described exactly as it is.
+fn transport_of(tree: &Tree<'_>, node: &Node<'_>) -> Result<Option<Transport>, Refusal>
+{
+    let Some((registers, register_bytes)) = node.window()
     else
     {
-        return 0;
+        return Ok(None);
     };
-    let mut count = 0;
-    let _ = tree.for_each_compatible(VIRTIO_MMIO, |node| {
-                  if let Some(transport) = transport_of(&tree, node)
-                  {
-                      visit(transport);
-                      count += 1;
-                  }
-              });
-    count
+    if registers == 0
+       || register_bytes < VIRTIO_MMIO_REGISTERS
+       || registers.checked_add(register_bytes).is_none()
+    {
+        return Ok(None);
+    }
+    let key = node.compatible.map_or(NO_KEY, key_of);
+    let interrupt = interrupt_of(tree, node)
+        .map_err(|()| Refusal { key,
+                                cause: Cause::NoInterruptParent })?;
+    Ok(Some(Transport { registers,
+                        register_bytes,
+                        interrupt }))
 }
 
 /// How many virtio-MMIO transports the machine describes.
@@ -303,8 +383,57 @@ pub(crate) fn transport(index: usize) -> Option<Transport>
     found
 }
 
-/// The enumerated peripheral at `index`, or `None` before admission or past the
-/// number the machine described.
+/// The peripheral a node describes, or `None` when it describes none.
+fn device_of(tree: &Tree<'_>, node: &Node<'_>) -> Result<Option<Device>, Refusal>
+{
+    let Some((registers, register_bytes)) = node.window()
+    else
+    {
+        return Ok(None);
+    };
+    if register_bytes == 0 || registers == 0
+    {
+        return Ok(None);
+    }
+    let Some(compatible) = node.compatible
+    else
+    {
+        return Ok(None);
+    };
+    let key = key_of(compatible);
+    // A node that states interrupts this kernel cannot attribute is refused by
+    // the identity the machine wrote, rather than published as a device whose
+    // interrupt is unknown: a driver that vectors it would vector a number the
+    // machine never stated.
+    let interrupt = interrupt_of(tree, node)
+        .map_err(|()| Refusal { key,
+                                cause: Cause::NoInterruptParent })?;
+    let mut flags = mac_device_interface::MMIO;
+    if node.dma_coherent
+    {
+        flags |= mac_device_interface::COHERENT_DMA;
+    }
+    Ok(Some(Device { bus: *b"MMIO",
+                     key,
+                     registers,
+                     register_bytes,
+                     interrupt,
+                     flags }))
+}
+
+/// The declared identity, as the fixed-width key the wire carries it in.
+fn key_of(compatible: &str) -> [u8; 16]
+{
+    let mut key = [0u8; 16];
+    for (slot, byte) in key.iter_mut().zip(compatible.as_bytes())
+    {
+        *slot = *byte;
+    }
+    key
+}
+
+/// The enumerated peripheral at `index`, or `None` past the number the machine
+/// described.
 pub(crate) fn get(index: usize) -> Option<Device>
 {
     let mut found = None;
@@ -319,19 +448,21 @@ pub(crate) fn get(index: usize) -> Option<Device>
     found
 }
 
-/// The interrupt number a node's first specifier carries.
+/// The interrupt number a node's first specifier carries, or `None` when the
+/// node declares none.
 ///
 /// The width of a specifier is the interrupt controller's `#interrupt-cells`, so
 /// the controller has to be resolved rather than assumed: reading the property
 /// by length alone would take a two-cell specifier as a number plus a flag. A
 /// node that declares no `interrupts` raises none, which is a fact rather than a
-/// default.
-fn interrupt_of<'a>(tree: &Tree<'a>, node: &Node<'a>) -> Result<u32, ()>
+/// default, and a node that declares one this kernel cannot attribute is an
+/// error rather than a number the machine never stated.
+fn interrupt_of<'a>(tree: &Tree<'a>, node: &Node<'a>) -> Result<Option<u32>, ()>
 {
     let Some(specifier) = node.interrupts
     else
     {
-        return Ok(0);
+        return Ok(None);
     };
     let mut current = *node;
     let mut phandle = None;
@@ -365,5 +496,5 @@ fn interrupt_of<'a>(tree: &Tree<'a>, node: &Node<'a>) -> Result<u32, ()>
     // The last cell is the trigger type and flags, and a one-cell controller
     // carries only the number itself.
     let start = cells.saturating_sub(2) * 4;
-    Ok(u32::from_be_bytes(specifier[start..start + 4].try_into().map_err(|_| ())?))
+    Ok(Some(u32::from_be_bytes(specifier[start..start + 4].try_into().map_err(|_| ())?)))
 }

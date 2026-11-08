@@ -324,7 +324,7 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
             {
                 return Err(BAD_ARGUMENT);
             }
-            let count = u32::try_from(device_count()).unwrap_or(u32::MAX);
+            let count = u32::try_from(device_count()).map_err(|_| NOT_SUPPORTED)?;
             output[..4].copy_from_slice(&count.to_le_bytes());
             Ok(4)
         }

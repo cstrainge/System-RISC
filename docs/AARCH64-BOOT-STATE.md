@@ -415,6 +415,19 @@ asserted `register_bytes == 4096`, which is the record's stride mistaken for the
 machine's window: the same value derived from the same wrong source in four
 places, and nothing compared any of them to the tree.
 
+The record was corrected to the machine's own numbers — stride `0x200`, 32 slots
+— and those two fields are not decorative: `tools/mac-build/src/platform/memory/io.rs`
+multiplies them to size the emitted `BOOT_MMIO_REGIONS` window, so the old pair
+mapped `0x8000` over a `0x4000` aperture. The corrected record maps
+`0xa000000..0xa004000`, exactly the aperture. It was confirmed by asking the
+machine rather than the documentation:
+`qemu-system-aarch64 -machine virt,dumpdtb=virt-a64.dtb -cpu max -m 2G -smp 4`
+(QEMU 11.1.0), then reading every `virtio,mmio` node's `reg` out of the dump —
+32 nodes, `0xa000000` + `n * 0x200`, each `0x200` bytes, ending at `0xa004000`.
+The same dump for `qemu-system-riscv64` gives 8 nodes of `0x1000` at
+`0x10001000..0x10009000`, which is what `riscv_base.json` already stated, so that
+record needed no change.
+
 The fix enumerates transports from the device tree and establishes presence from
 the **ID register**, not from node presence. That distinction is load-bearing and
 contradicts a claim this project made in its own tasking: *every* transport
@@ -422,6 +435,14 @@ position in the aperture has a node, attached or not — 32 on arm64, 8 on riscv
 Node presence is not device presence. The claim that a tree lists a node only
 for an existing transport is false on both machines and is recorded here so it is
 not re-derived.
+
+A transport is a bus, and the device on it is identified by the ID register, so
+the transport node is no longer enumerated a second time as a board peripheral.
+Both views are filtered from one classification in
+`system/src/machine/platform_devices.rs`, and admission checks on the machine's
+own tree that no transport node reaches the peripheral view. Transports stay
+covered for pool exclusion and mapping by the record's declared bootstrap
+aperture, which the paragraph above now states correctly.
 
 The regression test is `crates/mac-device-interface/tests/virtio.rs`: it probes a
 transport set with an occupied and an unoccupied entry, asserts the empty entry
@@ -441,6 +462,19 @@ assumes, and it sets a coherent mask rather than reading a property — so the
 reported value is correct. But it is currently correct *by accident* if it is
 inferred from the tree's silence, because silence and assertion are being
 treated alike. It must rest on the specification, in a comment that says so.
+
+**An interrupt the tree does not attribute is now absence, not zero.** The
+device description carried `interrupt: u32`, and a node whose `interrupt-parent`
+could not be resolved was published as interrupt 0 — on both machines
+`interrupt_base` is 1, so that was a number no controller decodes, and a driver
+could not tell it from "raises none". `Description.interrupt` is now
+`Option<u32>`: `None` means the machine states no interrupt for the device, and a
+driver that needs one refuses the device rather than vectoring a number that was
+never stated. The wire carries the fact in `INTERRUPT_STATED`, and `decode`
+refuses a word that disagrees with the flag, so absence cannot be re-encoded as a
+sentinel. A node that states interrupts the kernel cannot attribute is refused at
+admission by its compatible string, which is also why the `Missing` and
+`NoInterruptParent` refusals exist as machine facts rather than defaults.
 
 ## The display adapter: the stub, not the machine, said there was no framebuffer
 
