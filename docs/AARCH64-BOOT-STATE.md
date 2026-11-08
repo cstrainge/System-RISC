@@ -64,6 +64,33 @@ The same commit on `qemu_riscv` passes 19 of 19 cases, with `RAMFB 800x600`,
 `CRASH_REPORT_READY` in that log. The fix is in the AArch64 entry only; the
 RISC-V entry already reloaded its scratch.
 
+### Position after the application set, the tick and the power findings (2026-11-08)
+
+Three defects reported from an interactive desktop session are settled here.
+
+- **Applications.** `platforms/qemu_arm64.json` installed three applications
+  because aarch64 `std` did not build. It now installs the same eleven as
+  `qemu_riscv`, with the same `Applications/Utility` and
+  `Applications/Utility/Cli` exceptions, and all eleven package. Shelly exposed
+  a real defect in the aarch64 GOT decoder, described below.
+- **Double click.** Fixed. The classic tick was 6.25 times too fast, so the
+  half-second window was 80 ms of real time and no folder on the boot volume
+  could be opened.
+- **Shut Down and Restart.** Still disabled, and correctly so: this machine has
+  no finisher register to declare.
+
+Measured after all three, artifact `dist/qemu_arm64`:
+
+| case | result |
+| --- | --- |
+| `no-disk` | passed |
+| `raw-hfs-b` | passed — `RAMFB 800x600`, `FINDER_FOLDER_OPEN`, `DESKTOP_READY:` |
+| `fonts-probe` and later | not constructed, as before |
+
+`qemu_riscv` passes 19 of 19 ROM boot checks, with `RAMFB 800x600`,
+`FINDER_FOLDER_OPEN` and `DESKTOP_READY:` in the `raw-hfs-b` log and no crash
+report in it.
+
 ### How it stood when the physmap read was unexplained
 
 `cargo xtask boot-check --platform qemu_arm64` builds its private SDK and enters
@@ -263,6 +290,33 @@ One instance of the same assumption is left alone here because it is a timeout
 rather than an interval: `crates/mac-bootloader/src/virtio_blk.rs:348` treats
 `elapsed > 10_000_000` counter ticks as one second, which on AArch64 is 160 ms.
 It has not been observed to matter, and it is a separate change.
+
+## Fixed: the aarch64 GOT pairing could not tell two sites apart
+
+Packaging Shelly — the largest application — failed with `GOT relocation does not
+identify a matching ADRP/LDR register pair`. The message named the check, not the
+cause, so the check was made to print the pair it refused:
+
+```
+GOT-DIAG load=0x40021c target=0x40021c page=0x525e1c ldr_rn=10 adrp_rd=9 paired=false pages=3
+```
+
+The load read through `x10` and the site the search returned used `x9`, with the
+same target. Three ADRP sites existed and two of them named that one cell, which
+is ordinary: a GOT cell is created once and referenced from everywhere. Two
+things were wrong in `crates/mac-formats/src/elf/relocation/aarch64.rs`:
+
+- the sites were sorted by address and then searched by target, so binary search
+  walked an order the slice did not have and could answer "absent" for a site
+  that was present;
+- a search over equal targets returns an arbitrary one of them, and the register
+  was the only thing that could have told them apart.
+
+The site is now chosen by the register that pairs it with the load, preferring
+one no load has claimed, which is what makes the closing "every site is paired"
+check mean something. `cargo xtask --platform qemu_arm64 stage apps` packaged nine
+applications before the change and stopped at Shelly; it packages all eleven
+after.
 
 ## Defects found and fixed
 
