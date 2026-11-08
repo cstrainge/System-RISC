@@ -293,7 +293,8 @@
     "modules": [
       "mac-system",
       "virtio-gpu",
-      "virtio-rng"
+      "virtio-rng",
+      "psci-power"
     ],
     "folders": {
       "applications": "Applications",

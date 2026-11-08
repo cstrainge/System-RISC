@@ -197,7 +197,15 @@ pub struct Node<'a>
     /// states one, so a consumer resolves it by walking `parent_index`.
     pub interrupt_parent: Option<u32>,
     /// `timebase-frequency`, the counter rate a machine states for itself.
-    pub timebase_frequency: Option<u32>
+    pub timebase_frequency: Option<u32>,
+    /// `method`, which is how a firmware-interface node states the conduit its
+    /// calls travel over. The PSCI binding defines two: `hvc` and `smc`.
+    ///
+    /// A node that describes a function rather than a register window has no
+    /// `reg`, so this is the property that makes its declaration concrete. The
+    /// reader reports the spelling the machine wrote; whether a consumer
+    /// implements it is the consumer's answer, not this reader's.
+    pub method:           Option<&'a str>
 }
 
 impl Node<'_>
@@ -385,6 +393,7 @@ impl<'a> Tree<'a>
             interrupt_cells: Option<u32>,
             interrupt_parent: Option<u32>,
             timebase_frequency: Option<u32>,
+            method:       Option<&'a str>,
             address_cells: Option<u32>,
             size_cells:    Option<u32>,
             own_address_cells: Option<u32>,
@@ -498,7 +507,8 @@ impl<'a> Tree<'a>
                                   interrupt_controller: state.interrupt_controller,
                                   interrupt_cells: state.interrupt_cells,
                                   interrupt_parent: state.interrupt_parent,
-                                  timebase_frequency: state.timebase_frequency });
+                                  timebase_frequency: state.timebase_frequency,
+                                  method:       state.method });
                     seen += 1;
                 }
                 PROP =>
@@ -547,6 +557,7 @@ impl<'a> Tree<'a>
                             "#interrupt-cells" => state.interrupt_cells = cell_count(value),
                             "interrupt-parent" => state.interrupt_parent = cell_count(value),
                             "timebase-frequency" => state.timebase_frequency = cell_count(value),
+                            "method" => state.method = Some(first_string(value)),
                             "#address-cells" =>
                             {
                                 state.own_address_cells = cell_count(value);

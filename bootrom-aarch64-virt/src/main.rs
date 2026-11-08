@@ -919,6 +919,59 @@ struct Loaded
     disk_index:      usize
 }
 
+/// The firmware power conduit the machine's tree declares.
+///
+/// PSCI defines two conduits, `hvc` and `smc`, and names them in the `/psci`
+/// node's `method` property. The answer is reported by name whatever it is, so a
+/// machine that declares something else is named rather than mistaken for one
+/// with no conduit at all, and a refusal further down can be read against what
+/// the machine actually said.
+fn power_conduit(tree: &mac_devicetree::Tree<'_>) -> u64
+{
+    use mac_abi::boot::conduit;
+    let node = match tree.find(|candidate| candidate.depth == 1 && candidate.name == "psci")
+    {
+        Ok(node) => node,
+        Err(_) =>
+        {
+            // The CPUs and the RAM were read out of this same blob, so a walk
+            // that fails here is reported rather than treated as a machine
+            // without a power interface.
+            puts("BOOT_AARCH64_PSCI_REFUSED: the machine's tree could not be read at /psci\n");
+            return conduit::NONE;
+        }
+    };
+    let Some(node) = node
+    else
+    {
+        puts("BOOT_AARCH64_PSCI: absent\n");
+        return conduit::NONE;
+    };
+    let Some(method) = node.method
+    else
+    {
+        puts("BOOT_AARCH64_PSCI_REFUSED: the machine's /psci node states no method, so no \
+              conduit is named\n");
+        return conduit::NONE;
+    };
+    puts("BOOT_AARCH64_PSCI: method=");
+    for byte in method.bytes()
+    {
+        putc(byte);
+    }
+    puts("\n");
+    match method
+    {
+        "hvc" => conduit::HVC,
+        "smc" => conduit::SMC,
+        _ =>
+        {
+            puts("BOOT_AARCH64_PSCI_REFUSED: the PSCI binding defines hvc and smc only\n");
+            conduit::OTHER
+        }
+    }
+}
+
 /// Builds the record System is admitted with and enters it at EL1.
 ///
 /// Everything here is derived rather than declared: the mapping record comes
@@ -1043,6 +1096,14 @@ fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
     }
     let mut context = mac_bootloader::volume::BootVolume { disks:      disks.as_mut_ptr(),
                                                            disk_count: disks.len() };
+    // A machine that powers off through firmware says so in the same tree that
+    // describes its peripherals, and this is the boot that reads it. The node
+    // has no register window, so nothing enumerates it as a device: its
+    // `method` property names the conduit instead. The bootstrap reports what
+    // the machine declared and hands the declaration on; whether this System can
+    // use it is the power driver's answer, so a conduit this build does not
+    // implement leaves the machine running rather than claiming a capability.
+    let declared_conduit = power_conduit(tree);
     let info = BootInfo { header:                  Header::for_type::<BootInfo>(),
                           ram_base:                memory.ram[0].base,
                           ram_size:                memory.ram[0].length,
@@ -1073,7 +1134,8 @@ fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
                           monitor:                 &monitor.directory,
                           monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT,
                           device_tree:             tree_address as *const u8,
-                          device_tree_bytes:       tree.total_size() };
+                          device_tree_bytes:       tree.total_size(),
+                          power_conduit:           declared_conduit };
     // Seal the profile System checks against its own architecture adapter. The
     // kernel compares this against a constant it holds rather than against
     // anything this bootstrap said, so the two statements agreeing is the check:

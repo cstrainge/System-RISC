@@ -503,7 +503,16 @@ pub struct BootInfo
     /// or translated from another description - is a bootloader-side decision the
     /// kernel neither knows nor asks about.
     pub device_tree:             *const u8,
-    pub device_tree_bytes:       usize
+    pub device_tree_bytes:       usize,
+    /// The firmware power conduit the machine's tree declares, encoded as
+    /// [`boot::conduit`].
+    ///
+    /// This is a boot fact, not a capability: the bootstrap read `/psci` and its
+    /// `method` from the machine's own tree and reported what it found. Whether
+    /// the System can use that conduit is the power driver's answer, so a
+    /// machine that declares one this System does not implement still boots,
+    /// with no power capability offered rather than one that does nothing.
+    pub power_conduit:           u64
 }
 
 // The size gate must reject an earlier ROM before System forms a BootInfo
@@ -512,13 +521,14 @@ pub struct BootInfo
 // preserve an old size: a loader and a kernel built from different layouts must
 // refuse each other, and they do so by this check.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 192
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 200
                       && core::mem::offset_of!(BootInfo, cpus) == 144
                       && core::mem::offset_of!(BootInfo, cpu_count) == 152
                       && core::mem::offset_of!(BootInfo, monitor) == 160
                       && core::mem::offset_of!(BootInfo, monitor_layout) == 168
                       && core::mem::offset_of!(BootInfo, device_tree) == 176
                       && core::mem::offset_of!(BootInfo, device_tree_bytes) == 184
+                      && core::mem::offset_of!(BootInfo, power_conduit) == 192
                       && core::mem::size_of::<boot::topology::Cpu>() == 8);
 
 /// Immutable process-readable service descriptor. Callable code stays local to the SDK.
@@ -662,13 +672,15 @@ mod tests
         assert_eq!(core::mem::offset_of!(inspection::memory::Call, detail), 640);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 176);
+        assert_eq!(core::mem::size_of::<BootInfo>(), 200);
         assert_eq!(core::mem::offset_of!(BootInfo, execution), 136);
         assert_eq!(core::mem::offset_of!(BootInfo, display_scratch), 120);
         assert_eq!(core::mem::offset_of!(BootInfo, storage_context), 32);
         assert_eq!(core::mem::offset_of!(BootInfo, startup_partition_start), 80);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_regions), 88);
         assert_eq!(core::mem::offset_of!(BootInfo, reservations), 104);
+        assert_eq!(core::mem::offset_of!(BootInfo, device_tree), 176);
+        assert_eq!(core::mem::offset_of!(BootInfo, power_conduit), 192);
         assert_eq!(core::mem::offset_of!(SystemServices, capabilities), 8);
         assert_eq!(core::mem::size_of::<SystemServices>(), 16);
         assert!(Header::for_type::<SystemServices>().supports::<SystemServices>());

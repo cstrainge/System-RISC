@@ -2,8 +2,10 @@
 
 Future drivers default to external packages in `System Folder/Drivers`.
 Applications use generic System APIs; resident services select compatible driver
-interfaces by capabilities. [Power services](POWER.md) and the external Qemu
-Power Device provide the shutdown/restart example of this boundary.
+interfaces by capabilities. [Power services](POWER.md) and the external power
+controllers — Platform Power Controller on RISC-V, PSCI Power Controller on
+AArch64 — provide the shutdown/restart example of this boundary, one for each
+machine mechanism.
 
 Status: the initial class-neutral contract/registry/relocating module loader is
 implemented; storage class providers and deferred I/O remain in progress, tracked as [P14](CORE-TOOLBOX-ROADMAP.md#p14--loadable-kernel-drivers).

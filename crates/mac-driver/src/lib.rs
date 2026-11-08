@@ -3,6 +3,7 @@
 #![no_std]
 pub mod devices;
 pub mod lifecycle;
+pub mod power;
 pub mod preferences;
 pub mod scheduler;
 pub mod sync;

@@ -23,6 +23,28 @@ pub mod console
     pub const PL011: u64 = 2;
 }
 
+/// The conduit a machine's firmware declares for power state changes.
+///
+/// A machine that powers off through a firmware interface says so in its own
+/// tree: the `/psci` node's `method` property names the instruction that carries
+/// the call. The PSCI binding defines exactly two, `hvc` and `smc`, and the
+/// bootstrap reads the spelling the machine wrote. This value states that
+/// declaration; it does not state that this System implements it, which only the
+/// power driver can answer.
+pub mod conduit
+{
+    /// The machine's tree declares no firmware power interface.
+    pub const NONE: u64 = 0;
+    /// The machine declares `method = "hvc"`.
+    pub const HVC: u64 = 1;
+    /// The machine declares `method = "smc"`.
+    pub const SMC: u64 = 2;
+    /// The machine declares a method the PSCI binding does not define. The
+    /// bootstrap reports the spelling it read; this value only records that it
+    /// is neither of the two the binding names.
+    pub const OTHER: u64 = 3;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryError
 {

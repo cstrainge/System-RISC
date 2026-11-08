@@ -17,6 +17,15 @@ pub const ALLOCATE: u32 = 7;
 /// Privileged driver asserts device-specific completion before explicit release.
 /// Owner cleanup instead requires the Device Manager's actual reset ACK.
 pub const FREE_COMPLETED: u32 = 8;
+/// The firmware power conduit the machine's tree declares, as
+/// `mac_abi::boot::conduit` encodes it.
+///
+/// A node that describes a function states no register window, so it is not a
+/// device any driver can match or claim. This reports the boot fact the machine
+/// declared for the one interface of that kind the System consumes today; the
+/// driver decides whether it implements the conduit, and a machine that declares
+/// none reports `NONE` rather than failing this call.
+pub const CONDUIT: u32 = 9;
 pub const ALLOCATION_BYTES: usize = 32;
 pub const DESCRIPTION_BYTES: usize = 52;
 pub const MAPPING_BYTES: usize = 24;
@@ -64,7 +73,7 @@ pub fn virtio_identity(register_bytes: u64, read: impl Fn(usize) -> u32) -> Opti
 /// its explicit request ticket until hardware acknowledges quiescence.
 pub const fn synchronous(operation: u32) -> bool
 {
-    matches!(operation, PROBE | CLAIM | MAP | UNMAP | RELEASE | COUNT | FREE_COMPLETED)
+    matches!(operation, PROBE | CLAIM | MAP | UNMAP | RELEASE | COUNT | FREE_COMPLETED | CONDUIT)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

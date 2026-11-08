@@ -69,6 +69,17 @@ fn fatal(arguments: core::fmt::Arguments<'_>) -> !
     }
 }
 
+/// Report one bounded diagnostic from a driver.
+///
+/// The message reaches System's serial record. It allocates nothing and takes
+/// no registry lock, so it is usable from initialization and from a request
+/// callback; it is a diagnostic rather than a completion path, and the caller
+/// still returns its real status. Host builds discard it.
+pub fn report(arguments: core::fmt::Arguments<'_>)
+{
+    diagnostic(arguments);
+}
+
 /// One bounded formatter for panic/failure and retained cleanup diagnostics.
 /// Native output allocates no memory and takes no SDK/resident registry lock.
 pub(crate) fn diagnostic(arguments: core::fmt::Arguments<'_>)

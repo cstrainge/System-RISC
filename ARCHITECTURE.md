@@ -148,8 +148,8 @@ Finder. Background applications retain independently scheduled execution.
 
 New hardware drivers default to external packages in `System Folder/Drivers`.
 Applications request System services; resident policy selects driver interfaces
-by capability and contract rather than package names. The power service and
-external Qemu Power Device are described in [POWER.md](docs/POWER.md), including
+by capability and contract rather than package names. The power service and the
+external power controllers are described in [POWER.md](docs/POWER.md), including
 durability barriers and the remaining coordinated application-quit gate.
 
 CPU addresses and DMA bus addresses are separate contracts. The native bus

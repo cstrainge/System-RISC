@@ -1,12 +1,13 @@
-//! Audited MMIO boundary for an exclusively claimed SiFive test controller.
-//! Hardware protocol: QEMU v10.1.0 hw/misc/sifive_test.c and
-//! include/hw/misc/sifive_test.h (FINISHER_PASS / FINISHER_RESET).
+//! Audited MMIO boundary for an exclusively claimed SiFive test finisher.
+//! Hardware protocol: the `sifive,test` finisher, whose pass and reset commands
+//! are 0x5555 and 0x7777; QEMU v10.1.0 hw/misc/sifive_test.c and
+//! include/hw/misc/sifive_test.h are the implementation this was written from.
 #![allow(unsafe_code)]
 use mac_driver::{Client, Error, Result,
-                 devices::{DeviceService, interface}};
+                 devices::{DeviceService, interface},
+                 power::Hardware};
 use mac_power_interface::Action;
 
-use super::Hardware;
 pub struct Device
 {
     service:   DeviceService,

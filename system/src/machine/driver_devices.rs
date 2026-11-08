@@ -318,6 +318,15 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
     let owner = drivers::module_authority(caller)?;
     match operation
     {
+        wire::CONDUIT =>
+        {
+            if !input.is_empty() || output.len() < 8
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            output[..8].copy_from_slice(&platform_devices::power_conduit().to_le_bytes());
+            Ok(8)
+        }
         wire::COUNT =>
         {
             if !input.is_empty() || output.len() < 4

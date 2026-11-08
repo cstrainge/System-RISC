@@ -42,6 +42,22 @@ impl DeviceService
         Ok(u32::from_le_bytes(output))
     }
 
+    /// The firmware power conduit the machine's tree declares, as
+    /// `mac_abi::boot::conduit` encodes it.
+    ///
+    /// A function the machine declares has no register window, so there is no
+    /// device to match or claim: the resident reports what the boot read out of
+    /// the tree, and the caller decides whether it implements that conduit.
+    pub fn power_conduit(self) -> Result<u64>
+    {
+        let mut output = [0; 8];
+        if self.synchronous(wire::CONDUIT, &[], &mut output)? != output.len()
+        {
+            return Err(Error(BAD_ABI));
+        }
+        Ok(u64::from_le_bytes(output))
+    }
+
     pub fn claim(self, ordinal: u32) -> Result<Description>
     {
         self.describe(wire::CLAIM, ordinal)

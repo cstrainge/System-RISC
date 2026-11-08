@@ -1345,6 +1345,7 @@ dependencies = [
  "mac-device-interface",
  "mac-file-source-interface",
  "mac-module",
+ "mac-power-interface",
  "mac-scheduler-interface",
  "spinning_top",
 ]
@@ -1972,13 +1973,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pxfm"
-version = "0.1.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
-
-[[package]]
-name = "qemu-power-device"
+name = "psci-power"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
@@ -1987,6 +1982,12 @@ dependencies = [
  "mac-power-interface",
  "spinning_top",
 ]
+
+[[package]]
+name = "pxfm"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "quickdraw-test"
@@ -2468,6 +2469,17 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "sifive-test-power"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-power-interface",
+ "spinning_top",
+]
 
 [[package]]
 name = "signal-hook"

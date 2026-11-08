@@ -13,6 +13,7 @@
 //! to a compiled-in window.
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use mac_abi::BootInfo;
 use mac_devicetree::{Node, Tree};
@@ -226,6 +227,27 @@ pub(crate) fn retain_inventory() -> Result<(), Refusal>
     Ok(())
 }
 
+/// The firmware power conduit the bootstrap read from the machine's own tree,
+/// as [`mac_abi::boot::conduit`] encodes it.
+///
+/// This is a boot fact rather than an enumeration. A `/psci` node describes a
+/// function and states no register window, so it is not a device a driver can
+/// match or claim; the resident relays what the machine declared and the power
+/// driver decides whether it implements that conduit.
+static POWER_CONDUIT: AtomicU64 = AtomicU64::new(mac_abi::boot::conduit::NONE);
+
+/// The declared conduit. An encoding this build does not know is reported as
+/// [`mac_abi::boot::conduit::OTHER`] so a driver refuses it by name instead of
+/// treating it as the absence of a conduit.
+pub(crate) fn power_conduit() -> u64
+{
+    let declared = POWER_CONDUIT.load(Ordering::Acquire);
+    if declared > mac_abi::boot::conduit::OTHER
+    {
+        return mac_abi::boot::conduit::OTHER;
+    }
+    declared
+}
 
 /// Check that the machine supplied a tree this kernel can read, and pin it.
 ///
@@ -247,6 +269,7 @@ pub(crate) unsafe fn admit(info: &BootInfo) -> Result<(), Refusal>
                }.map_err(|_| unreadable_tree())?;
     let tree = Tree::new(blob).map_err(|_| unreadable_tree())?;
     verify(&tree)?;
+    POWER_CONDUIT.store(info.power_conduit, Ordering::Release);
     TREE.call_once(|| tree);
     Ok(())
 }

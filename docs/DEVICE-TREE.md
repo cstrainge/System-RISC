@@ -263,6 +263,13 @@ size is refused rather than given a default, because one window must have one
 declaration and a second source could disagree with the first. A peripheral with
 no base describes a function rather than a window and is omitted.
 
+A function the System calls is therefore not in the inventory, and it must not be
+turned into an invented device to get it there. `/psci` is the current case: the
+node states a conduit and no registers, so the bootstrap reports the declaration
+as a boot fact (`BootInfo.power_conduit`) and the power driver decides whether it
+implements that conduit. The inventory stays what it is — the claimable windows —
+and a driver for a function is admitted by initializing, not by matching.
+
 A peripheral whose registers start part way into a page is the one case where a
 window is described at two granularities, and the two are tied together rather
 than left to agree by inspection. Its exact window lives in `hardware.devices`

@@ -1,7 +1,8 @@
 //! Terminal-only board failure/restart, independent of ordinary power drivers.
 //! Provenance: QEMU v10.1.0 hw/riscv/virt.c VIRT_TEST and
 //! include/hw/misc/sifive_test.h / hw/misc/sifive_test.c FINISHER_FAIL/RESET;
-//! the normal external qemu-power-device uses the same documented reset command.
+//! the normal external platform power driver uses the same documented reset
+//! command.
 //! Values/addresses come from the checked platform record. No callbacks, ROM
 //! logger, scheduler context, heap or locks are consulted. These terminal paths
 //! abandon execution; they do not claim M-D04 privileged-fault recovery.

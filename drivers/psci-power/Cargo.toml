@@ -1,12 +1,12 @@
 [package]
-name = "qemu-power-device"
+name = "psci-power"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 [features]
 guest = []
 [[bin]]
-name = "PlatformPowerController"
+name = "PsciPowerController"
 path = "src/main.rs"
 required-features = ["guest"]
 test = false

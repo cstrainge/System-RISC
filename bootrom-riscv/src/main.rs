@@ -537,7 +537,13 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
                           monitor:                 &monitor.directory,
                           monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT,
                           device_tree:             tree_address as *const u8,
-                          device_tree_bytes:       tree.total_size() };
+                          device_tree_bytes:       tree.total_size(),
+                          // This machine powers off through its finisher
+                          // register, which the external power driver claims as
+                          // a device, so it declares no firmware conduit. The
+                          // boot fact is stated rather than left to a default:
+                          // a machine that has no PSCI node says so.
+                          power_conduit:           mac_abi::boot::conduit::NONE };
     let info_virtual = root.cpu_address(PhysicalAddress((&info as *const BootInfo) as u64),
                                         size_of::<BootInfo>() as u64)?
                            .0;

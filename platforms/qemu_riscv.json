@@ -28,7 +28,7 @@
       "multi-scheduler-extension",
       "vhost-filesystem",
       "stuffit-filesystem",
-      "qemu-power-device"
+      "sifive-test-power"
     ],
     "folders": {
       "applications": "Applications",
