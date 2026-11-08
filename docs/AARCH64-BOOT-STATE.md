@@ -321,6 +321,39 @@ table linearly (`crates/mac-formats/src/relocation.rs::patches`, at most 65536
 records) and that work is inside the 12.4 ms `image` phase above. The GOT fix
 cannot be timed here because it never runs here.
 
+### Where the second goes, one level down
+
+The two largest items were then split again, because the first answer —
+"the 4 MiB stack" — turned out to be wrong:
+
+| sub-phase | guest time | what it is |
+| --- | --- | --- |
+| `prep.context` | 0.8 ms | `ThreadContext` allocation |
+| `prep.slots` + `prep.tls` | 1.2 ms | TLS slot preparation and installation |
+| `prep.runtime` → `rt.entries` | 0.8 ms | find the image's runtime-entry resource |
+| **`prep.runtime` → `map.placed`** | **202 ms** | `Mapping::descriptor`: place the user service descriptor |
+| `stack.alloc.begin` → `.done` | **4.0-6.6 ms** | allocate **and zero all 4 MiB** of application stack |
+| `stack.cpu.done` | 1.1 ms | `SavedState` |
+| **`prep.stackmap` → `map.placed`** | **220 ms** | `Mapping::prepare` for the stack: place 4 MiB |
+| `prep.cpuinit` + `prep.core` | 1.7 ms | trap frame and `ThreadCore` |
+| `admit.publish` | 1.3 ms | publish the inert THRD row |
+| `backing.publish` | 1.2 ms | publish the stack PTEs |
+
+**The zero is not the cost.** `LAUNCH_PROBE_STACK bytes=4194304` names the
+extent and `stack.alloc.begin` → `stack.alloc.done` measures 4.0 ms of it: the
+resident zeroes the stack once, and the whole zero is under 1% of the freeze. The
+expensive half of `spawn_process` is `paging::user::Mapping`, twice, once for the
+service descriptor and once for the stack: 202 ms and 220 ms at `map.region` →
+`map.placed`, with `map.placed` → `map.registered` and the PTE publication each
+under 1.5 ms. Whatever it is, it is inside the free-address search, not in
+allocation, not in PTEs, and not in size — a 4 KiB descriptor mapping costs the
+same as a 4 MiB stack mapping.
+
+`clone_space` splits the same way: `LAUNCH_PROBE_CLONE` reports
+`alloc_ticks=20563 snapshot_ticks=23339` — 0.3 ms and 0.4 ms across all 29
+tables — so 155-190 ms is the 14,848-entry loop body and none of it is
+allocation or snapshotting.
+
 ### One defect found on the way, not the stall
 
 Screendumps show the desktop drawing at **1280x800** (`DISPLAY_MODE_CHANGED
