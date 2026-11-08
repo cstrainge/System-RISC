@@ -6,13 +6,14 @@ as the list of things fixed.
 
 ## Position
 
-`cargo xtask boot-check --platform qemu_arm64` runs two cases.
+`cargo xtask boot-check --platform qemu_arm64` is held to the same 19-case table
+as every platform. It does not currently run: the private SDK cannot build
+aarch64 `std`, so the build stops before any case starts (see *What still blocks
+`qemu_arm64`*). Built from the cached kernel-side stages instead, `raw-hfs-b`
+reaches `EMERGENCY_KIT_READY`, the native service table, `BOOT_FINDER_DOMAIN`
+and then refuses Finder's package as stale.
 
-- `no-disk` passes.
-- `raw-hfs-b` reaches `EMERGENCY_KIT_READY` and then faults in the machine
-  monitor's instruction publication, before the scanout is configured.
-
-The markers printed before the fault, in order:
+The markers printed, in order:
 
 ```
 BOOT_AARCH64_EL1_READY
@@ -31,12 +32,12 @@ EMERGENCY_KIT_READY services=terminal ...
 TRAPS_READY: resident ecall dispatcher ABI=1
 SYSTEM_LEASE_PROBE: ok
 System: native service table ready
-BOOT_FINDER_DOMAIN app=4294967392
-SYSTEM_TRAP_NO_CONTROL hart=0000000080000000 ESR=0000000096000046 \
-ELR=ffffffd00034bda4 FAR=0000000000000002 ...
+BOOT_FINDER_DOMAIN app=4294967394
+FINDER_IMAGE_REFUSED: native ABI layout differs; rebuild System and all native packages
 ```
 
-AArch64 has never reached `DESKTOP_READY` in this environment.
+AArch64 has never reached `DESKTOP_READY` — or `FINDER_FOLDER_LAYOUT`, the
+marker the `raw-hfs-b` case actually requires — in this environment.
 
 `qemu_riscv` passes 19/19 and is the gate that matters for landing.
 
@@ -604,29 +605,128 @@ after input has already succeeded.
 
 The emergency kit is accepted and the boot reaches `BOOT_FINDER_DOMAIN`. It used
 to fault there in monitor instruction publication, at VA `2`; that fault is gone.
-The boot now continues through `FONTS_READY` and stops on an application
-instruction fetch:
+It then faulted on the first dynamically mapped definition, and that fault is
+gone too (see the next section). The boot now refuses Finder's package:
 
 ```
-SYSTEM_TRAP_NO_CONTROL hart=0000000080000000 ESR=0000000086000005 ELR=00000000430fd000 FAR=00000000430fd000 VBAR=ffffffd000201800 TTBR0=0001000040007000 TTBR1=0000000040007000 SP=ffffffd0103de500 LR=ffffffd00027b3b4 SCTLR=0000000000c5183d
+BOOT_FINDER_DOMAIN app=4294967394
+FINDER_IMAGE_REFUSED: native ABI layout differs; rebuild System and all native packages
 ```
 
-`ESR` decodes as `EC=0x21` (instruction abort from a lower exception level) with
-`DFSC=0x05` (translation fault, level 1); `FAR=ELR=0x430fd000` is the address
-that was fetched. It lies in the application image window, `0x3000` below the
-record's `virtual_memory.application_relocation_base` (`0x43100000`), and it is
-unmapped in the root the faulting application was running under. This is a
-second, independent defect in the aarch64 application mapping or in the code that
-transferred control there; it was previously hidden behind the monitor fault and
-is **not** diagnosed here. `raw-hfs-b` on `qemu_arm64` therefore still fails, on
-the readiness marker timing out behind this trap.
+That refusal is `Descriptor::decode` (`crates/mac-code-resource/src/lib.rs:67`)
+rejecting the package's `NATIVE_LAYOUT_FINGERPRINT`. It is correct: the aarch64
+application packages in the build predate a change to `SystemServices` and must
+be rebuilt. It is also **not** the fault this section used to describe, and it is
+not a workaround target — the check stays.
 
-Nothing was done to make the marker appear. The fatal `start_services` path is
+Nothing was done to make a marker appear. The fatal `start_services` path is
 unchanged: a missing framebuffer on a machine whose record declares one is still
 a refused boot, and `BOOT_EMERGENCY_KIT_REJECTED` is still fatal. The boot passes
 that check because a framebuffer is now found, not because the check was relaxed.
 
+## The fetch at `0x430fd000` was a table index, not a placement
+
+The old report read this fault as the application: `0x3000` below
+`virtual_memory.application_relocation_base`. That reading was wrong in a way
+worth recording, because two numbers lined up and neither of them was the
+application.
+
+**It is the Progress Bar CDEF, and its placement and its entry agree exactly.**
+Both state `0x430fd000`:
+
+* `system/src/toolbox/resources/definitions.rs:732` places every definition
+  top-down: `base = DEFINITION_LIMIT - extent`. The CDEF's linked span is
+  `0x3000` (`CDEF_PROGRESS_BAR`: entry `0x42100000`, `.rodata` at `+0x2000`, end
+  `0x42020af`), so `base = 0x43100000 - 0x3000 = 0x430fd000`. For this record
+  `DEFINITION_LIMIT` and `application_relocation_base` are the same number,
+  `0x43100000`, which is what made the two look like one window.
+* `system/src/machine/paging/modules.rs:1011` records `plan.entry()`, which is
+  `base + (descriptor.entry - descriptor.load_base)` — `0x430fd000`.
+
+What disagreed was the table the mapping was written into.
+`system/src/machine/aarch64/page_layout.rs::index` indexed `leaf_sizes()` with a
+level counted from the finest leaf, and this format writes that list
+largest-first — `[1 GiB, 2 MiB, 4 KiB]`. So `index(addr, 2)` returned the 4 KiB
+index and `index(addr, 0)` returned the 1 GiB index: the root slot was written at
+entry `253` and the leaves at index `1` of the level-3 table, while the walk reads
+root entry `1`. Every page of the definition collided into one slot.
+
+Measured in the guest before the fix, by reading the kernel root through the
+QEMU monitor (`xp /512gx 0x40007000`, TTBR0 taken from the trap report):
+
+```
+root[1]   = 0            <- what the walk reads
+root[253] = 0x40917003   <- where the level-2 branch was written
+0x40918000[1] = 0x00600000409167c3   <- the only leaf, at the 1 GiB index
+```
+
+`0x86000005` decodes as `EC=0x21`, which is an instruction abort taken *without a
+change of exception level* (Linux's `ESR_ELx_EC_IABT_CUR`); `-d int` agrees —
+`Taking exception 3 [Prefetch Abort] on CPU 0 ...from EL1 to EL1`. Earlier
+readings of this syndrome as "from a lower exception level" were the inverted
+EC table, not a different fault.
+
+**The fix is one statement of level to leaf size.** `index` now asks the shared
+geometry for the leaf, `PageLayout::leaf_at(level)`, which counts from the finest
+leaf and is already what `MappingPlan`, `pages/mapping.rs` and `pages/walk.rs`
+use. RISC-V's adapter (`Sv39::index`) always counted from the finest leaf, which
+is why `qemu_riscv` was green while `qemu_arm64` was not: the two adapters
+disagreed about what `level` means, and nothing compared them.
+
+The index arithmetic, computed with the real crates on the host for
+`0x430fd000`:
+
+```
+level 0: leaf_sizes()[0]=0x40000000 index=0x1     leaf_at(0)=0x1000   index=0xfd
+level 1: leaf_sizes()[1]=0x200000   index=0x18    leaf_at(1)=0x200000 index=0x18
+level 2: leaf_sizes()[2]=0x1000     index=0xfd    leaf_at(2)=0x40000000 index=0x1
+```
+
+**What this does not establish.** No aarch64 definition has yet been *executed*
+after the fix, because the boot now stops earlier, on Finder's stale package.
+The mapping is the only thing changed, and the fault it removes is the only
+evidence for it; the definition path still needs a boot that gets past Finder
+admission to be called proven.
+
+## What still blocks `qemu_arm64`
+
+Three defects stand between this boot and `FINDER_FOLDER_LAYOUT`, none of them in
+the mapping code. They were found while trying to run the case table and are
+recorded with their exact sites.
+
+1. **`mac-system` did not compile for aarch64 at all.** `Registry::execution_handlers`
+   was `#[cfg(target_arch = "riscv64")]` (`system/src/drivers/registry.rs:1191`)
+   while its caller, `system/src/drivers/runtime.rs:986`, is shared code. The
+   method is architecture-neutral and its empty result is already the documented
+   "no execution provider" case (`system/src/toolbox/processes/execution.rs:13`),
+   so the gate was deleted rather than the caller. This is the same defect shape
+   as the RAMFB binding: an architecture gate stranding shared code.
+2. **The private SDK cannot build aarch64 `std`.**
+   `platforms/rust/library/std/src/sys/pal/systemrisc/native_tls.rs:11` selects a
+   machine thread-pointer adapter only for `riscv64` and emits
+   `compile_error!` otherwise. `sdk::prerequisites` builds `std` for the
+   platform's `std_target`, so `cargo xtask boot-check --platform qemu_arm64`
+   stops there before it builds anything, and the application packages cannot be
+   regenerated against the current fingerprint. An aarch64 adapter is
+   `TPIDR_EL0`, not a general register.
+3. **The aarch64 trap frame does not carry `TPIDR_EL0` or `x30`.**
+   `TrapFrame::registers` is `x0..x29` and `system/src/machine/aarch64/trap_entry.S`
+   neither saves nor restores `x30`; `TPIDR_EL0` is not touched anywhere in
+   `system/`. RISC-V's user thread pointer is `tp`, which is `registers[4]`, so it
+   survives a trap for free — the aarch64 port has no equivalent. Saving
+   `TPIDR_EL0` is a prerequisite for `std` TLS, and losing `x30` across a trap
+   breaks any preempted user function, so both belong to one thread-context
+   change rather than to a TLS-only patch. The floating-point/NEON state is in
+   the same position, and user code is built with `+neon`.
+
 ## Not attempted, deliberately
+
+An aarch64 thread context. Saving `TPIDR_EL0`, `x30` and the floating-point/NEON
+state across a trap is one change with one owner — the thread/std boundary — and
+it is a prerequisite for `std` TLS and for preempting user code at all, not for
+the mapping fix. It is listed under *What still blocks `qemu_arm64`* rather than
+started here, because a TLS-only patch would compile while leaving the frame
+lossy and would make the next reader believe the context was complete.
 
 A typed wrapper that makes a firmware pointer unusable without the switch. The
 `cfg` fix makes the invariant hold by construction for every `firmware_call`;
