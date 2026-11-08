@@ -11,7 +11,8 @@ mod families;
 #[doc(hidden)]
 pub mod validation;
 pub use families::{Button, ButtonKind, CaptionMode, Highlight, Progress, ProgressRange,
-                   ProgressStyle, Reply, Scrollbar, Splitter, Table};
+                   ProgressStyle, Reply, Scrollbar, Separator, SeparatorOrientation, Splitter,
+                   Table};
 /// Generate the CDEF entry and panic scaffold for the family named by `Message`.
 pub use mac_definition_macros::cdef_main;
 pub use toolbox_controls::Part;
@@ -19,7 +20,7 @@ pub use toolbox_controls::Part;
 #[doc(hidden)]
 pub mod runtime;
 #[doc(hidden)]
-pub use binding::{buttons_entry, progress_entry, scrollbar_entry, splitter_entry,
+pub use binding::{buttons_entry, progress_entry, scrollbar_entry, separator_entry, splitter_entry,
                   static_text_entry, table_entry};
 pub use mac_abi::{INLINE_STRING_BYTES, quickdraw::FontSelection, theme::Palette as Theme};
 pub use mac_traps::{Error, Result};

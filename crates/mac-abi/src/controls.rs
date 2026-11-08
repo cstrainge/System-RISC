@@ -46,16 +46,22 @@ pub const CHANGED: u32 = 16;
 
 /// Native CDEF state validation before retained drawing; no surface required.
 pub const VALIDATE_DEFINITION: i16 = 5;
+
 /// System CDEF resource IDs occupy 0..=127. Procedure IDs use the classic
 /// encoding: resource ID in the upper bits, variation in the low four bits.
 pub const CDEF_PROGRESS_BAR: i16 = 5;
 pub const CDEF_STATIC_TEXT: i16 = 18;
 pub const CDEF_TABLE: i16 = 27;
 pub const CDEF_SPLITTER: i16 = 28;
+pub const CDEF_SEPARATOR: i16 = 29;
 pub const PROGRESS_BAR_PROCEDURE: i16 = CDEF_PROGRESS_BAR << 4;
 pub const STATIC_TEXT_PROCEDURE: i16 = CDEF_STATIC_TEXT << 4;
 pub const TABLE_PROCEDURE: i16 = CDEF_TABLE << 4;
 pub const SPLITTER_PROCEDURE: i16 = CDEF_SPLITTER << 4;
+pub const SEPARATOR_PROCEDURE: i16 = CDEF_SEPARATOR << 4;
+/// Separator instance orientation; flags zero draws a horizontal rule.
+pub const SEPARATOR_VERTICAL: i16 = 1;
+
 /// Native progress presentation flag, independent of the classic procedure.
 /// Procedure 81 belongs to the Appearance relevance bar, not monochrome mode.
 pub const PROGRESS_MONOCHROME: i16 = 1;

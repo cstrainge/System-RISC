@@ -5,8 +5,8 @@
 use mac_abi::{controls, definitions::ControlDefinitionState};
 
 use crate::{Error, Result,
-            families::{ButtonFamily, Family, ProgressFamily, ScrollbarFamily, SplitterFamily,
-                       StaticFamily, TableFamily}};
+            families::{ButtonFamily, Family, ProgressFamily, ScrollbarFamily, SeparatorFamily,
+                       SplitterFamily, StaticFamily, TableFamily}};
 
 pub fn standard(id: i16, variation: i16, state: &ControlDefinitionState) -> Result<()>
 {
@@ -36,6 +36,11 @@ pub fn standard(id: i16, variation: i16, state: &ControlDefinitionState) -> Resu
         {
             SplitterFamily::variation(variation)?;
             SplitterFamily::decode(state, variation).map(|_| ())
+        }
+        controls::CDEF_SEPARATOR =>
+        {
+            SeparatorFamily::variation(variation)?;
+            SeparatorFamily::decode(state, variation).map(|_| ())
         }
         _ => Err(Error::NotSupported)
     }

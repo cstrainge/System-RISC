@@ -224,7 +224,8 @@ fn standard_definition(procedure: i16) -> Result<i16, Status>
         | PROGRESS_BAR_PROCEDURE
         | STATIC_TEXT_PROCEDURE
         | TABLE_PROCEDURE
-        | SPLITTER_PROCEDURE => Ok(procedure >> 4),
+        | SPLITTER_PROCEDURE
+        | SEPARATOR_PROCEDURE => Ok(procedure >> 4),
         _ => Err(NOT_SUPPORTED)
     }
 }

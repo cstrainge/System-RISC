@@ -1,6 +1,10 @@
 //! Native control-family values and their private wire codecs.
 use mac_abi::{controls, definitions::ControlDefinitionState};
 
+mod separator;
+pub(crate) use separator::SeparatorFamily;
+pub use separator::{Separator, SeparatorOrientation};
+
 use crate::{Alignment, Error, FontSelection, Part, Rect, Result, StaticText};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonKind

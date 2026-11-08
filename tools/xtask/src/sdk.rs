@@ -1167,6 +1167,14 @@ pub(super) fn applications(workspace: &Workspace, apps: &[App]) -> Result<Vec<Va
            .env_remove("SR_CARGO_ARTIFACT_DIR")
            .stdout(Stdio::piped());
 
+    // `sdk app MANIFEST` may name a standalone workspace with a package
+    // name also used by an installed app. Select that manifest explicitly;
+    // choosing only --package would silently build the checkout's copy.
+    if apps.len() == 1
+    {
+        command.arg("--manifest-path").arg(&apps[0].manifest);
+    }
+
     for app in apps
     {
         command.args(["--package", &app.package]);
