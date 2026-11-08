@@ -261,6 +261,10 @@ also the host clock.
 
 ### The desktop paints nothing for about a second
 
+Numbers in this subsection and the next two were taken on `5782a4ab`, before the
+machine's peripheral inventory was retained; the same instrument on `main` is in
+"The cause, and what it costs on `retain_inventory`" below.
+
 | launch | paint gap (host clock) |
 | --- | --- |
 | Control Suite, run A | 1036 ms |
@@ -353,6 +357,61 @@ same as a 4 MiB stack mapping.
 `alloc_ticks=20563 snapshot_ticks=23339` — 0.3 ms and 0.4 ms across all 29
 tables — so 155-190 ms is the 14,848-entry loop body and none of it is
 allocation or snapshotting.
+
+### The cause, and what it costs on `retain_inventory`
+
+`LAUNCH_PROBE_PLACE` was then put on both sides of the three placement scans in
+one launch. Every one of them spent its whole interval in the same loop:
+
+| placement | steps | total ticks | of which the device loop |
+| --- | --- | --- | --- |
+| user service descriptor (4 KiB) | 2 | 11,723,444 (187 ms) | 11,648,619 (186 ms) |
+| application stack (4 MiB) | 3 | 14,628,875 (234 ms) | 14,550,181 (233 ms) |
+| a later definition mapping (64 KiB) | 3 | 23,795,225 (381 ms) | 23,724,381 (380 ms) |
+
+That loop is
+
+```rust
+for index in 0..platform_devices::count()
+{
+    let Some(device) = platform_devices::get(index) else { continue };
+```
+
+and both queries answered from the tree directly: `count()` walked every node,
+and so did each `get()`, re-resolving each node's window and interrupt through
+`classify` and `interrupt_of`. So the idiom cost `n + 1` full tree walks, every
+caller in the tree used it, and `clone_space` paid the same walk through
+`keep_low` for every entry whose window overlapped the application range. One
+fact — the machine's peripheral list — was stated twice: once as the admission
+enumeration the module documents ("resolves each declared identity … once, at
+admission, and publishes the result"), and once as a fresh walk per query. That
+is why two phases that look unrelated, placing a mapping and copying a page-table
+hierarchy, collapsed together when the queries became cheap.
+
+Main now retains that inventory at boot: `retain_inventory()`
+(`system/src/machine/platform_devices.rs:180`) is called from
+`system/src/kernel.rs:1547` right after heap initialisation, and `count()` and
+`get()` answer from the retained list in O(1), falling back to a tree walk only
+before retention. The numbers above were taken before that landed; these were
+taken on it, four runs of the same launch with the same instrument:
+
+| phase | before (`5782a4ab`) | on `retain_inventory` (four runs) |
+| --- | --- | --- |
+| `clone_space` (29 tables) | 156-220 ms | **2.2, 3.0, 3.1, 3.6 ms** |
+| `spawn_process` | 315-485 ms | **7.6, 9.9, 10.3, 12.3 ms** |
+| `LAUNCH` trap → thread started | 562-816 ms | **88, 128, 130, 149 ms** |
+| click → first painted change | 938-1329 ms | **252, 256, 355, 461 ms** |
+
+The longest interval in which nothing was painted across those four runs is
+**283 ms**; in the other three the window appeared between frames, so paint never
+stopped for two consecutive 89 ms samples.
+
+What is left is ordinary work, and only what was measured is claimed: the HFS
+read of the application's resource fork 20-23 ms, admission plus image load plus
+`clone_space` 24-41 ms, desktop activation 26-59 ms, and the new application's
+own startup to its first paint, which is the interval between `started` and the
+first painted change. That tail was not split further, because splitting it
+would mean instrumenting application code rather than the launch path.
 
 ### One defect found on the way, not the stall
 
