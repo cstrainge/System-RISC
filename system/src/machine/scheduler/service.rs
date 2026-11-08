@@ -232,6 +232,15 @@ pub(crate) fn enter_ecall(frame: &TrapFrame) -> Result<Entry, Status>
     {
         if original != Call::new(frame)
         {
+            let identity = thread.core.context.identity();
+            serial!("EXITDIAG_STALE_ECALL app={} thread={} number={} original_pc={:#x} \
+                     call_pc={:#x} original_number={}",
+                    identity.app.0,
+                    identity.thread.0,
+                    abi::number(frame),
+                    original.pc,
+                    abi::call_site(frame),
+                    original.number);
             return Err(ACCESS_DENIED);
         }
         if !hart.is_primary()

@@ -1572,6 +1572,71 @@ today. The line that made this diagnosable at all — `USER_FAULT_CAPTURED` — 
 added in the same change, because until then a fault named no cause, PC or
 address anywhere in the serial record.
 
+## Measured: an aarch64 replay resumes four bytes past its `svc`
+
+The question was where a woken aarch64 thread resumes when the service it was
+parked inside asks to be replayed. It resumes at the instruction **after** the
+`svc`, not at the `svc`. That is the defect.
+
+A parked service call is not completed when the thread is parked. The dispatcher
+returns `RequestAction::Replay` and `Dispatch::Schedule` after recording
+`state.service.ecall = Some(Call::new(frame))`, and the thread is switched out
+holding its own `TrapFrame`. Nothing commits a result and nothing advances the
+frame: the shared contract is that the woken thread **re-executes the call
+instruction**, and the service runs again. On RISC-V that holds for free. The
+entry stores `sepc`, which names the `ecall` itself, and `trap_frame::advance`
+adds four only when a call actually completes.
+
+AArch64's `ELR_EL1` names the instruction *after* the `svc`, and its `advance`
+is a deliberate no-op for that reason. So the parked frame's `pc` is already
+`call_site + 4`. `abi::call_site(frame)` recovers the call instruction, but only
+as an identity for `Call::new`; nothing ever moves the resume address back.
+
+Measured with a one-line diagnostic at the replay park, on
+`cargo xtask boot-check --platform qemu_arm64` at `79bb1826`:
+
+```
+PIPES_PROBE_WRITER_ARMED
+EXITDIAG_REPLAY number=65583 pc=0x400c7c call_site=0x400c78 prior_depth=0
+PIPES_PROBE_WRITER_PARKED
+PIPES_PROBE_MAKE_ROOM
+EXITDIAG_REPLAY number=65578 pc=0x41be2c call_site=0x41be28 prior_depth=0
+USER_FAULT_CAPTURED app=4294967394 thread=4294967495 cause=4060086272 pc=0x41c550 address=0x0 status=0x80000000
+```
+
+`65583` is `PIPES` and `65578` is `NATIVE_THREAD` (`crates/mac-abi/src/traps.rs`):
+the child parks in its blocking pipe write, and the creating thread parks in
+`Thread::join`. In both, `pc` is exactly `call_site + 4`. Two runs of the same
+case produced the same two pairs with the same four-byte difference.
+
+The consequence is the record the previous section describes. The woken thread
+does not re-execute the call, so `state.service.ecall` is never completed, and
+the thread carries an outstanding call obligation it can no longer satisfy.
+Every later call then reaches `enter_ecall` with `original != Call::new(frame)`.
+That test exists precisely to refuse a mismatched obligation with
+`ACCESS_DENIED`, and it is the one branch that can refuse a call before any
+service body runs — which is why nothing between the wake and the fault reaches
+the serial record: the thread's own diagnostics are service calls, and they are
+refused too. It ends at the `BRK` in `emergency::exit_returned`, exactly as
+`USER_FAULT_CAPTURED` reports.
+
+This also names the desktop symptom. An application that quits after any service
+parked it cannot complete its own exit, because the exit is one more service
+call. The same refusal explains a Finder window close that stops responding.
+
+The fix is one shared step at the park points: before `Dispatch::Schedule` for a
+replay, move the frame back to `call_site(frame)`. On RISC-V that is a no-op,
+because `pc` already names the `ecall`; on AArch64 it rewinds the four bytes. The
+`svc` then re-traps, the entry re-establishes `pc = ELR_EL1`, and a call that
+completes advances exactly as it does today.
+
+What this does not yet establish: the exact refusal site. The stale-`Call`
+diagnostic in `enter_ecall` did not fire in this run, so the refused call may be
+rejected by an earlier check (`matching_frame`/`WRONG_THREAD`, or the
+`prior_depth` refusal) before that test is reached. The resume address, which is
+the defect, is measured; the terminal refusal that follows it is inferred from
+the code and not yet instrumented.
+
 ## Not attempted, deliberately
 
 The floating-point/NEON part of an aarch64 thread context. `TPIDR_EL0` and `x30`

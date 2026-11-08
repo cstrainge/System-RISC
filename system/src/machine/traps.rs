@@ -656,6 +656,11 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     if action == crate::machine::scheduler::service::RequestAction::Replay
     {
         retain_user_call(user_call.take());
+        serial!("EXITDIAG_REPLAY number={} pc={:#x} call_site={:#x} prior_depth={}",
+                number,
+                frame.pc,
+                abi::call_site(frame),
+                frame.prior_depth);
         // Every Call/executor/manager borrow has ended. The original PC and
         // request identity remain owned by this same canonical continuation.
         return Dispatch::Schedule;
