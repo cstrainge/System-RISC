@@ -20,6 +20,8 @@
 use core::arch::global_asm;
 
 use crate::machine::traps::{CPU_SLOTS, TrapFrame, hart};
+use crate::machine::trap_frame::{EXCEPTION_FIQ, EXCEPTION_IRQ, EXCEPTION_SERROR,
+                                 EXCEPTION_SYNCHRONOUS};
 
 global_asm!(include_str!("trap_entry.S"),
     frame_bytes=const core::mem::size_of::<TrapFrame>(),
@@ -32,6 +34,11 @@ global_asm!(include_str!("trap_entry.S"),
     registers=const core::mem::offset_of!(TrapFrame,registers),
     thread_pointer=const core::mem::offset_of!(TrapFrame,thread_pointer),
     link_register=const core::mem::offset_of!(TrapFrame,link_register),
+    exception=const core::mem::offset_of!(TrapFrame,exception),
+    exception_synchronous=const EXCEPTION_SYNCHRONOUS,
+    exception_irq=const EXCEPTION_IRQ,
+    exception_fiq=const EXCEPTION_FIQ,
+    exception_serror=const EXCEPTION_SERROR,
     ctl_entering=const core::mem::offset_of!(hart::Control,entering),
     ctl_depth=const core::mem::offset_of!(hart::Control,depth),
     ctl_frames=const core::mem::offset_of!(hart::Control,frames),

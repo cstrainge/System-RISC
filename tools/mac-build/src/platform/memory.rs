@@ -561,7 +561,7 @@ impl Checked
     /// emitted as zero. Zero means "no such window", which is what makes shared
     /// device and memory code find nothing to act on - the truth for such a
     /// board - instead of needing a board or architecture test.
-    fn absent_bootstrap_io() -> [(&'static str, u64); 9]
+    fn absent_bootstrap_io() -> [(&'static str, u64); 11]
     {
         [("UART_BASE", 0),
          ("RTC_BASE", 0),
@@ -571,6 +571,8 @@ impl Checked
          ("VIRTIO_MMIO_STRIDE", 0),
          ("VIRTIO_MMIO_SLOTS", 0),
          ("VIRTIO_INTERRUPT_BASE", 0),
+         ("INTERRUPT_CONTROLLER_BASE", 0),
+         ("INTERRUPT_CONTROLLER_BYTES", 0),
          ("CONSOLE_KIND", CONSOLE_KIND_NONE)]
     }
 

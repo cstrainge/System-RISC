@@ -52,19 +52,31 @@ pub(super) struct Definition
     rtc:         Option<Region>,
     #[serde(default)]
     clint:       Option<Region>,
+    /// The extent the machine's interrupt controller occupies, when the resident
+    /// path has to program one before any interrupt can be delivered.
+    ///
+    /// The extent, not the register blocks: the machine's own tree states where
+    /// the distributor and the CPU interface sit inside it, and the kernel
+    /// checks that statement against this declaration rather than deriving one
+    /// address from the other. This window exists so the kernel root maps it at
+    /// all - an address the kernel cannot reach is a controller it cannot use,
+    /// whatever the tree says.
+    #[serde(default)]
+    interrupt_controller: Option<Region>,
     virtio_mmio: Virtio
 }
 #[derive(Debug)]
 pub(super) struct Checked
 {
-    uart:           Range<u64>,
-    rtc:            Option<Range<u64>>,
-    clint:          Option<Range<u64>>,
-    console:        ConsoleKind,
-    virtio:         Range<u64>,
-    stride:         u64,
-    slots:          u32,
-    interrupt_base: u32
+    uart:                 Range<u64>,
+    rtc:                  Option<Range<u64>>,
+    clint:                Option<Range<u64>>,
+    interrupt_controller: Option<Range<u64>>,
+    console:              ConsoleKind,
+    virtio:               Range<u64>,
+    stride:               u64,
+    slots:                u32,
+    interrupt_base:       u32
 }
 impl Definition
 {
@@ -79,6 +91,12 @@ impl Definition
         let rtc = self.rtc.as_ref().map(|r| region("bootstrap_io.rtc", r, page)).transpose()?;
         let clint =
             self.clint.as_ref().map(|c| region("bootstrap_io.clint", c, page)).transpose()?;
+        let interrupt_controller = self.interrupt_controller
+                                       .as_ref()
+                                       .map(|c| {
+                                           region("bootstrap_io.interrupt_controller", c, page)
+                                       })
+                                       .transpose()?;
         if clint.as_ref().is_some_and(|clint| clint.end - clint.start != 0x10000)
         {
             return Err(error("selected legacy CLINT window must cover exactly its 64 KiB \
@@ -107,7 +125,10 @@ impl Definition
         {
             windows.push(fw_cfg);
         }
-        windows.extend([Some(&uart), rtc.as_ref(), Some(&virtio), clint.as_ref()].into_iter().flatten());
+        windows.extend([Some(&uart), rtc.as_ref(), Some(&virtio), clint.as_ref(),
+                        interrupt_controller.as_ref()]
+                           .into_iter()
+                           .flatten());
         for (index, range) in windows.iter().enumerate()
         {
             if range.end > 1 << 56
@@ -129,6 +150,7 @@ impl Definition
         Ok(Checked { uart,
                      rtc,
                      clint,
+                     interrupt_controller,
                      console: self.uart.kind,
                      virtio,
                      stride,
@@ -150,6 +172,10 @@ impl Checked
          ("VIRTIO_MMIO_STRIDE", self.stride),
          ("VIRTIO_MMIO_SLOTS", u64::from(self.slots)),
          ("VIRTIO_INTERRUPT_BASE", u64::from(self.interrupt_base)),
+         ("INTERRUPT_CONTROLLER_BASE",
+          self.interrupt_controller.as_ref().map_or(0, |c| c.start)),
+         ("INTERRUPT_CONTROLLER_BYTES",
+          self.interrupt_controller.as_ref().map_or(0, |c| c.end - c.start)),
          ("CONSOLE_KIND", match self.console
          {
              ConsoleKind::Uart16550 => super::CONSOLE_KIND_16550,
@@ -165,7 +191,11 @@ impl Checked
         {
             windows.push(fw_cfg);
         }
-        windows.extend([Some(&self.uart), self.rtc.as_ref(), Some(&self.virtio), self.clint.as_ref()]
+        windows.extend([Some(&self.uart),
+                        self.rtc.as_ref(),
+                        Some(&self.virtio),
+                        self.clint.as_ref(),
+                        self.interrupt_controller.as_ref()]
                            .into_iter()
                            .flatten());
         for range in windows

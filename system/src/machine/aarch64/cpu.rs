@@ -123,19 +123,16 @@ pub(crate) fn breakpoint() -> !
     unsafe { core::arch::asm!("brk #0", options(noreturn)) };
 }
 
-/// Clears a pending software interrupt so re-entry cannot immediately retrap.
-pub(crate) fn clear_software_interrupt()
+/// Makes the source another hart would wake this one through deliverable.
+///
+/// This machine signals between harts through the interrupt controller, not
+/// through a per-hart pending bit, so the adapter that owns the controller
+/// enables the software-generated bank. The resident scheduler is single-hart
+/// and posts none of them; a hart that has been told it may be woken still has
+/// to have the source enabled, or the wake it waits for cannot arrive.
+pub(crate) fn admit_wake_source()
 {
-    // AArch64 reports a software-generated interrupt through the GIC, not a
-    // pending bit this layer owns; the distributor clear belongs to the
-    // interrupt controller adapter.
-}
-
-/// Unmasks the software-interrupt source, which the scheduler uses to admit a
-/// peer into idle.
-pub(crate) fn enable_software_interrupt()
-{
-    // As `clear_software_interrupt`: the GIC owns this, not the CPU interface.
+    super::gic::admit_wake_source();
 }
 
 /// The interrupt-enable register, whose bits say which sources can interrupt.

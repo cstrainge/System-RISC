@@ -195,7 +195,7 @@ pub(crate) fn prepare_primary_wake() -> Result<PrimaryWake, WakeError>
     // This runs once, SIE masked, before the first scheduled claim. Preserve
     // STIE and all other local interrupt enables; no epoch or self-IPI here.
     unsafe {
-        crate::machine::cpu::enable_software_interrupt();
+        crate::machine::cpu::admit_wake_source();
     }
     Ok(PrimaryWake { key,
                      entry })

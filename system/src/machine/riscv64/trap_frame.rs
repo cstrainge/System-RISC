@@ -8,13 +8,47 @@
 //! must step over. Every accessor is therefore the identity. The module exists
 //! so that the shared callers have one statement to read rather than a
 //! conditional of their own.
+//!
+//! Interrupts need no translation here either: `scause` states the kind in its
+//! own high bit and names the source in the low bits, so this module reads the
+//! two sources the scheduler acts on out of it and completes the software one,
+//! which is a pending bit this architecture owns.
 
-use crate::machine::traps::TrapFrame;
+use crate::machine::cpu;
+use crate::machine::traps::{Interrupt, TrapFrame};
+
+/// `scause` sets bit 63 for an interrupt and carries the code below it.
+const INTERRUPT_BIT: usize = 1 << 63;
+/// Supervisor software interrupt: a peer asking this hart to look at the
+/// scheduler.
+const CAUSE_SOFTWARE: usize = INTERRUPT_BIT | 1;
+/// Supervisor timer interrupt: the running quantum expired.
+const CAUSE_TIMER: usize = INTERRUPT_BIT | 5;
 
 /// The cause the shared dispatcher classifies: `scause` already names a call.
-pub(crate) fn cause(scause: usize, _from_user: bool) -> usize
+pub(crate) fn cause(frame: &TrapFrame) -> usize
 {
-    scause
+    frame.cause
+}
+
+/// The interrupt this frame was entered for, if it was entered for one.
+///
+/// The software source is a pending bit rather than a controller latch, so it is
+/// cleared here - before the wake is acknowledged, and before any frame
+/// reference survives into that acknowledgement - or the return would retrap
+/// immediately.
+pub(crate) fn interrupt(frame: &TrapFrame) -> Option<Interrupt>
+{
+    match frame.cause
+    {
+        CAUSE_SOFTWARE =>
+        {
+            cpu::clear_software_interrupt();
+            Some(Interrupt::Wake)
+        }
+        CAUSE_TIMER => Some(Interrupt::Preempt),
+        _ => None
+    }
 }
 
 /// The service number, which this architecture carries in `a7`.

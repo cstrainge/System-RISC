@@ -1,4 +1,4 @@
-//! The AArch64 statement of the shared trap-frame call contract.
+//! The AArch64 statement of the shared trap-frame contract.
 //!
 //! `machine::traps` and the scheduler describe a service call as a number, a
 //! request pointer, its byte length and a result, and they name the frame slots
@@ -12,14 +12,23 @@
 //! instruction after `svc`. This module is the one place that states that
 //! difference, so no shared caller names an architecture.
 //!
-//! Interrupt causes are deliberately absent. AArch64 delivers them through the
-//! GIC and never writes `ESR_EL1` for one, so the shared software-interrupt and
-//! timer comparisons cannot match an AArch64 frame. That is also why this board
-//! must not unmask IRQ yet: with a stale `ESR_EL1` still holding a call's
-//! exception class, an interrupt would be classified as a call. Recording the
-//! vector slot belongs with the GIC path in the multi-scheduler extension.
+//! It also answers what RISC-V answers with its cause word: which exception kind
+//! a frame came from, and what an interrupt means. An AArch64 interrupt writes no
+//! `ESR_EL1`, so the kind is recorded by the vector slot that took it and the
+//! source is read from the controller. The dispatcher is given an [`Interrupt`]
+//! and never compares a cause word to a bit pattern to decide whether a trap was
+//! an interrupt at all.
 
-use crate::machine::traps::TrapFrame;
+use crate::machine::gic;
+use crate::machine::traps::{Interrupt, TrapFrame};
+
+/// The vector slot's exception kind. The sixteen slots are four kinds from four
+/// sources, so the kind is the slot number modulo four, and the table states it
+/// per slot from these constants rather than from its own copy of the numbers.
+pub(crate) const EXCEPTION_SYNCHRONOUS: usize = 0;
+pub(crate) const EXCEPTION_IRQ: usize = 1;
+pub(crate) const EXCEPTION_FIQ: usize = 2;
+pub(crate) const EXCEPTION_SERROR: usize = 3;
 
 /// `ESR_EL1.EC`, the exception class, in bits 31:26.
 const EC_SHIFT: usize = 26;
@@ -27,22 +36,56 @@ const EC_MASK: usize = 0x3f;
 /// A supervisor call executed in AArch64 state.
 const EC_SVC_AARCH64: usize = 0x15;
 
+/// Whether this frame was taken from unprivileged execution.
+///
+/// `SPSR_EL1.A` is set in privileged execution and clear at EL0, which is the
+/// test the shared dispatcher already makes. It is not the architectural test -
+/// `SPSR_EL1.M[3:0]` is - and moving to that is its own change with its own
+/// owner, because `INITIAL_STATUS` and `USER_STATUS` are the words that would
+/// have to move with it.
+fn from_user(frame: &TrapFrame) -> bool
+{
+    frame.status & (1 << 8) == 0
+}
+
 /// The cause the shared dispatcher classifies.
 ///
 /// The dispatcher names the call cause it handles for each origin; AArch64
-/// reports a call as an exception class instead. Translate exactly that class
-/// and return every other `ESR_EL1` unchanged, so a genuine fault is still
-/// reported with the value the hardware produced.
-pub(crate) fn cause(esr: usize, from_user: bool) -> usize
+/// reports a call as an exception class instead. Translate exactly that class,
+/// and only from a synchronous trap: an IRQ, FIQ or SError writes no `ESR_EL1`,
+/// so the word in the frame is whatever the last synchronous trap left there,
+/// and reading it as an exception class is how an interrupt would be classified
+/// as a service call. Every other cause is returned unchanged, so a genuine
+/// fault is still reported with the value the hardware produced.
+pub(crate) fn cause(frame: &TrapFrame) -> usize
 {
-    if (esr >> EC_SHIFT) & EC_MASK == EC_SVC_AARCH64
+    if frame.exception != EXCEPTION_SYNCHRONOUS
     {
-        if from_user { 8 } else { 9 }
+        return frame.cause;
+    }
+    if (frame.cause >> EC_SHIFT) & EC_MASK == EC_SVC_AARCH64
+    {
+        if from_user(frame) { 8 } else { 9 }
     }
     else
     {
-        esr
+        frame.cause
     }
+}
+
+/// The interrupt this frame was entered for, if it was entered for one.
+///
+/// The source is read from the controller and completed there, so the caller
+/// never sees a half-serviced interrupt. A source nothing in the resident path
+/// enabled is still completed, and is reported as unhandled rather than as a
+/// tick.
+pub(crate) fn interrupt(frame: &TrapFrame) -> Option<Interrupt>
+{
+    if frame.exception != EXCEPTION_IRQ
+    {
+        return None;
+    }
+    Some(gic::service())
 }
 
 /// The service number, which this architecture carries in `x8`.

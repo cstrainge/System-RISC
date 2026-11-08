@@ -3,6 +3,7 @@
 use mac_abi::{traps::*, *};
 
 use crate::{machine::trap_frame as abi, toolbox};
+use core::sync::atomic::{AtomicBool, Ordering};
 mod state;
 mod definition_services;
 pub(crate) mod user;
@@ -45,7 +46,17 @@ pub(crate) struct TrapFrame
     /// Return link of the interrupted context. RISC-V holds it in `ra`, which
     /// is `registers[0]`; AArch64 holds it in `x30`, which the 30-slot file
     /// stops short of. Only the AArch64 entry writes this.
-    pub(crate) link_register:  usize
+    pub(crate) link_register:  usize,
+    /// Which of the architecture's exception kinds this frame was entered
+    /// through, in the architecture's own encoding.
+    ///
+    /// AArch64 needs it: an IRQ, FIQ or SError writes no `ESR_EL1`, so the
+    /// recorded cause alone cannot say whether the word in it belongs to this
+    /// exception. Without this field a stale exception class from the last
+    /// `svc` would make an interrupt look like a service call. RISC-V's
+    /// `scause` states the kind in the cause word itself, so its entry leaves
+    /// this zero and nothing reads it.
+    pub(crate) exception:      usize
 }
 // Integer offsets remain the assembly gate contract. The extended offsets and
 // fixed frame size are generated above from this one Rust representation.
@@ -272,27 +283,72 @@ enum Dispatch
     Schedule,
     Wake
 }
+
+/// An interrupt this machine delivered, named in terms the shared dispatcher
+/// acts on rather than in one architecture's cause encoding.
+///
+/// The architecture adapters produce these; nothing above them compares a cause
+/// word to a bit pattern to decide whether a trap was an interrupt. That
+/// comparison was RISC-V's `scause` vocabulary leaking into shared code, and it
+/// had no meaning on a machine whose interrupts carry no cause at all.
+pub(crate) enum Interrupt
+{
+    /// The running context's quantum expired: select again.
+    Preempt,
+    /// Another hart asked this one to look at the scheduler.
+    Wake,
+    /// A source nothing in the resident path enabled. It is completed and
+    /// reported, and it is neither a tick nor a fault.
+    Unhandled
+    {
+        number: u32
+    }
+}
+
+/// Whether an unhandled interrupt has already been reported. A stray source
+/// repeats until it is masked, and a terminal report would turn that into a dead
+/// machine while an unbounded log would bury the boot.
+static UNHANDLED_INTERRUPT_REPORTED: AtomicBool = AtomicBool::new(false);
+
 fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
 {
-    if frame.cause == (1usize << 63) | 1
+    // An interrupt is neither a call nor a fault, and the adapter answers which
+    // it is before any cause is decoded: on a machine whose interrupts write no
+    // cause register, reading the recorded cause as an exception class is how
+    // an interrupt comes to look like a service call.
+    match abi::interrupt(frame)
     {
-        // Clear the local hardware source before any ACK observation. No frame
-        // reference or trace/context guard may survive into that ACK.
-        crate::machine::cpu::clear_software_interrupt();
-        return Dispatch::Wake;
+        Some(Interrupt::Wake) => return Dispatch::Wake,
+        Some(Interrupt::Preempt) =>
+        {
+            #[cfg(feature = "event-trace")]
+            hart::observe_entry(frame as *mut TrapFrame as usize);
+            return Dispatch::Schedule;
+        }
+        Some(Interrupt::Unhandled { number }) =>
+        {
+            // The answer every other kernel gives to an interrupt no handler
+            // owns: say so once, complete it, and carry on. Nothing was armed
+            // for it, so there is no work to lose, and reporting it as a
+            // privileged fault would stop a machine that is otherwise healthy.
+            if !UNHANDLED_INTERRUPT_REPORTED.swap(true, Ordering::Relaxed)
+            {
+                serial!("SYSTEM_INTERRUPT_UNHANDLED: number={} pc=0x{:x}; completed and \
+                         ignored",
+                        number, frame.pc);
+            }
+            return Dispatch::Resume;
+        }
+        None => ()
     }
     #[cfg(feature = "event-trace")]
     hart::observe_entry(frame as *mut TrapFrame as usize);
-    if frame.cause == (1usize << 63) | 5
-    {
-        return Dispatch::Schedule;
-    }
 
     let user_origin = frame.status & (1 << 8) == 0;
     // The cause this architecture reports for a service call. A genuine fault
     // keeps the value the hardware produced, so a fault is never classified as
     // a call and a call is never classified as a fault.
-    let cause = abi::cause(frame.cause, user_origin);
+    let cause = abi::cause(frame);
     if user_origin && cause & (1usize << 63) == 0 && cause != 8
     {
         if frame.prior_depth != 0

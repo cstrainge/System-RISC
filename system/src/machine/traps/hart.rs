@@ -1089,7 +1089,7 @@ pub(crate) fn start_secondary(payload: *const (), bytes: usize) -> !
     // returns this real idle frame until core policy admits scheduling. The
     // scheduler enables STIE when it arms the first genuine local deadline.
     unsafe {
-        crate::machine::cpu::enable_software_interrupt();
+        crate::machine::cpu::admit_wake_source();
         proof.row.activity.resume(true);
         __system_start_frame(frame)
     }

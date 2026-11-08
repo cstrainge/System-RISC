@@ -125,3 +125,28 @@ pub(crate) fn disable()
         core::arch::asm!("csrci sstatus, 2", options(nostack));
     }
 }
+
+/// Nothing on this machine has to be programmed before a deadline can be
+/// delivered: the timer is a supervisor CSR (`stimecmp`), its interrupt is a
+/// pending bit in `sip`, and both are taken through `stvec` without a separate
+/// controller in the path. Admission therefore has nothing to configure and
+/// nothing it could refuse.
+///
+/// The type is stated rather than the function omitted so the shared bring-up
+/// reads the same on every machine instead of testing which one it is on.
+pub(crate) enum Refusal
+{}
+impl core::fmt::Display for Refusal
+{
+    fn fmt(&self, _: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match *self
+        {}
+    }
+}
+
+/// Nothing to bring up: see [`Refusal`].
+pub(crate) fn admit(_info: &mac_abi::BootInfo) -> Result<(), Refusal>
+{
+    Ok(())
+}

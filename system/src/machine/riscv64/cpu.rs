@@ -137,15 +137,23 @@ pub(crate) fn breakpoint() -> !
 }
 
 /// Clears a pending software interrupt so re-entry cannot immediately retrap.
+///
+/// This is the completion of the wake source on this machine: the interrupt is a
+/// pending bit in `sip` that this layer owns, so the trap path that classifies it
+/// clears it there rather than a controller doing it. AArch64 has no equivalent
+/// bit - its completion is the controller acknowledgement - which is why this
+/// operation belongs to the architecture that has it.
 pub(crate) fn clear_software_interrupt()
 {
     // SAFETY: clears one pending bit for this hart.
     unsafe { core::arch::asm!("csrci sip, 2", options(nostack)) };
 }
 
-/// Unmasks the software-interrupt source, which the scheduler uses to admit a
-/// peer into idle.
-pub(crate) fn enable_software_interrupt()
+/// Makes the source another hart would wake this one through deliverable.
+///
+/// On this machine that is the supervisor software-interrupt enable bit, which
+/// is a CSR this adapter owns; the scheduler uses it to admit a peer into idle.
+pub(crate) fn admit_wake_source()
 {
     // SAFETY: sets one interrupt-enable bit for this hart.
     unsafe { core::arch::asm!("csrs sie, {}", in(reg) 2usize, options(nomem, nostack)) };

@@ -3,7 +3,12 @@
 // The vector table must be 2 KiB aligned and occupies sixteen 128-byte slots:
 // four exception kinds (synchronous, IRQ, FIQ, SError) from four sources
 // (current EL with SP0, current EL with SPx, lower EL AArch64, lower EL AArch32).
-// Every slot branches to the shared entry below.
+// The slot number is the source times four plus the kind, so which kind a slot
+// is entered through is a property of the slot and not something the hardware
+// records. Each slot therefore states its own kind in x3 before converging on
+// the shared entry, and the entry stores it in the frame: an IRQ writes no
+// ESR_EL1, so without that record the dispatcher would have to read whatever
+// exception class the last synchronous trap left behind.
 //
 // Frame layout is the shared TrapFrame: integer registers, then the fields the
 // parameters below name. The floating-point and vector portion is not carried
@@ -13,20 +18,108 @@
     .balign 2048
     .global __system_trap_vector
 __system_trap_vector:
-    .rept 16
+    // Current EL with SP0: unreachable at EL1 with a stack, but the hardware
+    // takes these slots if the entry ever runs on SP_EL0, so they are real
+    // entries rather than a trap.
     .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_synchronous}
     b __system_trap_common
-    .endr
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_irq}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_fiq}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_serror}
+    b __system_trap_common
+    // Current EL with SPx: every privileged trap System takes.
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_synchronous}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_irq}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_fiq}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_serror}
+    b __system_trap_common
+    // Lower EL, AArch64: application calls, faults and the idle loop's
+    // interrupts all arrive here.
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_synchronous}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_irq}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_fiq}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_serror}
+    b __system_trap_common
+    // Lower EL, AArch32: nothing this kernel runs is 32-bit, so these record a
+    // kind and take the same path rather than branching into an unrelated slot.
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_synchronous}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_irq}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_fiq}
+    b __system_trap_common
+    .balign 0x80
+    sub sp, sp, #16
+    stp x2, x3, [sp]
+    mov x3, #{exception_serror}
+    b __system_trap_common
 
-// On entry: SP is whatever the interrupted context had. ELR_EL1, SPSR_EL1,
-// ESR_EL1 and FAR_EL1 hold the fault. The per-CPU control block is in TPIDR_EL1
-// and carries the frame stack this path allocates from.
+// On entry: SP is whatever the interrupted context had, x3 holds the kind the
+// vector slot was entered through, and the interrupted x2 and x3 are in the
+// sixteen bytes the slot reserved. ELR_EL1, SPSR_EL1 and ESR_EL1 hold the
+// fault. The per-CPU control block is in TPIDR_EL1 and carries the frame stack
+// this path allocates from.
 __system_trap_common:
-    // Reserve room for the six scratch registers this entry uses below.
-    sub sp, sp, #48
+    // Reserve the rest of the scratch area, so this entry owns the same 48
+    // bytes as it did when every slot shared one prologue.
+    sub sp, sp, #32
     stp x0, x1, [sp]
-    stp x2, x3, [sp, #16]
-    stp x4, x5, [sp, #32]
+    stp x4, x5, [sp, #16]
+    // The kind travels in x3, whose interrupted value is already on the stack.
+    mov x4, x3
 
     // Load the control block. A zero pointer means no per-CPU state was
     // published, so there is nowhere to record a frame; report and halt rather
@@ -37,10 +130,10 @@ __system_trap_common:
     // The entering flag is set only while an entry or a restore is in progress.
     // A trap that arrives while it is set cannot be recorded on the fixed frame
     // stack without overwriting a frame that is still live.
-    ldr x4, [x0, #{ctl_entering}]
-    cbnz x4, __system_trap_no_frame
-    mov x4, #1
-    str x4, [x0, #{ctl_entering}]
+    ldr x5, [x0, #{ctl_entering}]
+    cbnz x5, __system_trap_no_frame
+    mov x5, #1
+    str x5, [x0, #{ctl_entering}]
 
     // x1 = depth. Frames are a fixed stride from `frames`, indexed by depth.
     ldr x1, [x0, #{ctl_depth}]
@@ -57,13 +150,17 @@ __system_trap_common:
     madd x2, x1, x3, x2
 
     // x2 is now the frame base. Write the interrupted context into its own
-    // slots, restoring the six registers saved above.
-    ldp x4, x5, [sp]
-    stp x4, x5, [x2, #{registers}]
-    ldp x4, x5, [sp, #16]
-    stp x4, x5, [x2, #{registers} + 16]
-    ldp x4, x5, [sp, #32]
-    stp x4, x5, [x2, #{registers} + 32]
+    // slots, restoring the registers saved above.
+    ldp x3, x5, [sp]
+    stp x3, x5, [x2, #{registers}]
+    ldp x3, x5, [sp, #32]
+    stp x3, x5, [x2, #{registers} + 16]
+    ldp x3, x5, [sp, #16]
+    stp x3, x5, [x2, #{registers} + 32]
+
+    // Which exception kind this frame came from, which is what lets the
+    // dispatcher tell an interrupt from a call and a fault from either.
+    str x4, [x2, #{exception}]
 
     // The interrupted stack pointer. From EL0 the hardware switched to SP_EL1,
     // so the interrupted value is SP_EL0; from EL1 an exception does not switch
