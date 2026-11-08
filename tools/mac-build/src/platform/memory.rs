@@ -113,9 +113,10 @@ pub(super) struct Definition
     /// The window holds both, and one permission cannot be right for both: code
     /// must be read-only and executable, data writable and not executable. The
     /// boundary is declared here so the region table states it and no mapping
-    /// code has to infer it. Absent means the machine has not split its window.
+    /// code has to infer it. Absent means the machine has not split its window;
+    /// a present value is checked against that window in [`Definition::check`].
     #[serde(default)]
-    firmware_code_bytes:         String,
+    firmware_code_bytes:         Option<String>,
     boot_stack_bytes:            String,
     monitor_stack_bytes:         String,
     /// The monitor's reset/transport binding. Only the RISC-V legacy CLINT
@@ -215,6 +216,23 @@ impl Definition
                                .map(|io| io.check(page, &ram, flash.as_ref(), fw_cfg.as_ref()))
                                .transpose()?;
         let boot = region("boot", &self.boot, page)?;
+        // The boot window holds code and data, and the boot page tables split it
+        // at the boundary the record declares. The linker asserts that `.data`
+        // begins exactly there, which proves the link cares; it does not prove
+        // the record was ever checked, so the boundary is validated where the
+        // record is read. A record that omits the field has not split its window
+        // and is not asked to state one.
+        if let Some(code_bytes) = &self.firmware_code_bytes
+        {
+            let code_bytes = address("firmware_code_bytes", code_bytes)?;
+            if code_bytes == 0
+               || !code_bytes.is_multiple_of(page)
+               || code_bytes >= boot.end - boot.start
+            {
+                return Err(error("platform memory firmware_code_bytes must be nonzero, page \
+                                  aligned and leave data room in the boot window it splits"));
+            }
+        }
         let firmware_heap = region("firmware_heap", &self.firmware_heap, page)?;
         let images = region("images", &self.images, page)?;
         let display_scratch = region("display_scratch", &self.display_scratch, page)?;
@@ -846,5 +864,29 @@ mod tests
                    .unwrap_err()
                    .to_string()
                    .contains("application/definition regions overlap"));
+    }
+    /// The code/data boundary splits the boot window, and the linker asserting
+    /// the same boundary proves the link cares rather than that the record was
+    /// checked. A record that states a boundary the window cannot hold is
+    /// refused here, and a record that states none is a machine that has not
+    /// split its window.
+    #[test]
+    fn refuses_a_code_boundary_the_boot_window_cannot_hold()
+    {
+        let original = definition();
+        assert!(original.firmware_code_bytes.is_none(),
+                "the RISC-V record does not split its boot window");
+        let mut split = original.clone();
+        split.firmware_code_bytes = Some("0x1000".into());
+        assert!(split.check().is_ok(), "a page inside the boot window is a valid boundary");
+        for boundary in [String::from("0x0"), String::from("0x1800"), original.boot.bytes.clone()]
+        {
+            let mut bad = original.clone();
+            bad.firmware_code_bytes = Some(boundary.clone());
+            let error = bad.check().unwrap_err().to_string();
+            assert!(error.contains("firmware_code_bytes must be nonzero, page aligned and leave \
+                                    data room"),
+                    "{boundary}: {error}");
+        }
     }
 }
