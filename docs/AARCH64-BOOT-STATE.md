@@ -85,9 +85,15 @@ Two mistakes made during this work are recorded because the commits carry them:
 - An earlier commit attributed a change in fault class to that switch. The
   change came from an added TLB flush alone.
 
-## The open fault
+## The fault that started this: a writable page on a fetch
 
-`raw-hfs-b` faults with:
+**Historical — this fault is fixed.** It is kept because the experiments below
+were performed against it and because its mechanism is still not fully
+explained. The log and the three facts that follow are evidence from the run
+that failed, in past tense, not a description of current behaviour. Where the
+boot reaches now is in "Where the boot now stops".
+
+`raw-hfs-b` failed with:
 
 ```
 SYSTEM_TRAP_NO_CONTROL hart=0x80000000 ESR=0x8600000f
@@ -98,20 +104,25 @@ SYSTEM_TRAP_NO_CONTROL hart=0x80000000 ESR=0x8600000f
 ```
 
 `ESR 0x8600000f` is an instruction abort taken to EL1: permission fault, level
-3. Three facts hold together and none of them is wrong:
+3. Three facts held together and none of them was wrong:
 
-1. `TTBR0` at the fault is the firmware root, `0x5092a000`, read in the handler
+1. `TTBR0` at the fault was the firmware root, `0x5092a000`, read in the handler
    rather than inferred.
-2. The level-3 leaf for the faulting address is executable by descriptor:
+2. The level-3 leaf for the faulting address was executable by descriptor:
    `0x4009a743` — valid, leaf, access flag set, writable, `PXN=0`, `UXN=0`,
-   `AttrIndx=0`. The neighbouring page `0x4008ffbc` reads `0x4008f743`,
+   `AttrIndx=0`. The neighbouring page `0x4008ffbc` read `0x4008f743`,
    identical except for the output address, through the same level-2 and
    level-1 tables.
-3. `SCTLR_EL1` is `0xc5183d`: MMU, D-cache and I-cache on, `EE` off, `WXN` = 0.
-   Nothing in `SCTLR` forces a writable page execute-never.
+3. `SCTLR_EL1` was `0xc5183d`: MMU, D-cache and I-cache on, `EE` off, `WXN` = 0.
+   Nothing in `SCTLR` forced a writable page execute-never.
 
 A level-3 permission fault on a fetch, with the right root, an executable leaf
-and `WXN` clear, is not explained by anything readable from inside the guest.
+and `WXN` clear, was not explained by anything readable from inside the guest.
+What removed it was splitting the firmware window so the code half is
+read-only-executable; what that experiment does and does not establish is in
+"Dropping WRITE changed the fault, and what that does not prove" below. The
+mechanism is not a settled property of QEMU, and it is not a property of the
+core.
 
 ## Ruled out by measurement
 
@@ -180,7 +191,9 @@ A clean version of this test would need a third root mapping only the firmware
 window, the image and the stack, with no RAM bank in it, so that an executable
 leaf cannot be shadowed. That is a second space builder rather than a small
 change, so it was not attempted; the ambiguity is recorded instead of papered
-over. The switch-on fault is still the open puzzle.
+over. That probe's result is therefore not relied on either way. The fault it
+was trying to isolate is gone with the window split; the mechanism is discussed
+in the next section.
 
 ## Dropping WRITE changed the fault, and what that does not prove
 
@@ -336,8 +349,10 @@ ELF at 0x4009aad0:  d65f03c0 f240085f fa400844 fa401804
 They are identical: `ret` at `0x4009aad0`, then `tst x2, #7` at `0x4009aad4`,
 which is the entry of `mac_bootloader::volume::disk_info`. So the code is where
 the symbol table says it is, `BootInfo::disk_info` points at it, and the loaded
-image matches the file byte for byte. A permission fault on a fetch of correct
-code at a correct address under an executable leaf remains unexplained.
+image matches the file byte for byte. So code identity is excluded: the fetch
+was of correct code at the correct address. What remained was the permission —
+that leaf was writable as well as executable — and making it read-only is what
+removed the fault. The window split is how it became read-only.
 
 ## Named separately, not explained
 
