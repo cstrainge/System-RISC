@@ -1218,6 +1218,92 @@ pub(super) fn applications(workspace: &Workspace, apps: &[App]) -> Result<Vec<Va
     Ok(packaged)
 }
 
+/// Build one application-shaped package that is not a member of this
+/// workspace, such as a boot-check probe fixture, through the same private SDK
+/// an installed application uses.
+///
+/// A fixture is its own workspace, so `--package` cannot select it. Everything
+/// that makes its output an installable application still comes from the SDK:
+/// the target specification, the private sysroot, the compiler proxy and the
+/// code-generation flags. A probe built any other way would be evidence about a
+/// different image than the one the platform installs.
+///
+/// The returned path is the executable cargo produced for `binary`.
+pub(super) fn standalone_application(workspace: &Workspace, manifest: &Path, binary: &str)
+                                     -> Result<PathBuf>
+{
+    let sdk = prepare(workspace)?;
+
+    if !sdk.root.join("build.json").is_file()
+    {
+        build_std(workspace, &sdk)?;
+    }
+
+    let target = sdk.target.display().to_string();
+    let stem = sdk.target.file_stem().and_then(|stem| stem.to_str()).ok_or_else(|| {
+                                                                         error("the platform's \
+                                                                                std target spec \
+                                                                                has no file name")
+                                                                     })?;
+    let name = manifest.parent()
+                       .and_then(Path::file_name)
+                       .and_then(|name| name.to_str())
+                       .ok_or_else(|| {
+                           error(format!("{} is not inside a package directory",
+                                         manifest.display()))
+                       })?;
+    let target_dir = workspace.target().join("standalone").join(name);
+    let mut command = Command::new("cargo");
+
+    command.current_dir(workspace.root())
+           .args(["build", "--release", "--locked", "--target", &target, "-Zjson-target-spec",
+                  "-Zunstable-options"])
+           .arg("--target-dir")
+           .arg(&target_dir)
+           .arg("--manifest-path")
+           .arg(manifest)
+           .args(["--bin", binary])
+           .env("RUSTC", env::current_exe()?)
+           .env(PROXY_ENV, &sdk.rustc)
+           .env(SYSROOT_ENV, &sdk.sysroot)
+           .env("CARGO_CACHE_RUSTC_INFO", "0")
+           .env("RUSTUP_TOOLCHAIN", &workspace.toolchain)
+           .env("RUSTUP_AUTO_INSTALL", "0")
+           .env("RUST_TARGET_PATH", sdk.target.parent().expect("the target spec has a parent"))
+           .env("CARGO_ENCODED_RUSTFLAGS", "-C\u{1f}relocation-model=pic")
+           .env("CARGO_BUILD_RUSTFLAGS", "")
+           .env(mac_build::platform::PLATFORM_ENV, &workspace.platform.name)
+           .env_remove("SR_CARGO_ARTIFACT_DIR");
+
+    for variable in SCRUBBED
+    {
+        if !matches!(*variable, "CARGO_TARGET_DIR" | "CARGO_ENCODED_RUSTFLAGS")
+        {
+            command.env_remove(variable);
+        }
+    }
+
+    let status = command.status()
+                        .map_err(|cause| {
+                            error(format!("cannot run cargo for {}: {cause}", manifest.display()))
+                        })?;
+
+    if !status.success()
+    {
+        return Err(error(format!("{} did not build; see the cargo output above", name)));
+    }
+
+    let executable = target_dir.join(stem).join("release").join(binary);
+
+    if !executable.is_file()
+    {
+        return Err(error(format!("cargo produced no {binary} executable for {}",
+                                 manifest.display())));
+    }
+
+    Ok(executable)
+}
+
 fn features(apps: &[App]) -> BTreeSet<String>
 {
     let mut features = BTreeSet::new();
