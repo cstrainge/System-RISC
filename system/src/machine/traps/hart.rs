@@ -4,7 +4,7 @@
 //! as &Control or a slice after assembly publication.
 use core::{           fmt,
            mem::MaybeUninit,
-           ptr,
+           ptr::{self, NonNull},
            sync::atomic::{AtomicU8, AtomicU64, Ordering}};
 
 pub(crate) mod execution;
@@ -300,7 +300,7 @@ pub(crate) fn admit_bootstrap(admitted: usize) -> Result<(), Error>
     let pointer = {
         let mut control = cold.control.lock();
         control.local = ptr::from_ref(&cold.local) as usize;
-        ptr::from_ref(&*control) as usize
+        NonNull::from(&*control)
     };
     // SAFETY: this masked primary owns cold admission; stable BSS metadata was
     // initialized before the actual CSR can name it. No System vector is active.
@@ -468,8 +468,10 @@ pub(crate) fn prepare(stack: &'static Stack) -> Result<PreparedEntry, Error>
     // callback-free with SIE clear. Once REGISTRY exists the old cold pointer
     // is invalid; only the pure M monitor may interrupt this tiny transition.
     let hart = &registry.rows.as_slice()[primary_index];
+    let control = NonNull::new(hart.control as *mut Control)
+        .expect("a published registry row names a non-null control block");
     unsafe {
-        crate::machine::cpu::set_hart_control(hart.control);
+        crate::machine::cpu::set_hart_control(control);
     }
     serial!("SYSTEM_STACK_READY base={:#x} bytes={} control={:#x} cpu_slots={} cpu_stride={} \
              prepared_harts={} control_bytes={}",

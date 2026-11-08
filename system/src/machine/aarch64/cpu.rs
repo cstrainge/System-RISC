@@ -1,5 +1,8 @@
 //! CPU primitives the terminal and scheduler paths need: a system-wide barrier,
 //! and entry onto a fresh stack without unwinding the caller's.
+use core::ptr::NonNull;
+
+use crate::machine::traps::hart::Control;
 
 /// Orders all preceding memory accesses before any that follow.
 pub(crate) fn barrier()
@@ -101,11 +104,15 @@ pub(crate) fn hart_control() -> usize
 /// Sets this CPU's control-block pointer.
 ///
 /// # Safety
-/// `value` must be null or point to the live control block for this CPU.
-pub(crate) unsafe fn set_hart_control(value: usize)
+/// `control` must point to the live control block for this CPU. Non-nullness is
+/// in the type, not in this note: every caller publishes a real control block,
+/// and a hart that named none would only fail on its next trap.
+pub(crate) unsafe fn set_hart_control(control: NonNull<Control>)
 {
-    // SAFETY: the caller guarantees the pointer.
-    unsafe { core::arch::asm!("msr tpidr_el1, {}", in(reg) value, options(nostack)) };
+    // SAFETY: the caller guarantees the pointer; a `NonNull` is never null.
+    unsafe {
+        core::arch::asm!("msr tpidr_el1, {}", in(reg) control.as_ptr(), options(nostack));
+    }
 }
 
 /// Raises a breakpoint, entering the exception handler with a breakpoint cause.
