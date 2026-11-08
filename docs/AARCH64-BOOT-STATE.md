@@ -6,14 +6,17 @@ as the list of things fixed.
 
 ## Position
 
-`cargo xtask boot-check --platform qemu_arm64` is held to the same 19-case table
-as every platform. It does not currently run: the private SDK cannot build
-aarch64 `std`, so the build stops before any case starts (see *What still blocks
-`qemu_arm64`*). Built from the cached kernel-side stages instead, `raw-hfs-b`
-reaches `EMERGENCY_KIT_READY`, the native service table, `BOOT_FINDER_DOMAIN`
-and then refuses Finder's package as stale.
+`cargo xtask boot-check --platform qemu_arm64` builds its private SDK and enters
+the case table. The table is the same 19 cases as every platform, and it stops
+at the second one:
 
-The markers printed, in order:
+```
+ROM check no-disk: passed
+ROM check raw-hfs-b: failed after 3.6 s
+```
+
+`raw-hfs-b` fails in System startup, after the definition that supplies the
+fonts has been loaded and invoked:
 
 ```
 BOOT_AARCH64_EL1_READY
@@ -33,11 +36,13 @@ TRAPS_READY: resident ecall dispatcher ABI=1
 SYSTEM_LEASE_PROBE: ok
 System: native service table ready
 BOOT_FINDER_DOMAIN app=4294967394
-FINDER_IMAGE_REFUSED: native ABI layout differs; rebuild System and all native packages
+FONTS_READY: families=23 resources loaded from System
+SYSTEM_STARTUP_FAILED: executable PTE 0x430fd000 changed: expected 0x0, observed 0x80000040928003; original mapping/backing retained
 ```
 
 AArch64 has never reached `DESKTOP_READY` — or `FINDER_FOLDER_LAYOUT`, the
-marker the `raw-hfs-b` case actually requires — in this environment.
+marker the `raw-hfs-b` case actually requires — in this environment. Finder
+does not run.
 
 `qemu_riscv` passes 19/19 and is the gate that matters for landing.
 
@@ -640,7 +645,7 @@ after input has already succeeded.
 The emergency kit is accepted and the boot reaches `BOOT_FINDER_DOMAIN`. It used
 to fault there in monitor instruction publication, at VA `2`; that fault is gone.
 It then faulted on the first dynamically mapped definition, and that fault is
-gone too (see the next section). The boot now refuses Finder's package:
+gone too (see the next section). It then refused Finder's package as stale:
 
 ```
 BOOT_FINDER_DOMAIN app=4294967394
@@ -648,10 +653,15 @@ FINDER_IMAGE_REFUSED: native ABI layout differs; rebuild System and all native p
 ```
 
 That refusal is `Descriptor::decode` (`crates/mac-code-resource/src/lib.rs:67`)
-rejecting the package's `NATIVE_LAYOUT_FINGERPRINT`. It is correct: the aarch64
-application packages in the build predate a change to `SystemServices` and must
-be rebuilt. It is also **not** the fault this section used to describe, and it is
-not a workaround target — the check stays.
+rejecting the package's `NATIVE_LAYOUT_FINGERPRINT`. It was correct: the aarch64
+application packages in the build predated a change to `SystemServices` and had
+to be rebuilt. It is also **not** the fault this section used to describe, and it
+was not a workaround target — the check stays.
+
+That refusal is now history. With `std` building for aarch64, `boot-check`
+regenerates the packages, Finder passes the fingerprint check, `FONTS_READY`
+prints, and the boot stops one step later in `launch()` on a page-table slot that
+is not empty. See *What still blocks `qemu_arm64`*.
 
 Nothing was done to make a marker appear. The fatal `start_services` path is
 unchanged: a missing framebuffer on a machine whose record declares one is still
@@ -724,43 +734,105 @@ admission to be called proven.
 
 ## What still blocks `qemu_arm64`
 
-Three defects stand between this boot and `FINDER_FOLDER_LAYOUT`, none of them in
-the mapping code. They were found while trying to run the case table and are
-recorded with their exact sites.
+### Fixed: the private SDK could not build aarch64 `std`
 
-1. **`mac-system` did not compile for aarch64 at all.** `Registry::execution_handlers`
-   was `#[cfg(target_arch = "riscv64")]` (`system/src/drivers/registry.rs:1191`)
-   while its caller, `system/src/drivers/runtime.rs:986`, is shared code. The
-   method is architecture-neutral and its empty result is already the documented
-   "no execution provider" case (`system/src/toolbox/processes/execution.rs:13`),
-   so the gate was deleted rather than the caller. This is the same defect shape
-   as the RAMFB binding: an architecture gate stranding shared code.
-2. **The private SDK cannot build aarch64 `std`.**
-   `platforms/rust/library/std/src/sys/pal/systemrisc/native_tls.rs:11` selects a
-   machine thread-pointer adapter only for `riscv64` and emits
-   `compile_error!` otherwise. `sdk::prerequisites` builds `std` for the
-   platform's `std_target`, so `cargo xtask boot-check --platform qemu_arm64`
-   stops there before it builds anything, and the application packages cannot be
-   regenerated against the current fingerprint. An aarch64 adapter is
-   `TPIDR_EL0`, not a general register.
-3. **The aarch64 trap frame does not carry `TPIDR_EL0` or `x30`.**
-   `TrapFrame::registers` is `x0..x29` and `system/src/machine/aarch64/trap_entry.S`
-   neither saves nor restores `x30`; `TPIDR_EL0` is not touched anywhere in
-   `system/`. RISC-V's user thread pointer is `tp`, which is `registers[4]`, so it
-   survives a trap for free — the aarch64 port has no equivalent. Saving
-   `TPIDR_EL0` is a prerequisite for `std` TLS, and losing `x30` across a trap
-   breaks any preempted user function, so both belong to one thread-context
-   change rather than to a TLS-only patch. The floating-point/NEON state is in
-   the same position, and user code is built with `+neon`.
+`platforms/rust/library/std/src/sys/pal/systemrisc/native_tls.rs` selected a
+machine thread-pointer adapter only for `riscv64` and emitted `compile_error!`
+otherwise, so `sdk::prerequisites` — which builds `std` for the platform's
+`std_target` — stopped the whole `boot-check` before any case ran, and the
+application packages could not be regenerated against the current fingerprint.
+
+The adapter is now selected once at that module boundary:
+`native_tls/riscv64.rs` reads `tp`, `native_tls/aarch64.rs` reads and writes
+`TPIDR_EL0`. That register is what AArch64 provides for a software per-thread
+pointer and what Linux uses; it is per-thread, not a global. System's own control
+block stays in `TPIDR_EL1`.
+
+### Fixed: the trap frame did not carry `TPIDR_EL0` or `x30`
+
+`TrapFrame::registers` is 30 slots. That covers RISC-V's `ra` (`registers[0]`)
+and `tp` (`registers[2]`), which is why RISC-V's thread pointer and return link
+survive a trap for free. It stops short of AArch64's `x30` and has no
+representation at all for a system register.
+
+`TrapFrame` now carries `thread_pointer` and `link_register` after
+`prior_depth`, so no existing offset moved and the `pc == 240` / `status == 248`
+assembly gate still holds. `system/src/machine/aarch64/trap_entry.S` stores both
+before its first `bl` — the only point at which `x30` is still the interrupted
+context's — and `__system_restore_frame` writes them back before `eret`. RISC-V
+leaves both zero because it already has the values in its register file.
+
+The frame grew from 592 to 608 bytes, which is visible in the boot log as
+`STACK_POLICY ... cpu_state=608` and `SYSTEM_STACK_READY ... cpu_stride=608`.
+Nothing asserts the old size; `SavedState`, `cpu_state_bytes` and the assembly
+`frame_bytes` all derive from `size_of::<TrapFrame>()`.
+
+Still not carried: the floating-point and NEON state. That is a real gap for any
+context that traps with live floating-point registers, and user code is built
+with `+neon`.
+
+### Open: the definition mapping is published into a slot that is not empty
+
+`SYSTEM_STARTUP_FAILED` comes from `system/src/kernel.rs:1610`, i.e. from
+`launch()`, not from Finder. The refusal is `Error::Conflict` raised by the
+`edits` loop in `system/src/machine/paging/modules.rs:1901`, which requires every
+slot it is about to fill with a new table descriptor to still read zero:
+
+```
+SYSTEM_STARTUP_FAILED: executable PTE 0x430fd000 changed: expected 0x0, observed 0x80000040928003; original mapping/backing retained
+```
+
+The address is the Progress Bar CDEF entry, `0x430fd000`, the same address the
+level-index fix (`cfe1c119`) made mappable. The observed value is a *table*
+descriptor — bit 0 valid, bit 1 set, output address `0x40928000` — not a leaf, so
+the slot was already holding the table this plan wanted to create, and the only
+difference from `Entry::table(0x40928000, _, Manual)` (`0x40928003`) is bit 63,
+which no aarch64 paging code in this tree sets.
+
+Two readings fit and the log does not distinguish them: the same definition is
+being published twice, or the slot coordinate is not the one the plan means.
+This is paging-owned code and was not touched here.
+
+### Open: `mac_traps::invoke` is still RISC-V only
+
+`crates/mac-traps/src/lib.rs:30` implements the local trap instruction under
+`#[cfg(target_arch = "riscv64")]` and returns `NOT_SUPPORTED` otherwise. Every
+`Client` method funnels through it, so on aarch64 an application's first service
+call returns `NOT_SUPPORTED` without ever trapping — `std` startup reaches
+`__system_risc_thread_id_v1` and aborts at `STD_STARTUP_SERVICES_REFUSED`. This
+is the fourth instance of the same shape as the RAMFB binding,
+`Registry::execution_handlers` and the TLS adapter: an architecture gate
+stranding shared code.
+
+It was deliberately not changed here. The kernel side it would reach is still
+RISC-V-shaped, so enabling the call would not produce a working trap — it would
+produce a worse one:
+
+* `dispatch_frame` decides `user_origin` from `status & (1 << 8)`, which is
+  `sstatus.SPP` on RISC-V and `SPSR_EL1`'s FIQ mask on AArch64, where the source
+  EL is `M[3:0]`.
+* It compares `cause` against RISC-V `scause` values (`(1 << 63) | 1`,
+  `(1 << 63) | 5`), while the aarch64 entry stores `ESR_EL1`.
+* It reads the trap number from `registers[15]` and the arguments from
+  `registers[8]`/`registers[9]` — RISC-V's `a7`/`a0`/`a1` — while aarch64 callers
+  put the number in `x8` and the arguments in `x0`/`x1`, and the aarch64 entry
+  stores raw `x0..x29` into slots 0..29.
+
+An aarch64 `svc` would therefore take `ESR_EL1` as a fault cause and be routed
+into `capture_fault`, killing the application. The trap-frame register ABI needs
+one owner and one decision before `invoke` gains an aarch64 arm.
+
 
 ## Not attempted, deliberately
 
-An aarch64 thread context. Saving `TPIDR_EL0`, `x30` and the floating-point/NEON
-state across a trap is one change with one owner — the thread/std boundary — and
-it is a prerequisite for `std` TLS and for preempting user code at all, not for
-the mapping fix. It is listed under *What still blocks `qemu_arm64`* rather than
-started here, because a TLS-only patch would compile while leaving the frame
-lossy and would make the next reader believe the context was complete.
+The floating-point/NEON part of an aarch64 thread context. `TPIDR_EL0` and `x30`
+are now carried (see *What still blocks `qemu_arm64`*); the 32 128-bit vector
+registers and `FPCR`/`FPSR` are not. That is one change with one owner — the
+thread/std boundary — and user code is built with `+neon`, so a context that
+traps with live floating-point state still loses it. Carrying the two scalar
+values was a prerequisite for `std` TLS and for a resumable return link; carrying
+the vector state is a prerequisite for preempting user code at all, and it needs
+a frame wider than the shared RISC-V-shaped vector area.
 
 A typed wrapper that makes a firmware pointer unusable without the switch. The
 `cfg` fix makes the invariant hold by construction for every `firmware_call`;

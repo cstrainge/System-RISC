@@ -24,19 +24,19 @@ pub(crate) use __system_trap_gateway as gateway;
 #[derive(Default)]
 pub(crate) struct TrapFrame
 {
-    pub registers:       [usize; 30],
-    pub pc:              usize,
-    pub status:          usize,
-    pub(crate) cause:    usize,
-    pub(crate) value:    usize,
-    pub(crate) floating: [u64; 32],
-    pub(crate) fcsr:     usize,
-    pub(crate) vl:       usize,
-    pub(crate) vtype:    usize,
-    pub(crate) vstart:   usize,
-    pub(crate) vcsr:     usize,
-    pub stack_pointer:   usize,
-    pub prior_depth:     usize,
+    pub registers:             [usize; 30],
+    pub pc:                    usize,
+    pub status:                usize,
+    pub(crate) cause:          usize,
+    pub(crate) value:          usize,
+    pub(crate) floating:       [u64; 32],
+    pub(crate) fcsr:           usize,
+    pub(crate) vl:             usize,
+    pub(crate) vtype:          usize,
+    pub(crate) vstart:         usize,
+    pub(crate) vcsr:           usize,
+    pub stack_pointer:         usize,
+    pub prior_depth:           usize,
     /// Software thread pointer of the interrupted context. RISC-V holds it in
     /// `tp`, which is `registers[2]` and needs no field of its own; AArch64
     /// holds it in TPIDR_EL0, a system register that the shared 30-slot
