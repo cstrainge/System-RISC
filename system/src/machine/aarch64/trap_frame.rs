@@ -74,6 +74,19 @@ pub(crate) fn from_user(frame: &TrapFrame) -> bool
     frame.status & MODE_MASK == MODE_EL0T
 }
 
+/// Whether the interrupted context had interrupts enabled, so this frame may be
+/// suspended or moved.
+///
+/// `SPSR_EL1` holds the interrupted `PSTATE`, so bit 7 is `PSTATE.I` as it was
+/// and a clear bit means IRQ was unmasked. This is the same bit
+/// `page_layout::interrupts_enabled` reads, but the two are stated separately:
+/// that one answers for a live `DAIF` read, this one for a saved frame, and
+/// RISC-V's two answers are genuinely different bits.
+pub(crate) fn interrupts_were_enabled(frame: &TrapFrame) -> bool
+{
+    frame.status & (1 << 7) == 0
+}
+
 /// The cause the shared dispatcher classifies.
 ///
 /// The dispatcher names the call cause it handles for each origin; AArch64

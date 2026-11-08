@@ -748,7 +748,7 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
     use mac_module::abi::{WorkerCall, worker};
     let operation = || -> Result<bool, Status> {
         if frame.prior_depth != 0
-           || !crate::machine::page_layout::interrupts_enabled(frame.status)
+           || !crate::machine::trap_frame::interrupts_were_enabled(frame)
            || crate::context::critical_active()
         {
             return Err(WRONG_THREAD);

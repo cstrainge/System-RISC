@@ -28,6 +28,8 @@ const CAUSE_TIMER: usize = INTERRUPT_BIT | 5;
 /// `sstatus` bit 8 is `SPP`: set when the trap was taken from supervisor mode,
 /// clear from user mode.
 const SPP: usize = 1 << 8;
+/// `sstatus` bit 5 is `SPIE`: the interrupt-enable state before the trap.
+const SPIE: usize = 1 << 5;
 
 /// The `sstatus` a System-owned frame resumes at: supervisor mode (`SPP`), the
 /// previous interrupt-enable bit set so `sret` leaves interrupts on, and the
@@ -47,6 +49,20 @@ const _: () = assert!(INITIAL_STATUS & SPP != 0 && USER_STATUS & SPP == 0);
 pub(crate) fn from_user(frame: &TrapFrame) -> bool
 {
     frame.status & SPP == 0
+}
+
+/// Whether the interrupted context had interrupts enabled, so this frame may be
+/// suspended or moved.
+///
+/// `sstatus.SIE` is cleared by the trap before the entry reads the register, so
+/// a saved frame carries the pre-trap state in `SPIE` and a clear `SIE`.
+/// `page_layout::interrupts_enabled` answers the other question — whether the
+/// status word *now* has interrupts enabled — and would refuse every saved
+/// frame if it were used here. That substitution was made and caught by the
+/// `qemu_riscv` gate: every application call was refused as `WrongThread`.
+pub(crate) fn interrupts_were_enabled(frame: &TrapFrame) -> bool
+{
+    frame.status & SPIE != 0
 }
 
 /// The cause the shared dispatcher classifies: `scause` already names a call.

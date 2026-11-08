@@ -7,46 +7,48 @@ as the list of things fixed.
 ## Position
 
 `cargo xtask boot-check --platform qemu_arm64` builds its private SDK and enters
-the case table. The table is the same 19 cases as every platform, and it stops
-at the second one:
-
-```
-ROM check no-disk: passed
-ROM check raw-hfs-b: failed after 60 s: the readiness marker did not arrive
-```
-
-`raw-hfs-b` now boots the whole way to the desktop launch and stops in Finder:
+the case table. `raw-hfs-b` now reaches the desktop:
 
 ```
 INTERRUPTS_READY: controller=gic-v2 distributor=0x8000000 cpu_interface=0x8010000 timer=30 security=0 lines=9 ctlr=0x1 group=0x0 enabled=0x4000ffff prio=0xa00000 target=0x1010101 gicc_ctlr=0x1 pmr=0xf0
+RAMFB 800x600 addr=0x50930000
 SYSTEM_CPUS_READY primary=0 admitted_peers=0 dispatch=primary-only
-TIMER_ARMED: requested=0xea7c878 cval=0xea7c878 ctl=0x1 count=0xea7a69b freq=0x3b9aca0
+TIMER_ARMED: requested=0x196c99c2 cval=0x196c99c2 ctl=0x1 count=0x196c79a7 freq=0x3b9aca0
 FONTS_PUBLISHED revision=1 families=23 volume=66113 directory=21
 DISPLAY_MODE_CHANGED 1280x800
 LAUNCH_DIRECTORY_READY owner=4294967394 volume=66113 node=20 policy=Documents
 SYSTEM_FINDER_LAUNCH entry=0x400000
 BOOT_PROGRESS completed=7 total=7
 PROCESS_REGISTERED app=4294967394 name=Finder
-CRASH_REPORT_READY app=4294967394 window=4294967486 bytes=1013 lines=40 page_lines=22 flags=0
-NATIVE_EXIT_RECOVERY_QUEUED app=4294967394 kind=abort code=255 thread=4294967479
+Finder: native application entry reached
+FINDER_POWER_CAPABILITIES shutdown=false restart=false
+CRASH_REPORT_READY app=4294967394 window=4294967543 bytes=1013 lines=40 page_lines=22 flags=0
+NATIVE_EXIT_RECOVERY_QUEUED app=4294967394 kind=abort code=255 thread=4294967479 state=owned-finder-flight
+FINDER_RECOVERED old=4294967394 new=4294967550 thread=4294967601 state=runnable
+Finder: native application entry reached
+FINDER_POWER_CAPABILITIES shutdown=false restart=false
+FINDER_VOLUME id=66113 name=System RISC
+FINDER_FOLDER_OPEN volume=66113 cnid=2 window=4294967664 name=System RISC
+FINDER_FOLDER_LAYOUT window=4294967664 volume=66113 folder=2 first=16,28,48,60 frame=8,46,412,234 count=3
+FINDER_FOLDER_READY window=4294967664
+DESKTOP_READY: Finder and native Window Manager
 ```
 
-Finder is launched, takes a data abort on its own stack and is recovered, and
-the replacement instance aborts the same way. `-d int` names the abort exactly:
+The data abort on Finder's own stack is gone. Before the page-protection fix it
+was a permission fault on a write, `ESR 0x9200004f`, `FAR 0xfa8fe0`, from EL0;
+there is no fault line at all now, so the fault address did not move — it stopped
+happening. The *first* Finder instance still exits after the menu stage with a
+published crash report (`kind=abort code=255`), and the System's replacement
+instance then completes the whole startup. That first-instance exit is a
+separate, unresolved AArch64 defect: it produces no fault, no `SYSTEM_TRAP` and
+no serial diagnostic, so what it is has not been established — only that it is
+an application-level failure report rather than a memory-protection failure.
 
-```
-Taking exception 4 [Data Abort] on CPU 0
-...from EL0 to EL1
-...with ESR 0x24/0x9200004f      <- data abort from lower EL, permission fault, level 3, on a write
-...with FAR 0xfa8fe0            <- the application stack, 0x20 below its top
-...with SPSR 0x200
-...with ELR 0x400000
-```
-
-AArch64 has never reached `DESKTOP_READY` — or `FINDER_FOLDER_LAYOUT`, the
-marker the `raw-hfs-b` case actually requires — in this environment. The reason
-is in *The next blocker* below: every application page is mapped EL1-only,
-because the AArch64 page encoder has `AP[1]` inverted.
+The gate does not yet report green on this platform for a reason that is not
+Finder's: `raw-hfs-b` asserts `BOOT: entering System`, the RISC-V bootstrap's
+wording, and the AArch64 bootstrap used to say `BOOT_AARCH64_ENTERING`. The
+words are now shared (`mac_bootloader::report::ENTERING_SYSTEM`) so the case can
+judge the boot instead of the spelling.
 
 `qemu_riscv` passes 19/19 and is the gate that matters for landing.
 
@@ -1069,10 +1071,18 @@ and the origin test reads `M[3:0]`. The RISC-V words moved unchanged into
 `machine/riscv64/trap_frame.rs` behind the same two names and the same
 `from_user`, so the shared dispatcher asks one question instead of testing a bit
 of its own: `machine/traps.rs` and `machine/scheduler/user.rs` both call
-`trap_frame::from_user`, and the "was preemptible" test in `machine/traps.rs` and
-`machine/scheduler/service.rs` both call `page_layout::interrupts_enabled` — which
-already existed for exactly this and which three call sites had bypassed with a
-hand-written `1 << 5`.
+`trap_frame::from_user`.
+
+The other status-bit test had the same shape and needed the same treatment. The
+"may this frame be suspended or moved" test in `machine/traps.rs` and
+`machine/scheduler/service.rs` tested `1 << 5` by hand. Pointing it at the
+existing `page_layout::interrupts_enabled` looked like the obvious
+consolidation and was wrong: that predicate answers for a status word read
+*now*, and on RISC-V it reads `sstatus.SIE`, which the trap has already cleared.
+A saved frame carries the pre-trap state in `SPIE`. The `qemu_riscv` gate caught
+it immediately — every application call was refused as `WrongThread` — so each
+architecture now states `trap_frame::interrupts_were_enabled` separately from
+`page_layout::interrupts_enabled`, and the two questions have two names.
 
 
 
