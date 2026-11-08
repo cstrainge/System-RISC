@@ -48,6 +48,14 @@ const IAR_NUMBER: u32 = 0x3ff;
 /// Interrupts 0..15 are software-generated, which is the only way one hart
 /// signals another.
 pub(crate) const SGI_COUNT: u32 = 16;
+/// The first private peripheral interrupt's number.
+///
+/// A machine's tree states a PPI as its index inside that bank - the timer's
+/// non-secure physical interrupt is PPI 14 - while a distributor enable bit is
+/// indexed by the absolute number, which is this plus that index. Treating the
+/// two as one number enables an interrupt nobody raises, and nothing reports it:
+/// the boot simply waits for a tick that cannot arrive.
+pub(crate) const PPI_BASE: u32 = SGI_COUNT;
 /// The number the acknowledge register reports when nothing is pending.
 pub(crate) const SPURIOUS: u32 = 1023;
 

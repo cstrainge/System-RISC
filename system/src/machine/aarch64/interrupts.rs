@@ -177,7 +177,16 @@ pub(crate) enum Refusal
     },
     /// The machine states no timer interrupt for the controller to deliver, so
     /// there is nothing to enable.
-    NoTimer
+    NoTimerNode,
+    /// The timer node's interrupt is written in a layout this reader cannot
+    /// decode, so reading it would be a guess.
+    NoTimerSpecifier,
+    /// The timer's interrupt is not a private peripheral interrupt.
+    TimerNotPrivate
+    {
+        kind:   u32,
+        number: u32
+    }
 }
 impl core::fmt::Display for Refusal
 {
@@ -212,10 +221,21 @@ impl core::fmt::Display for Refusal
                        crate::machine::memory::INTERRUPT_CONTROLLER_BASE
                        + crate::machine::memory::INTERRUPT_CONTROLLER_BYTES)
             }
-            Self::NoTimer =>
+            Self::NoTimerNode =>
             {
-                out.write_str("the machine states no non-secure physical timer interrupt for \
-                               the controller to deliver")
+                out.write_str("the machine's device tree describes no `arm,armv8-timer`")
+            }
+            Self::NoTimerSpecifier =>
+            {
+                out.write_str("the machine's timer declares no interrupt this kernel can read \
+                               against the controller's specifier width")
+            }
+            Self::TimerNotPrivate { kind,
+                                     number } =>
+            {
+                write!(out,
+                       "the machine's timer interrupt is not a private peripheral interrupt \
+                        (type {kind}, number {number})")
             }
         }
     }
@@ -325,25 +345,31 @@ fn region(node: &Node<'_>, index: usize) -> Option<(u64, u64)>
 /// the controller rather than assumed.
 fn timer_of(tree: &Tree<'_>, controller: &Node<'_>) -> Result<u32, Refusal>
 {
-    let cells = controller.interrupt_cells.ok_or(Refusal::NoTimer)? as usize;
+    let cells = controller.interrupt_cells.ok_or(Refusal::NoTimerSpecifier)? as usize;
     // A GICv2 specifier is type, number, flags. A narrower one is a different
     // controller's encoding and cannot be read with this layout.
     if cells != 3
     {
-        return Err(Refusal::NoTimer);
+        return Err(Refusal::NoTimerSpecifier);
     }
     let node = tree.find(|node| node.enabled() && node.names("arm,armv8-timer"))
                    .map_err(|_| Refusal::Tree)?;
-    let specifiers = node.ok_or(Refusal::NoTimer)?.interrupts.ok_or(Refusal::NoTimer)?;
-    let entry = specifiers.get(cells * 4..cells * 8).ok_or(Refusal::NoTimer)?;
+    let specifiers =
+        node.ok_or(Refusal::NoTimerNode)?.interrupts.ok_or(Refusal::NoTimerSpecifier)?;
+    // The binding states four specifiers in a fixed order - secure physical,
+    // non-secure physical, virtual, hypervisor - and `CNTP_*`, which is the
+    // timer the scheduler arms, is the non-secure physical one.
+    let entry = specifiers.get(cells * 4..cells * 8).ok_or(Refusal::NoTimerSpecifier)?;
     let kind = u32::from_be_bytes(entry[0..4].try_into().unwrap());
     let number = u32::from_be_bytes(entry[4..8].try_into().unwrap());
     // Type 1 is a private peripheral interrupt, which is what a timer is on this
-    // controller. A shared one here would mean the specifier order is not the
-    // binding's, and vectoring it would be a guess.
-    if kind != 1 || !(16..32).contains(&number)
+    // controller, and its number is an index inside that bank rather than the
+    // number the distributor uses. A shared interrupt here would mean the
+    // specifier order is not the binding's, and vectoring it would be a guess.
+    if kind != 1 || number >= super::gic::PPI_BASE
     {
-        return Err(Refusal::NoTimer);
+        return Err(Refusal::TimerNotPrivate { kind,
+                                              number });
     }
-    Ok(number)
+    Ok(super::gic::PPI_BASE + number)
 }
