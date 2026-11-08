@@ -67,6 +67,14 @@ __system_trap_common:
     stp x26, x27, [x2, #{registers} + 208]
     stp x28, x29, [x2, #{registers} + 224]
 
+    // The two values the shared 30-slot register file cannot hold: AArch64's
+    // return link and its software thread pointer. Both are captured before the
+    // first `bl`, which overwrites x30. TPIDR_EL1 keeps System's control block,
+    // so TPIDR_EL0 is the interrupted context's alone.
+    str x30, [x2, #{link_register}]
+    mrs x4, tpidr_el0
+    str x4, [x2, #{thread_pointer}]
+
     // The fault state, which is what the diagnostic path reports.
     mrs x4, elr_el1
     str x4, [x2, #{pc}]
@@ -109,6 +117,11 @@ __system_restore_frame:
     msr elr_el1, x4
     ldr x4, [x2, #{status}]
     msr spsr_el1, x4
+    // Restore the interrupted context's thread pointer and return link while
+    // x2 still holds the frame base; the register reload below overwrites it.
+    ldr x4, [x2, #{thread_pointer}]
+    msr tpidr_el0, x4
+    ldr x30, [x2, #{link_register}]
     ldp x2, x3, [x2, #{registers} + 16]
     ldp x4, x5, [x2, #{registers} + 32]
     ldp x6, x7, [x2, #{registers} + 48]

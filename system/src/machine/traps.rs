@@ -36,7 +36,16 @@ pub(crate) struct TrapFrame
     pub(crate) vstart:   usize,
     pub(crate) vcsr:     usize,
     pub stack_pointer:   usize,
-    pub prior_depth:     usize
+    pub prior_depth:     usize,
+    /// Software thread pointer of the interrupted context. RISC-V holds it in
+    /// `tp`, which is `registers[2]` and needs no field of its own; AArch64
+    /// holds it in TPIDR_EL0, a system register that the shared 30-slot
+    /// register file cannot represent. Only the AArch64 entry writes this.
+    pub(crate) thread_pointer: usize,
+    /// Return link of the interrupted context. RISC-V holds it in `ra`, which
+    /// is `registers[0]`; AArch64 holds it in `x30`, which the 30-slot file
+    /// stops short of. Only the AArch64 entry writes this.
+    pub(crate) link_register:  usize
 }
 // Integer offsets remain the assembly gate contract. The extended offsets and
 // fixed frame size are generated above from this one Rust representation.

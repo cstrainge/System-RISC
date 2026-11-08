@@ -5,11 +5,18 @@ use mac_traps::native_threads::Failure;
 use super::{failure, runtime};
 use crate::{boxed::Box, ptr};
 
+// The thread-pointer location is a property of the machine, so it is selected
+// once here and nowhere else. RISC-V keeps it in `tp`; AArch64 keeps it in the
+// TPIDR_EL0 system register.
 #[cfg(target_arch = "riscv64")]
 #[path = "native_tls/riscv64.rs"]
 mod machine;
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(target_arch = "aarch64")]
+#[path = "native_tls/aarch64.rs"]
+mod machine;
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
 compile_error!("System RISC std TLS requires a machine thread-pointer adapter");
 
 const CACHE_SLOTS: usize = 64;
