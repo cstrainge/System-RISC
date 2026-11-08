@@ -1,97 +1,171 @@
-# Native asynchronous Toolbox SDK
+# Native event dispatch and asynchronous execution
 
-Decision, 2026-10-21: native System RISC applications must be able to use
-async/await easily. The base SDK owns the common machinery. The application
-model targets an ordinary async entry point and awaitable services. Applications
-must not build their own event/promise pump or executor. The first delivery slice
-is lazy drag data; this decision does not claim that the full application runtime
-or std target already exists.
+Native applications may opt into two userspace libraries:
 
-Async I/O APIs are supplied by a later loadable System extension. The fixed
-core owns the minimal request, completion, cancellation, lifetime and wakeup
-mechanisms; the extension publishes its awaitable I/O services through ordinary
-versioned, ledger-owned registrations. Do not hard-code an async provider or
-executor into resident managers. The base SDK's event executor and optional
-runtime adapters remain clients of those mechanisms. Removing an extension must
-quiesce its registrations and retain outstanding requests until actual completion
-or acknowledged cancellation; a timeout never substitutes for acknowledgement.
+- `sr-event-dispatch` owns weak subscriptions, target routing and serialized
+  handler queues. It requires an application-selected local runtime.
+- `sr-event-async` supplies the distribution's single-threaded event runtime,
+  native readiness futures, cancellation scopes and the runtime integration
+  interface. An application explicitly constructs the engine; neither std nor
+  the Toolbox facade starts one automatically.
 
-## One service contract, independent runtimes
+Applications remain free to use Toolbox events directly. The resident System
+never executes a Rust future, Waker or application callback. The public Toolbox
+facade remains `mac-toolbox`; platform wait operations remain usable independently
+of either library. This replaces the earlier mandatory base-SDK executor policy.
 
-Potentially waiting operations expose `core::future::Future` with typed results.
-They use resident completion/readiness notifications and ordinary `Waker`s, not a
-Tokio-specific task handle. Immediate queries remain cheap synchronous calls;
-wrapping a blocking trap in `async fn` does not make it asynchronous. A future's
-poll must do bounded work, register readiness without a lost-wake race, and return
-Pending while other application work can progress. Completion wakes only the
-interested work. Never poll pending I/O on every physical mouse event or on a
-periodic busy loop.
+## Ownership and event delivery
 
-The built-in executor is event driven and fully compatible with **std**. Its
-normal application configuration supports allocation, owned futures, tasks and
-ordinary Rust errors. A minimal no_std configuration may serve low-level clients;
-it must not impose fixed-buffer/borrowed-only ergonomics on std applications.
-The SDK event source, completion registry and OS-thread parking integrate with
-that executor. A single receiver owns each app's queue; async tasks must not race
-independent WaitNextEvent loops and consume each other's events. Windows retain
-their ordinary decoded event streams alongside completion delivery.
+A parent owns `Rc<RefCell<T>>`. A `Handler<E>` stores a weak reference to that
+object and a callback factory taking `&mut T` and an owned event. It temporarily
+upgrades the reference for the synchronous callback factory. The factory returns
+an owned local future; it cannot retain that mutable borrow across suspension.
+The struct need not contain a permanent reference to itself.
 
-An optional Tokio adapter will drive the same futures and event source. Tokio
-must not be a dependency of resident managers or the minimal transport. System
-RISC's std target, thread/TLS/park-wake/timer support and platform integration are
-prerequisites for a real guest Tokio claim. UI work runs on its owning OS thread
-through a current-thread runtime/local task set. Worker-safe I/O may use a
-multithreaded runtime once the native worker-thread and synchronization services
-exist. A thread-mobile owner is not permission to issue UI operations from an
-arbitrary Tokio worker: resident WrongThread validation remains authoritative.
-See Tokio's [runtime](https://docs.rs/tokio/latest/tokio/runtime/index.html) and
-[LocalSet](https://docs.rs/tokio/latest/tokio/task/struct.LocalSet.html) contracts.
+Each Handler has one ordered queue and at most one active operation. Copies of
+that Handler share the same queue across all subscribed sources. While an
+operation awaits, subsequent events for that Handler remain queued. Other
+Handlers can progress. Explicitly constructing another Handler creates another
+queue. The engine gives other runnable work a turn between queued deliveries.
+This serialization includes keyboard, paint and resize events: apps should avoid
+long operations in a handler when they want that same handler to remain responsive.
 
-## Resident boundaries and cancellation
+`Router<K, E>` maps System-delivered target identities to Handlers. Routing
+belongs in the library; applications need not visit every window on each input.
+`Source<E>` is a direct object-local subscription, suitable for a control wrapper.
+It sends to its Handler without visiting the app's Router. Neither path owns the
+recipient. Router pruning and Source pruning remove dead weak recipients even
+without a new event for that recipient. Owners call these during idle maintenance.
 
-Implementation remains in System. SDK futures hold generation-checked operation
-capabilities and owned application state, never resident manager references or a
-lock guard across await. Request submission, readiness subscription, result
-collection and cancellation must distinguish pending, committed and cancelled
-operations. Dropping a future releases its waiter and requests appropriate
-cleanup; it cannot claim that a concurrently committed write was rolled back.
-Expose explicit awaitable cancellation/drain when an application needs confirmed
-cleanup. Do not restart mutations just because a poll or transport wait retries.
-This is the same rule used by filesystem provider tickets.
+A control tracking callback is synchronous today. Scheduling an asynchronous
+handler does not change the resident tracking protocol or make a synchronous
+callback awaitable. Applications must keep the existing immediate feedback path
+until a control wrapper supplies its own separately borrowable view state.
 
-Source callbacks run on their owning application thread. A same-application drop
-must be able to wait for a promised flavor while that source's producer executes.
-For Rust this is event delivery plus a lazy closure invoked at most once; classic
-callbacks are an adapter over the shared resident session. A promised-data take
-is awaitable, including same-app delivery. Inline data completes on its first
-poll. Only Dropped carries a take capability; tracking views expose metadata.
+Queues use fallible growth rather than an arbitrary event count limit. Admission
+failure is returned to the producer; it must report or recover from the failure.
+No library silently discards an accepted event to make room for another one.
 
-## Delivery and acceptance
+## Runtime boundary and cancellation
 
-1. Drag futures, lazy producers and completion wakes through the public SDK.
-   Verify same-app delivery, inline completion, multiple pending takes, exactly-once
-   production, typed failures, cancellation, dropped futures and waiter cleanup.
-2. Add the reusable SDK event-driven executor and app startup integration with
-   a std-compatible API. The early no_std drag pump is a bridge, not the final
-   application entry-point contract. Verify unrelated event handling while a
-   future waits, wake-driven polling, no nested queue consumers and responsive
-   cursor/event timings. Keep the executor crate independent of kernel code.
-3. Add awaitable file/provider operations and other services that can actually
-   wait, using the same completion facility. Cover commit/cancel races and
-   process-exit cleanup through real System services.
-4. With the P8 std target/runtime, ship an allocating async std APPL and CLAP.
-   Verify startup and default System-owned panic reporting without custom app
-   runtime/panic boilerplate. A no_std-only demo is not this gate.
-5. Qualify optional Tokio support on the actual guest target, beginning with the
-   current-thread UI runtime, then worker-safe I/O. Test both executors against
-   identical SDK conformance cases. Host-only Tokio execution is insufficient.
+The `Runtime` interface accepts an owned local future and a cancellation scope.
+The supplied engine's `Spawner` is a weak scheduling handle: pending operations
+cannot create a cycle that keeps their engine alive. A Waker contains only a
+thread notification right and an atomic ready flag. Its thread-safe wake
+bookkeeping does not make the engine, handler, or UI objects Send or Sync.
 
-Status: architecture accepted; drag delivery implementation in progress. General
-SDK executor, async entry points, guest std and guest Tokio remain delivery work.
+The caller owns a `ScopeOwner`; tasks receive only its cancellation state. Child
+scopes inherit cancellation. After a window close is approved, cancel its scope
+and remove its subscriptions. Task disposal happens after the current poll
+returns, never in the middle of application code. Explicit app-owned cleanup
+can continue draining pipes and collecting real child results after the window
+has closed. Cancelling a readiness future releases its subscription; it does not
+claim to undo bytes already written or to terminate an unrelated child process.
 
-Priority clarification, 2026-10-21: generic IPC and networking are optional later
-work, not prerequisites for the first std/async applications. Prioritize
-allocation/startup, files, clocks, OS threads/TLS/synchronization, event wakeups and
-System-owned panic reporting. Compile the standard library's surface while
-reporting unavailable facilities honestly; do not invent working sockets or
-require a generic IPC subsystem merely to deliver resident completions.
+The engine never holds its task-store borrow while polling user code. Readiness
+subscriptions are weak and disappear when their futures are dropped. A wake
+causes only ready tasks to be polled; pending operations are not polled because
+an unrelated input event arrived.
+
+An adapter for another runtime must implement the same local scheduling,
+ordering, cancellation and wake integration contract. In particular, Tokio may
+keep GUI tasks on its local task set and use thread-safe messages for background
+work. The source interface permits such an adapter; a System RISC Tokio port and
+its I/O/timer-driver integration are not supplied or qualified by these crates.
+Two independent indefinitely blocking event loops on the same thread are invalid.
+
+## Resident readiness and parking
+
+The native readiness service waits on existing owner-checked pipe endpoints,
+retained child-result identities, owner-scoped Time Manager tasks, absolute
+monotonic deadlines and a durable
+same-process thread notification. It also consumes ordinary native UI events
+with their resident-captured pointer coordinates. It does not introduce a classic
+EventRecord kind or route native readiness through the lossy UI event queue.
+
+Readiness is level-triggered and non-consuming. A readable source reports bytes
+or real EOF; a writable source reports enough space for the requested atomic
+write, or peer close. An invalidated endpoint is reported as invalid. The caller
+still performs its I/O through the original endpoint. Observing readiness grants
+no new authority and does not promise that another consumer cannot change the
+condition before use. Futures never lend user I/O buffers across Pending.
+
+The service checks sources without holding SCHEDULER alongside their managers.
+Source producers advance a revision and wake matching sleepers. Parking checks
+that revision under SCHEDULER, closing the check-before-park race. A revision
+change during checking returns control for a fresh check. Notifications are
+sticky until collected, including a notification preceding the first wait.
+Existing scheduler event wakeups still deliver UI input normally.
+
+Source snapshots own only copied identities. No user address is retained across
+a wait. Source storage is reused on subsequent waits and detached before an
+owner resource walk. Stop, endpoint transfer and normal close invalidate the
+original authority through the existing owner/generation machinery.
+
+An absolute deadline is converted to hardware ticks with upward rounding, not
+recomputed relative to the time spent checking other sources. The scheduler
+wakes a parked thread at expiry; actual delivery latency includes scheduling and
+runnable work. No hard real-time precision or new hardware qualification is
+claimed. Cursor deadlines never serve as an excuse to issue read/write probes.
+
+## Timers and Macintosh compatibility
+
+`mac_toolbox::events::TimeTask` owns a generation-tagged resident task admitted
+through the central object ledger and the caller's memory budget. Native
+event-loop timers use the same OS monotonic deadline facility. It supports install, prime, fire acknowledgement,
+remove and extended drift-free scheduling. Positive PrimeTime-style delays mean
+milliseconds; negative delays mean microseconds. A task remains installed after
+firing and can then be primed again. An active task must be removed and
+reinstalled before rescheduling. Extended timers retain their scheduled anchor
+rather than accumulating callback lateness. Removal invalidates the canonical task identity, wakes outstanding observers
+and reports remaining time; extended reinstall with zero delay can resume the saved deadline.
+
+`prime` returns the actual scheduled monotonic deadline. Readiness is
+non-consuming; `fire` acknowledges one due expiration before the task can be
+primed again. Dropping an installed TimeTask attempts removal; its original
+owner ledger remains responsible for cleanup if removal is refused.
+
+The native `reset` operation retimes an installed timer in place and wakes
+observers to recompute their deadline. Cursor resets therefore do not allocate
+a new owner-ledger object for each keystroke. Classic PrimeTime semantics stay
+strict; `reset` is an explicit native event-loop operation.
+
+The lifecycle follows Apple's [Time Manager addenda](https://leopard-adc.pepas.com/technotes/tn/tn1063.html)
+and [Time Manager reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Time_Manager/Time_Manager.pdf).
+Native delivery happens in the application's event runtime. This is not a claim
+that the classic `InsTime`/`InsXTime`/`PrimeTime`/`RmvTime` A-line adapters, TMTask
+memory updates or emulator interrupt-level callback execution are implemented.
+Those require a legacy callback boundary; native timer events must never be
+inserted into a classic application's event queue as a substitute.
+
+## Terminal consumer
+
+Terminal opts into both crates. A collection owns per-session weak handler
+recipients and window scopes. The native wait includes only the live session's
+stdout/stderr readers, stdin writer when bytes are queued, a retained child exit
+receipt after output has drained, and a cursor timer for an active session.
+Only the ready stream is read. Timers do not query child status or poll streams.
+A queued readiness/timer notice disarms its source until the handler consumes
+it, preventing a busy handler from repeatedly enqueueing the same level-ready
+condition.
+
+Launch still uses the existing worker thread because executable loading is a
+synchronous, potentially parking service. Completion publishes its channel
+result and wakes the UI with a durable thread notification; there is no periodic
+launch-completion fallback. Moving loading itself to a genuinely nonblocking
+operation is separate work, not a consequence of putting `async` on a function.
+
+Approved window close cancels window-scoped handlers. EOF/drain/reap remains
+explicit app-owned work until the real child result is collected. A shell exit
+closes its session window. An explicitly launched command leaves its window open
+with its exit code. Closing the last window keeps Terminal available for a new
+session; explicit Quit waits for owned cleanup.
+
+## Evidence boundaries
+
+These contracts require actual optimized target builds and native execution.
+Compilation alone does not qualify wake races, cancellation, owner cleanup,
+multiple sessions, absence of polling, legacy compatibility or performance.
+Native qualification must record the exact paired artifacts, SDK, source,
+configured memory, execution policy, scenarios and remaining gaps. Host Rust
+tests are not a substitute, and no replacement Rust test framework is provided.

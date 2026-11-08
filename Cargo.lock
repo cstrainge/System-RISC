@@ -1613,6 +1613,8 @@ version = "0.1.0"
 dependencies = [
  "mac-build",
  "mac-toolbox",
+ "sr-event-async",
+ "sr-event-dispatch",
  "vte",
 ]
 
@@ -2559,6 +2561,21 @@ name = "sr-control-reflow-handling"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+]
+
+[[package]]
+name = "sr-event-async"
+version = "0.1.0"
+dependencies = [
+ "mac-toolbox",
+]
+
+[[package]]
+name = "sr-event-dispatch"
+version = "0.1.0"
+dependencies = [
+ "mac-toolbox",
+ "sr-event-async",
 ]
 
 [[package]]

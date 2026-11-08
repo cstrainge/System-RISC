@@ -218,6 +218,13 @@ fn name_into(call: &mut wire::Call, name: &str) -> Result<()>
 
 impl<'a> PipeReader<'a>
 {
+    /// Non-owning readiness source. It grants no endpoint access and becomes
+    /// invalid when this endpoint closes or is transferred to another owner.
+    pub fn readiness(&self)->mac_abi::readiness::Source {
+        mac_abi::readiness::Source { kind:mac_abi::readiness::PIPE_READ,id:self.handle,
+            minimum:0,ready:0 }
+    }
+
     /// Hand this reader's handle to another thread of the same process without
     /// closing it. Consumes the reader, so the handed-over handle never has two
     /// owners; the receiving side adopts it with `Pipes::adopt_reader`.
@@ -313,6 +320,13 @@ impl Drop for PipeReader<'_>
 
 impl<'a> PipeWriter<'a>
 {
+    /// Non-owning readiness source. It grants no endpoint access and becomes
+    /// invalid when this endpoint closes or is transferred to another owner.
+    pub fn readiness(&self, minimum: usize)->mac_abi::readiness::Source {
+        mac_abi::readiness::Source { kind:mac_abi::readiness::PIPE_WRITE,id:self.handle,
+            minimum:minimum as u64,ready:0 }
+    }
+
     /// Hand this writer's handle to another thread of the same process without
     /// closing it. Consumes the writer, so the handed-over handle never has two
     /// owners; the receiving side adopts it with `Pipes::adopt_writer`.

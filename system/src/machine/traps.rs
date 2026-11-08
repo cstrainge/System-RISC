@@ -450,7 +450,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         (status as i64, crate::machine::scheduler::service::RequestAction::Return)
     }
-    else if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && physical_depth != 1
+    else if matches!(number, WAIT_EVENT | POSITIONED_EVENT | READINESS) && physical_depth != 1
     {
         (WRONG_THREAD as i64, crate::machine::scheduler::service::RequestAction::Return)
     }
@@ -623,7 +623,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         return Dispatch::Schedule;
     }
-    if matches!(number, WAIT_EVENT | POSITIONED_EVENT)
+    if matches!(number, WAIT_EVENT | POSITIONED_EVENT | READINESS)
        && result == OK as i64
        && crate::machine::scheduler::blocked()
     {
@@ -1434,6 +1434,16 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 call.event = runtime.next(call.mask);
                 OK
             }).unwrap_or_else(|error| error.status()) as i64
+        }
+        TIMERS=>toolbox::timers::request(read_request!(mac_abi::timers::Call)).err().unwrap_or(OK) as i64,
+        READINESS =>
+        {
+            let call = read_request!(mac_abi::readiness::Call);
+            // The U envelope captures and validates this entire writable span.
+            let sources = if call.count == 0 { &mut [] } else {
+                unsafe { core::slice::from_raw_parts_mut(call.sources, call.count) }
+            };
+            crate::machine::scheduler::readiness::request(call, sources).err().unwrap_or(OK) as i64
         }
         POSITIONED_EVENT =>
         {

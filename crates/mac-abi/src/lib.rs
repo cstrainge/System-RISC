@@ -206,6 +206,16 @@ pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
                  core::mem::size_of::<pipes::Call>(),
                  core::mem::offset_of!(pipes::Call, wait_nanoseconds),
                  pipes::READ_WAIT as usize,
+                 traps::READINESS as usize,
+                 traps::TIMERS as usize,
+                 readiness::TIMER as usize,
+                 timers::RESET as usize,
+                 core::mem::size_of::<timers::Call>(),
+                 core::mem::offset_of!(timers::Call, deadline),
+                 core::mem::size_of::<readiness::Call>(),
+                 core::mem::size_of::<readiness::Source>(),
+                 core::mem::offset_of!(readiness::Call, event),
+                 core::mem::offset_of!(readiness::Source, minimum),
                  FIRMWARE_READ_SECTORS,
                  traps::COROUTINE_STACK as usize,
                  core::mem::size_of::<coroutine_stack::Call>(),
@@ -692,6 +702,8 @@ pub mod dialogs;
 
 pub mod processes;
 pub mod pipes;
+pub mod readiness;
+pub mod timers;
 pub mod standard_file;
 
 pub mod scrollbox;

@@ -1,0 +1,11 @@
+[package]
+name = "sr-event-async"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[lib]
+test = false
+doctest = false
+bench = false
+[dependencies]
+mac-toolbox.workspace = true

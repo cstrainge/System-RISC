@@ -997,6 +997,10 @@ impl Call
                            align_of::<u8>(),
                            writable)?;
             }
+            READINESS =>
+            {
+                span!(abi::readiness::Call, sources, count, abi::readiness::Source, true);
+            }
             NATIVE_THREAD =>
             {
                 span!(abi::native_threads::Call, name, name_length, u8, false);
@@ -1260,6 +1264,8 @@ fn layout(number: u32, bytes: usize) -> Result<Layout, Status>
         COROUTINE_STACK => select!(abi::coroutine_stack::Call),
         ADDRESS_WAIT => select!(abi::address_wait::Call),
         PIPES => select!(abi::pipes::Call),
+        READINESS => select!(abi::readiness::Call),
+        TIMERS=>select!(abi::timers::Call),
         TLS => select!(abi::tls::Call),
         ENTROPY => select!(abi::entropy::Call),
         POWER => select!(abi::power::PowerCall),

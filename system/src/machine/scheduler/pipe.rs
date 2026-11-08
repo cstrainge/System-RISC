@@ -125,8 +125,10 @@ pub(crate) fn park(pipe: u64, handle: u64, operation: u32, identity: RequestIden
 pub(crate) fn wake(pipe: u64)
 {
     let scheduler = SCHEDULER.lock();
+    super::readiness::advance();
     for (_, thread) in scheduler.iter()
     {
+        super::readiness::wake_matching(thread, mac_abi::readiness::PIPE_READ, pipe);
         if !thread.state.get().live
         {
             continue;

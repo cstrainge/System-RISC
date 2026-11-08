@@ -203,7 +203,7 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
                                 callback_queue: None,
                                 name: Mutex::new(Some(name)),
                                 application: None,
-                                pending_join: Mutex::new(None), pending_pipe: Mutex::new(None) };
+                                pending_join: Mutex::new(None), pending_pipe: Mutex::new(None), readiness: Mutex::new(readiness::State::default()) };
         let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
         Ok((core, subject))
     });

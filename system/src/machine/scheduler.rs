@@ -27,6 +27,7 @@ mod worker;
 pub(crate) mod service;
 pub(crate) mod wake;
 pub(crate) mod pipe;
+pub(crate) mod readiness;
 pub(crate) mod policy;
 include!(concat!(env!("OUT_DIR"), "/platform-scheduling.rs"));
 pub(crate) mod recovery;
@@ -597,7 +598,8 @@ struct ThreadCore
     name:               Mutex<Option<ThreadName>>,
     application:        Option<Arc<application::Completion>>,
     pending_join:       Mutex<Option<application::PendingJoin>>,
-    pending_pipe:       Mutex<Option<pipe::Pending>>
+    pending_pipe:       Mutex<Option<pipe::Pending>>,
+    readiness: Mutex<readiness::State>
 }
 impl ThreadCore
 {
@@ -719,7 +721,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              name: Mutex::new(None),
                                              application: None,
                                              pending_join: Mutex::new(None),
-                                             pending_pipe: Mutex::new(None) }).map_err(|_| {
+                                             pending_pipe: Mutex::new(None), readiness: Mutex::new(readiness::State::default()) }).map_err(|_| {
                                                                                   mac_abi::NO_MEMORY
                                                                               })?;
         Ok((core, allocation))
@@ -824,7 +826,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     name: Mutex::new(None),
                                     application: None,
                                     pending_join: Mutex::new(None),
-                                    pending_pipe: Mutex::new(None) };
+                                    pending_pipe: Mutex::new(None), readiness: Mutex::new(readiness::State::default()) };
             let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
             Ok::<_, mac_abi::Status>((core, stack_preparation))
         })
@@ -1275,6 +1277,7 @@ pub fn wait_current(mask: u16, timeout_ticks: u32) -> Result<(), mac_abi::Status
     let scheduler = SCHEDULER.lock();
     let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
     service::suspension_allowed(thread.state.get())?;
+    readiness::disarm(thread);
     if timeout_ticks == 0
     {
         return Ok(());
@@ -1449,8 +1452,10 @@ pub(crate) fn park_child(child: u64, suspension: Result<(), mac_abi::Status>)
 pub(crate) fn wake_child(child: u64)
 {
     let scheduler = SCHEDULER.lock();
+    readiness::advance();
     for (_, thread) in scheduler.iter()
     {
+        readiness::wake_matching(thread,mac_abi::readiness::CHILD,child);
         if thread.state.get().live
            && matches!(thread.state.get().waiting, Some(Wait::Child { child: id }) if id == child)
         {
@@ -1504,6 +1509,7 @@ pub(crate) fn retire_owner(owner: u64)
 {
     address::cancel_owner(owner);
     pipe::cancel_owner(owner);
+    readiness::cancel_owner(owner);
     application::cancel_owner(owner);
     let mut after = 0;
     loop

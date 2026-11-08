@@ -28,6 +28,7 @@ pub(crate) mod strings;
 pub mod processes;
 
 pub(crate) mod pipes;
+pub(crate) mod timers;
 pub mod standard_file;
 
 #[cfg(all(test, feature = "test-support", not(systemrisc)))]

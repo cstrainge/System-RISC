@@ -1,0 +1,12 @@
+[package]
+name = "sr-event-dispatch"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[lib]
+test = false
+doctest = false
+bench = false
+[dependencies]
+sr-event-async.workspace = true
+mac-toolbox.workspace = true

@@ -260,6 +260,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                        cleanup::context::Toolbox(kind))
                                        .map_err(KindAccessError::Registry)?;
                                }
+                               for kind in crate::toolbox::timers::Registration::ALL {
+                                   registry.register(&owner,kind.specification(),cleanup::context::Toolbox(kind))
+                                     .map_err(KindAccessError::Registry)?;
+                               }
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
@@ -521,4 +525,9 @@ pub(crate) fn file_operation_kinds() -> Result<(KindLease, KindLease), mac_abi::
 {
     registry(|registry|Ok((registry.get(KindCode(*b"FIOP"))?,registry.get(KindCode(*b"FIOB"))?)))
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
+}
+
+pub(crate) fn timer_kinds()->Result<(KindLease,KindLease),mac_abi::Status>{
+ registry(|r|Ok((r.get(KindCode(*b"TMTK"))?,r.get(KindCode(*b"TMST"))?)))
+ .map_err(|e|e.status())?.map_err(|e|registry_status(&e))
 }

@@ -242,7 +242,7 @@ pub(crate) fn prepare(source: &crate::images::Read) -> Result<CallbackThread, St
             backing:Mutex::new(Some(ThreadBacking {cpu,stack,image:Some(ApplicationImageUse::Child { _execution: code })})),
             launch:Mutex::new(None),context,release:Mutex::new(None),binding:image,space:Some(space),top,
             cleanup_refusal:Mutex::new(None),service_quarantine:spin::Once::new(),name:Mutex::new(None),
-            application:None,pending_join:Mutex::new(None),pending_pipe:Mutex::new(None),user_fault:Mutex::new(None),
+            application:None,pending_join:Mutex::new(None),pending_pipe:Mutex::new(None),readiness:Mutex::new(readiness::State::default()),user_fault:Mutex::new(None),
             runtime:Some(runtime),callback_queue:Some(queue) }).map_err(|_|mac_abi::NO_MEMORY)?;
             Ok::<_, Status>(PreparedThread { owner: actual,
                                              core: Read::new(core, context_released),

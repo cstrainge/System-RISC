@@ -1314,3 +1314,11 @@ pub(crate) fn wait_for_terminal_stop(key: crate::machine::traps::execution::Hart
                                                    key.number()));
     crate::machine::power::fatal_shutdown()
 }
+
+/// Absolute monotonic deadline conversion. Round up so a sub-tick deadline
+/// never fires early; do not rebase it on the time spent checking other sources.
+pub(crate) fn nanoseconds_to_ticks(nanoseconds:u64)->Result<u64,Error> {
+ let transport=MONITOR.get().ok_or(Error::Missing)?;
+ let ticks=(u128::from(nanoseconds)*u128::from(transport.timebase_hz)).div_ceil(1_000_000_000);
+ u64::try_from(ticks).map_err(|_|Error::ClockOverflow)
+}

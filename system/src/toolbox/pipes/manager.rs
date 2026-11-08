@@ -914,3 +914,24 @@ pub(crate) fn attach_for_launch(sender: &OwnerRef, child: &OwnerRef,
     }
     Ok(())
 }
+
+/// Non-consuming, owner-checked readiness. The returned ring identity is only
+/// retained by the scheduler; callers continue to use their original endpoint.
+pub(crate) fn readiness(owner: &OwnerRef, source: mac_abi::readiness::Source)
+ -> Result<(u64,u32),Status> {
+ use mac_abi::readiness as r;
+ let manager=manager()?.lock();
+ let endpoint=match own_endpoint(&manager,source.id,owner) {
+  Ok(e)=>e,Err(BAD_ARGUMENT)=>return Ok((0,r::INVALID)),Err(e)=>return Err(e)
+ };
+ if endpoint.reader != (source.kind==r::PIPE_READ) {return Err(BAD_ARGUMENT);}
+ let pipe=manager.pipes.get(endpoint.pipe).ok_or(NOT_FOUND)?;
+ let flags=if endpoint.reader {
+  if source.minimum!=0 {return Err(BAD_ARGUMENT);}
+  if pipe.writers==0 {r::READY|r::CLOSED} else if pipe.ring.available()!=0 {r::READY} else {0}
+ } else {
+  if source.minimum==0 || source.minimum>wire::ATOMIC_WRITE as u64 {return Err(BAD_ARGUMENT);}
+  if pipe.readers==0 {r::READY|r::CLOSED} else if pipe.ring.space()>=source.minimum as usize {r::READY}else{0}
+ };
+ Ok((endpoint.pipe,flags))
+}

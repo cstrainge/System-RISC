@@ -12,6 +12,7 @@ pub mod entropy;
 pub mod emergency;
 pub mod user_callbacks;
 pub mod address_wait;
+pub mod readiness;
 mod error;
 pub mod types;
 pub mod coordinates;

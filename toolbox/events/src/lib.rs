@@ -5,6 +5,8 @@ use mac_abi::events::{EventCall, EventKind, INPUT_STATE, NATIVE_FLUSH, NATIVE_PE
                       OS_FLUSH, OS_GET, OS_GET_MASK, OS_PEEK, OS_POST, OS_SET_MASK, OS_STILL_DOWN};
 pub use mac_abi::{geometry::Point, events::KeyMap};
 mod decoded;
+mod timer;
+pub use timer::TimeTask;
 mod positioned;
 pub use decoded::{DisplaySize, Event, EventMask, EventSnapshot, Input, Key, Modifiers};
 pub use positioned::{PointerPosition, PositionedEvent, PositionedSnapshot, ScreenPoint,
