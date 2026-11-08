@@ -232,6 +232,11 @@ pub(crate) fn enter_ecall(frame: &TrapFrame) -> Result<Entry, Status>
     {
         if original != Call::new(frame)
         {
+            // Two different calls on one continuation means the first never
+            // committed. Naming both is the difference between a readable
+            // refusal and an unexplained `AccessDenied` for every later call.
+            serial!("NATIVE_CALL_REFUSED thread={} status={} original={:?} arrived={:?}",
+                    thread.id, ACCESS_DENIED, original, Call::new(frame));
             return Err(ACCESS_DENIED);
         }
         if !hart.is_primary()

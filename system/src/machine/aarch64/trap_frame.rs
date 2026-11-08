@@ -186,3 +186,72 @@ pub(crate) fn rewind(frame: &mut TrapFrame)
 {
     frame.pc = frame.pc.wrapping_sub(4);
 }
+
+/// The exception class, named. `ESR_EL1` states the kind of exception in
+/// `EC`, so the diagnostic reads it there rather than pretending the word is a
+/// cause number: `EC` 0x3C is `BRK`, which is a deliberate instruction and not
+/// a fault the context stumbled into.
+pub(crate) fn write_exception(output: &mut core::fmt::Formatter<'_>, frame: &TrapFrame)
+                              -> core::fmt::Result
+{
+    let ec = (frame.cause >> EC_SHIFT) & EC_MASK;
+    let cause = match ec
+    {
+        0x00 => "unknown exception",
+        0x01 => "trapped WFI or WFE",
+        0x07 => "trapped SIMD or floating-point access",
+        0x0e => "illegal execution state",
+        0x11 | 0x15 => "supervisor call",
+        0x18 => "trapped system instruction",
+        0x20 | 0x21 => "instruction abort",
+        0x22 => "misaligned instruction address",
+        0x24 | 0x25 => "data abort",
+        0x26 => "misaligned stack pointer",
+        0x2c => "floating-point exception",
+        0x30 | 0x31 => "breakpoint",
+        0x32 | 0x33 => "software step",
+        0x34 | 0x35 => "watchpoint",
+        0x3c => "breakpoint instruction (BRK)",
+        _ => "unhandled user exception"
+    };
+    writeln!(output, "User fault: {cause} (ESR_EL1 {:#010x}, EC {:#04x}).", frame.cause, ec)
+}
+
+/// The interrupted frame under this architecture's own names: `ELR_EL1`, the
+/// fault address register, `sp`, `SPSR_EL1`, then `x0` to `x30`.
+///
+/// `x30` and the thread pointer are named here because the shared 30-slot
+/// register file stops short of them: they are frame fields of their own, and
+/// the link register is the first thing a reader needs to walk a crash.
+pub(crate) fn write_frame(output: &mut core::fmt::Formatter<'_>, frame: &TrapFrame)
+                          -> core::fmt::Result
+{
+    writeln!(output,
+             "PC (ELR_EL1): {:#018x}  fault address (FAR_EL1): {:#018x}",
+             frame.pc, frame.value)?;
+    writeln!(output,
+             "SP: {:#018x}  status (SPSR_EL1): {:#018x}",
+             frame.stack_pointer, frame.status)?;
+    for (index, value) in frame.registers.iter().enumerate()
+    {
+        writeln!(output, "x{index}: {value:#018x}")?;
+    }
+    writeln!(output, "x30: {:#018x}", frame.link_register)?;
+    writeln!(output, "TPIDR_EL0: {:#018x}", frame.thread_pointer)
+}
+
+/// Whether this exception names an attempt to reach memory the context may not
+/// touch, as opposed to a deliberate or undefined instruction. `BRK` and the
+/// software-step/watchpoint classes are not access faults.
+pub(crate) fn is_access_fault(frame: &TrapFrame) -> bool
+{
+    matches!((frame.cause >> EC_SHIFT) & EC_MASK, 0x20 | 0x21 | 0x22 | 0x24 | 0x25 | 0x26)
+}
+
+/// The termination code this exception stands for: 128 plus the exception
+/// class. `ESR_EL1` has no cause numbering of its own to add, and its class is
+/// bounded by its own field width, so the code never saturates.
+pub(crate) fn abort_code(frame: &TrapFrame) -> i32
+{
+    128 + ((frame.cause >> EC_SHIFT) & EC_MASK) as i32
+}

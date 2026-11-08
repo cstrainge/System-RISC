@@ -145,3 +145,60 @@ pub(crate) fn advance(frame: &mut TrapFrame)
 pub(crate) fn rewind(_frame: &mut TrapFrame)
 {
 }
+
+/// The cause, named as a reader of this architecture expects to find it.
+///
+/// `scause` already carries this architecture's own cause numbers, so the
+/// diagnostic states them as they are: the number *is* the description.
+pub(crate) fn write_exception(output: &mut core::fmt::Formatter<'_>, frame: &TrapFrame)
+                              -> core::fmt::Result
+{
+    let cause = match frame.cause
+    {
+        0 => "misaligned instruction address",
+        1 => "instruction access fault",
+        2 => "illegal or privileged instruction",
+        3 => "breakpoint",
+        4 => "misaligned load",
+        5 => "load access fault",
+        6 => "misaligned store",
+        7 => "store access fault",
+        12 => "instruction page fault",
+        13 => "load page fault",
+        15 => "store page fault",
+        _ => "unhandled user exception"
+    };
+    writeln!(output, "User fault: {cause} (cause {}).", frame.cause)
+}
+
+/// The interrupted frame under this architecture's own names: `sepc`, the
+/// faulting address, `sp`, `sstatus`, then the register file in the order the
+/// 30 shared slots hold it — `ra` first, `sp` and `x0` omitted.
+pub(crate) fn write_frame(output: &mut core::fmt::Formatter<'_>, frame: &TrapFrame)
+                          -> core::fmt::Result
+{
+    writeln!(output, "PC: {:#018x}  address: {:#018x}", frame.pc, frame.value)?;
+    writeln!(output, "SP: {:#018x}  status: {:#018x}", frame.stack_pointer, frame.status)?;
+    for (name, value) in ["ra", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2",
+                          "a3", "a4", "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
+                          "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"].into_iter()
+                                                                           .zip(frame.registers)
+    {
+        writeln!(output, "{name}: {value:#018x}")?;
+    }
+    Ok(())
+}
+
+/// Whether this cause names an attempt to reach memory the context may not
+/// touch, as opposed to a deliberate or undefined instruction.
+pub(crate) fn is_access_fault(frame: &TrapFrame) -> bool
+{
+    matches!(frame.cause, 0 | 1 | 4 | 5 | 6 | 7 | 12 | 13 | 15)
+}
+
+/// The termination code this exception stands for: 128 plus the cause, the
+/// shell convention for a signal-like death, bounded by the cause's own range.
+pub(crate) fn abort_code(frame: &TrapFrame) -> i32
+{
+    128 + frame.cause.min(127) as i32
+}

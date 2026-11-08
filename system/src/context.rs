@@ -908,9 +908,21 @@ impl ApplicationExecutor<'_>
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
             let mut slots = self._context.tls.lock();
-            let slots = slots.as_mut().ok_or(crate::toolbox::native_threads::Error::Authority)?;
+            let Some(slots) = slots.as_mut()
+            else
+            {
+                // A refusal a reader cannot attribute is why a dying application
+                // looks like an unexplained `AccessDenied`; name the condition.
+                serial!("NATIVE_TLS_REFUSED thread={} reason=absent",
+                        self._context.identity().thread.0);
+                return Err(crate::toolbox::native_threads::Error::Authority);
+            };
             if slots.owner() != self.owner.owner()
             {
+                serial!("NATIVE_TLS_REFUSED thread={} reason=owner slots={} expected={}",
+                        self._context.identity().thread.0,
+                        slots.owner().incarnation(),
+                        self.owner.owner().incarnation());
                 return Err(crate::toolbox::native_threads::Error::Authority);
             }
             Ok(operation(slots))

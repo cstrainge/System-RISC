@@ -23,7 +23,7 @@ unsafe extern "C" {
 }
 pub(crate) use __system_trap_gateway as gateway;
 #[repr(C, align(16))]
-#[derive(Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct TrapFrame
 {
     pub registers:             [usize; 30],
