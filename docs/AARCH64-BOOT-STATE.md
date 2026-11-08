@@ -875,6 +875,13 @@ gate would then stop `std` startup at `__system_risc_thread_id_v1` and
 `STD_STARTUP_SERVICES_REFUSED`, and `FINDER_FOLDER_LAYOUT window=` is never
 printed.
 
+`boot-check` on `qemu_arm64` reports 1 case passed (`no-disk`) and stops on
+`raw-hfs-b` after those two lines; a second run at the same commit prints the
+identical pair. `qemu_riscv` at the same commit is 19/19 with `RAMFB 800x600`,
+`FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY` intact. This refusal is a
+definition-service call, not a paging or mapping failure: nothing in the page
+tables is now in conflict.
+
 It was deliberately not changed here. The kernel side it would reach is still
 RISC-V-shaped, so enabling the call would not produce a working trap — it would
 produce a worse one:
