@@ -133,3 +133,27 @@ through the ROM, shutdown through QEMU, app-refusal dialog recovery and boot
 without the external package. Capture scripts transport evidence; Rust owns
 acceptance assertions. These checks do not claim the deferred Quit/Cancel
 negotiation or arbitrary privileged-fault recovery gates.
+
+### What has actually been observed
+
+On `qemu_arm64` (QEMU 11.1.0, `system7.hfsb` built from this tree), driving the
+Special menu through QMP:
+
+- `BOOT_AARCH64_PSCI: method=hvc` — the conduit read from the machine's tree.
+- `MODULE_PUBLISHED name=PSCI Power Controller`, then
+  `FINDER_POWER_CAPABILITIES shutdown=true restart=true`.
+- Shut Down: `POWER_REQUEST: action=shutdown psci=0x84000008 conduit=hvc`, then
+  the emulator exited with status 0. Restart: `psci=0x84000009`, then a second
+  ROM banner and a second `DESKTOP_READY:`. No panic or trap in either.
+
+On `qemu_riscv`, `cargo xtask boot-check` reports exactly 19 of 19, and its
+`raw-hfs-b` serial log carries `MODULE_PUBLISHED name=Platform Power Controller`
+and `FINDER_POWER_CAPABILITIES shutdown=true restart=true`.
+
+**Not observed, and therefore not claimed:** a machine whose tree declares
+`smc`, an undefined method, or no `/psci` node. Those paths are implemented —
+each refuses by name and declines to initialize, which leaves the items disabled
+— but no run in this environment produced such a machine, so they remain
+code-reviewed only. The `qemu_arm64` boot-check still stops in `pipes-probe`
+(a pre-existing arm64 defect unrelated to power) after `no-disk`, `raw-hfs-b`
+and `fonts-probe` pass.

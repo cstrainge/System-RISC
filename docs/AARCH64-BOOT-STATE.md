@@ -6,6 +6,18 @@ as the list of things fixed.
 
 ## Position
 
+### Position after the arm64 power capability (2026-11-08)
+
+`cargo xtask boot-check --platform qemu_arm64` on the tree that installs the PSCI
+power driver: `no-disk`, `raw-hfs-b` and `fonts-probe` pass. `raw-hfs-b` reaches
+`DESKTOP_READY:` with `BOOT_AARCH64_PSCI: method=hvc`,
+`MODULE_PUBLISHED name=PSCI Power Controller` and
+`FINDER_POWER_CAPABILITIES shutdown=true restart=true` in its serial log. The
+gate then stops in `pipes-probe` at `lookup Pipes NotFound`, after
+`PIPES_FOLDER_REFUSED_OK refusals=11`; that case is the known arm64
+work-in-progress described below and is unrelated to power. The count is
+therefore 3 of 19, and the first remaining failure is still `pipes-probe`.
+
 ### Position after the probe fixtures were ported to `std` (2026-11-08)
 
 The two probe fixtures now build and run on aarch64, so the gate constructs
