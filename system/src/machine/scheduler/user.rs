@@ -373,6 +373,18 @@ pub(crate) fn pump_faults()
         {
             continue;
         };
+        // One bounded line per fault, because the report body is only readable
+        // in the guest's own window: without this a fault names no cause, PC or
+        // address in the serial record at all.
+        let snapshot = fault.snapshot();
+        serial!("USER_FAULT_CAPTURED app={} thread={} cause={} pc=0x{:x} address=0x{:x} \
+                 status=0x{:x}",
+                fault.owner().owner().incarnation(),
+                fault.thread().0,
+                snapshot.cause,
+                snapshot.pc,
+                snapshot.address,
+                snapshot.status);
         if let Err(status) = crate::toolbox::processes::termination::queue_user_fault(&fault)
         {
             // The single pump owns this detached value; the faulted author
