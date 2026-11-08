@@ -270,12 +270,21 @@ __system_restore_frame:
     ldp x24, x25, [x2, #{registers} + 192]
     ldp x26, x27, [x2, #{registers} + 208]
     ldp x28, x29, [x2, #{registers} + 224]
-    ldp x0, x1, [x2, #{registers}]
     // x2 is the address every reload above reads through, so the pair that
     // restores x2 itself has to be the last load. The entering flag is cleared
     // just before it, as nothing between here and `eret` can trap.
-    mrs x4, tpidr_el1
-    str xzr, [x4, #{ctl_entering}]
+    //
+    // The scratch register this clear reads TPIDR_EL1 through must be one the
+    // frame still owns, and every register is restored above. It used to be x4,
+    // whose reload is the first `ldp` of the block: the clear then handed the
+    // resumed context the control block's address in x4, so a call that passes
+    // its fifth argument in x4 (a slice, or `&mut Browser`) dereferenced kernel
+    // memory whenever a trap landed between the argument being placed and the
+    // callee reading it. x0 is reloaded immediately below instead, which is the
+    // same ordering the RISC-V entry uses for `t0`/`t1`.
+    mrs x0, tpidr_el1
+    str xzr, [x0, #{ctl_entering}]
+    ldp x0, x1, [x2, #{registers}]
     ldp x2, x3, [x2, #{registers} + 16]
     eret
 
