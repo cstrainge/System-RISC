@@ -1682,6 +1682,18 @@ touched here. The arm64 case count therefore stays at 3 of 19: `no-disk`,
 longer the resume path — the probe now reaches the same point in its own
 coverage that the icon assertion guards.
 
+### The result on `qemu_riscv`
+
+`cargo xtask boot-check --platform qemu_riscv` passes 19 of 19 with `rewind` in
+place. That is the comparison: the same source, the same case, and a `rewind`
+that is a no-op on this architecture because `sepc` already names the `ecall`.
+Nothing on RISC-V moved, and the blocking-writer case still reaches
+`PIPES_PROBE_BLOCK_OK` and the case its eleven markers.
+
+The RISC-V half of the resume address was established from `sepc`'s definition
+and from this run, not from the removed diagnostic: the instrumented build was
+aarch64 only.
+
 ## Not attempted, deliberately
 
 The floating-point/NEON part of an aarch64 thread context. `TPIDR_EL0` and `x30`
