@@ -24,9 +24,11 @@ fn device_descriptions_and_dma_records_have_checked_fixed_wire_layouts()
                              ..description };
     assert_eq!(Description::decode(&zero.encode()), Some(zero));
     assert_ne!(Description::decode(&silent.encode()), Description::decode(&zero.encode()));
-    // A word without the flag states an interrupt the encoder did not claim, so
-    // the encoding disagrees with itself and is refused rather than guessed at.
-    let mut unstated = zero.encode();
+    // A nonzero word without the flag states an interrupt the encoder did not
+    // claim, so the encoding disagrees with itself and is refused rather than
+    // guessed at. Clearing the flag on a zero word is consistent: it is a device
+    // with no interrupt, which is what `silent` already asserts.
+    let mut unstated = description.encode();
     unstated[48..52].copy_from_slice(&(COHERENT_DMA | MMIO).to_le_bytes());
     assert_eq!(Description::decode(&unstated), None);
     for length in 0..DESCRIPTION_BYTES
