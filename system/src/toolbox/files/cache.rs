@@ -21,6 +21,11 @@ pub(super) struct Cache
 }
 impl Cache
 {
+    pub fn contains(&self, number: u64) -> bool
+    {
+        self.sectors.iter().any(|sector| sector.number == number)
+    }
+
     pub fn get(&mut self, number: u64, output: &mut [u8; 512]) -> bool
     {
         let Some(sector) = self.sectors.iter_mut().find(|s| s.number == number)

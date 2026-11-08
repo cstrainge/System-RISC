@@ -277,10 +277,11 @@ unsafe extern "C" fn disk_info(context: *mut (), index: u32, output: *mut mac_ab
     OK
 }
 
-unsafe extern "C" fn read_sector(context: *mut (), index: u32, sector: u64, output: *mut u8)
-                                 -> Status
+unsafe extern "C" fn read_sectors(context: *mut (), index: u32, sector: u64, count: u32,
+                                 output: *mut u8) -> Status
 {
     if context.is_null() || output.is_null()
+       || !(1..=mac_abi::FIRMWARE_READ_SECTORS as u32).contains(&count)
     {
         return BAD_ARGUMENT;
     }
@@ -290,12 +291,12 @@ unsafe extern "C" fn read_sector(context: *mut (), index: u32, sector: u64, outp
         return NOT_FOUND;
     }
     let disk = unsafe { &mut *context.disks.add(index as usize) };
-    if sector >= disk.sector_count()
+    if sector.checked_add(u64::from(count)).is_none_or(|end| end > disk.sector_count())
     {
         return BAD_ARGUMENT;
     }
-    let output = unsafe { &mut *output.cast::<[u8; 512]>() };
-    match disk.read_sector(sector, output)
+    let output = unsafe { core::slice::from_raw_parts_mut(output.cast::<[u8; 512]>(), count as usize) };
+    match disk.read_sectors(sector, output)
     {
         Ok(()) => OK,
         Err(error) =>
@@ -547,7 +548,7 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                           log:                     Some(log),
                           storage_context:         (&mut context as *mut BootVolume).cast(),
                           disk_info:               Some(disk_info),
-                          read_sector:             Some(read_sector),
+                          read_sectors:             Some(read_sectors),
                           write_sector:            Some(write_sector),
                           flush_disk:              Some(flush_disk),
                           startup_disk:            disk_index as u32,

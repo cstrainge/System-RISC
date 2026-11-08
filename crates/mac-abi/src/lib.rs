@@ -2,6 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub mod application_heap;
+pub mod coroutine_stack;
 pub mod address_wait;
 pub mod native_threads;
 pub mod tls;
@@ -201,6 +202,12 @@ pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
                  core::mem::offset_of!(tls::Call, detail),
                  tls::DESTRUCTOR_ROUNDS as usize,
                  traps::NATIVE_THREAD as usize,
+                 traps::COROUTINE_STACK as usize,
+                 core::mem::size_of::<coroutine_stack::Call>(),
+                 core::mem::offset_of!(coroutine_stack::Call, base),
+                 core::mem::offset_of!(coroutine_stack::Call, limit),
+                 coroutine_stack::ALLOCATE as usize,
+                 coroutine_stack::RELEASE as usize,
                  traps::TLS as usize,
                  core::mem::size_of::<usize>(),
                  core::mem::size_of::<resources::Scope>(),
@@ -367,8 +374,8 @@ impl ResourceKey
 }
 
 /// Firmware block devices remain available while System is running. Device
-/// ordinals are stable; NOT_FOUND terminates enumeration. Reads transfer one
-/// 512-byte sector into caller-owned writable storage.
+/// ordinals are stable; NOT_FOUND terminates enumeration. Reads transfer
+/// 1–128 contiguous 512-byte sectors into caller-owned writable storage.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DiskInfo
@@ -381,8 +388,10 @@ pub struct DiskInfo
 }
 pub type DiskInfoFn =
     unsafe extern "C" fn(context: *mut (), index: u32, output: *mut DiskInfo) -> Status;
-pub type ReadSectorFn =
-    unsafe extern "C" fn(context: *mut (), index: u32, sector: u64, output: *mut u8) -> Status;
+pub const FIRMWARE_READ_SECTORS: usize = 128;
+pub type ReadSectorsFn =
+    unsafe extern "C" fn(context: *mut (), index: u32, sector: u64, count: u32, output: *mut u8)
+                         -> Status;
 
 /// Transfer exactly one512-byte sector from exclusive caller-owned readable storage.
 pub type WriteSectorFn =
@@ -437,7 +446,7 @@ pub struct BootInfo
     pub log:                     Option<LogFn>,
     pub storage_context:         *mut (),
     pub disk_info:               Option<DiskInfoFn>,
-    pub read_sector:             Option<ReadSectorFn>,
+    pub read_sectors:             Option<ReadSectorsFn>,
     pub write_sector:            Option<WriteSectorFn>,
     pub flush_disk:              Option<FlushDiskFn>,
     pub startup_disk:            u32,

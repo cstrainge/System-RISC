@@ -1,0 +1,22 @@
+import std::io
+import std::net::tcp::{ Endpoint }
+visible `__socket
+visible `__socket_close
+visible "__socket_DatagramSocket"
+pub type Socket = __socket_DatagramSocket
+pub type Error = std::io::Error
+pub struct Datagram { pub bytes: std::io::Bytes, pub peer: Endpoint, pub truncated: Boolean }
+pub fn bind($host: String, $port: Integer): Socket | Error { __socket "udp_bind" $host $port }
+pub fn Socket::get_address(): Endpoint | Error
+{
+    let $value = __socket "udp_address" $self
+    Endpoint(host: $value[0], port: $value[1])
+}
+pub fn Socket::receive($max_bytes: Integer | ()): Datagram | Error
+{
+    let $value = __socket "udp_receive" $self $max_bytes
+    Datagram(bytes: $value[0], peer: Endpoint(host: $value[1][0], port: $value[1][1]), truncated: $value[2])
+}
+pub fn Socket::send($bytes: std::io::Bytes, $peer: Endpoint): Integer | Error
+{ __socket "udp_send" $self $bytes $peer.host $peer.port }
+pub fn Socket::close(): () | Error { __socket_close $self }

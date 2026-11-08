@@ -1192,6 +1192,14 @@ impl Browser
             {
                 system.processes().launch(entry.volume, entry.id)?;
             }
+            else if entry.file_type == TypeCode::new(*b"CLAP")
+            {
+                use mac_toolbox::processes::DocumentRef;
+                let volume = system.processes().current()?.volume;
+                let terminal = system.files().lookup(volume, ROOT_ID, "/Applications/Utility/Terminal")?;
+                system.processes().open_documents(DocumentRef { volume, id: terminal.id },
+                                                  &[DocumentRef { volume: entry.volume, id: entry.id }])?;
+            }
             else if !crate::font_suitcase::candidate(entry)
                       && let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
             {

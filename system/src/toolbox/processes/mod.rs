@@ -10,6 +10,8 @@ pub(crate) mod documents;
 pub(crate) mod retirement;
 pub(crate) mod finder;
 pub(crate) mod termination;
+#[cfg(target_arch = "riscv64")]
+pub(super) mod execution;
 pub(crate) mod launch;
 pub(crate) mod startup;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
@@ -63,6 +65,12 @@ pub struct Process
 {
     pub info:         ProcessInfo,
     pub(crate) image: Option<crate::images::Binding>,
+    pub(super) streams: [u64; 3],
+    argv:             Option<Arguments>,
+    pub(crate) opened_for_documents: bool,
+    pub(super) console_session: Option<(u64, u64)>,
+    parent:           Option<u64>,
+    children:         alloc::vec::Vec<ChildReceipt>,
     // Original executable context, captured at its real read. Not authority.
     original_catalog: Option<mac_abi::files::CatalogInfo>,
     heap:             Option<crate::toolbox::application_heap::RootBinding>,
@@ -71,6 +79,27 @@ pub struct Process
     cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
     termination:      termination::State,
     account:          crate::machine::scheduler::accounting::ProcessAccount
+}
+
+struct Arguments
+{
+    bytes:  alloc::vec::Vec<u8>,
+    length: usize,
+    count:  u32
+}
+
+struct ChildReceipt
+{
+    id:      u64,
+    outcome: Option<termination::Outcome>
+}
+
+impl Process
+{
+    pub(super) fn console(&self) -> bool
+    {
+        self.original_catalog.is_some_and(|catalog| catalog.file_type == *b"CLAP")
+    }
 }
 
 /// Complete authentic Process backing before directory publication. No ID is
@@ -172,6 +201,12 @@ impl PreparedProcess
                   value: Process { info,
                                    image: None,
                                    original_catalog: None,
+                                   streams: [0; 3],
+                                   argv: None,
+                                   opened_for_documents: false,
+                                   console_session: None,
+                                   parent: None,
+                                   children: alloc::vec::Vec::new(),
                                    heap: None,
                                    tls: None,
                                    stamp: 0,
@@ -344,7 +379,8 @@ pub struct Manager
     entries:           Directory<Process>,
     documents:         documents::storage::Batches,
     document_sequence: u64,
-    stamp:             u64
+    stamp:             u64,
+    pub(crate) terminal_host: Option<mac_abi::files::CatalogInfo>
 }
 impl Manager
 {
@@ -358,7 +394,8 @@ impl Manager
         Self { entries:           Directory::new(),
                documents:         documents::storage::Batches::new(),
                document_sequence: 0,
-               stamp:             0 }
+               stamp:             0,
+               terminal_host:     None }
     }
 
     pub(crate) fn ledger(&self, id: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
@@ -654,7 +691,10 @@ impl Manager
 
     pub fn activate(&mut self, id: u64) -> Result<(), Status>
     {
-        self.get(id)?;
+        if self.get(id)?.console()
+        {
+            return Err(ACCESS_DENIED);
+        }
         if !self.entries.get(id).is_some_and(|entry| entry.ledger().accepting())
         {
             return Err(SERVICE_BUSY);
@@ -676,7 +716,7 @@ impl Manager
     pub fn previous(&self, excluding: u64) -> u64
     {
         self.iter()
-            .filter(|p| p.info.id != excluding && p.info.hidden == 0)
+            .filter(|p| !p.console() && p.info.id != excluding && p.info.hidden == 0)
             .max_by_key(|p| p.stamp)
             .map_or(crate::context::finder_app().0, |p| p.info.id)
     }
@@ -728,6 +768,7 @@ impl Manager
             checkpoint.ensure_settled().map_err(|_| SERVICE_BUSY)?;
         }
         drop(process.cleanup.take());
+        drop(core::mem::take(&mut process.children));
         Ok(())
     }
 
@@ -789,6 +830,9 @@ impl Manager
             .ledger()
             .drain_stopped()
             .map_err(&retirement_error)?;
+        // The startup arguments are charged to this process. With admission
+        // closed and its threads gone, release them before closing the account.
+        drop(self.get_mut(id)?.argv.take());
         // A cancelled preparation or retained thread reader can outlive its
         // ordinary scheduler ID. The account's original receipts are part of
         // the domain's death barrier, including zero-byte reservations.
@@ -811,6 +855,51 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         self.entries.remove(id).map(|_| ()).map_err(retirement_error)
+    }
+
+    pub(super) fn retain_child(&mut self, parent: u64, child: u64) -> Result<(), Status>
+    {
+        if parent == child || !self.ledger(parent)?.accepting() || !self.get(child)?.console()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let account = self.allocation(parent)?;
+        let children = &mut self.get_mut(parent)?.children;
+        crate::allocator::with_target(crate::allocator::Target::Owner {
+            account,
+            class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || children.try_reserve(1)).map_err(|_| NO_MEMORY)?;
+        children.push(ChildReceipt { id: child, outcome: None });
+        self.get_mut(child)?.parent = Some(parent);
+        Ok(())
+    }
+
+    pub(super) fn forget_child(&mut self, parent: u64, child: u64) -> Result<(), Status>
+    {
+        let children = &mut self.get_mut(parent)?.children;
+        let at = children.iter().position(|receipt| receipt.id == child).ok_or(NOT_FOUND)?;
+        children.swap_remove(at);
+        crate::machine::scheduler::wake_child(child);
+        if children.is_empty()
+        {
+            drop(core::mem::take(children));
+        }
+        Ok(())
+    }
+
+    pub(super) fn child_status(&self, parent: u64, call: &mut ProcessCall) -> Result<(), Status>
+    {
+        use termination::Outcome;
+        let receipt = self.get(parent)?.children.iter()
+                          .find(|receipt| receipt.id == call.id).ok_or(NOT_FOUND)?;
+        (call.index, call.exit_code) = match receipt.outcome
+        {
+            None => (CHILD_RUNNING, 0),
+            Some(Outcome::Normal(code)) => (CHILD_EXITED, code),
+            Some(Outcome::Abort(code)) => (CHILD_ABORTED, code),
+            Some(Outcome::Legacy | Outcome::ShellReplacement) => (CHILD_ABORTED, 1)
+        };
+        Ok(())
     }
 
     pub fn snapshot(&self, id: u64) -> Result<ProcessInfo, Status>
@@ -867,9 +956,91 @@ fn finder_desktop_ready() -> Result<(), Status>
     Ok(())
 }
 
+/// Wait and publication share the Desktop guard. The native trap retains the
+/// original request across suspension and replays it after notification.
+pub(crate) fn wait_child(call: &mut ChildWaitCall, suspension: Result<(), Status>)
+                         -> crate::machine::scheduler::service::RequestResult
+{
+    use crate::machine::scheduler::service::{RequestAction, RequestResult};
+    if call.child == 0 || call.reserved != [0; 2]
+    {
+        return RequestResult::done(BAD_ARGUMENT);
+    }
+    let caller = crate::context::current_thread_context().identity().app.0;
+    let result = crate::kernel::with_toolbox(|toolbox| {
+        let mut query = ProcessCall { id: call.child, ..Default::default() };
+        toolbox.processes.child_status(caller, &mut query)?;
+        if query.index == CHILD_RUNNING
+        {
+            crate::machine::scheduler::park_child(call.child, suspension)?;
+            return Ok(RequestResult { status: OK, action: RequestAction::Replay });
+        }
+        call.state = query.index;
+        call.code = query.exit_code;
+        Ok(RequestResult::done(OK))
+    });
+    match result
+    {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(status)) => RequestResult::done(status),
+        Err(error) => RequestResult::done(error.status())
+    }
+}
+
 /// Dispatch native and classic process requests without holding desktop state
 /// across storage reads, provider callbacks or scheduler waits.
 pub(crate) fn request(call: &mut ProcessCall) -> Status
+{
+    request_inner(call, None)
+}
+
+pub(crate) fn request_with_argv(call: &mut ProcessCall, bytes: &[u8], length: usize,
+                                count: u32) -> Status
+{
+    let Some((argv, path)) = bytes.split_at_checked(length)
+    else
+    {
+        return BAD_ARGUMENT;
+    };
+    if call.operation != LAUNCH || call.streams == [0; 3]
+       || count as usize > mac_abi::processes::ARGUMENT_COUNT
+       || bytes.len() > mac_abi::processes::ARGUMENT_BYTES
+       || argv.is_empty() != (count == 0)
+       || (!argv.is_empty() && (argv.first() == Some(&0) || argv.last() != Some(&0)))
+       || argv.iter().filter(|&&byte| byte == 0).count() != count as usize
+       || core::str::from_utf8(argv).is_err()
+       || path.contains(&0) || core::str::from_utf8(path).is_err()
+    {
+        return BAD_ARGUMENT;
+    }
+    request_inner(call, Some((bytes, length, count)))
+}
+
+pub(crate) fn startup_argv(output: &mut [u8], reserved: u32) -> Result<(u32, u32, u32), Status>
+{
+    if reserved != 0
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let identity = crate::context::current_thread_context().identity();
+    crate::kernel::with_toolbox(|toolbox| {
+        let process = toolbox.processes.get(identity.app.0)?;
+        if !process.console() || process.info.thread != identity.thread.0
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let Some(argv) = &process.argv
+        else
+        {
+            return Ok((0, 0, 0));
+        };
+        let output = output.get_mut(..argv.bytes.len()).ok_or(NO_MEMORY)?;
+        output.copy_from_slice(&argv.bytes);
+        Ok((argv.length as u32, argv.count, (argv.bytes.len() - argv.length) as u32))
+    }).map_err(|error| error.status())?
+}
+
+fn request_inner(call: &mut ProcessCall, argv: Option<(&[u8], usize, u32)>) -> Status
 {
     call.requirement_class = [0; 4];
     call.requirement_version = 0;
@@ -902,15 +1073,20 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
             // checkpoint before deciding whether reloading the old image is safe.
             crate::machine::scheduler::reclaim_retired();
             retirement::pump();
-            if !crate::toolbox::files::application::pending()
+            if call.streams == [0; 3] && !crate::toolbox::files::application::pending()
            && crate::kernel::with_toolbox(|d| d.activate_existing_application(call))
                 .map_err(|e| e.status())??
         {
             return Ok(OK);
         }
             let owner = crate::context::current_thread_context().identity().app.0;
-            let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid)?;
-            launch_application(call, *loaded, launch::Origin::Process).map(|()| OK)
+            if call.streams != [0; 3] && !crate::toolbox::files::application::pending()
+            {
+                crate::kernel::with_toolbox(|toolbox| toolbox.console_session(owner, call.id))
+                    .map_err(|error| error.status())??;
+            }
+            let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid, call.id, call.streams)?;
+            launch_application(call, *loaded, launch::Origin::Process, argv).map(|()| OK)
         })
     })();
     result.unwrap_or_else(|error| error)
@@ -1017,13 +1193,14 @@ pub(crate) fn select_required_services(resources: &[mac_formats::resource::Resou
 /// Ordinary Open and document delivery share this genuine launch coordinator.
 /// No Desktop guard spans root preparation or provider admission.
 fn launch_application(call: &mut ProcessCall, loaded: crate::toolbox::files::application::Loaded,
-                      origin: launch::Origin)
+                      origin: launch::Origin, argv: Option<(&[u8], usize, u32)>)
                       -> Result<(), Status>
 {
-    crate::context::without_recovery(|| launch::start(call, loaded, origin))
+    crate::context::without_recovery(|| launch::start(call, loaded, origin, argv))
 }
 
-fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::application::Loaded)
+fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::application::Loaded,
+                  argv: Option<(&[u8], usize, u32)>)
                   -> Result<Option<launch::Prepared>, Status>
 {
     call.requirement_class = [0; 4];
@@ -1085,17 +1262,34 @@ fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::applica
             }
             None => None
         };
-        Ok::<_, Status>((heap, tls, ready))
+        let argv = if let Some((bytes, length, count)) = argv
+        {
+            Some(crate::allocator::with_target(crate::allocator::Target::Owner {
+                account: admission.allocation(),
+                class: mac_kernel_model::policy::MemoryClass::Kernel
+            }, || {
+                let mut owned = alloc::vec::Vec::new();
+                owned.try_reserve_exact(bytes.len()).map_err(|_| NO_MEMORY)?;
+                owned.extend_from_slice(bytes);
+                Ok::<_, Status>(Arguments { bytes: owned, length, count })
+            })?)
+        }
+        else
+        {
+            None
+        };
+        Ok::<_, Status>((heap, tls, ready, argv))
     })();
     match roots
     {
-        Ok((heap, tls, ready)) =>
+        Ok((heap, tls, ready, argv)) =>
         {
             Ok(Some(launch::Prepared { admission,
                                        heap,
                                        tls,
                                        loaded: Some(loaded),
                                        ready,
+                                       argv,
                                        directory: None,
                                        directory_bound: false }))
         }
@@ -1107,7 +1301,8 @@ fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::applica
     }
 }
 
-fn finish_launch(call: &mut ProcessCall, prepared: &mut launch::Prepared) -> Result<(), Status>
+fn finish_launch(call: &mut ProcessCall, prepared: &mut launch::Prepared, origin: launch::Origin)
+                 -> Result<(), Status>
 {
     let crate::toolbox::files::application::Loaded { catalog,
                                                      resources } =
@@ -1130,7 +1325,9 @@ fn finish_launch(call: &mut ProcessCall, prepared: &mut launch::Prepared) -> Res
     crate::kernel::with_toolbox(|toolbox| {
         toolbox.processes.bind_heap(prepared.admission.owner(), prepared.heap.clone())?;
         toolbox.processes.bind_tls(prepared.admission.owner(), prepared.tls.clone())?;
-        toolbox.finish_application_launch(call, catalog, image, space, &mut prepared.admission)
+        toolbox.processes.get_mut(prepared.admission.id())?.argv = prepared.argv.take();
+        toolbox.finish_application_launch(call, catalog, image, space, &mut prepared.admission,
+                                          matches!(origin, launch::Origin::Document(_)))
     }).map_err(|error| error.status())?
 }
 

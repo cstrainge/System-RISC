@@ -2,10 +2,11 @@ fn main()
 {
     println!("cargo:rerun-if-env-changed={}", mac_build::platform::PLATFORM_ENV);
     let platform = mac_build::platform::current();
-    let definition =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../platforms")
-                                                        .join(format!("{}.json", platform.name));
-    println!("cargo:rerun-if-changed={}", definition.display());
+    for definition in mac_build::platform::record_files(&platform.name)
+        .expect("System platform source records must resolve")
+    {
+        println!("cargo:rerun-if-changed={}", definition.display());
+    }
     let checked =
         platform.memory().expect("System platform layout must validate before compilation");
     mac_build::write_if_changed(std::path::Path::new(&std::env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"))

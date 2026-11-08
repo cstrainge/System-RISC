@@ -1,0 +1,43 @@
+import std::io
+visible `__tcp
+visible `__tcp_close
+visible "__tcp_Connection"
+visible "__tcp_Listener"
+
+pub type Connection = __tcp_Connection
+pub type Listener = __tcp_Listener
+pub type Error = std::io::Error
+pub struct Endpoint { pub host: String, pub port: Integer }
+
+pub fn connect($host: String, $port: Integer): Connection | Error { __tcp "connect" $host $port }
+pub fn listen($host: String, $port: Integer): Listener | Error { __tcp "listen" $host $port }
+pub fn resolve($host: String): [String] | Error { __tcp "resolve" $host }
+pub fn Listener::get_address(): Endpoint | Error
+{
+    let $address = __tcp "address" $self
+    Endpoint(host: $address[0], port: $address[1])
+}
+pub fn Listener::accept(): Connection | Error { __tcp "accept" $self }
+pub fn Listener::close(): () | Error { __tcp_close $self }
+pub fn Connection::get_reader(): std::io::Reader | Error { __tcp "reader" $self }
+pub fn Connection::get_writer(): std::io::Writer | Error { __tcp "writer" $self }
+pub fn Connection::get_peer(): Endpoint | Error
+{
+    let $address = __tcp "peer" $self
+    Endpoint(host: $address[0], port: $address[1])
+}
+pub fn Connection::get_local(): Endpoint | Error
+{
+    let $address = __tcp "local" $self
+    Endpoint(host: $address[0], port: $address[1])
+}
+pub fn Connection::close(): () | Error { __tcp_close $self }
+
+pub fn Connection::shutdown_write(): () | Error { $self.writer.shutdown_write }
+
+
+import std::stream
+pub fn connections($listener: Listener): std::stream::Reader | ErrorValue
+{
+    std::stream::Reader(next: fn (): Connection | () | Error { $listener.accept })
+}

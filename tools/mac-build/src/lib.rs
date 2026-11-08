@@ -41,10 +41,10 @@ pub fn build_guest() -> Result<()>
 {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
     println!("cargo:rerun-if-env-changed={}", platform::PLATFORM_ENV);
-    let definition =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platforms")
-                                             .join(format!("{}.json", platform::current().name));
-    println!("cargo:rerun-if-changed={}", definition.display());
+    for definition in platform::record_files(&platform::current().name)?
+    {
+        println!("cargo:rerun-if-changed={}", definition.display());
+    }
     let root = env::var("CARGO_MANIFEST_DIR")?;
     let path = Path::new(&root).join("resources.json");
     let manifest = Manifest::read(&path)?;

@@ -11,6 +11,50 @@ mod runtime;
 pub(super) mod retirement;
 pub(super) use runtime::Runtime;
 
+pub(crate) fn coroutine_stack(call: &mut mac_abi::coroutine_stack::Call, sp: usize)
+                              -> Result<(), Status>
+{
+    use mac_abi::{BAD_ARGUMENT, coroutine_stack as wire};
+    if call.reserved != 0 || call.limit != 0
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    crate::context::without_recovery(|| {
+        let space = current_user_space()?;
+        crate::context::with_application_executor(|executor| {
+            let backing = {
+                let scheduler = SCHEDULER.lock();
+                let thread = scheduler.thread(current()).ok_or(WRONG_THREAD)?;
+                if thread.id != executor.thread() || space.owner() != executor.owner().owner()
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                let backing = thread.core.backing.lock();
+                backing.as_ref().map(|entry| entry.stack.clone()).ok_or(WRONG_THREAD)?
+            };
+            match call.operation
+            {
+                wire::ALLOCATE if call.base == 0 && call.top == 0 =>
+                {
+                    (call.base, call.top) =
+                        backing.allocate_coroutine(&space, executor.allocation(), call.bytes)?;
+                    call.limit = call.base - crate::machine::memory::PAGE_BYTES as usize;
+                    Ok(())
+                }
+                wire::RELEASE if call.bytes == 0 && call.base != 0 && call.base < call.top =>
+                {
+                    if (call.base..=call.top).contains(&sp)
+                    {
+                        return Err(WRONG_THREAD);
+                    }
+                    backing.release_coroutine(call.base, call.top)
+                }
+                _ => Err(BAD_ARGUMENT)
+            }
+        }).map_err(|cause| cause.status())?
+    })
+}
+
 pub(super) fn runtime_for_executor(executor: &crate::context::ApplicationExecutor<'_>)
                                    -> Result<alloc::sync::Arc<Runtime>, Status>
 {

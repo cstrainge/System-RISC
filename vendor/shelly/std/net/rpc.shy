@@ -1,0 +1,350 @@
+# JSON-RPC policy is script code; exchange accepts/returns exact documents.
+import std::json
+import std::net::http
+visible `__json_bind
+visible `__json_apply
+
+pub error struct CallError { pub code: Integer, pub message: String, pub data: std::json::Document | () }
+pub error struct RequestError { pub message: String }
+pub error struct ProtocolError { pub message: String, pub response: std::json::Document | () }
+pub error struct RemoteError
+{
+    pub code: Integer,
+    pub message: String,
+    pub data: std::json::Document | (),
+    pub id: std::json::Document,
+}
+pub error struct BatchError { pub message: String, pub response: std::json::Document }
+pub type Error = CallError | RequestError | ProtocolError | RemoteError | BatchError | std::json::Error | std::net::http::Error
+pub struct Call { pub method: String, pub params: any | (), pub notification: Boolean | () }
+pub struct Outcome
+{
+    pub id: String,
+    pub result: std::json::Document | (),
+    pub error: RemoteError | (),
+}
+pub type Exchange = fn(std::json::Document): std::json::Document | ()
+pub type Notification = fn(std::json::Document): ()
+pub type Close = fn(): ()
+pub struct Client { exchange_fn: any, notify_fn: any | (), close_fn: any | (), reject_fn: any | (), sequence: Integer, closed: Boolean }
+pub fn Client::new($exchange: Exchange, $notify: Notification | (), $close: Close | ()): Client
+{ Client(exchange_fn: $exchange, notify_fn: $notify, close_fn: $close, reject_fn: $close, sequence: 0, closed: false) }
+pub fn Client::close(): () | ErrorValue
+{
+    if $self.::closed { return () }
+    $self.::closed = true
+    let $close = $self.::close_fn
+    $self.::close_fn = ()
+    $self.::reject_fn = ()
+    $self.::exchange_fn = ()
+    $self.::notify_fn = ()
+    if $close != () { $close }
+}
+
+fn Client::configure_rejection($reject: Close): () { $self.::reject_fn = $reject }
+fn Client::reject(): () | ErrorValue
+{
+    let $reject = $self.::reject_fn
+    $self.::closed = true
+    $self.::exchange_fn = ()
+    $self.::notify_fn = ()
+    $self.::close_fn = ()
+    $self.::reject_fn = ()
+    if $reject != () { $reject }
+}
+fn request($method: String, $params: any, $id: String | ()): std::json::Document | Error
+{
+    if ($method == "") || ($method.starts_with "rpc.")
+    { return RequestError(message: "Method must be nonempty and not reserved") }
+    let $document = std::json::wrap ["jsonrpc": "2.0", "method": $method]
+    if $params != ()
+    {
+        let $params = std::json::wrap $params
+        if ($params.kind != std::json::Kind::Array) && ($params.kind != std::json::Kind::Object)
+        { return RequestError(message: "RPC params must be an array or object") }
+        $document = std::json::set $document "/params" $params
+    }
+    if $id != () { $document = std::json::set $document "/id" $id }
+    $document
+}
+fn response($reply: std::json::Document, $id: String): std::json::Document | Error
+{
+    if $reply.kind != std::json::Kind::Object
+    { return ProtocolError(message: "RPC response must be an object", response: $reply) }
+    let $version = $reply.find "/jsonrpc"
+    let $reply_id = $reply.find "/id"
+    if $version == () || $reply_id == () ||
+        $version.kind != std::json::Kind::String || $reply_id.kind != std::json::Kind::String
+    { return ProtocolError(message: "RPC response is missing version or correlated string ID", response: $reply) }
+    if $version.require_string != "2.0" || $reply_id.require_string != $id
+    { return ProtocolError(message: "RPC version or ID does not match", response: $reply) }
+    if ($reply.has "/result") == ($reply.has "/error")
+    { return ProtocolError(message: "RPC reply requires exactly one of result and error", response: $reply) }
+    if $reply.has "/result" { return $reply.at "/result" }
+    let $error = $reply.at "/error"
+    if $error.kind != std::json::Kind::Object
+    { return ProtocolError(message: "RPC error must be an object", response: $reply) }
+    RemoteError(code: ($error.require_integer "/code"), message: ($error.require_string "/message"),
+        data: ($error.find "/data"), id: $reply_id)
+}
+pub fn Client::exchange($document: std::json::Document): std::json::Document | () | ErrorValue
+{
+    if $self.::closed { return RequestError(message: "RPC client is closed") }
+    let $exchange = $self.::exchange_fn
+    $exchange $document
+}
+pub fn Client::call($method: String, $params: any | ()): std::json::Document | ErrorValue
+{
+    $self.::sequence = $self.::sequence + 1
+    let $id = String($self.::sequence)
+    let $reply = $self.exchange (request $method $params $id)
+    try
+    {
+        if $reply == () { throw ProtocolError(message: "RPC call has no response") }
+        let $result: std::json::Document = response $reply $id
+        return $result
+    }
+    catch ($error: ProtocolError) { $self.reject; throw $error }
+}
+pub fn Client::call_as($method: String, $params: any, $target: Type): any | ErrorValue
+{
+    let $conversion = __json_bind $target
+    __json_apply ($self.call $method $params) $conversion
+}
+pub fn Client::notify($method: String, $params: any | ()): () | ErrorValue
+{
+    if $self.::closed { return RequestError(message: "RPC client is closed") }
+    let $document = request $method $params ()
+    let $notify = $self.::notify_fn
+    if $notify != () { $notify $document; return () }
+    let $reply = $self.exchange $document
+    if $reply != () { return ProtocolError(message: "Notification unexpectedly returned an RPC reply", response: $reply) }
+}
+pub fn Client::batch($calls: [Call]): [Outcome] | ErrorValue
+{
+    try { let $results: [Outcome] = $self.batch_checked $calls; return $results }
+    catch ($error: ProtocolError) { $self.reject; throw $error }
+}
+fn Client::batch_checked($calls: [Call]): [Outcome] | ErrorValue
+{
+    if $calls.count == 0 { return RequestError(message: "RPC batch cannot be empty") }
+    if $calls.count > 256 { return RequestError(message: "RPC batch exceeds 256 requests") }
+    let $requests = []
+    let $ids = []
+    for $call in $calls
+    {
+        let $id = ()
+        if $call.notification != true
+        {
+            $self.::sequence = $self.::sequence + 1
+            $id = String($self.::sequence)
+            $ids = [$ids..., $id]
+        }
+        $requests = [$requests..., (request $call.method $call.params $id)]
+    }
+    let $reply = $self.exchange (std::json::wrap $requests)
+    if $ids.count == 0
+    {
+        if $reply != () { return ProtocolError(message: "Notification batch unexpectedly returned a reply", response: $reply) }
+        return []
+    }
+    if $reply == () { return ProtocolError(message: "RPC batch has no response") }
+    if $reply.kind == std::json::Kind::Object
+    {
+        let $id = $reply.find "/id"
+        if $id != () && $id.kind == std::json::Kind::Null && ($reply.has "/error") &&
+            ($reply.require_string "/jsonrpc") == "2.0" && !($reply.has "/result")
+        {
+            ($reply.at "/error").require_integer "/code"
+            ($reply.at "/error").require_string "/message"
+            return BatchError(message: "Server rejected the RPC batch", response: $reply)
+        }
+        return ProtocolError(message: "Expected batch response array", response: $reply)
+    }
+    if $reply.kind != std::json::Kind::Array
+    { return ProtocolError(message: "Expected batch response array", response: $reply) }
+    let $by_id = [:]
+    for $entry in $reply.array_items
+    {
+        let $id = $entry.find "/id"
+        if $id == () || $id.kind != std::json::Kind::String
+        { return ProtocolError(message: "Batch reply is missing a string ID", response: $reply) }
+        let $id = $id.require_string
+        let $known = false
+        for $expected in $ids { if $expected == $id { $known = true } }
+        if !$known || $by_id[$id] != ()
+        { return ProtocolError(message: "Duplicate or unexpected batch ID", response: $reply) }
+        $by_id[$id] = $entry
+    }
+    let $results = []
+    for $id in $ids
+    {
+        if $by_id[$id] == () { return ProtocolError(message: "Missing batch reply", response: $reply) }
+        try
+        {
+            let $value = response $by_id[$id] $id
+            $results = [$results..., Outcome(id: $id, result: $value)]
+        }
+        catch ($error: RemoteError) { $results = [$results..., Outcome(id: $id, error: $error)] }
+    }
+    $results
+}
+pub fn over_http($client: std::net::http::Client, $path: String): Client
+{
+    Client(exchange: fn ($document: std::json::Document): std::json::Document | () | Error
+        {
+            let $reply = $client.post $path (std::net::http::json_body $document)
+            $reply.require_success
+            let $text = $reply.read_text
+            if $text == "" { return () }
+            std::json::parse $text
+        })
+}
+pub fn String::from_remote_error($error: RemoteError): String { "RPC ${error.code}: ${error.message}" }
+pub fn String::from_protocol_error($error: ProtocolError): String { $error.message }
+pub fn String::from_request_error($error: RequestError): String { $error.message }
+pub fn String::from_batch_error($error: BatchError): String { $error.message }
+
+
+import std::io
+import std::net::framing
+pub fn over_stream($reader: std::io::Reader, $writer: std::io::Writer,
+                   $max_bytes: Integer | ()): Client | ErrorValue
+{
+    let $busy = false
+    let $closed = false
+    let $write = fn ($document: std::json::Document): () | ErrorValue
+    {
+        if $closed { return RequestError(message: "RPC transport is closed") }
+        std::net::framing::write_length $writer (std::io::Bytes(std::json::encode $document)) () () $max_bytes
+        ()
+    }
+    let $client = Client(
+        exchange: fn ($document: std::json::Document): std::json::Document | () | ErrorValue
+        {
+            if $closed { return RequestError(message: "RPC transport is closed") }
+            if $busy { return RequestError(message: "RPC stream already has an exchange") }
+            $busy = true
+            try
+            {
+                # Acquire the source before transmitting; do not keep an operation reader
+                # alive between calls or across REPL submissions.
+                let $frames = std::net::framing::read_length $reader () () $max_bytes
+                try
+                {
+                    $write $document
+                    let $expects_reply = if $document.kind == std::json::Kind::Object
+                        { $document.has "/id" } else { false }
+                    if $document.kind == std::json::Kind::Array
+                    { for $entry in $document.array_items { if $entry.has "/id" { $expects_reply = true } } }
+                    if !$expects_reply { return () }
+                    let $frame = $frames.next_item
+                    if $frame == () { return ProtocolError(message: "RPC stream ended before response") }
+                    return std::json::parse (String($frame))
+                }
+                finally { $frames.close }
+            }
+            catch ($error)
+            {
+                $closed = true
+                $reader.close
+                $writer.close
+                throw $error
+            }
+            finally { $busy = false }
+        },
+        notify: fn ($document: std::json::Document): () | ErrorValue
+        {
+            if $busy { return RequestError(message: "RPC stream already has an exchange") }
+            $busy = true
+            try { $write $document }
+            finally { $busy = false }
+        },
+        close: fn () { $closed = true },
+    )
+    $client.configure_rejection fn () { $closed = true; $reader.close; $writer.close }
+    $client
+}
+
+
+# Routes are ordinary Shelly callbacks. Boundary policy catches/report failures once
+# and sends a constant internal-error message, never a script diagnostic to the peer.
+pub type Handler = fn(std::json::Document | ()): any
+pub struct Router { routes: [String: Handler] }
+pub fn Router::new($routes: [String: Handler] | ()): Router
+{ Router(routes: (if $routes == () { [:] } else { $routes })) }
+pub fn Router::register($method: String, $handler: Handler): () | RequestError
+{
+    if ($method == "") || ($method.starts_with "rpc.")
+    { return RequestError(message: "Method must be nonempty and not reserved") }
+    $self.::routes[$method] = $handler
+}
+fn error_reply($id: std::json::Document, $code: Integer, $message: String): std::json::Document | Error
+{ std::json::wrap ["jsonrpc": "2.0", "id": $id, "error": ["code": $code, "message": $message]] }
+fn Router::dispatch_one($request: std::json::Document): std::json::Document | () | ErrorValue
+{
+    let $id = $request.find "/id"
+    let $null = std::json::wrap ()
+    if $request.kind != std::json::Kind::Object
+    { return error_reply $null -32600 "Invalid Request" }
+    let $version = $request.find "/jsonrpc"
+    let $method = $request.find "/method"
+    if $version == () || $method == () || $version.kind != std::json::Kind::String ||
+        $method.kind != std::json::Kind::String
+    { return error_reply $null -32600 "Invalid Request" }
+    if $version.require_string != "2.0" || ($id != () && $id.kind != std::json::Kind::String &&
+        $id.kind != std::json::Kind::Number && $id.kind != std::json::Kind::Null)
+    { return error_reply $null -32600 "Invalid Request" }
+    let $params = $request.find "/params"
+    if $params != () && $params.kind != std::json::Kind::Object && $params.kind != std::json::Kind::Array
+    { if $id == () { return () }; return error_reply $id -32602 "Invalid params" }
+    let $handler = $self.::routes[$method.require_string]
+    if $handler == ()
+    { if $id == () { return () }; return error_reply $id -32601 "Method not found" }
+    try
+    {
+        let $result = $handler $params
+        if $id == () { return () }
+        return std::json::wrap ["jsonrpc": "2.0", "id": $id, "result": $result]
+    }
+    catch ($error: CallError)
+    {
+        if $id == () { return () }
+        let $reply = error_reply $id $error.code $error.message
+        if $error.data != () { return std::json::set $reply "/error/data" $error.data }
+        return $reply
+    }
+    catch ($stack, $error)
+    {
+        report_error $stack $error
+        if $error.type == RuntimeError && (($error.what == "Interrupted") || ($error.what == "CleanupAbort"))
+        { throw $error }
+        if $id == () { return () }
+        return error_reply $id -32603 "Internal error"
+    }
+}
+pub fn Router::dispatch($request: std::json::Document): std::json::Document | () | ErrorValue
+{
+    if $request.kind != std::json::Kind::Array { return $self.dispatch_one $request }
+    let $items = $request.array_items
+    if $items.count == 0 { return error_reply (std::json::wrap ()) -32600 "Invalid Request" }
+    if $items.count > 256 { return error_reply (std::json::wrap ()) -32600 "Invalid Request" }
+    let $replies = []
+    for $item in $items
+    {
+        let $reply = $self.dispatch_one $item
+        if $reply != () { $replies = [$replies..., $reply] }
+    }
+    if $replies.count == 0 { return () }
+    std::json::wrap $replies
+}
+pub fn Router::dispatch_text($text: String): std::json::Document | () | ErrorValue
+{
+    let $request: std::json::Document
+    try { $request = std::json::parse $text }
+    catch ($error: std::json::Error)
+    { return error_reply (std::json::wrap ()) -32700 "Parse error" }
+    $self.dispatch $request
+}
+
+pub fn String::from_call_error($error: CallError): String { "RPC ${error.code}: ${error.message}" }

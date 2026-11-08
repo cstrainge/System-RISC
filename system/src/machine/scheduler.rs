@@ -23,7 +23,7 @@ pub(crate) use stack::{StackPinError, StackWaitPin, pin_application_stack};
 mod user;
 pub(crate) mod callbacks;
 pub(crate) use user::{Fault as UserFault, FaultSnapshot, capture_definition_panic, capture_fault,
-                      current_user_space, pump_faults};
+                      coroutine_stack, current_user_space, pump_faults};
 mod worker;
 pub(crate) mod service;
 pub(crate) mod wake;
@@ -467,7 +467,12 @@ enum Wait
     /// changing the ring or an endpoint count.
     Pipe
     {
-        pipe: u64
+        pipe:     u64,
+        deadline: Option<u64>
+    },
+    Child
+    {
+        child: u64
     }
 }
 struct Scheduler
@@ -713,7 +718,8 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              callback_queue: None,
                                              name: Mutex::new(None),
                                              application: None,
-                                             pending_join: Mutex::new(None), pending_pipe: Mutex::new(None) }).map_err(|_| {
+                                             pending_join: Mutex::new(None),
+                                             pending_pipe: Mutex::new(None) }).map_err(|_| {
                                                                                   mac_abi::NO_MEMORY
                                                                               })?;
         Ok((core, allocation))
@@ -817,7 +823,8 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     callback_queue: None,
                                     name: Mutex::new(None),
                                     application: None,
-                                    pending_join: Mutex::new(None), pending_pipe: Mutex::new(None) };
+                                    pending_join: Mutex::new(None),
+                                    pending_pipe: Mutex::new(None) };
             let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
             Ok::<_, mac_abi::Status>((core, stack_preparation))
         })
@@ -1021,7 +1028,7 @@ pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                     charges: accounting::ThreadCharges,
                     heap: crate::toolbox::application_heap::RootBinding,
                     tls: crate::toolbox::native_threads::RootBinding,
-                    space: super::paging::process::Pin)
+                    space: super::paging::process::Pin, runnable: bool)
                     -> Result<u64, mac_abi::Status>
 {
     let prepared = prepare(owner, loaded, charges, heap, tls, space).map_err(|failure| {
@@ -1034,7 +1041,7 @@ pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                        drop(loaded);
                        status
                    })?;
-    spawn_prepared(prepared, true).map_err(|failure| failure.status)
+    spawn_prepared(prepared, runnable).map_err(|failure| failure.status)
 }
 
 fn arm()
@@ -1437,6 +1444,38 @@ pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
           });
     Ok(true)
 }
+/// The Process Manager holds the result condition until the wait is armed.
+pub(crate) fn park_child(child: u64, suspension: Result<(), mac_abi::Status>)
+                         -> Result<(), mac_abi::Status>
+{
+    suspension?;
+    let scheduler = SCHEDULER.lock();
+    let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
+    service::suspension_allowed(thread.state.get())?;
+    thread.update(|state| {
+              state.waiting = Some(Wait::Child { child });
+              state.woken = 0;
+          });
+    Ok(())
+}
+
+pub(crate) fn wake_child(child: u64)
+{
+    let scheduler = SCHEDULER.lock();
+    for (_, thread) in scheduler.iter()
+    {
+        if thread.state.get().live
+           && matches!(thread.state.get().waiting, Some(Wait::Child { child: id }) if id == child)
+        {
+            thread.update(|state| {
+                      state.waiting = None;
+                      state.woken = 1;
+                  });
+            wake::runnable(thread.state.get().requires_primary());
+        }
+    }
+}
+
 pub fn wake_io(identity: u64, job: crate::context::DeferredIo)
 {
     let scheduler = SCHEDULER.lock();
@@ -1800,7 +1839,7 @@ fn wake_deadlines(scheduler: &Scheduler, now: u64)
     {
         address::observe(thread, now, invalidated);
         if matches!(thread.state.get().waiting,
-            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) } | Wait::Sleep { deadline }) if now >= deadline)
+            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) } | Wait::Pipe { deadline: Some(deadline), .. } | Wait::Sleep { deadline }) if now >= deadline)
         {
             thread.update(|state| state.waiting = None);
             if let Some(worker) = &thread.worker

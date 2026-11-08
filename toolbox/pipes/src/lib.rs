@@ -67,6 +67,48 @@ impl<'a> Pipes<'a>
                         active: true })
     }
 
+    /// Launch a command-line executable in an owned Terminal window session.
+    /// On success the child owns the ends. On refusal the caller still owns
+    /// them and may retry or close them.
+    pub fn launch_cli(self, session: mac_abi::WindowId, volume: mac_traps::VolumeId,
+                      cnid: mac_traps::Cnid, stdin: &mut PipeReader<'a>,
+                      stdout: &mut PipeWriter<'a>, stderr: &mut PipeWriter<'a>)
+                      -> Result<mac_traps::ProcessId>
+    {
+        self.launch_cli_with_path(session, volume, cnid, "", stdin, stdout, stderr)
+    }
+
+    /// Launch in an owned session with the Terminal's executable search path.
+    pub fn launch_cli_with_path(self, session: mac_abi::WindowId, volume: mac_traps::VolumeId,
+                                cnid: mac_traps::Cnid, path: &str, stdin: &mut PipeReader<'a>,
+                                stdout: &mut PipeWriter<'a>, stderr: &mut PipeWriter<'a>)
+                                -> Result<mac_traps::ProcessId>
+    {
+        use mac_abi::processes::{LAUNCH, ProcessCall};
+        if !stdin.active || !stdout.active || !stderr.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = ProcessCall { operation: LAUNCH,
+                                     id: session.0,
+                                     volume: volume.0,
+                                     cnid: cnid.0,
+                                     streams: [stdin.handle, stdout.handle, stderr.handle],
+                                     ..Default::default() };
+        if path.is_empty()
+        {
+            self.client.process(&mut call)?;
+        }
+        else
+        {
+            self.client.launch_argv(&mut call, &[], 0, path)?;
+        }
+        stdin.active = false;
+        stdout.active = false;
+        stderr.active = false;
+        Ok(mac_traps::ProcessId(call.info.id))
+    }
+
     fn pair(self, operation: u32, name: &str, capacity: usize, writers: u64)
             -> Result<(PipeReader<'a>, PipeWriter<'a>)>
     {
@@ -112,6 +154,37 @@ impl PipeReader<'_>
                                     handle: self.handle,
                                     buffer: output.as_mut_ptr(),
                                     length: output.len(),
+                                    ..Default::default() };
+        let result = self.client.pipes(&mut call);
+        call.buffer = core::ptr::null_mut();
+        result.map(|()| call.transferred)
+    }
+
+    /// Wait for data or real EOF, without changing the endpoint's blocking mode.
+    /// `None` waits indefinitely; expiry returns `Error::WouldBlock`, preserving
+    /// the output buffer. Zero duration makes one immediate attempt.
+    pub fn read_wait(&mut self, output: &mut [u8], timeout: Option<core::time::Duration>)
+                     -> Result<usize>
+    {
+        if output.is_empty()
+        {
+            return Err(Error::BadArgument);
+        }
+        let wait_nanoseconds = match timeout
+        {
+            Some(value) =>
+            {
+                u64::try_from(value.as_nanos()).ok()
+                                               .filter(|value| *value != u64::MAX)
+                                               .ok_or(Error::BadArgument)?
+            }
+            None => u64::MAX
+        };
+        let mut call = wire::Call { operation: wire::READ_WAIT,
+                                    handle: self.handle,
+                                    buffer: output.as_mut_ptr(),
+                                    length: output.len(),
+                                    wait_nanoseconds,
                                     ..Default::default() };
         let result = self.client.pipes(&mut call);
         call.buffer = core::ptr::null_mut();

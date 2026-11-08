@@ -1,0 +1,172 @@
+import std::io
+import std::json
+visible `__http
+visible `__http_close
+visible `__http_header
+visible `__json_bind
+visible `__json_apply
+visible `__http_apply
+visible "__http_Client"
+visible "__http_Response"
+visible "__http_DiagnosticResponse"
+pub visible "__http_StatusError"
+pub visible "__http_ProtocolError"
+pub visible "__http_TransportError"
+
+pub type Response = __http_Response
+pub type DiagnosticResponse = __http_DiagnosticResponse
+pub type Error = StatusError | ProtocolError | TransportError | std::io::Error | std::json::Error
+
+pub struct Headers { values: [String: [String]] }
+pub fn Headers::new($values: [String: [String]]): Headers { Headers(values: $values) }
+pub fn Headers::get($name: String): String | () | Error { __http_header $self.::values $name }
+pub fn Headers::all($name: String): [String]
+{
+    __http_header $self.::values $name true
+}
+
+pub struct Body { pub value: any, pub content_type: String | () }
+pub fn bytes_body($bytes: std::io::Bytes): Body { Body(value: $bytes) }
+pub fn text_body($text: String): Body | std::io::Error
+{
+    Body(value: std::io::Bytes($text), content_type: "text/plain; charset=utf-8")
+}
+pub fn json_body($value: any, $options: std::json::EncodeOptions | ()): Body | Error
+{
+    Body(value: std::io::Bytes(std::json::encode $value $options), content_type: "application/json")
+}
+pub fn reader_body($reader: std::io::Reader): Body { Body(value: $reader) }
+pub fn source_body($source: std::io::ByteSource): Body { Body(value: $source) }
+pub fn bearer($token: String): String { "Bearer " + $token }
+
+pub enum TimeoutPolicy { Unbounded }
+pub type Timeout = Integer | TimeoutPolicy
+
+pub struct Request
+{
+    pub method: String,
+    pub path: String,
+    pub body: Body | (),
+    pub headers: [String: String | [String]] | (),
+    pub query: [[String, String]] | (),
+    pub timeout_ms: Timeout | (),
+}
+
+pub struct Client { native: __http_Client }
+pub fn Client::new($base_url: String, $auth: String | (),
+                  $headers: [String: String | [String]] | (), $timeout_ms: Timeout | (),
+                  $connect_timeout_ms: Integer | (), $idle_timeout_ms: Timeout | (),
+                  $error_decoder: Type | ()): Client | Error
+{
+    let $native = __http "client" ["base_url": $base_url, "auth": $auth, "headers": $headers,
+        "timeout_ms": $timeout_ms, "connect_timeout_ms": $connect_timeout_ms,
+        "idle_timeout_ms": $idle_timeout_ms, "error_decoder": $error_decoder]
+    Client(native: $native)
+}
+pub fn Client::create($request: Request): Response | Error { __http "send" $self.::native $request }
+pub fn Client::get($path: String, $query: [[String, String]] | ()): Response | Error
+{
+    $self.create Request(method: "GET", path: $path, query: $query)
+}
+pub fn Client::post($path: String, $body: Body): Response | Error
+{
+    $self.create Request(method: "POST", path: $path, body: $body)
+}
+pub fn Client::put($path: String, $body: Body): Response | Error
+{
+    $self.create Request(method: "PUT", path: $path, body: $body)
+}
+pub fn Client::delete($path: String): Response | Error { $self.create Request(method: "DELETE", path: $path) }
+pub fn Client::close(): () | Error { __http_close $self.::native }
+
+pub fn Response::get_status(): Integer | Error { __http "status" $self }
+pub fn Response::get_headers(): Headers | Error { Headers(values: __http "headers" $self) }
+pub fn Response::get_url(): String | Error { __http "url" $self }
+pub fn Response::require_success(): Response | ErrorValue { __http "require_success" $self }
+pub fn Response::take_body(): std::io::Reader | Error { __http "take_body" $self }
+pub fn Response::close(): () | Error { __http_close $self }
+pub fn Response::read_bytes($max_bytes: Integer | ()): std::io::Bytes | Error
+{
+    let $reader = $self.take_body
+    try { return $reader.read_all $max_bytes }
+    finally { $reader.close }
+}
+pub fn Response::read_text($max_bytes: Integer | ()): String | Error { String($self.read_bytes $max_bytes) }
+pub fn Response::read_document($options: std::json::ParseOptions | ()): std::json::Document | Error
+{
+    let $reader = $self.take_body
+    try { return std::json::read $reader $options }
+    finally { $reader.close }
+}
+pub fn Response::read_json($options: std::json::ParseOptions | ()): any | Error
+{
+    let $document = $self.read_document $options
+    $document.value
+}
+pub fn Response::read_as($target: Type, $options: std::json::MappingOptions | ()): any | ErrorValue
+{
+    let $conversion = __json_bind $target
+    let $document = $self.read_document
+    __http_apply $document $conversion $options $self
+}
+
+pub fn DiagnosticResponse::get_status(): Integer | Error { __http "status" $self }
+pub fn DiagnosticResponse::get_headers(): Headers | Error { Headers(values: __http "headers" $self) }
+pub fn DiagnosticResponse::get_url(): String | Error { __http "url" $self }
+pub fn DiagnosticResponse::get_capture_complete(): Boolean | Error { __http "diagnostic_complete" $self }
+pub fn DiagnosticResponse::get_capture_reason(): String | Error { __http "diagnostic_reason" $self }
+pub fn DiagnosticResponse::read_bytes(): std::io::Bytes | Error { __http "diagnostic_bytes" $self }
+pub fn DiagnosticResponse::read_text(): String | Error { String($self.read_bytes) }
+pub fn DiagnosticResponse::read_document($options: std::json::ParseOptions | ()): std::json::Document | Error
+{
+    if !$self.capture_complete { return ProtocolError(message: "Diagnostic capture is incomplete") }
+    std::json::parse ($self.read_text) $options
+}
+pub fn DiagnosticResponse::read_as($target: Type, $options: std::json::MappingOptions | ()): any | ErrorValue
+{
+    let $conversion = __json_bind $target
+    __json_apply ($self.read_document) $conversion $options
+}
+pub fn String::from_status_error($error: StatusError): String { $error.message }
+pub fn String::from_protocol_error($error: ProtocolError): String { $error.message }
+
+pub fn DiagnosticResponse::get_bytes_received(): Integer | Error { __http "diagnostic_received" $self }
+
+visible "__http_Upload"
+visible `__http_upload
+pub type Upload = __http_Upload
+pub fn Client::upload($request: Request): Upload | Error { __http "upload" $self.::native $request }
+pub fn Upload::finish(): Response | Error { __http_upload $self }
+pub fn Upload::close(): () | Error { __http_close $self }
+pub fn upload($request: Request, $client: Client | ()): Upload | Error
+{
+    let $client = if $client == () { Client(base_url: $request.path) } else { $client }
+    $client.upload $request
+}
+pub fn get($url: String): Response | Error { Client(base_url: $url).get "" }
+pub fn post($url: String, $body: Body): Response | Error { Client(base_url: $url).post "" $body }
+pub fn get_as($url: String, $target: Type): any | ErrorValue { (get $url).require_success.read_as $target }
+
+pub fn Client::send($request: Request): Response | Error { $self.create $request }
+
+pub fn String::from_transport_error($error: TransportError): String
+{ "${error.operation}: ${error.message} (delivery ${error.delivery})" }
+
+
+# Path segments and query/form pairs are escaped as data, including slash, plus and ampersand.
+pub fn path($segments: [String]): String | Error { __http "path" $segments }
+pub fn form_body($fields: [[String, String]]): Body | Error
+{ Body(value: std::io::Bytes(__http "form" $fields), content_type: "application/x-www-form-urlencoded") }
+pub struct Part
+{
+    pub name: String,
+    pub data: std::io::Bytes,
+    pub filename: String | (),
+    pub content_type: String | (),
+}
+pub fn multipart_body($parts: [Part]): Body | Error
+{
+    let $body = __http "multipart" $parts
+    let $bytes: std::io::Bytes = $body[0]
+    Body(value: $bytes, content_type: $body[1])
+}

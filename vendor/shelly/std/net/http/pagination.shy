@@ -1,0 +1,108 @@
+import std::io
+import std::json
+import std::stream
+import std::net::http
+
+pub struct Page
+{
+    pub items: Array,
+    pub next: std::net::http::Request | (),
+    pub cursor: String | (),
+    pub metadata: any | (),
+}
+pub error struct PaginationError { pub message: String }
+pub type Error = PaginationError | std::net::http::Error
+pub type Decoder = fn(std::net::http::Response): Page
+pub type Reader = std::stream::Reader
+
+struct Pager
+{
+    client: std::net::http::Client,
+    request: std::net::http::Request | (),
+    decode: Decoder,
+    remaining: Integer,
+    count: Integer,
+    seen: [String: Boolean],
+    cursor: String | (),
+}
+fn Pager::new($client: std::net::http::Client, $first: std::net::http::Request,
+              $decode: Decoder, $max_pages: Integer): Pager | PaginationError
+{
+    if ($max_pages < 1) || ($max_pages > 10000)
+    { return PaginationError(message: "Page limit must be 1..10000") }
+    Pager(client: $client, request: $first, decode: $decode,
+        remaining: $max_pages, count: 0, seen: [:])
+}
+fn Pager::next(): Page | () | ErrorValue
+{
+    if $self.::request == () { return () }
+    if $self.::remaining == 0 { return PaginationError(message: "Pagination page limit exceeded") }
+    let $request = $self.::request
+    let $key = if $self.::cursor != () { "cursor:" + $self.::cursor }
+        else { "${request.method} ${request.path}" }
+    if $self.::cursor == ()
+    {
+        if $request.query != ()
+        { $key = $key + (std::json::encode $request.query) }
+        if $request.body != ()
+        {
+            let $body = $request.body.value
+            if $body.type != std::io::Bytes
+            { return PaginationError(message: "A streamed pagination request requires an explicit cursor") }
+            $key = $key + $body.encode_base64
+        }
+    }
+    if $self.::seen[$key] == true { return PaginationError(message: "Pagination repeated a request or cursor") }
+    $self.::seen[$key] = true
+    $self.::remaining = $self.::remaining - 1
+    let $reply = $self.::client.send $request
+    try
+    {
+        $reply.require_success
+        let $decode = $self.::decode
+        let $page: Page = $decode $reply
+        $self.::request = $page.next
+        $self.::cursor = $page.cursor
+        $self.::count = $self.::count + 1
+        return $page
+    }
+    finally { $reply.close }
+}
+fn Pager::get_count(): Integer { $self.::count }
+
+pub fn pages($client: std::net::http::Client, $first: std::net::http::Request,
+             $decode: Decoder, $max_pages: Integer | ()): Reader | ErrorValue
+{
+    let $pager = Pager(client: $client, first: $first, decode: $decode,
+        max_pages: (if $max_pages == () { 1000 } else { $max_pages }))
+    std::stream::Reader(
+        next: fn (): Page | () | ErrorValue { $pager.next },
+        result: fn (): Integer { $pager.count },
+    )
+}
+pub fn items($pages: Reader): Reader | ErrorValue
+{
+    let $items = []
+    let $offset = 0
+    std::stream::Reader(
+        next: fn (): std::stream::Item | () | ErrorValue
+        {
+            loop
+            {
+                if $offset < $items.count
+                {
+                    let $value = $items[$offset]
+                    $offset = $offset + 1
+                    return std::stream::Item(value: $value)
+                }
+                let $page = $pages.next_item
+                if $page == () { return () }
+                $items = $page.items
+                $offset = 0
+            }
+        },
+        result: fn (): any | ErrorValue { $pages.result },
+        close: fn (): () | ErrorValue { $pages.close },
+    )
+}
+pub fn String::from_pagination_error($error: PaginationError): String { $error.message }

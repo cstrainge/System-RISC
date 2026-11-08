@@ -148,7 +148,7 @@ pub struct BootStorage
 {
     context:                 *mut (),
     disk_info:               DiskInfoFn,
-    read_sector:             ReadSectorFn,
+    read_sectors:             ReadSectorsFn,
     write_sector:            Option<WriteSectorFn>,
     flush_disk:              Option<FlushDiskFn>,
     startup_disk:            u32,
@@ -163,7 +163,7 @@ impl BootStorage
     {
         Some(Self { context:                 info.storage_context,
                     disk_info:               info.disk_info?,
-                    read_sector:             info.read_sector?,
+                    read_sectors:             info.read_sectors?,
                     write_sector:            info.write_sector,
                     flush_disk:              info.flush_disk,
                     startup_disk:            info.startup_disk,
@@ -178,23 +178,29 @@ impl BootStorage
         if status == OK { Ok(result) } else { Err(status) }
     }
 
-    fn read(&self, index: u32, sector: u64, output: &mut [u8; 512]) -> Status
+    fn read(&self, index: u32, sector: u64, output: &mut [[u8; 512]]) -> Status
     {
+        if output.is_empty() || output.len() > FIRMWARE_READ_SECTORS
+        {
+            return BAD_ARGUMENT;
+        }
+        let count = output.len() as u32;
+        let output = output.as_flattened_mut();
         if firmware_buffer(output.as_ptr(), output.len())
         {
             firmware_call(|| unsafe {
-                (self.read_sector)(self.context, index, sector, output.as_mut_ptr())
+                (self.read_sectors)(self.context, index, sector, count, output.as_mut_ptr())
             }).unwrap_or_else(|status| status)
         }
         else
         {
-            let mut resident = [0u8; 512];
+            let mut resident = [0u8; 512 * FIRMWARE_READ_SECTORS];
             let status = firmware_call(|| unsafe {
-                             (self.read_sector)(self.context, index, sector, resident.as_mut_ptr())
-                         }).unwrap_or_else(|status| status);
+                (self.read_sectors)(self.context, index, sector, count, resident.as_mut_ptr())
+            }).unwrap_or_else(|status| status);
             if status == OK
             {
-                output.copy_from_slice(&resident);
+                output.copy_from_slice(&resident[..output.len()]);
             }
             status
         }
@@ -234,25 +240,42 @@ impl BlockDevice for Device
 
     fn read_sector(&mut self, sector: u64, output: &mut [u8; 512]) -> mac_hfs::Result<()>
     {
-        if sector >= self.info.sector_count
+        self.read_sectors(sector, core::slice::from_mut(output))
+    }
+
+    fn read_sectors(&mut self, sector: u64, output: &mut [[u8; 512]]) -> mac_hfs::Result<()>
+    {
+        if sector.checked_add(output.len() as u64).is_none_or(|end| end > self.info.sector_count)
         {
-            return Err(mac_hfs::Error::Malformed("sector outside device"));
+            return Err(mac_hfs::Error::Malformed("sector range outside device"));
         }
-        if self.cache.get(sector, output)
+        let mut at = 0;
+        while at < output.len()
         {
-            return Ok(());
+            if self.cache.get(sector + at as u64, &mut output[at])
+            {
+                at += 1;
+                continue;
+            }
+            let first = at;
+            at += 1;
+            while at < output.len() && at - first < FIRMWARE_READ_SECTORS
+                  && !self.cache.contains(sector + at as u64)
+            {
+                at += 1;
+            }
+            let batch = &mut output[first..at];
+            if self.storage.read(self.index, sector + first as u64, batch) != OK
+            {
+                self.cache.clear();
+                return Err(mac_hfs::Error::Malformed("firmware sector read failed"));
+            }
+            for (index, bytes) in batch.iter().enumerate()
+            {
+                self.cache.put(sector + (first + index) as u64, bytes);
+            }
         }
-        let status = self.storage.read(self.index, sector, output);
-        if status == OK
-        {
-            self.cache.put(sector, output);
-            Ok(())
-        }
-        else
-        {
-            self.cache.clear();
-            Err(mac_hfs::Error::Malformed("firmware sector read failed"))
-        }
+        Ok(())
     }
 }
 impl WritableBlockDevice for Device

@@ -1,0 +1,11 @@
+{
+  "name": "Cli Extension",
+  "binary_name": "CliExtension",
+  "file_type": "INIT",
+  "extension_target": "system",
+  "creator": "CLIX",
+  "role": "code_resource",
+  "abi_version": 1,
+  "description": "Selects the command-line launch profile for CLAP executables",
+  "resources": []
+}

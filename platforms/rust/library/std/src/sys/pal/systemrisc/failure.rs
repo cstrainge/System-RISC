@@ -82,6 +82,11 @@ fn log_refusal(operation: &str, cause: mac_traps::Error)
 /// Keep Rust's E: Debug contract; no application hook or error-type specialization.
 pub(crate) fn main_error(arguments: fmt::Arguments<'_>)
 {
+    if runtime::stream(2) != 0
+    {
+        crate::io::attempt_print_to_stderr(format_args!("{arguments}\n"));
+        return;
+    }
     if !runtime::is_main_thread() || REPORTING.load(Ordering::Acquire)
     {
         return;

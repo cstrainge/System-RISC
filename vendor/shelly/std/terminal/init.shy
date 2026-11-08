@@ -1,0 +1,81 @@
+
+pub import readline
+
+
+visible `__terminal_color
+visible `__terminal_style
+visible `__terminal_control
+
+
+# Foreground color follows terminal capabilities; text arguments retain their spacing.
+pub fn color($color: String | [Integer], $text: String...): String
+{
+    __terminal_color $color $text false
+}
+
+
+pub fn bk_color($color: String | [Integer], $text: String...): String
+{
+    __terminal_color $color $text true
+}
+
+
+# Non-color styles remain active on monochrome TTYs, but never on redirected stdout.
+pub fn bold($text: String...): String
+{
+    __terminal_style "bold" $text
+}
+
+
+pub fn dim($text: String...): String
+{
+    __terminal_style "dim" $text
+}
+
+
+pub fn italic($text: String...): String
+{
+    __terminal_style "italic" $text
+}
+
+
+pub fn underline($text: String...): String
+{
+    __terminal_style "underline" $text
+}
+
+
+pub fn reverse($text: String...): String
+{
+    __terminal_style "reverse" $text
+}
+
+
+pub fn strikethrough($text: String...): String
+{
+    __terminal_style "strikethrough" $text
+}
+
+
+pub fn term_size(): [Integer, Integer] | ()
+{
+    __terminal_control "size"
+}
+
+
+pub fn cursor_position(): [Integer, Integer] | ()
+{
+    __terminal_control "position"
+}
+
+
+pub fn move_cursor($row: Integer, $col: Integer)
+{
+    __terminal_control "move" $row $col
+}
+
+
+pub fn clear()
+{
+    __terminal_control "clear"
+}

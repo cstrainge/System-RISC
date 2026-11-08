@@ -52,13 +52,14 @@ impl Decoder
     fn modifiers(&self) -> u16
     {
         (if self.keys[42] || self.keys[54] { SHIFT_KEY } else { 0 })
-        | (if self.keys[56] || self.keys[100] { OPTION_KEY } else { 0 })
-        // System RISC's temporary host layout: either Ctrl is Mac Command.
-        | (if self.keys[29] || self.keys[97] || self.keys[125] || self.keys[126] { CMD_KEY } else { 0 })
+        | (if self.keys[100] { OPTION_KEY } else { 0 })
+        | (if self.keys[29] || self.keys[97] { CONTROL_KEY } else { 0 })
+        // Left Alt supplies Command even when the host intercepts Super.
+        | (if self.keys[56] || self.keys[125] || self.keys[126] { CMD_KEY } else { 0 })
         | (if self.caps { ALPHA_LOCK } else { 0 })
     }
 
-    /// Physical keys after the host's temporary Ctrl-to-Command remapping.
+    /// Physical keys translated to the guest modifier layout.
     /// Combining decoder snapshots, rather than clearing individual bits on a
     /// release, preserves a modifier held on another input device/key.
     pub fn key_map(&self) -> KeyMap
@@ -72,10 +73,11 @@ impl Decoder
             }
             let mac_code = match code
             {
-                29 | 97 | 125 | 126 => 0x37,
+                29 => 0x3b,
+                97 => 0x3e,
+                56 | 125 | 126 => 0x37,
                 42 => 0x38,
                 54 => 0x3c,
-                56 => 0x3a,
                 100 => 0x3d,
                 58 => 0x39,
                 _ => key(code as u16).0
@@ -91,13 +93,11 @@ impl Decoder
         {
             (3, 0) =>
             {
-                self.pending.h =
-                    ((value.min(32767) as u64 * (crate::display::width() as u64 - 1)) / 32767) as i16
+                self.pending.h = absolute_pixel(value, crate::display::width());
             }
             (3, 1) =>
             {
-                self.pending.v =
-                    ((value.min(32767) as u64 * (crate::display::height() as u64 - 1)) / 32767) as i16
+                self.pending.v = absolute_pixel(value, crate::display::height());
             }
             (1, 0x110) => self.button = Some(value != 0),
             (0, 0) =>
@@ -177,6 +177,15 @@ impl Decoder
             {}
         }
     }
+}
+
+fn absolute_pixel(value: u32, extent: usize) -> i16
+{
+    const AXIS_MAX: u64 = 32767;
+    // QEMU normalizes pixel coordinates by the full extent and truncates.
+    // Round to recover the pixel, then clamp the inclusive tablet endpoint.
+    let scaled = (u64::from(value).min(AXIS_MAX) * extent as u64 + AXIS_MAX / 2) / AXIS_MAX;
+    scaled.min(extent.saturating_sub(1) as u64) as i16
 }
 
 fn key(code: u16) -> (u8, u8)
@@ -291,7 +300,7 @@ mod tests
     }
 
     #[test]
-    fn both_host_control_keys_map_to_command_and_release_independently()
+    fn host_modifiers_map_to_distinct_guest_keys_and_release_independently()
     {
         let mut decoder = Decoder::new();
         let mut event = None;
@@ -302,13 +311,17 @@ mod tests
                                      character: b'w',
                                      down:      true,
                                      repeat:    false,
-                                     modifiers: CMD_KEY }));
+                                     modifiers: CONTROL_KEY }));
         decoder.feed(1, 97, 1, |_| {});
+        decoder.feed(1, 56, 1, |_| {});
+        decoder.feed(1, 100, 1, |_| {});
         decoder.feed(1, 29, 0, |_| {});
-        assert_eq!(decoder.modifiers(), CMD_KEY);
+        assert_eq!(decoder.modifiers(), CONTROL_KEY | CMD_KEY | OPTION_KEY);
         decoder.feed(1, 97, 0, |_| {});
+        assert_eq!(decoder.modifiers(), CMD_KEY | OPTION_KEY);
+        decoder.feed(1, 56, 0, |_| {});
+        assert_eq!(decoder.modifiers(), OPTION_KEY);
+        decoder.feed(1, 100, 0, |_| {});
         assert_eq!(decoder.modifiers(), 0);
-        decoder.feed(1, 125, 1, |_| {});
-        assert_eq!(decoder.modifiers(), CMD_KEY);
     }
 }

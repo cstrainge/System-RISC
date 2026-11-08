@@ -102,53 +102,98 @@ impl Manager
 static MANAGER: spin::Once<Spinlock<Manager>> = spin::Once::new();
 static NEXT_CNID: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) fn specification(handles: bool) -> Specification<'static>
+#[derive(Clone, Copy)]
+pub(crate) enum Registration
 {
-    Specification { kind:     KindCode(if handles { *b"PIPE" } else { *b"PPST" }),
-                    label:    if handles { "Pipe endpoints" } else { "Named and anonymous pipes" },
-                    provider: "System Pipes",
-                    capacity: CapacityPolicy::HardBound { slots:  if handles
-                                                          {
-                                                              256
-                                                          }
-                                                          else
-                                                          {
-                                                              wire::MAX_PIPES
-                                                          },
-                                                          reason: if handles
-                                                          {
-                                                              "Two endpoints per anonymous pipe \
-                                                               plus one writer per connection"
-                                                          }
-                                                          else
-                                                          {
-                                                              "Bounded resident pipe population"
-                                                          } },
-                    source:   Source::Resident }
+    Pipe,
+    PipeStorage,
+    Endpoint,
+    EndpointStorage
 }
+impl Registration
+{
+    pub(crate) const ALL: [Self; 4] =
+        [Self::Pipe, Self::PipeStorage, Self::Endpoint, Self::EndpointStorage];
 
-/// Registered cleanup for one abandoned endpoint. The handle table invalidates
-/// before this runs; the endpoint count is decremented exactly once and the
-/// remaining endpoints learn about the close on their next operation.
-pub(crate) struct ReleasePipes;
+    pub(crate) fn specification(self) -> Specification<'static>
+    {
+        let (code, label, capacity) = match self
+        {
+            Self::Pipe =>
+            {
+                (*b"PPST",
+                 "Named and anonymous pipes",
+                 CapacityPolicy::HardBound { slots:  wire::MAX_PIPES,
+                                             reason: "Bounded resident pipe population" })
+            }
+            Self::Endpoint =>
+            {
+                (*b"PIPE",
+                 "Pipe endpoints",
+                 CapacityPolicy::HardBound { slots:  256,
+                                             reason: "Two endpoints per anonymous pipe plus one \
+                                                      writer per connection" })
+            }
+            Self::PipeStorage =>
+            {
+                (*b"PPBS",
+                 "Pipe object storage",
+                 CapacityPolicy::HardBound { slots:  1,
+                                             reason: "One pipe object backing per owner domain" })
+            }
+            Self::EndpointStorage =>
+            {
+                (*b"PEBS",
+                 "Pipe endpoint storage",
+                 CapacityPolicy::HardBound { slots:  1,
+                                             reason: "One endpoint backing per owner domain" })
+            }
+        };
+        Specification { kind: KindCode(code),
+                        label,
+                        provider: "System Pipes",
+                        capacity,
+                        source: Source::Resident }
+    }
+}
 impl Release<crate::toolbox::runtime::Toolbox, crate::toolbox::handles::cleanup::Failure>
-    for ReleasePipes
+    for Registration
 {
     fn release(&self, _: &mut crate::toolbox::runtime::Toolbox, ticket: ReleasedResource)
                -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
-        release_endpoint(ticket).map_err(|ticket| {
-            crate::toolbox::handles::cleanup::Failure::context_unavailable(ticket, "Pipes")
-        })
+        use crate::toolbox::handles::cleanup::Failure;
+        if matches!(self, Self::Endpoint)
+        {
+            return release_endpoint(ticket);
+        }
+        if matches!(self, Self::Pipe)
+        {
+            return release_pipe(ticket);
+        }
+        let manager = match manager()
+        {
+            Ok(manager) => manager,
+            Err(_) => return Err(Failure::context_unavailable(ticket, "Pipes"))
+        };
+        let mut manager = manager.lock();
+        if matches!(self, Self::PipeStorage)
+        {
+            manager.pipes.release_storage(ticket).map_err(Failure::from)
+        }
+        else
+        {
+            manager.endpoints.release_storage(ticket).map_err(Failure::from)
+        }
     }
 }
 
 fn manager() -> Result<&'static Spinlock<Manager>, Status>
 {
     MANAGER.try_call_once(|| {
-               let (pipe, endpoint) = crate::toolbox::handles::pipe_kinds()?;
-               Ok::<_, Status>(Spinlock::new(Manager { pipes:     Store::registered(pipe),
-                                                       endpoints: Store::registered(endpoint),
+               let (pipe, pipe_storage, endpoint, endpoint_storage) = crate::toolbox::handles::pipe_kinds()?;
+               Ok::<_, Status>(Spinlock::new(Manager { pipes:     Store::owned(pipe, pipe_storage).map_err(status)?,
+                                                       endpoints: Store::owned(endpoint, endpoint_storage).map_err(status)?,
                                                        named:     Vec::new(),
                                                        revision:  1 }))
            })
@@ -209,10 +254,9 @@ const VIRTUAL_END: u32 = 0x9000_0000;
 /// resolve to a different live pipe. Exhaustion is an ordinary refusal.
 fn free_cnid() -> Option<u32>
 {
-    let counter = NEXT_CNID.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                             value.checked_add(1)
-                         })
-                           .ok()?;
+    let counter =
+        NEXT_CNID.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+                 .ok()?;
     let cnid = VIRTUAL_FIRST.checked_add(u32::try_from(counter).ok()?)?;
     (cnid < VIRTUAL_END).then_some(cnid)
 }
@@ -251,9 +295,9 @@ pub(crate) fn row(index: usize) -> Option<Row>
     let manager = manager().ok()?;
     let manager = manager.lock();
     let entry = manager.named.get(index)?;
-    Some(Row { cnid: entry.cnid,
+    Some(Row { cnid:    entry.cnid,
                created: entry.created,
-               name: entry.name })
+               name:    entry.name })
 }
 
 /// Registry row by item name, using the same comparison as `CONNECT`.
@@ -262,9 +306,9 @@ pub(crate) fn find(text: &[u8]) -> Option<Row>
     let manager = manager().ok()?;
     let manager = manager.lock();
     let entry = manager.named.iter().find(|entry| same_name(named(entry), text))?;
-    Some(Row { cnid: entry.cnid,
+    Some(Row { cnid:    entry.cnid,
                created: entry.created,
-               name: entry.name })
+               name:    entry.name })
 }
 
 /// Registry row by synthetic identity.
@@ -273,9 +317,9 @@ pub(crate) fn row_of(cnid: u32) -> Option<Row>
     let manager = manager().ok()?;
     let manager = manager.lock();
     let entry = manager.named.iter().find(|entry| entry.cnid == cnid)?;
-    Some(Row { cnid: entry.cnid,
+    Some(Row { cnid:    entry.cnid,
                created: entry.created,
-               name: entry.name })
+               name:    entry.name })
 }
 
 /// Validate a delivered request, perform it, and park only when the contract
@@ -310,14 +354,18 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
            suspension: Result<(), Status>)
            -> Result<RequestAction, Status>
 {
-    if call.reserved != [0; 2] || call.nonblocking > 1
+    if call.reserved != [0; 1]
+       || call.nonblocking > 1
+       || (call.operation != wire::READ_WAIT && call.wait_nanoseconds != 0)
     {
         return Err(BAD_ARGUMENT);
     }
     let owner = crate::context::current_owner()?;
     // A resumed call must be the same request; a changed one is refused before
     // it can consume a different handle than the one that parked.
-    let resumed = crate::machine::scheduler::pipe::begin(identity, call.handle, call.operation)?;
+    let turn = crate::machine::scheduler::pipe::begin(identity, call.handle, call.operation,
+        (call.operation == wire::READ_WAIT).then_some(call.wait_nanoseconds))?;
+    let resumed = turn.resumed;
     match call.operation
     {
         wire::CREATE | wire::CREATE_NAMED =>
@@ -358,13 +406,13 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
                 decode_name(call.name.get(..call.name_length as usize).ok_or(BAD_ARGUMENT)?)?;
             connect(call, &owner, name)
         }
-        wire::READ =>
+        wire::READ | wire::READ_WAIT =>
         {
             if call.handle == 0 || call.name_length != 0 || call.writers != 0 || !input.is_empty()
             {
                 return Err(BAD_ARGUMENT);
             }
-            read(call, &owner, output, identity, suspension)
+            read(call, &owner, output, identity, suspension, turn)
         }
         wire::WRITE =>
         {
@@ -372,7 +420,7 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
             {
                 return Err(BAD_ARGUMENT);
             }
-            write(call, &owner, input, identity, suspension)
+            write(call, &owner, input, identity, suspension, turn)
         }
         wire::SET_BLOCKING =>
         {
@@ -437,13 +485,13 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
         Gate::with_system_allocation(|| manager.named.try_reserve(1)).map_err(|_| NO_MEMORY)?;
         cnid = Some(free_cnid().ok_or(NO_MEMORY)?);
     }
-    let pipe = manager.pipes
-                      .insert(&system,
-                              Pipe { ring,
-                                     readers:     1,
-                                     writers:     1,
-                                     connections: 0 })
-                      .map_err(status)?;
+    let pipe = Gate::with_system_allocation(|| {
+                   manager.pipes.insert(&system,
+                                        Pipe { ring,
+                                               readers: 1,
+                                               writers: 1,
+                                               connections: 0 })
+               }).map_err(status)?;
     let reader = match manager.endpoints.insert(owner,
                                                 Endpoint { pipe,
                                                            reader: READER,
@@ -493,12 +541,11 @@ fn connect(call: &mut wire::Call, owner: &OwnerRef, name: Name) -> Result<Reques
 {
     let manager = manager()?;
     let mut manager = manager.lock();
-    let Some((pipe, limit)) = manager.named
-                                     .iter()
-                                     .find(|entry| {
-                                         same_name(named(entry), &name.1[..name.0 as usize])
-                                     })
-                                     .map(|entry| (entry.pipe, entry.writers))
+    let Some((pipe, limit)) =
+        manager.named
+               .iter()
+               .find(|entry| same_name(named(entry), &name.1[..name.0 as usize]))
+               .map(|entry| (entry.pipe, entry.writers))
     else
     {
         return Err(NOT_FOUND);
@@ -534,7 +581,7 @@ fn connect(call: &mut wire::Call, owner: &OwnerRef, name: Name) -> Result<Reques
 }
 
 fn read(call: &mut wire::Call, owner: &OwnerRef, output: &mut [u8], identity: RequestIdentity,
-        suspension: Result<(), Status>)
+        suspension: Result<(), Status>, turn: crate::machine::scheduler::pipe::Turn)
         -> Result<RequestAction, Status>
 {
     if output.is_empty()
@@ -562,14 +609,15 @@ fn read(call: &mut wire::Call, owner: &OwnerRef, output: &mut [u8], identity: Re
             call.transferred = 0;
             (OK, None)
         }
-        else if !endpoint.blocking
+        else if (call.operation == wire::READ_WAIT && turn.expired())
+                  || (call.operation == wire::READ && !endpoint.blocking)
         {
             (WOULD_BLOCK, None)
         }
         else
         {
             crate::machine::scheduler::pipe::park(endpoint.pipe, call.handle, call.operation,
-                                                  identity, suspension)?;
+                                                  identity, suspension, turn)?;
             return Ok(RequestAction::Replay);
         }
     };
@@ -582,7 +630,7 @@ fn read(call: &mut wire::Call, owner: &OwnerRef, output: &mut [u8], identity: Re
 }
 
 fn write(call: &mut wire::Call, owner: &OwnerRef, input: &[u8], identity: RequestIdentity,
-         suspension: Result<(), Status>)
+         suspension: Result<(), Status>, turn: crate::machine::scheduler::pipe::Turn)
          -> Result<RequestAction, Status>
 {
     if input.is_empty()
@@ -628,7 +676,7 @@ fn write(call: &mut wire::Call, owner: &OwnerRef, input: &[u8], identity: Reques
             else
             {
                 crate::machine::scheduler::pipe::park(endpoint.pipe, call.handle, call.operation,
-                                                      identity, suspension)?;
+                                                      identity, suspension, turn)?;
                 return Ok(RequestAction::Replay);
             }
         }
@@ -739,23 +787,104 @@ fn own_endpoint(manager: &Manager, handle: u64, owner: &OwnerRef) -> Result<Endp
 
 /// Registered cleanup entry. The handle table has already invalidated `ticket`;
 /// this only releases the endpoint and applies its departure.
-fn release_endpoint(ticket: ReleasedResource) -> Result<(), ReleasedResource>
+fn release_endpoint(ticket: ReleasedResource)
+                    -> Result<(), crate::toolbox::handles::cleanup::Failure>
 {
     let Ok(manager) = manager()
     else
     {
-        return Err(ticket);
+        return Err(crate::toolbox::handles::cleanup::Failure::context_unavailable(ticket,
+                                                                                  "Pipes"));
     };
     let mut manager = manager.lock();
     let removed = match manager.endpoints.release(ticket)
     {
         Ok(removed) => removed,
-        Err(error) => return Err(error.into_ticket())
+        Err(error) => return Err(error.into())
     };
     let endpoint = *removed;
     drop(removed);
     retire_endpoint(&mut manager, endpoint);
     drop(manager);
     crate::machine::scheduler::pipe::wake(endpoint.pipe);
+    Ok(())
+}
+
+fn release_pipe(ticket: ReleasedResource) -> Result<(), crate::toolbox::handles::cleanup::Failure>
+{
+    use crate::toolbox::handles::cleanup::Failure;
+    let manager = match manager()
+    {
+        Ok(manager) => manager,
+        Err(_) => return Err(Failure::context_unavailable(ticket, "Pipes"))
+    };
+    let mut manager = manager.lock();
+    if let Some(pipe) = manager.pipes.releasing(&ticket)
+    {
+        if pipe.readers != 0 || pipe.writers != 0
+        {
+            return Err(Failure::pipe_endpoints_pending(ticket, pipe.readers, pipe.writers));
+        }
+    }
+    manager.pipes.release(ticket).map(drop).map_err(Failure::from)
+}
+
+/// Move the three offered ends as part of launch publication. The caller's
+/// invocation gate prevents the new thread or either owner walk from running
+/// before the old aliases are invalidated.
+pub(crate) fn attach_for_launch(sender: &OwnerRef, child: &OwnerRef,
+                                allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                offered: [u64; 3],
+                                start: impl FnOnce([u64; 3]) -> Result<(), Status>)
+                                -> Result<(), Status>
+{
+    if !sender.accepting()
+       || !child.accepting()
+       || sender.owner() == child.owner()
+       || allocation.owner() != child.owner()
+    {
+        return Err(ACCESS_DENIED);
+    }
+    if offered[0] == offered[1] || offered[0] == offered[2] || offered[1] == offered[2]
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let mut manager = manager()?.lock();
+    let endpoints = [own_endpoint(&manager, offered[0], sender)?,
+                     own_endpoint(&manager, offered[1], sender)?,
+                     own_endpoint(&manager, offered[2], sender)?];
+    if !endpoints[0].reader || endpoints[1].reader || endpoints[2].reader
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let mut attached = [0; 3];
+    let result = (|| {
+        for (index, endpoint) in endpoints.into_iter().enumerate()
+        {
+            attached[index] = crate::allocator::with_target(crate::allocator::Target::Owner {
+                account: allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
+            }, || manager.endpoints.insert(child, endpoint)).map_err(status)?;
+        }
+        start(attached)
+    })();
+    // Alias publication never changes the ring's reader/writer accounting.
+    // Only the surviving set of aliases owns the original endpoint counts.
+    if let Err(error) = result
+    {
+        for handle in attached.into_iter().filter(|&handle| handle != 0)
+        {
+            let _ = manager.endpoints.remove(handle);
+        }
+        return Err(error);
+    }
+    for handle in offered
+    {
+        let _ = manager.endpoints.remove(handle);
+    }
+    drop(manager);
+    for endpoint in endpoints
+    {
+        crate::machine::scheduler::pipe::wake(endpoint.pipe);
+    }
     Ok(())
 }

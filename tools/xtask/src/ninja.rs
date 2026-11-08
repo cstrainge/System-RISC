@@ -92,7 +92,18 @@ pub fn generate(workspace: &Workspace) -> Result<PathBuf>
     let apps = borrow(&apps);
     for (name, roots) in [("definitions", &definitions), ("guest", &guest), ("apps", &apps)]
     {
-        let inputs = source_files(workspace, &crates, roots)?;
+        let mut inputs = source_files(workspace, &crates, roots)?;
+        inputs.extend(platform_records(workspace)?);
+        inputs.push(mac_build::platform::compiler_path(workspace.root(), &workspace.platform)?);
+        if name == "apps"
+        {
+            inputs.extend(crate::crates::files(&workspace.root().join("platforms/rust"))?);
+            // SDK builder changes can select a new sysroot without changing
+            // the applications' own sources or the port overlay.
+            inputs.push(workspace.root().join("tools/xtask/src/sdk.rs"));
+        }
+        inputs.sort();
+        inputs.dedup();
         let inputs = inputs.iter().map(|input| path(input)).collect::<Vec<_>>().join(" ");
         text.push_str(&format!("\nbuild {}: {name} | {inputs}\n", path(&stamps.join(name))));
     }
@@ -193,7 +204,7 @@ fn source_files(workspace: &Workspace, crates: &Crates, roots: &[&str]) -> Resul
     {
         files.extend(crate::crates::files(&entry.directory)?);
     }
-    for shared in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+    for shared in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml"]
     {
         let path = workspace.root().join(shared);
         if path.is_file()
@@ -209,18 +220,7 @@ fn source_files(workspace: &Workspace, crates: &Crates, roots: &[&str]) -> Resul
 /// The platform record and everything it includes.
 fn platform_records(workspace: &Workspace) -> Result<Vec<PathBuf>>
 {
-    let directory = workspace.root().join("platforms");
-    let mut records = Vec::new();
-    for entry in fs::read_dir(&directory)?
-    {
-        let path = entry?.path();
-        if path.extension().is_some_and(|extension| extension == "json")
-        {
-            records.push(path);
-        }
-    }
-    records.sort();
-    Ok(records)
+    mac_build::platform::record_files(&workspace.platform.name)
 }
 
 /// Resolve ninja, naming the install command when it is missing.
@@ -243,6 +243,11 @@ pub fn run(workspace: &Workspace, targets: &[String]) -> Result<()>
            .env(crate::DIST_ENV, workspace.dist())
            .arg("-f")
            .arg(&file);
+    // An explicitly serial Cargo build also needs serial compile stages.
+    if std::env::var("CARGO_BUILD_JOBS").as_deref() == Ok("1")
+    {
+        command.args(["-j", "1"]);
+    }
     for target in targets
     {
         command.arg(target);

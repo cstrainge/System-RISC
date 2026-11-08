@@ -41,7 +41,7 @@ use crate::{Workspace, patch, run, write_json};
 /// Bumped when the preparation logic changes in a way that invalidates a
 /// previously prepared tree. A prepared tree is not upgraded in place; it is
 /// abandoned under its old key.
-const BUILDER: &str = "xtask-sdk-3";
+const BUILDER: &str = "xtask-sdk-4";
 
 /// The proxy mode this executable runs in when the SDK build invokes it as
 /// `RUSTC`.
@@ -566,12 +566,41 @@ pub(super) fn build_std(workspace: &Workspace, sdk: &Private) -> Result<()>
                   .to_string_lossy()
                   .to_string();
     let profile = release_profile(root)?;
+    // The proxy executable stays the same while its private sysroot changes.
+    // Keep Cargo's std dependency graph and compiler probes private to that
+    // source key; a shared target can select an earlier SDK's rust-src.
+    let key = sdk.root
+                 .file_name()
+                 .and_then(|name| name.to_str())
+                 .ok_or_else(|| error("the private SDK has no source key"))?;
+    let prefix = key.get(..16).ok_or_else(|| error("invalid private SDK source key"))?;
+    let target_dir = workspace.target().join("std").join(prefix);
+    fs::create_dir_all(&target_dir)?;
+    let marker = target_dir.join("sdk-key");
+    match fs::read_to_string(&marker)
+    {
+        Ok(existing) if existing == key => (),
+        Ok(_) =>
+        {
+            return Err(error("private std target key collision; original artifacts retained"));
+        }
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound =>
+        {
+            if fs::read_dir(&target_dir)?.next().is_some()
+            {
+                return Err(error("private std target lacks its source key; original artifacts \
+                                  retained"));
+            }
+            fs::write(&marker, key)?;
+        }
+        Err(cause) => return Err(cause.into())
+    }
 
     let mut command = Command::new("cargo");
     command.current_dir(root)
            .args(["build", "--release", "--locked", "--package", "mac-traps", "--target", &target])
            .arg("--target-dir")
-           .arg(root.join("target"))
+           .arg(&target_dir)
            .args(["-Zbuild-std=core,alloc,std,panic_abort",
                   "-Zbuild-std-features=compiler-builtins-mem", "-Zjson-target-spec",
                   "--message-format=json-render-diagnostics"])
@@ -586,6 +615,7 @@ pub(super) fn build_std(workspace: &Workspace, sdk: &Private) -> Result<()>
            .env("CARGO_ENCODED_RUSTFLAGS", "")
            .env(PROXY_ENV, &sdk.rustc)
            .env(SYSROOT_ENV, &sdk.sysroot)
+           .env("CARGO_CACHE_RUSTC_INFO", "0")
            .env("RUSTUP_TOOLCHAIN", &workspace.toolchain);
 
     for variable in SCRUBBED
@@ -607,18 +637,59 @@ pub(super) fn build_std(workspace: &Workspace, sdk: &Private) -> Result<()>
     let output =
         command.output().map_err(|cause| error(format!("cannot run the SDK build: {cause}")))?;
     let returncode = output.status.code().unwrap_or(-1);
+    cargo_diagnostics(&output);
 
     if !output.status.success()
     {
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-
         return Err(error("the private SDK did not build; see the cargo output above"));
     }
 
     // Cargo reports the files this invocation actually produced, so the
     // sysroot is filled from that report rather than from a scan of a shared
     // target directory that may still hold an earlier build's output.
-    let produced = artifacts(&String::from_utf8_lossy(&output.stdout))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let source_root = sdk.sysroot.join("lib/rustlib/src/rust/library");
+    let mut source_manifests = BTreeMap::new();
+    for line in stdout.lines()
+    {
+        let Ok(message) = serde_json::from_str::<Value>(line)
+        else
+        {
+            continue;
+        };
+        if message.get("reason").and_then(Value::as_str) != Some("compiler-artifact")
+        {
+            continue;
+        }
+        let Some(target) =
+            message.get("target").and_then(|target| target.get("name")).and_then(Value::as_str)
+        else
+        {
+            continue;
+        };
+        if !["std", "core", "alloc", "panic_abort"].contains(&target)
+        {
+            continue;
+        }
+        let expected = source_root.join(target).join("Cargo.toml");
+        let actual =
+            message.get("manifest_path").and_then(Value::as_str).ok_or_else(|| {
+                                                                     error("standard-library \
+                                                                            artifact lacks its \
+                                                                            source manifest")
+                                                                 })?;
+        if Path::new(actual) != expected
+        {
+            return Err(error(format!("standard-library source mismatch: {target} built from                                       {actual}; expected {}", expected.display())));
+        }
+        source_manifests.insert(target.to_string(), actual.to_string());
+    }
+    if source_manifests.len() != 4
+    {
+        return Err(error("the private SDK build did not report all four standard-library \
+                          source manifests"));
+    }
+    let produced = artifacts(&stdout)?;
     let libraries = install_libraries(sdk, &name, &produced)?;
 
     write_json(&sdk.root.join("build.json"),
@@ -627,6 +698,8 @@ pub(super) fn build_std(workspace: &Workspace, sdk: &Private) -> Result<()>
                        "profile": profile.into_iter().collect::<BTreeMap<_, _>>(),
                        "returncode": returncode,
                        "compiler_source_root": plain(&sdk.root),
+                       "target_directory": plain(&target_dir),
+                       "source_manifests": source_manifests,
                        "std_runtime_qualified": false,
                        "libraries": libraries}))?;
 
@@ -856,6 +929,7 @@ pub(super) fn applications(workspace: &Workspace, apps: &[App]) -> Result<Vec<Va
            .env("RUSTC", env::current_exe()?)
            .env(PROXY_ENV, &sdk.rustc)
            .env(SYSROOT_ENV, &sdk.sysroot)
+           .env("CARGO_CACHE_RUSTC_INFO", "0")
            .env("RUSTUP_TOOLCHAIN", &workspace.toolchain)
            .env("RUST_TARGET_PATH", sdk.target.parent().expect("the target spec has a parent"))
            .env("CARGO_ENCODED_RUSTFLAGS", "-C\u{1f}relocation-model=pic")
@@ -888,13 +962,12 @@ pub(super) fn applications(workspace: &Workspace, apps: &[App]) -> Result<Vec<Va
         command.output()
                .map_err(|cause| error(format!("cannot run cargo for the applications: {cause}")))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    cargo_diagnostics(&output);
 
     let executables = executables(&stdout)?;
 
     if !output.status.success()
     {
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-
         return Err(error("the applications did not build; see the cargo output above"));
     }
 
@@ -928,6 +1001,26 @@ fn features(apps: &[App]) -> BTreeSet<String>
     }
 
     features
+}
+
+fn cargo_diagnostics(output: &std::process::Output)
+{
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    for line in String::from_utf8_lossy(&output.stdout).lines()
+    {
+        let Ok(message) = serde_json::from_str::<Value>(line)
+        else
+        {
+            continue;
+        };
+        if message.get("reason").and_then(Value::as_str) == Some("compiler-message")
+           && let Some(rendered) = message.get("message")
+                                          .and_then(|message| message.get("rendered"))
+                                          .and_then(Value::as_str)
+        {
+            eprint!("{rendered}");
+        }
+    }
 }
 
 /// The executable paths cargo reported, keyed by the manifest that asked for

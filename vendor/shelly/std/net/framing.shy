@@ -1,0 +1,82 @@
+import std::io
+import std::stream
+pub error struct FrameError { pub message: String }
+pub type Error = FrameError | std::io::Error
+pub enum ByteOrder { BigEndian, LittleEndian }
+pub type Reader = std::stream::Reader
+
+pub fn encode_length($bytes: std::io::Bytes, $width: Integer | (),
+                     $order: ByteOrder | (), $max_bytes: Integer | ()): std::io::Bytes | Error
+{
+    let $width = if $width == () { 4 } else { $width }
+    let $max = if $max_bytes == () { 1048576 } else { $max_bytes }
+    if ($width != 1) && ($width != 2) && ($width != 4) && ($width != 8)
+    { return FrameError(message: "Prefix width must be 1, 2, 4 or 8") }
+    if ($max < 1) || ($max > 16777216) || ($bytes.count > $max)
+    { return FrameError(message: "Frame exceeds its byte limit") }
+    let $prefix = []
+    let $length = $bytes.count
+    for _ in 0..$width
+    {
+        $prefix = [$prefix..., $length % 256]
+        $length = $length / 256
+    }
+    if $length != 0 { return FrameError(message: "Length does not fit prefix width") }
+    if $order != ByteOrder::LittleEndian { $prefix = $prefix.reverse }
+    std::io::Bytes($prefix).concat $bytes
+}
+pub fn write_length($writer: std::io::Writer, $bytes: std::io::Bytes,
+                    $width: Integer | (), $order: ByteOrder | (),
+                    $max_bytes: Integer | ()): Integer | Error
+{
+    let $frame = encode_length $bytes $width $order $max_bytes
+    let $lease = $writer.lease
+    try { return $lease.write $frame }
+    finally { $lease.close }
+}
+pub fn read_length($reader: std::io::Reader, $width: Integer | (),
+                   $order: ByteOrder | (), $max_bytes: Integer | ()): Reader | ErrorValue
+{
+    let $width = if $width == () { 4 } else { $width }
+    let $max = if $max_bytes == () { 1048576 } else { $max_bytes }
+    if ($width != 1) && ($width != 2) && ($width != 4) && ($width != 8)
+    { return FrameError(message: "Prefix width must be 1, 2, 4 or 8") }
+    if ($max < 1) || ($max > 16777216)
+    { return FrameError(message: "Frame limit must be 1..16777216") }
+    let $lease = $reader.lease
+    std::stream::Reader(
+        next: fn (): std::io::Bytes | () | Error
+        {
+            try
+            {
+                let $prefix = $lease.read 1
+                if $prefix == () { return () }
+                $prefix = $prefix.concat ($lease.read_exact ($width - 1))
+                let $digits = $prefix.to_array
+                if $order == ByteOrder::LittleEndian { $digits = $digits.reverse }
+                let $length = 0
+                for $digit in $digits
+                {
+                    $length = ($length * 256) + $digit
+                    if $length > $max { throw FrameError(message: "Frame exceeds its byte limit") }
+                }
+                let $payload = $lease.read_exact $length
+                return $payload
+            }
+            catch ($error)
+            {
+                $reader.close
+                throw $error
+            }
+        },
+        close: fn (): () | std::io::Error { $lease.close },
+    )
+}
+pub fn read_lines($reader: std::io::Reader, $max_bytes: Integer | ()): Reader | ErrorValue
+{
+    let $lines = std::io::lines $reader $max_bytes
+    std::stream::Reader(
+        next: fn (): String | () | std::io::Error { $lines.next_item },
+        close: fn (): () | std::io::Error { $lines.close },
+    )
+}

@@ -1188,6 +1188,43 @@ impl Registry
             .map(|(id, i)| (id, *i))
     }
 
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn execution_handlers(&self) -> Result<Vec<u64>>
+    {
+        use mac_abi::processes::execution as wire;
+        let offers = || {
+            self.find(ClassId(wire::CLASS), wire::VERSION)
+                .filter(|(_, offer)| offer.module != 0)
+        };
+        let count = offers().count();
+        let mut ordered = Vec::new();
+        if count == 0
+        {
+            return Ok(ordered);
+        }
+        ordered.try_reserve_exact(count).map_err(|_| Error::Exhausted)?;
+
+        // Include intermediate dependencies even if they do not offer EXEC.
+        // Removing leaves places each dependent ahead of its providers.
+        let mut remaining = Vec::new();
+        remaining.try_reserve_exact(self.modules.iter().count())
+                 .map_err(|_| Error::Exhausted)?;
+        remaining.extend(self.modules.iter().map(|(id, _)| id));
+        while ordered.len() < count
+        {
+            let next = remaining.iter().position(|&id| {
+                !self.dependencies.iter().any(|(_, binding)| {
+                    binding.provider == id && remaining.contains(&binding.dependent)
+                })
+            }).ok_or(Error::State)?;
+            let id = remaining.remove(next);
+            ordered.extend(offers().filter_map(|(handle, offer)| {
+                (offer.module == id).then_some(handle)
+            }));
+        }
+        Ok(ordered)
+    }
+
     /// Kernel discovery distinguishes absence from a stale service contract.
     /// Never silently treat an installed incompatible provider as no hardware.
     pub fn select(&self, class: ClassId, version: u32, capabilities: u64) -> Result<Option<u64>>

@@ -428,20 +428,21 @@ impl Manager
         })
     }
 
-    fn load_selected_resources(volume: &mut Volume<'_, Device>, mut fork: Fork,
+    fn load_selected_resources(volume: &mut Volume<'_, Device>, fork: Fork,
                                select: fn([u8; 4], i16) -> bool,
                                budget: mac_formats::resource::stream::Budget)
                                -> Result<Vec<mac_formats::resource::Resource>, Status>
     {
         use mac_formats::resource::loader::Loader;
+        let mut reader = io(volume.fork_reader(&fork))?;
         let mut loader =
-            Loader::selected(fork.length, budget, select).map_err(application_format_status)?;
+            Loader::selected(reader.length(), budget, select).map_err(application_format_status)?;
         while let Some((offset, count)) = loader.request()
         {
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
             bytes.resize(count, 0);
-            if io(volume.read(&mut fork, offset, &mut bytes))? != count
+            if io(reader.read(offset, &mut bytes))? != count
             {
                 return Err(IO_ERROR);
             }
@@ -458,7 +459,7 @@ impl Manager
         self.with_volume(volume, |v| {
                 let mut e = required(io(v.entry(cnid))?)?;
                 let info = metadata(volume, &e);
-                if info.kind != FILE || info.file_type != *b"APPL"
+                if info.kind != FILE || info.file_type != selection.file_type()
                 {
                     return Err(BAD_ARGUMENT);
                 }

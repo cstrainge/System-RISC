@@ -1,0 +1,68 @@
+import std::io
+import std::json
+import std::net::tcp::{ Endpoint }
+import std::net::http
+visible `__server
+visible `__server_close
+visible `__server_invoke
+visible `__json_bind
+visible `__json_apply
+visible "__server_Server"
+visible "__server_Incoming"
+pub type Server = __server_Server
+pub type Incoming = __server_Incoming
+pub type Error = std::net::http::Error
+pub struct Response { pub status: Integer, pub headers: [String: String | [String]] | (), pub body: std::net::http::Body | () }
+pub type Handler = fn(Incoming): Response
+pub fn listen($host: String, $port: Integer): Server | Error { __server "listen" $host $port }
+pub fn Server::get_address(): Endpoint | Error
+{
+    let $address = __server "address" $self
+    Endpoint(host: $address[0], port: $address[1])
+}
+pub fn Server::accept(): Incoming | Error { __server "accept" $self }
+pub fn Server::close(): () | Error { __server_close $self }
+pub fn Incoming::get_method(): String | Error { __server "method" $self }
+pub fn Incoming::get_path(): String | Error { __server "path" $self }
+pub fn Incoming::get_headers(): std::net::http::Headers | Error
+{ std::net::http::Headers(values: (__server "headers" $self)) }
+pub fn Incoming::take_body(): std::io::Reader | Error { __server "take_body" $self }
+pub fn Incoming::read_document(): std::json::Document | Error
+{
+    let $reader = $self.take_body
+    try { return std::json::read $reader }
+    finally { $reader.close }
+}
+pub fn Incoming::read_as($target: Type): any | ErrorValue
+{
+    let $conversion = __json_bind $target
+    __json_apply ($self.read_document) $conversion
+}
+pub fn Incoming::respond($response: Response): () | Error { __server "respond" $self $response }
+pub fn Incoming::close(): () | Error { __server_close $self }
+pub fn json_response($value: any, $status: Integer | ()): Response | Error
+{ Response(status: (if $status == () { 200 } else { $status }), body: (std::net::http::json_body $value)) }
+pub fn text_response($value: String, $status: Integer | ()): Response | Error
+{ Response(status: (if $status == () { 200 } else { $status }), body: (std::net::http::text_body $value)) }
+pub fn Server::serve($handler: Handler, $max_requests: Integer | ()): Integer | ErrorValue
+{
+    let $count = 0
+    while $max_requests == () || $count < $max_requests
+    {
+        let $request = $self.accept
+        try
+        {
+            let $response: Response = __server_invoke $handler $request
+            $request.respond $response
+        }
+        catch ($stack, $error)
+        {
+            if $error.type == RuntimeError && (($error.what == "Interrupted") || ($error.what == "CleanupAbort"))
+            { throw $error }
+            report_error $stack $error
+        }
+        finally { $request.close }
+        $count = $count + 1
+    }
+    $count
+}

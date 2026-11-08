@@ -1,0 +1,141 @@
+# Reedline owns editing. Application loops and prompts remain ordinary Shelly code.
+import std::stream
+visible `__readline
+visible "__readline_Editor"
+visible "__readline_Text"
+visible "__readline_Color"
+
+pub type Editor = __readline_Editor
+pub type Text = __readline_Text
+pub type Color = __readline_Color
+pub enum NamedColor { Black, Red, Green, Yellow, Blue, Purple, Cyan, White }
+pub struct Style
+{
+    pub foreground: Color | (), pub background: Color | (),
+    pub bold: Boolean | (), pub dim: Boolean | (), pub underline: Boolean | (),
+}
+pub fn Color::from_integer($value: Integer): Color | Error { __readline "color" $value }
+pub fn Color::from_array_integer($value: [Integer]): Color | Error { __readline "color" $value }
+pub fn Color::from_named_color($value: NamedColor): Color | Error { __readline "color" $value }
+pub fn Text::from_string($value: String): Text | Error { __readline "text" $value }
+pub fn Text::concat($other: String | Text): Text | Error { __readline "concat" $self $other }
+pub fn styled($text: String, $style: Style): Text | Error { __readline "styled" $text $style }
+
+pub type PromptFn = fn(): String | Text
+pub struct Prompt
+{
+    pub left: String | Text | PromptFn,
+    pub right: String | () | Text | PromptFn,
+    pub continuation: String | () | Text | PromptFn,
+}
+pub fn Prompt::from_string($text: String): Prompt { Prompt(left: $text) }
+
+pub struct Span { pub start: Integer, pub end: Integer }
+pub fn Span::slice($text: String): String | Error { __readline "slice" $text $self }
+pub struct Edit
+{
+    pub text: String, pub cursor: Integer, pub revision: Integer,
+    pub before_cursor: String, pub after_cursor: String,
+    pub word_span: Span, pub word_prefix: String,
+}
+pub struct Completion
+{
+    pub value: String, pub replace: Span | (),
+    pub display: String | (), pub description: String | (),
+    pub append_space: Boolean | (),
+}
+pub type Complete = fn(Edit): [String | Completion]
+pub enum ValidationKind { Ready, More, Reject }
+pub struct Validation
+{
+    pub kind: ValidationKind, pub message: String | (), pub span: Span | (),
+}
+pub type Validate = fn(Edit): Validation
+pub struct HighlightSpan { pub span: Span, pub style: Style }
+pub type Highlight = fn(Edit): [HighlightSpan]
+pub fn ready(): Validation { Validation(kind: ValidationKind::Ready) }
+pub fn more(): Validation { Validation(kind: ValidationKind::More) }
+pub fn reject($message: String, $span: Span | ()): Validation
+{ Validation(kind: ValidationKind::Reject, message: $message, span: $span) }
+pub fn words($values: [String]): Complete
+{
+    fn($edit: Edit): [String | Completion]
+    {
+        __readline "words" $values $edit.word_prefix
+    }
+}
+
+pub enum EditMode { Emacs, Vi }
+pub enum EventKind { Line, Interrupt, End }
+pub struct ReadEvent { pub kind: EventKind, pub text: String }
+pub struct ReadOptions
+{
+    pub prompt: String | () | Prompt,
+    pub initial: String | (), pub cursor: Integer | (),
+}
+pub enum HistoryRecord { Submitted, Manual }
+pub enum HistoryFailure { Memory, Raise }
+pub struct History
+{
+    pub path: String | (), pub limit: Integer | (),
+    pub record: HistoryRecord | (), pub failure: HistoryFailure | (),
+}
+pub enum HistoryMode { Memory, Persistent, Disabled }
+pub struct HistoryProblem { pub path: String, pub message: String, pub code: Integer | () }
+pub struct HistoryStatus { pub mode: HistoryMode, pub problem: HistoryProblem | () }
+pub struct Limits
+{
+    pub max_input_bytes: Integer | (), pub max_completions: Integer | (),
+    pub max_completion_bytes: Integer | (), pub max_highlight_spans: Integer | (),
+    pub callback_timeout_ms: Integer | (), pub callback_instructions: Integer | (),
+}
+
+pub enum TerminalFailure { NotTerminal, NotForeground, Read, Restore, Unsupported }
+pub error struct TerminalError
+{ pub what: TerminalFailure, pub message: String, pub code: Integer | () }
+pub error struct ConfigError { pub message: String }
+pub error struct BusyError { pub message: String }
+pub error struct ClosedError { pub message: String }
+pub error struct CancelledError { pub message: String }
+pub error struct LimitError { pub message: String }
+pub error struct CallbackError { pub hook: String, pub message: String }
+pub error struct HistoryError { pub path: String, pub message: String, pub code: Integer | () }
+pub type Error = TerminalError | ConfigError | BusyError | ClosedError | CancelledError | LimitError | CallbackError | HistoryError
+
+pub fn Editor::new($prompt: String | () | Prompt, $history: History | (),
+    $complete: Complete | (), $validate: Validate | (), $highlight: Highlight | (),
+    $edit_mode: EditMode | (), $limits: Limits | ()): Editor | Error
+{
+    __readline "create" ["prompt": $prompt, "history": $history, "complete": $complete,
+        "validate": $validate, "highlight": $highlight, "edit_mode": $edit_mode, "limits": $limits]
+}
+pub fn Editor::read_event($options: ReadOptions | ()): ReadEvent | Error
+{ __readline "read" $self $options }
+pub fn Editor::read($options: ReadOptions | ()): String | () | Error
+{
+    loop
+    {
+        let $event = $self.read_event $options
+        if $event.kind == EventKind::End { return () }
+        if $event.kind == EventKind::Line { return $event.text }
+    }
+}
+pub fn Editor::lines($options: ReadOptions | ()): std::stream::Reader | Error
+{
+    let $lease: Editor = __readline "lease" $self
+    let $reader = std::stream::Reader(
+        next: fn(): String | () | Error { $lease.read $options },
+        close: fn(): () | Error { __readline "release" $lease })
+    __readline "attach" $reader $lease
+}
+pub fn Editor::remember($text: String): () | Error { __readline "remember" $self $text }
+pub fn Editor::flush_history(): () | Error { __readline "flush" $self }
+pub fn Editor::get_history_status(): HistoryStatus { __readline "history_status" $self }
+pub fn Editor::get_draft(): String { __readline "draft" $self }
+pub fn Editor::close(): () | Error { __readline "close" $self }
+pub fn read($prompt: String | () | Prompt): String | () | Error
+{
+    let $editor = Editor(prompt: $prompt, history: History(limit: 0))
+    try { return $editor.read }
+    finally { $editor.close }
+}

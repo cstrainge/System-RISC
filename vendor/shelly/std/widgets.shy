@@ -1,0 +1,311 @@
+
+# Show if the current directory is in a git workspace and if it is show the current version and if
+# files have changed since the last commit.
+#
+# Show nothing if we're not in a git directory.
+pub fn git_widget(): String
+{
+    let $branch: String
+    let $result = git rev-parse --abbrev-ref HEAD -> $branch ~-> /dev/null
+
+    if !$result
+    {
+        return ""
+    }
+
+    $branch = $branch.trim_end
+
+    let $status: String
+    $result = git status --porcelain=v1 --untracked-files=all -> $status ~-> /dev/null
+
+    if !$result
+    {
+        return ""
+    }
+
+    let $changed = 0
+    let $untracked = 0
+
+    for $line in $status.split "\n"
+    {
+        if $line == "" { continue }
+
+        if ($line.starts_with "?? ")
+        {
+            $untracked = $untracked + 1
+        }
+        else
+        {
+            $changed = $changed + 1
+        }
+    }
+
+    let $text = "git: ${branch}"
+
+    if $changed != 0
+    {
+        $text = "${text}, ${changed} changed"
+    }
+
+    if $untracked != 0
+    {
+        $text = "${text}, ${untracked} untracked"
+    }
+
+    $text
+}
+
+
+# Show the current time of day on the command line.
+pub fn clock_widget(): String
+{
+    let $clock: String
+    let $result = date "+%H:%M" -> $clock ~-> /dev/null
+
+    if !$result
+    {
+        return ""
+    }
+
+    $clock.trim_end
+}
+
+
+# Show the current time of day in twelve hour time.
+pub fn clock_12_widget(): String
+{
+    let $clock: String
+    let $result = date "+%I:%M %p" -> $clock ~-> /dev/null
+
+    if !$result
+    {
+        return ""
+    }
+
+    $clock.trim_end
+}
+
+
+# Show the last command's elapsed time, rounded to the nearest second; hide zero.
+pub fn command_time_widget(): String
+{
+    if $last_cmd_time == "0:00"
+    {
+        return ""
+    }
+
+    "Took: $last_cmd_time"
+}
+
+
+# Find the nearest workspace without changing the shell's working directory.
+fn widget_workspace($files: [String], $directories: [String]): String
+{
+    let $directory: String
+    let $reply = run_process ["pwd", "-P"] [:] -> $directory ~-> /dev/null
+
+    if    ($reply["error"] != ())
+       || ($reply["exit_code"] != 0)
+    {
+        return ""
+    }
+
+    $directory = $directory.trim_end
+
+    loop
+    {
+        for ($kind, $markers) in [["-f", $files], ["-d", $directories]]
+        {
+            for $marker in $markers
+            {
+                let $reply = run_process ["test", $kind, "${directory}/${marker}"] [:] ~-> /dev/null
+
+                if    ($reply["error"] == ())
+                   && ($reply["exit_code"] == 0)
+                {
+                    return $directory
+                }
+            }
+        }
+        let $parent: String
+        let $reply = run_process ["dirname", $directory] [:] -> $parent ~-> /dev/null
+
+        if    ($reply["error"] != ())
+           || ($reply["exit_code"] != 0)
+        {
+            return ""
+        }
+
+        $parent = $parent.trim_end
+
+        if $parent == $directory
+        {
+            return ""
+        }
+
+        $directory = $parent
+    }
+}
+
+
+# Show the active Python environment only within a Python workspace.
+pub fn venv_widget(): String
+{
+    let $root = widget_workspace ["pyproject.toml", "setup.py", "setup.cfg",
+                                  "requirements.txt"] [".venv", "venv"]
+    if $root == ""
+    {
+        return ""
+    }
+
+    let $environment: String
+    let $reply = run_process ["printenv", "VIRTUAL_ENV"] [:] -> $environment ~-> /dev/null
+
+    if    ($reply["error"] != ())
+       || ($reply["exit_code"] != 0)
+       || ($environment.trim_end == "")
+    {
+        return "venv: inactive"
+    }
+
+    let $name: String
+    let $reply = run_process ["basename", $environment.trim_end] [:] -> $name ~-> /dev/null
+
+    if    ($reply["error"] != ())
+       || ($reply["exit_code"] != 0)
+    {
+        return "venv: inactive"
+    }
+
+    $name = $name.trim_end
+
+    "venv: ${name}"
+}
+
+
+# Read version files without letting a failed probe interrupt prompt rendering.
+fn widget_node_version($path: String): String
+{
+    let $text: String
+    let $reply = run_process ["cat", $path] [:] -> $text ~-> /dev/null
+
+    if    ($reply["error"] != ())
+       || ($reply["exit_code"] != 0)
+    {
+        return ""
+    }
+
+    for $line in $text.split "\n"
+    {
+        let $version = ($line.split "#")[0].trim
+
+        if $version != ""
+        {
+            return $version
+        }
+    }
+
+    ""
+}
+
+
+# Ignore the optional version prefix while preserving the rest of the version.
+fn widget_node_normalize($version: String): String
+{
+    if !($version.starts_with "v")
+    {
+        return $version
+    }
+
+    let $text = ""
+    let $first = true
+
+    for $character in $version.chars
+    {
+        if $first
+        {
+            $first = false
+        }
+        else
+        {
+            $text = "${text}${character}"
+        }
+    }
+
+    $text
+}
+
+
+# Show expected versus current Node versions only within a Node project.
+pub fn node_widget(): String
+{
+    let $root = widget_workspace ["package.json", ".nvmrc", ".node-version"] []
+
+    if $root == ""
+    {
+        return ""
+    }
+
+    let $expected = widget_node_version "${root}/.nvmrc"
+
+    if $expected == ""
+    {
+        $expected = widget_node_version "${root}/.node-version"
+    }
+
+    let $current: String
+    let $reply = run_process ["node", "--version"] [:] -> $current ~-> /dev/null
+
+    if    ($reply["error"] != ())
+       || ($reply["exit_code"] != 0)
+    {
+        if $expected != ""
+        {
+            return "node: expected ${expected}, current: missing"
+        }
+
+        return "node: missing"
+    }
+
+    $current = widget_node_normalize $current.trim
+
+    if $expected == ""
+    {
+        # JSON.parse reads metadata; it does not execute the project's package code.
+        let $probe = '*
+            try
+            {
+                const pkg = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+
+                if (pkg && pkg.engines && typeof pkg.engines.node === "string")
+                {
+                    process.stdout.write(pkg.engines.node);
+                }
+            }
+            catch
+            {
+            }
+            *'
+
+        let $reply = run_process ["node", "--eval", $probe,
+                                 "${root}/package.json"] [:] -> $expected ~-> /dev/null
+
+        if    ($reply["error"] != ())
+           || ($reply["exit_code"] != 0)
+        {
+            $expected = ""
+        }
+
+        $expected = $expected.trim
+    }
+
+    let $normalized = widget_node_normalize $expected
+
+    if    ($expected == "")
+       || ($normalized == $current)
+    {
+        return "node: ${current}"
+    }
+
+    "node: expected ${expected}, current: ${current}"
+}

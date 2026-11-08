@@ -1,0 +1,70 @@
+visible `__stream
+visible "__stream_Reader"
+
+pub struct Item { pub value: any }
+pub type Reader = __stream_Reader
+pub type Error = ErrorValue
+
+pub fn from_iterable($items: any): Reader | ErrorValue { __stream "from_iterable" $items (Item) }
+pub fn Reader::next_item(): any | () | ErrorValue { __stream "next" $self }
+pub fn Reader::close(): () | ErrorValue { __stream "close" $self }
+
+pub struct Mapped { source: Reader, convert: any }
+pub fn Mapped::new($source: Reader, $convert: any): Mapped { Mapped(source: $source, convert: $convert) }
+pub fn Mapped::next_item(): Item | () | ErrorValue
+{
+    let $item = $self.::source.next_item
+    if $item == () { return () }
+    let $convert = $self.::convert
+    let $value = if $item.type == Item { $item.value } else { $item }
+    Item(value: ($convert $value))
+}
+pub fn Mapped::close(): () | ErrorValue { $self.::source.close }
+pub fn map($source: Reader, $convert: any): Reader | ErrorValue
+{
+    let $reader = from_iterable Mapped(source: $source, convert: $convert)
+    __stream "inherit_iteration" $reader $source
+}
+
+pub struct Filtered { source: Reader, keep: any }
+pub fn Filtered::new($source: Reader, $keep: any): Filtered { Filtered(source: $source, keep: $keep) }
+pub fn Filtered::next_item(): Item | () | ErrorValue
+{
+    let $keep = $self.::keep
+    loop
+    {
+        let $item = $self.::source.next_item
+        if $item == () { return () }
+        let $value = if $item.type == Item { $item.value } else { $item }
+        if ($keep $value) { return Item(value: $value) }
+    }
+}
+pub fn Filtered::close(): () | ErrorValue { $self.::source.close }
+pub fn filter($source: Reader, $keep: any): Reader | ErrorValue
+{
+    let $reader = from_iterable Filtered(source: $source, keep: $keep)
+    __stream "inherit_iteration" $reader $source
+}
+
+pub fn collect($source: Reader): Array | ErrorValue
+{
+    let $items = []
+    for $item in $source
+    { $items = [$items..., (if $item.type == Item { $item.value } else { $item })] }
+    $items
+}
+
+pub fn reader($next: any, $result: any | (), $close: any | (),
+              $context: any | (), $boxed: Boolean | ()): Reader | ErrorValue
+{
+    __stream "reader" [$next, $result, $close, $context, $boxed] (Item)
+}
+pub fn Reader::get_result(): any | ErrorValue { __stream "result" $self }
+
+pub fn Reader::new($next: any, $result: any | (), $close: any | (),
+                   $context: any | (), $boxed: Boolean | ()): Reader | ErrorValue
+{
+    __stream "reader" [$next, $result, $close, $context, $boxed] (Item)
+}
+
+pub fn Reader::get_context(): any { __stream "context" $self }

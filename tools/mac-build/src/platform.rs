@@ -166,7 +166,7 @@ pub fn catalogue() -> Result<Vec<(String, String)>>
 const INCLUDE: &str = "include";
 const APPEND: &str = "$append";
 
-fn document(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Value>
+fn document(path: &Path, stack: &mut Vec<PathBuf>, files: &mut Vec<PathBuf>) -> Result<Value>
 {
     let resolved =
         path.canonicalize()
@@ -180,6 +180,7 @@ fn document(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Value>
         chain.push(resolved.display().to_string());
         return Err(error(format!("platform include cycle: {}", chain.join(" -> "))));
     }
+    files.push(resolved.clone());
     let bytes = fs::read(&resolved)?;
     let mut value: Value = serde_json::from_slice(&bytes).map_err(|cause| {
                                                              error(format!("invalid platform \
@@ -203,7 +204,7 @@ fn document(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Value>
                                    })?;
     let target = resolved.parent().unwrap_or(Path::new(".")).join(include);
     stack.push(resolved.clone());
-    let base = document(&target, stack).map_err(|cause| {
+    let base = document(&target, stack, files).map_err(|cause| {
                                            error(format!("platform {} includes '{include}': \
                                                           {cause}",
                                                          resolved.display()))
@@ -275,6 +276,19 @@ fn plain(value: Value) -> Result<Value>
     }
 }
 
+/// Source records used by a platform, including its recursively included bases.
+/// Build scripts and compile stages watch these files for configuration changes.
+pub fn record_files(name: &str) -> Result<Vec<PathBuf>>
+{
+    let name = resolve(name)?;
+    let path = directory().join(format!("{name}.json"));
+    let mut files = Vec::new();
+    document(&path, &mut Vec::new(), &mut files)?;
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
 /// The merged JSON record for a platform, with every include resolved.
 ///
 /// This is the interpreter's view of the manifest: callers that need to read a
@@ -285,7 +299,7 @@ pub fn record(name: &str) -> Result<Value>
 {
     let name = resolve(name)?;
     let path = directory().join(format!("{name}.json"));
-    document(&path, &mut Vec::new())
+    document(&path, &mut Vec::new(), &mut Vec::new())
 }
 
 /// The canonical spelling of a platform name.
@@ -790,14 +804,14 @@ mod tests
         fs::write(root.join("cycle-a.json"), br#"{"include":"cycle-b.json"}"#).unwrap();
         fs::write(root.join("cycle-b.json"), br#"{"include":"cycle-a.json"}"#).unwrap();
 
-        let merged = document(&root.join("extends.json"), &mut Vec::new()).unwrap();
+        let merged = document(&root.join("extends.json"), &mut Vec::new(), &mut Vec::new()).unwrap();
         assert_eq!(merged["scalar"], serde_json::json!("base"), "an absent key keeps the base");
         assert_eq!(merged["list"], serde_json::json!([1, 2, 3]), "$append extends the base array");
         assert_eq!(merged["object"],
                    serde_json::json!({"a":1,"b":20}),
                    "objects merge key by key and a scalar leaf overrides");
 
-        let recursive = document(&root.join("over.json"), &mut Vec::new()).unwrap();
+        let recursive = document(&root.join("over.json"), &mut Vec::new(), &mut Vec::new()).unwrap();
         assert_eq!(recursive["scalar"], serde_json::json!("over"), "a scalar overrides");
         assert_eq!(recursive["object"],
                    serde_json::json!({"c":3,"b":20}),
@@ -805,15 +819,15 @@ mod tests
         assert_eq!(recursive["leaf"], serde_json::json!(true), "includes resolve recursively");
         assert!(recursive.get(INCLUDE).is_none(), "the include key does not survive");
 
-        let cycle = document(&root.join("cycle-a.json"), &mut Vec::new()).unwrap_err().to_string();
+        let cycle = document(&root.join("cycle-a.json"), &mut Vec::new(), &mut Vec::new()).unwrap_err().to_string();
         assert!(cycle.contains("platform include cycle") && cycle.contains("cycle-a.json ->"),
                 "{cycle}");
-        let missing = document(&root.join("absent.json"), &mut Vec::new()).unwrap_err().to_string();
+        let missing = document(&root.join("absent.json"), &mut Vec::new(), &mut Vec::new()).unwrap_err().to_string();
         assert!(missing.contains("cannot read platform file") && missing.contains("absent.json"),
                 "{missing}");
         let dangling = root.join("dangling.json");
         fs::write(&dangling, br#"{"include":"nowhere.json"}"#).unwrap();
-        let dangling = document(&dangling, &mut Vec::new()).unwrap_err().to_string();
+        let dangling = document(&dangling, &mut Vec::new(), &mut Vec::new()).unwrap_err().to_string();
         assert!(dangling.contains("includes 'nowhere.json'")
                 && dangling.contains("cannot read platform file"),
                 "{dangling}");

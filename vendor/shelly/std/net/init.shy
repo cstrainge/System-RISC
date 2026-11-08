@@ -1,0 +1,12 @@
+# Network policy is built in Shelly over private native transport primitives.
+pub import std::net::udp
+pub import std::net::unix
+pub import std::net::tls
+pub import std::net::framing
+pub import std::net::tcp
+pub import std::net::http
+pub import std::net::sse
+pub import std::net::rpc
+pub type Error = std::net::tcp::Error | std::net::http::Error | std::net::sse::Error | std::net::rpc::Error | std::net::framing::Error
+
+pub import std::net::dns

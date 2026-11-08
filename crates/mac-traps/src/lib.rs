@@ -229,6 +229,14 @@ impl<'a> Client<'a>
         unsafe { invoke(number, (request as *mut T).cast(), core::mem::size_of::<T>()) }
     }
 
+    /// # Safety
+    /// A RELEASE must name the calling thread's original live mapping. No
+    /// coroutine or other reader may retain references into it after release.
+    pub unsafe fn coroutine_stack(self, call: &mut mac_abi::coroutine_stack::Call) -> Result<()>
+    {
+        status(self.invoke(mac_abi::traps::COROUTINE_STACK, call))
+    }
+
     pub fn log(self, text: &str) -> Result<()>
     {
         status(self.invoke(LOG,
@@ -1106,6 +1114,74 @@ impl Client<'_>
             return Err(Error::BadAbi);
         }
         requirement_status(result, call.requirement_class, call.requirement_version)
+    }
+
+    pub fn wait_child(self, call: &mut mac_abi::processes::ChildWaitCall) -> Result<()>
+    {
+        status(self.invoke(PROCESS, call))
+    }
+
+    /// Launch a streamed application with a bounded argument vector and search path.
+    pub fn launch_argv(self, launch: &mut mac_abi::processes::ProcessCall, bytes: &[u8],
+                       count: usize, path: &str) -> Result<()>
+    {
+        use mac_abi::processes::{ARGUMENT_BYTES, ARGUMENT_COUNT, LAUNCH, LaunchArgvCall};
+
+        if launch.operation != LAUNCH || count > ARGUMENT_COUNT
+           || path.len() > ARGUMENT_BYTES.saturating_sub(bytes.len())
+           || bytes.len() > ARGUMENT_BYTES
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut combined = [0; ARGUMENT_BYTES];
+        let total = bytes.len() + path.len();
+        let input = if path.is_empty()
+        {
+            bytes
+        }
+        else
+        {
+            combined[..bytes.len()].copy_from_slice(bytes);
+            combined[bytes.len()..total].copy_from_slice(path.as_bytes());
+            &combined[..total]
+        };
+        launch.requirement_class = [0; 4];
+        launch.requirement_version = 0;
+        let mut call = LaunchArgvCall { launch: *launch,
+                                       bytes: input.as_ptr(),
+                                       length: bytes.len() as u32,
+                                       count: count as u32,
+                                       path_length: path.len() as u32,
+                                       reserved: 0 };
+        let result = self.invoke(PROCESS, &mut call);
+        *launch = call.launch;
+        requirement_status(result, launch.requirement_class, launch.requirement_version)
+    }
+
+    /// Read the caller's startup arguments and executable search path.
+    pub fn startup_argv(self, bytes: &mut [u8]) -> Result<(usize, usize, usize)>
+    {
+        use mac_abi::processes::{ARGUMENT_BYTES, ARGUMENT_COUNT, StartupArgvCall};
+
+        if bytes.len() > ARGUMENT_BYTES
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = StartupArgvCall { bytes: bytes.as_mut_ptr(),
+                                        capacity: bytes.len() as u32,
+                                        length: 0,
+                                        count: 0,
+                                        path_length: 0 };
+        status(self.invoke(PROCESS, &mut call))?;
+        let length = call.length as usize;
+        let count = call.count as usize;
+        let path_length = call.path_length as usize;
+        if length > bytes.len() || path_length > bytes.len() - length
+           || count > ARGUMENT_COUNT || (length == 0) != (count == 0)
+        {
+            return Err(Error::BadAbi);
+        }
+        Ok((length, count, path_length))
     }
 
     pub fn process(self, call: &mut mac_abi::processes::ProcessCall) -> Result<()>

@@ -187,10 +187,7 @@ fn read_page(d: &mut impl BlockDevice, p: Partition, id: u32) -> Result<Page>
         return Err(Error::Corrupt);
     }
     let mut page = [0; BLOCK_SIZE];
-    for (i, chunk) in page.as_chunks_mut::<512>().0.iter_mut().enumerate()
-    {
-        d.read_sector(p.start + u64::from(id) * 8 + i as u64, chunk)?;
-    }
+    d.read_sectors(p.start + u64::from(id) * 8, page.as_chunks_mut::<512>().0)?;
     Ok(page)
 }
 fn write_page(d: &mut impl WritableBlockDevice, p: Partition, id: u32, page: &Page) -> Result<()>
@@ -450,6 +447,40 @@ impl<'a, D: BlockDevice> Volume<'a, D>
             return Ok(0);
         }
         let extents = self.extent_list(id, kind, fork)?;
+        self.read_extents(fork.length, &extents, offset, output)
+    }
+
+    pub fn fork_reader(&mut self, id: u32, kind: ForkKind) -> Result<ForkReader<'_, 'a, D>>
+    {
+        let entry = self.entry(id)?;
+        if entry.directory
+        {
+            return Err(Error::Invalid);
+        }
+        let fork = entry.fork(kind);
+        let extents = self.extent_list(id, kind, fork)?;
+        Ok(ForkReader { volume: self,
+                        length: fork.length,
+                        extents })
+    }
+
+    fn read_extents(&mut self, fork_length: u64, extents: &[Extent], offset: u64,
+                    output: &mut [u8])
+                    -> Result<usize>
+    {
+        if output.len() > self.budget.io_bytes
+        {
+            return Err(Error::Budget);
+        }
+        if offset > fork_length
+        {
+            return Err(Error::Invalid);
+        }
+        let length = output.len().min((fork_length - offset).min(usize::MAX as u64) as usize);
+        if length == 0
+        {
+            return Ok(0);
+        }
         let mut logical = 0u64;
         let mut done = 0usize;
         for e in extents
@@ -464,12 +495,28 @@ impl<'a, D: BlockDevice> Volume<'a, D>
                 }
                 let within = position - logical;
                 let block = e.start + (within / 4096) as u32;
-                self.allocated(block)?;
-                let page = read_page(self.disk, self.partition, block)?;
                 let at = (within % 4096) as usize;
-                let n = (4096 - at).min(length - done);
-                output[done..done + n].copy_from_slice(&page[at..at + n]);
-                done += n;
+                if at == 0 && length - done >= 4096
+                {
+                    let available = (end - position).min((length - done) as u64) as usize;
+                    let bytes = available / 4096 * 4096;
+                    for index in 0..bytes / 4096
+                    {
+                        self.allocated(block + index as u32)?;
+                    }
+                    self.disk.read_sectors(
+                        self.partition.start + u64::from(block) * 8,
+                        output[done..done + bytes].as_chunks_mut::<512>().0)?;
+                    done += bytes;
+                }
+                else
+                {
+                    self.allocated(block)?;
+                    let page = read_page(self.disk, self.partition, block)?;
+                    let n = (4096 - at).min(length - done);
+                    output[done..done + n].copy_from_slice(&page[at..at + n]);
+                    done += n;
+                }
             }
             logical = end;
             if done == length
@@ -503,6 +550,28 @@ impl<'a, D: BlockDevice> Volume<'a, D>
         String::from_utf8(b).map_err(|_| Error::Corrupt)
     }
 }
+/// A read-only fork snapshot while its volume is exclusively borrowed.
+/// Catalog identity and extent validation are performed once. The borrow
+/// prevents writes or remounting until this reader is dropped.
+pub struct ForkReader<'v, 'd, D: BlockDevice>
+{
+    volume:  &'v mut Volume<'d, D>,
+    length:  u64,
+    extents: Vec<Extent>
+}
+impl<D: BlockDevice> ForkReader<'_, '_, D>
+{
+    pub fn length(&self) -> u64
+    {
+        self.length
+    }
+
+    pub fn read(&mut self, offset: u64, output: &mut [u8]) -> Result<usize>
+    {
+        self.volume.read_extents(self.length, &self.extents, offset, output)
+    }
+}
+
 impl<D: BlockDevice> Store for Volume<'_, D>
 {
     fn read_page(&mut self, id: u32) -> Result<Page>

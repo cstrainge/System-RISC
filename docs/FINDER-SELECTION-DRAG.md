@@ -191,7 +191,7 @@ retired in favor of the manager.
   - Different volume: **copy**.
   - **Option** held at drop: force copy (even same volume).
   - **Command** held at drop: force move (even across volumes). On the current
-    native keyboard mapping, the host Ctrl key supplies Command.
+    native QEMU keyboard mapping, left Alt supplies Command.
   - Sample modifiers at **drop time**, never latch them at drag start. The user
     can change their mind while dragging. If both forcing modifiers are held,
     Command takes precedence; Trash takes precedence over both.
