@@ -203,6 +203,67 @@ and flushes every writable block device before it calls the provider, so a PSCI
 provider would inherit that ordering rather than bypass it. The hazard would be
 a power path that skipped those gates, not PSCI itself.
 
+## Fixed: the classic tick ran 6.25 times too fast, so a double click never fit
+
+Symptom: double-clicking did nothing, so a folder on the boot volume could not be
+opened, while single clicks and selection worked.
+
+Finder decides a double click at `apps/finder/src/browser.rs:2461-2472`: two
+presses on the same item, with
+`event.input().when.wrapping_sub(time) < 30`. Those are classic ticks, and the
+Toolbox reports them at 60 Hz, so the window is meant to be half a second.
+`when` comes from `Toolbox::uptime()` (`system/src/toolbox/runtime.rs:670`),
+which read the machine counter and divided it by a hardcoded `10_000_000`.
+
+That divisor is the RISC-V `virt` timebase. The AArch64 counter runs at 62.5 MHz,
+which the guest prints for itself:
+
+```
+BOOT_AARCH64_COUNTER: hz=0000000003b9aca0
+TIMER_ARMED: requested=0x146b3bb4 cval=0x146b3bb4 ctl=0x1 count=0x146b1efe freq=0x3b9aca0
+```
+
+So `uptime()` advanced 375 per second instead of 60 and every interval measured
+in it was 6.25 times shorter: the 30-tick window became 80 ms of real time. A
+first click in Finder also costs the guest tens of milliseconds of work, so two
+presses 20 ms apart already arrived more than 30 ticks apart and the pair was
+never recognised. This is why the desktop could be used but nothing could be
+opened.
+
+`machine::monitor::ticks_to_event_ticks` now converts against the admitted
+counter rate, the inverse of the `event_ticks_to_ticks` that already existed for
+the other direction and already carried the comment "avoiding a machine-specific
+10 MHz constant". On RISC-V the arithmetic is identical — the old expression was
+`floor(a*60/10^7)` by quotient and remainder — so that platform's behaviour does
+not change.
+
+Measured on the shipped input path: `input-send-event` to the record's
+`virtio-tablet-device`, two left clicks at one point on the boot volume's first
+item, serial read for `FINDER_CLICK_HANDLED` (both presses arrived in every run)
+and for a new `FINDER_FOLDER_OPEN ... name=Applications`.
+
+| artifact | gap between presses | `FINDER_FOLDER_OPEN` | opened |
+| --- | --- | --- | --- |
+| `qemu_arm64` before the fix | 5 ms | 1 → 2 | yes |
+| `qemu_arm64` before the fix | 20 ms | 1 → 1 | no |
+| `qemu_arm64` before the fix | 50 ms | 1 → 1 | no |
+| `qemu_arm64` before the fix | 100 ms | 1 → 1 | no |
+| `qemu_arm64` before the fix | 200 ms | 1 → 1 | no |
+| `qemu_arm64` after the fix | 200 ms | 1 → 2 | yes |
+| `qemu_arm64` after the fix | 400 ms | 1 → 2 | yes |
+| `qemu_arm64` after the fix | 700 ms | 1 → 1 | no |
+| `qemu_riscv` after the fix | 200 ms | 1 → 2 | yes |
+
+The fixed window ends between 400 ms and 700 ms, which is the 500 ms the constant
+asks for; the unfixed one ended below 20 ms. Nothing was widened: the constant is
+still 30, and the change is that a tick is now a sixtieth of a second on this
+machine as well.
+
+One instance of the same assumption is left alone here because it is a timeout
+rather than an interval: `crates/mac-bootloader/src/virtio_blk.rs:348` treats
+`elapsed > 10_000_000` counter ticks as one second, which on AArch64 is 160 ms.
+It has not been observed to matter, and it is a separate change.
+
 ## Defects found and fixed
 
 Each was found by measurement, not by reading.

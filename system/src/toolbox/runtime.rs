@@ -669,8 +669,11 @@ impl Toolbox
 
     fn uptime() -> u64
     {
-        let raw = platform::ticks();
-        (raw / 10_000_000) * 60 + (raw % 10_000_000) * 60 / 10_000_000
+        // Sixtieths of a second against the machine's admitted counter rate.
+        // Before the monitor admits that rate there is nothing to convert
+        // against, and a guessed rate would report elapsed time that never
+        // happened, so uptime starts at zero instead.
+        crate::machine::monitor::ticks_to_event_ticks(platform::ticks()).unwrap_or(0)
     }
 
     fn when() -> u32

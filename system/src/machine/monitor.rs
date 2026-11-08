@@ -646,6 +646,18 @@ pub(crate) fn event_ticks_to_ticks(ticks: u32) -> Result<u64, Error>
     u64::try_from(duration).map_err(|_| Error::ClockOverflow)
 }
 
+/// The inverse of `event_ticks_to_ticks`: elapsed counter ticks as the classic
+/// sixtieths of a second that Toolbox uptime, TickCount and every double-click
+/// interval are expressed in. The counter's rate belongs to the machine, so
+/// dividing by a fixed rate would make one board's sixtieths 6.25 times shorter
+/// than another's and shrink every interval measured in them.
+pub(crate) fn ticks_to_event_ticks(ticks: u64) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let sixtieths = (u128::from(ticks) * 60) / u128::from(transport.timebase_hz);
+    u64::try_from(sixtieths).map_err(|_| Error::ClockOverflow)
+}
+
 /// Whole seconds plus a checked fractional nanosecond interval. Rounding up
 /// cannot shorten a requested native thread/address-wait deadline.
 pub(crate) fn seconds_nanos_to_ticks_ceil(seconds: u64, nanoseconds: u32) -> Result<u64, Error>
