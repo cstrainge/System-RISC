@@ -138,3 +138,10 @@ pub(crate) fn advance(frame: &mut TrapFrame)
 {
     frame.pc = frame.pc.wrapping_add(4);
 }
+
+/// Leave the frame on the `ecall` a parked continuation must execute again.
+/// `sepc` already names the call instruction, so a replay steps nowhere;
+/// `advance` is the opposite of this and moves past the call.
+pub(crate) fn rewind(_frame: &mut TrapFrame)
+{
+}

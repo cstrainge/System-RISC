@@ -177,3 +177,12 @@ pub(crate) fn set_return_link(frame: &mut TrapFrame, value: usize)
 pub(crate) fn advance(_frame: &mut TrapFrame)
 {
 }
+
+/// Put the frame back on the `svc` a parked continuation must execute again.
+/// `ELR_EL1` holds the instruction after the `svc`, so a replay steps back one
+/// instruction; `advance` is the opposite of this and is a no-op here because a
+/// completed call already resumes past the call.
+pub(crate) fn rewind(frame: &mut TrapFrame)
+{
+    frame.pc = frame.pc.wrapping_sub(4);
+}

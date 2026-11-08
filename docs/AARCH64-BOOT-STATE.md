@@ -1624,18 +1624,29 @@ This also names the desktop symptom. An application that quits after any service
 parked it cannot complete its own exit, because the exit is one more service
 call. The same refusal explains a Finder window close that stops responding.
 
-The fix is one shared step at the park points: before `Dispatch::Schedule` for a
-replay, move the frame back to `call_site(frame)`. On RISC-V that is a no-op,
-because `pc` already names the `ecall`; on AArch64 it rewinds the four bytes. The
-`svc` then re-traps, the entry re-establishes `pc = ELR_EL1`, and a call that
-completes advances exactly as it does today.
+The fix is the missing counterpart of `advance`. `advance` means "the call is
+finished, resume after it": RISC-V adds four, AArch64 does nothing because
+`ELR_EL1` is already past. `rewind` means "resume at the call so it is issued
+again": RISC-V does nothing because `sepc` already names the `ecall`, AArch64
+subtracts four. The two functions now state the whole convention, once per
+architecture, beside each other. `finish_service` keeps calling `advance`; the
+two deferred-replay returns — `wait_io` reporting the thread parked, and
+`RequestAction::Replay` — call `rewind` first. No other `Dispatch::Schedule`
+takes it: preemption and fault capture resume at a genuine interrupted
+instruction, migration resumes on another hart, and `Yield`, `Exit`, the blocked
+event wait and the worker park have all already committed their result through
+`finish_service`.
 
-What this does not yet establish: the exact refusal site. The stale-`Call`
-diagnostic in `enter_ecall` did not fire in this run, so the refused call may be
-rejected by an earlier check (`matching_frame`/`WRONG_THREAD`, or the
-`prior_depth` refusal) before that test is reached. The resume address, which is
-the defect, is measured; the terminal refusal that follows it is inferred from
-the code and not yet instrumented.
+The contract the code had assumed is stated at `finish_service`: *deferred
+replay intentionally never calls this helper*. That sentence is true on RISC-V,
+where skipping `advance` leaves the PC on the `ecall`. It was not true on
+AArch64, where there was nothing to skip and nothing that moved the resume
+address back.
+
+The stale-`Call` diagnostic in `enter_ecall` never fired while this was being
+measured, so the exact terminal refusal that follows a missed replay is still
+inferred from the code rather than instrumented. The resume address, which is
+the defect, was measured directly.
 
 ## Not attempted, deliberately
 

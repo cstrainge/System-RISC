@@ -624,7 +624,11 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         retain_user_call(user_call.take());
         match crate::machine::scheduler::wait_io(job)
         {
-            Ok(true) => return Dispatch::Schedule,
+            Ok(true) =>
+            {
+                abi::rewind(frame);
+                return Dispatch::Schedule;
+            }
             Ok(false) => return Dispatch::Resume, // completion won the race; replay now
             Err(error) =>
             {
@@ -656,13 +660,10 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     if action == crate::machine::scheduler::service::RequestAction::Replay
     {
         retain_user_call(user_call.take());
-        serial!("EXITDIAG_REPLAY number={} pc={:#x} call_site={:#x} prior_depth={}",
-                number,
-                frame.pc,
-                abi::call_site(frame),
-                frame.prior_depth);
         // Every Call/executor/manager borrow has ended. The original PC and
-        // request identity remain owned by this same canonical continuation.
+        // request identity remain owned by this same canonical continuation,
+        // and the woken thread executes that call instruction again.
+        abi::rewind(frame);
         return Dispatch::Schedule;
     }
     let result = if action == crate::machine::scheduler::service::RequestAction::Exit
