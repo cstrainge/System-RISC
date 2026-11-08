@@ -10,7 +10,8 @@
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use mac_abi::boot::topology::{Cpu, Topology};
+use mac_abi::boot::{monitor::SignalTarget,
+                   topology::{Cpu, Topology}};
 use mac_devicetree::{Node, Tree};
 
 use super::{Error, Result};
@@ -21,7 +22,7 @@ pub struct MonitorRoute
     /// On this platform an inter-processor signal is a write to a CLINT cell, so
     /// the route is that cell's address. It is published as the entry's
     /// platform-encoded signalling target, which is what the ABI carries.
-    pub signal: u64
+    pub signal: SignalTarget
 }
 pub struct MonitorRoutes
 {
@@ -507,9 +508,11 @@ pub fn monitor_routes(tree: &Tree<'_>, cpus: &[Cpu], clint: Range<u64>)
         for cpu in controllers.into_iter().filter(|cpu| cpu.enabled)
         {
             routes.push(MonitorRoute { hart:   cpu.hart,
-                                       signal: cpu.msip
-                                                   .ok_or(Error::Missing("monitor enabled CPU has \
-                                                                          no CLINT route"))? });
+                                       signal: SignalTarget::new(
+                                           cpu.msip
+                                              .ok_or(Error::Missing("monitor enabled CPU has no \
+                                                                     CLINT route"))?
+                                       ) });
         }
     Ok(MonitorRoutes { timebase_hz: u64::from(timebase_hz),
                        routes })

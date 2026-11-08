@@ -472,9 +472,9 @@ later, and the boot faults before it. The display is prepared and unproven, not
 working. `qemu_riscv` still passes 19/19 and still prints
 `RAMFB 800x600 addr=0x88000000` followed by `DESKTOP_READY`.
 
-## The next stop: `signal` is an address on one machine and a target on the other
+## The signalling target is a type, not an integer
 
-After the display fix the boot faults in
+After the display fix the boot faulted in
 `machine::monitor::PublicationLease::finish`, reached from
 `paging::modules::Mapping::publish` → `monitor::publish_instructions()`:
 
@@ -482,50 +482,93 @@ After the display fix the boot faults in
 SYSTEM_TRAP_NO_CONTROL hart=0000000080000000 ESR=0000000096000046 ELR=ffffffd00034bda4 FAR=0000000000000002
 ```
 
-`ESR` decodes as a data abort at the same EL writing to VA `2`; `FAR=2` is
+`ESR` decoded as a data abort at the same EL writing to VA `2`; `FAR=2` was
 `notify()`'s `ptr::write_volatile(entry.signal as *mut u32, 1)`, and `2` is
 `bootrom-aarch64-virt`'s `signal(hart) = 1 << hart` for hart 1.
 
-The ABI already states the two meanings and forbids exactly this:
-`mac_abi::boot::monitor::Control::signal` is "the address of its CLINT `msip`
-cell" on a `Signalling::Cells` platform and "a target encoding this platform
-defines" on a `Signalling::Controller` one, and "nothing that is not implementing
-signalling for that platform may interpret it". `bootrom-aarch64-virt` publishes
-`Signalling::Controller` with a GIC window and a target bitmask; the kernel's
-`notify()` implements only the `Cells` meaning and never consults the published
-`Signalling` at all. The admission check compares `Control.signal` with
-`Entry.signal`, which are the same value written twice, so it cannot detect the
-disagreement — the same shape as the virtio stride: one value, two meanings, no
-comparison that could fail.
+The ABI already stated the two meanings and forbade exactly this: on a
+`Signalling::Cells` platform an entry's target is the address of that hart's
+CLINT `msip` cell, and on a `Signalling::Controller` platform it is a mask the
+controller decodes. The kernel's `notify()` implemented only the first meaning
+and never consulted the published `Signalling` at all. The admission check
+compared `Control.signal` with `Entry.signal`, which are the same value written
+twice, so it could not detect the disagreement — the same shape as the virtio
+stride: one value, two meanings, no comparison that could fail.
 
-It is not only a wrong address. The parked harts are `wfe` loops in the bootrom
+It was not only a wrong address. The parked harts are `wfe` loops in the bootrom
 with no vector table installed, so they could not acknowledge a controller
-interrupt even if one were sent. The aarch64 monitor transport does not exist on
-either side; the kernel's publication loop simply assumes the RISC-V one.
+interrupt even if one had been sent. The aarch64 monitor transport did not exist
+on either side; the kernel's publication loop assumed the RISC-V one.
 
-Not fixed here, deliberately, and the reason is a scope boundary rather than an
-unfinished feature. **The resident scheduler is single-hart by design**: it
-schedules one core, and that is its entire authority. Multi-hart dispatch
-belongs to the multi-scheduler extension — `extensions/multi-scheduler/`
-(SCHD v1, `SCTL`/`MLIF`), `crates/mac-scheduler-interface/src/control.rs`
-(`TAKEOVER | MULTI_HART | PARK`), with `crates/mac-driver/src/scheduler.rs`
-refusing rather than simulating. Hart *count* is topology, not dispatch
-authority. So the resident path cannot own a hart it does not schedule, and
-implementing a GIC SGI route there would put dispatch authority in the wrong
-place; a rejected takeover must leave boot scheduling dependable.
+### What replaced it
 
-An earlier version of this section justified the omission by the record's
-`maximum_active_harts: 1`. That was the wrong reason: the resident scheduler has
-one hart because it schedules one hart, not because a record caps it. The
-record's count is a machine fact; the scheduler's single-hart scope is the
-design.
+`mac_abi::boot::monitor::SignalTarget` is the published target: a
+`#[repr(transparent)]` wrapper with no integer or pointer conversion. It can only
+be used through `Signalling::route`, which returns `Routed::Cell(CellAddress)` or
+`Routed::Controller(ControllerTarget)` according to the kind the loader declared.
+Only `CellAddress` has `address()`; `ControllerTarget` names no address at all.
+`Control::signal` and `Entry::signal` are `SignalTarget`, so the old
+`entry.signal as *mut u32` is now a compile error rather than a convention. A
+standalone crate depending on the real `mac-abi` was compiled with the old
+`notify` body and with a controller target used as an address; the compiler said:
 
-What must still change in the resident path is the **type**, not the recipient
-list. `signal` meaning an address on one machine and a target encoding on the
-other has to become unrepresentable, so that the extension cannot inherit the
-cast when it takes over. Notifying only the hart the scheduler owns is correct
-scope; leaving the cast in place so the extension can reinterpret it later is
-the defect.
+```
+error[E0605]: non-primitive cast: `SignalTarget` as `*mut u32`
+  --> src\main.rs:9:29
+   |
+ 9 |         ptr::write_volatile(entry.signal as *mut u32, 1);
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^ an `as` expression can only be used to convert between primitive types or to coerce to a specific trait object
+
+error[E0599]: no method named `address` found for struct `ControllerTarget` in the current scope
+  --> src\main.rs:26:44
+   |
+26 |                 ptr::write_volatile(target.address() as *mut u32, 1);
+   |                                            ^^^^^^^ method not found in `ControllerTarget`
+```
+
+The first is the exact expression that faulted at VA `2`. The second is why a
+controller target cannot take its place: it has no address at all, so the only
+way to reach a writable value is a cell route.
+
+`notify()` now takes the admitted transport and matches on its route. A cell
+route writes the cell; a controller route returns `Error::Signalling` and prints
+`MONITOR_SIGNALLING_REFUSED hart=N target=0xM` naming the reason: the target is a
+controller mask, not an address, and cross-hart dispatch belongs to the
+multi-scheduler extension. Nothing in the resident path writes a target.
+
+The bootroms were converted with it. `bootrom-riscv` states its kind once
+(`ROUTE`) and writes cells only through `ROUTE.route(entry.signal)`;
+`bootrom-aarch64-virt` builds `SignalTarget::new(1 << hart)`, which cannot be
+written to because it is not an address.
+
+### The resident path owns no peer it cannot signal
+
+The resident scheduler schedules one hart. That is its whole scope, and it is not
+a membership list a platform record could enlarge: multi-hart dispatch is the
+multi-scheduler extension's (`extensions/multi-scheduler`, `SCTL`/`MLIF`,
+`TAKEOVER | MULTI_HART | PARK`), behind its own takeover seam, and hart count is
+topology rather than dispatch authority.
+
+So the resident monitor's signalable peer set is derived from the route it can
+actually write, not from how many CPUs the machine has: `Admitted::peers` yields
+the non-primary rows on a cell bank and nothing at all through a controller. The
+broadcast paths (`PublicationLease::finish`, `stop_peers`) and CPU initialization
+all iterate that set, so on a controller platform the boot publishes locally,
+starts no peer, and schedules on the primary. On a cell platform the behaviour is
+unchanged: peers are started, published to and stopped exactly as before.
+
+This is why the aarch64 boot no longer dies in `publish_instructions`. It is not
+a workaround for the cast — the cast cannot be written any more — and it does not
+leave the fault waiting for a second hart: a second hart now reaches a refusal
+that names the extension.
+
+### Not implemented, deliberately
+
+Controller signalling in the resident path. It cannot own harts it does not
+schedule, and GIC SGI delivery with peer vectors and an acknowledgement handler
+belongs behind the extension's takeover seam. The resident path refuses by name
+until then, and the type is what stops the extension from inheriting the old cast
+when it takes over.
 
 ## Ordering in `emergency::prepare()`
 
@@ -544,9 +587,24 @@ after input has already succeeded.
 
 ## Where the boot now stops
 
-The emergency kit is accepted and the boot reaches `BOOT_FINDER_DOMAIN`. It then
-faults in monitor instruction publication, described above. `raw-hfs-b` still
-fails, now on the readiness marker timing out behind that fault.
+The emergency kit is accepted and the boot reaches `BOOT_FINDER_DOMAIN`. It used
+to fault there in monitor instruction publication, at VA `2`; that fault is gone.
+The boot now continues through `FONTS_READY` and stops on an application
+instruction fetch:
+
+```
+SYSTEM_TRAP_NO_CONTROL hart=0000000080000000 ESR=0000000086000005 ELR=00000000430fd000 FAR=00000000430fd000 VBAR=ffffffd000201800 TTBR0=0001000040007000 TTBR1=0000000040007000 SP=ffffffd0103de500 LR=ffffffd00027b3b4 SCTLR=0000000000c5183d
+```
+
+`ESR` decodes as `EC=0x21` (instruction abort from a lower exception level) with
+`DFSC=0x05` (translation fault, level 1); `FAR=ELR=0x430fd000` is the address
+that was fetched. It lies in the application image window, `0x3000` below the
+record's `virtual_memory.application_relocation_base` (`0x43100000`), and it is
+unmapped in the root the faulting application was running under. This is a
+second, independent defect in the aarch64 application mapping or in the code that
+transferred control there; it was previously hidden behind the monitor fault and
+is **not** diagnosed here. `raw-hfs-b` on `qemu_arm64` therefore still fails, on
+the readiness marker timing out behind this trap.
 
 Nothing was done to make the marker appear. The fatal `start_services` path is
 unchanged: a missing framebuffer on a machine whose record declares one is still
@@ -559,10 +617,11 @@ A typed wrapper that makes a firmware pointer unusable without the switch. The
 `cfg` fix makes the invariant hold by construction for every `firmware_call`;
 the wrapper is the better end state and belongs after the boot is green.
 
-The aarch64 monitor signalling route, for the reasons in its own section: the
-resident scheduler is single-hart by design and multi-hart dispatch belongs to
-the multi-scheduler extension behind its takeover seam, so a GIC route does not
-belong in the resident path at all.
+GIC SGI delivery for the aarch64 monitor route, for the reasons in its own
+section: the resident scheduler is single-hart by design and multi-hart
+dispatch belongs to the multi-scheduler extension behind its takeover seam,
+and the controller path refuses by name until the parked harts have vectors
+and a handler.
 
 ## Baseline warning
 

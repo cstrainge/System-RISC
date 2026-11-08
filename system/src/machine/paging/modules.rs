@@ -2452,6 +2452,7 @@ pub(super) fn monitor_cause(base: u64, stage: Stage, error: &crate::machine::mon
         | E::WakeOrder { .. }
         | E::Wake(_)
         | E::State { .. }
+        | E::Signalling { .. }
         | E::StopUnacknowledged { .. } => MonitorRefusal::Protocol { status: error.status() }
     };
     CleanupCause::Monitor { base,

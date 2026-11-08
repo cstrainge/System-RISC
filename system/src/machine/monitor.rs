@@ -7,7 +7,8 @@ use core::{           fmt, ptr,
 
 use mac_abi::{BootInfo, BootMemoryRange,
               boot::{CheckedMemory,
-                     monitor::{self, BootImage, Control, Entry, SecondaryStart},
+                     monitor::{self, BootImage, Control, ControllerTarget, Entry, Routed,
+                               SecondaryStart, Signalling},
                      topology::Cpu}};
 
 use crate::machine::memory::*;
@@ -21,9 +22,35 @@ const _: () = assert!(MONITOR_CONTROL_BYTES == core::mem::size_of::<Control>() a
 struct Admitted
 {
     entries:     &'static [Entry],
+    /// How this platform delivers an inter-processor interrupt. One statement,
+    /// published by the loader, that every target is interpreted through.
+    route:       Signalling,
     primary:     usize,
     timebase_hz: u64,
     image:       &'static BootImage
+}
+impl Admitted
+{
+    /// True when this resident path owns secondary harts at all.
+    ///
+    /// It owns one only where the platform's declared route is a cell bank it
+    /// can write. Through an interrupt controller it cannot signal a hart, so it
+    /// owns none: cross-hart dispatch is the multi-scheduler extension's, behind
+    /// its own takeover seam. Boot scheduling is the primary either way.
+    fn owns_secondary_harts(&self) -> bool
+    {
+        matches!(self.route, Signalling::Cells(_))
+    }
+
+    /// The harts this resident path may signal: every entry except the one
+    /// running System, and none at all when it owns no secondary hart.
+    fn peers(&self) -> impl Iterator<Item = &'static Entry>
+    {
+        let entries: &'static [Entry] =
+            if self.owns_secondary_harts() { self.entries } else { &[] };
+        let primary = self.primary as u64;
+        entries.iter().filter(move |entry| entry.hart != primary)
+    }
 }
 static MONITOR: spin::Once<Admitted> = spin::Once::new();
 static ISSUING: AtomicBool = AtomicBool::new(false);
@@ -51,6 +78,10 @@ pub(crate) enum WakeError
     },
     Stopping,
     TransportRetired,
+    Signalling
+    {
+        hart: u64
+    },
     EpochExhausted
     {
         hart: u64
@@ -77,6 +108,12 @@ impl fmt::Display for WakeError
             }
             Self::Stopping => out.write_str("primary wake retained during terminal stop"),
             Self::TransportRetired => out.write_str("primary wake transport is retired"),
+            Self::Signalling { hart } =>
+            {
+                write!(out,
+                       "hart {hart} cannot be signalled by the resident path: cross-hart dispatch \
+                        belongs to the multi-scheduler extension")
+            }
             Self::EpochExhausted { hart } =>
             {
                 write!(out, "hart {hart} wake epoch is exhausted; reset required")
@@ -106,7 +143,7 @@ impl PrimaryWake
         let sender = crate::machine::traps::execution::selected_hart();
         checked_wake_entry(transport, sender.binding())?;
         checked_wake_entry(transport, self.key.binding())?;
-        post_wake(self.entry).map(|_| ())
+        post_wake(transport, self.entry).map(|_| ())
     }
 }
 fn checked_wake_entry(transport: &'static Admitted, key: crate::machine::traps::execution::HartBinding)
@@ -163,7 +200,7 @@ pub(crate) fn prepare_primary_wake() -> Result<PrimaryWake, WakeError>
     Ok(PrimaryWake { key,
                      entry })
 }
-fn post_wake(entry: &Entry) -> Result<u64, WakeError>
+fn post_wake(transport: &Admitted, entry: &Entry) -> Result<u64, WakeError>
 {
     if TERMINAL.load(Ordering::Acquire)
     {
@@ -180,7 +217,7 @@ fn post_wake(entry: &Entry) -> Result<u64, WakeError>
         .map_err(|_| WakeError::EpochExhausted { hart: entry.hart })? + 1;
     // The durable intent exists before MMIO. Posting is not an S ACK; a fault
     // or absent receiver cannot refund work or manufacture completion.
-    notify(entry);
+    notify(transport, entry).map_err(|_| WakeError::Signalling { hart: entry.hart })?;
     Ok(sequence)
 }
 #[derive(Debug)]
@@ -223,6 +260,13 @@ pub(crate) enum Error
     TransportRetired,
     SequenceExhausted,
     ClockOverflow,
+    /// This platform signals through an interrupt controller, which is the
+    /// multi-scheduler extension's to drive, not the resident path's. Carries
+    /// the hart that could not be posted.
+    Signalling
+    {
+        hart: u64
+    },
     State
     {
         hart: u64
@@ -318,6 +362,12 @@ impl fmt::Display for Error
             {
                 f.write_str("machine monitor deadline overflows the admitted time counter")
             }
+            Self::Signalling { hart } =>
+            {
+                write!(f,
+                       "hart {hart} cannot be signalled by the resident path: cross-hart \
+                        dispatch belongs to the multi-scheduler extension")
+            }
             Self::State { hart } =>
             {
                 write!(f,
@@ -357,6 +407,7 @@ impl Error
                     WakeError::Stopping => mac_abi::OPERATION_CANCELLED,
                     WakeError::TransportRetired => mac_abi::IO_ERROR,
                     WakeError::EpochExhausted { .. } => mac_abi::NOT_SUPPORTED,
+                    WakeError::Signalling { .. } => mac_abi::NOT_SUPPORTED,
                     WakeError::ForeignPrimary { .. } => mac_abi::ACCESS_DENIED,
                     WakeError::Missing
                     | WakeError::Binding { .. }
@@ -371,6 +422,7 @@ impl Error
             | Self::TransportRetired
             | Self::ClockOverflow => mac_abi::IO_ERROR,
             Self::SequenceExhausted | Self::StartRefused { .. } => mac_abi::NOT_SUPPORTED,
+            Self::Signalling { .. } => mac_abi::NOT_SUPPORTED,
             Self::Refused { status,
                             .. } if *status <= 0 && *status >= i32::MIN as i64 => *status as i32,
             _ => mac_abi::BAD_ABI
@@ -404,7 +456,8 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
     // platform and this code runs on more than one. Reading it here rather than
     // from a generated constant is what lets a platform whose signalling is not
     // a CLINT admit at all: there is no CLINT on such a machine, and a constant
-    // for one would be a hardcoded refusal.
+    // for one would be a hardcoded refusal. What this kernel can *deliver*
+    // through that route is a separate question, answered below.
     directory.checked(entries,
                       cpus,
                       memory,
@@ -412,6 +465,12 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
                       BootMemoryRange { base:   FIRMWARE_HEAP_BASE,
                                         length: FIRMWARE_HEAP_BYTES })
              .map_err(Error::Directory)?;
+    // A controller route cannot be signalled by this resident path: the target
+    // is a mask, not an address, and cross-hart dispatch belongs to the
+    // multi-scheduler extension behind its takeover seam. That is not a reason
+    // to refuse the boot — this path owns no secondary hart on such a platform,
+    // so it never asks (see `Admitted::peers`), and scheduling stays on the
+    // primary.
     let image =
         unsafe { crate::machine::memory::primary_slice(info, directory.image, 1) }.map_err(Error::Memory)?
                                                                          .first()
@@ -535,6 +594,7 @@ pub(crate) unsafe fn admit(info: &'static BootInfo, memory: CheckedMemory<'stati
     }
     MONITOR.call_once(|| {
                Admitted { entries,
+                          route: directory.signalling,
                           primary,
                           timebase_hz: directory.timebase_hz,
                           image }
@@ -634,14 +694,45 @@ pub(crate) fn cpu_observation(ordinal: usize, hardware: u64) -> Option<(u64, boo
     Some((transport.timebase_hz, stopped == 1))
 }
 
-fn notify(entry: &Entry)
+/// True when this resident path owns secondary harts: only where the platform's
+/// declared route is a cell bank it can write. Through an interrupt controller
+/// it owns none, and cross-hart dispatch is the multi-scheduler extension's.
+pub(crate) fn owns_secondary_harts() -> bool
 {
-    // Release alone does not order MMIO. Neither operation calls foreign code.
-    crate::machine::cpu::barrier();
-    unsafe {
-        ptr::write_volatile(entry.signal as *mut u32, 1);
+    MONITOR.get().is_some_and(Admitted::owns_secondary_harts)
+}
+
+/// Why a target could not be posted: this resident path does not own the hart,
+/// and the platform's controller route is the extension's to drive.
+fn signalling_refused(hart: u64, target: ControllerTarget) -> Error
+{
+    crate::machine::emergency::serial(format_args!(
+        "MONITOR_SIGNALLING_REFUSED hart={hart} target={:#x}: the target is a controller mask, \
+         not an address; cross-hart dispatch belongs to the multi-scheduler extension, so the \
+         resident path posted nothing\n",
+        target.mask()));
+    Error::Signalling { hart }
+}
+
+fn notify(transport: &Admitted, entry: &Entry) -> Result<(), Error>
+{
+    match transport.route.route(entry.signal)
+    {
+        Routed::Cell(cell) =>
+        {
+            // Release alone does not order MMIO. Neither operation calls
+            // foreign code.
+            crate::machine::cpu::barrier();
+            unsafe {
+                ptr::write_volatile(cell.address() as *mut u32, 1);
+            }
+            crate::machine::cpu::barrier();
+            Ok(())
+        }
+        // A controller target names no address. Writing it would fault at
+        // whatever value the platform chose, so the route is refused by name.
+        Routed::Controller(target) => Err(signalling_refused(entry.hart, target))
     }
-    crate::machine::cpu::barrier();
 }
 fn selected() -> Result<&'static Admitted, Error>
 {
@@ -797,7 +888,7 @@ impl PublicationLease
             SEQUENCE.store(sequence, Ordering::Relaxed);
             publication.local();
             issuer.complete = false;
-            for entry in monitor.entries.iter().filter(|entry| entry.hart != monitor.primary as u64)
+            for entry in monitor.peers()
             {
                 if TERMINAL.load(Ordering::Acquire)
                 {
@@ -807,11 +898,11 @@ impl PublicationLease
                                                                             Ordering::Relaxed);
                 field(entry, core::mem::offset_of!(Control, requested)).store(sequence,
                                                                               Ordering::Release);
-                notify(entry);
+                notify(monitor, entry)?;
             }
             Ok(())
         })?;
-        for entry in monitor.entries.iter().filter(|entry| entry.hart != monitor.primary as u64)
+        for entry in monitor.peers()
         {
             while field(entry, core::mem::offset_of!(Control, acknowledged)).load(Ordering::Acquire)
                   != sequence
@@ -863,12 +954,14 @@ pub(crate) fn stop_peers(winner: &crate::machine::traps::execution::TerminalWinn
     }
     TERMINAL.store(true, Ordering::Release);
     let deadline = now().checked_add(monitor.timebase_hz).ok_or(Error::ClockOverflow)?;
-    for entry in monitor.entries.iter().filter(|entry| entry.hart != current as u64)
+    // The winner is not a target of its own terminal stop. It may be a peer
+    // rather than the primary, so the exclusion is by hart, not by role.
+    for entry in monitor.peers().filter(|entry| entry.hart != current as u64)
     {
         field(entry, core::mem::offset_of!(Control, stop)).store(1, Ordering::Release);
-        notify(entry);
+        notify(monitor, entry)?;
     }
-    for entry in monitor.entries.iter().filter(|entry| entry.hart != current as u64)
+    for entry in monitor.peers().filter(|entry| entry.hart != current as u64)
     {
         while field(entry, core::mem::offset_of!(Control, stopped)).load(Ordering::Acquire) != 1
         {
@@ -1056,7 +1149,7 @@ pub(crate) fn begin_secondary(mut prepared: crate::machine::traps::PreparedHart)
     // publication tail. No migration, callback, allocation or owning Drop can
     // occur between this irreversible mark and its request/MMIO publication.
     let published = super::interrupts::with_masked(|| {
-        selected()?;
+        let transport = selected()?;
         if TERMINAL.load(Ordering::Acquire)
         {
             return Err(Error::Stopping);
@@ -1074,7 +1167,7 @@ pub(crate) fn begin_secondary(mut prepared: crate::machine::traps::PreparedHart)
         issuer.complete = false;
         prepared.mark_published();
         field(entry, core::mem::offset_of!(Control, requested)).store(sequence, Ordering::Release);
-        notify(entry);
+        notify(transport, entry)?;
         Ok::<(), Error>(())
     });
     if let Err(cause) = published
@@ -1101,7 +1194,7 @@ impl PendingHart
     /// acknowledgment. M acceptance/injection alone never means core readiness.
     pub(crate) fn poll(&mut self) -> Result<bool, Error>
     {
-        selected()?;
+        let transport = selected()?;
         if TERMINAL.load(Ordering::Acquire)
         {
             return Err(Error::Stopping);
@@ -1154,7 +1247,7 @@ impl PendingHart
                 }
                 else
                 {
-                    let sequence = post_wake(self.entry).map_err(Error::Wake)?;
+                    let sequence = post_wake(transport, self.entry).map_err(Error::Wake)?;
                     self.wake = Some(sequence);
                     sequence
                 };
@@ -1235,7 +1328,7 @@ impl ReadyHart
         let transport = MONITOR.get().ok_or(WakeError::Missing)?;
         checked_wake_entry(transport, crate::machine::traps::execution::selected_hart().binding())?;
         let entry = checked_wake_entry(transport, self.binding())?;
-        post_wake(entry).map(|_| ())
+        post_wake(transport, entry).map(|_| ())
     }
 
     pub(crate) fn ordinal(&self) -> usize

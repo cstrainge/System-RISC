@@ -9,11 +9,17 @@ use core::{alloc::Layout,
            sync::atomic::{AtomicU64, Ordering}};
 
 use mac_abi::{BootMemoryRange,
-              boot::{monitor::{BootImage, Control, Directory, Entry},
+              boot::{monitor::{BootImage, Control, Directory, Entry, Routed, Signalling},
                      topology::Cpu}};
 use mac_formats::{Error as FormatError, Result as FormatResult};
 
 use crate::memory::*;
+
+/// This board's signalling kind, stated once here and published in the
+/// directory. It is what turns each entry's published target into a cell
+/// address; nothing else in this bootstrap may do that conversion.
+const ROUTE: Signalling = Signalling::Cells(BootMemoryRange { base:   CLINT_BASE,
+                                                              length: CLINT_BYTES });
 
 #[repr(C)]
 struct Anchor
@@ -191,9 +197,7 @@ impl Published
                                     count:       entries.len(),
                                     stack_bytes: MONITOR_STACK_BYTES,
                                     timebase_hz: routes.timebase_hz,
-                                    signalling:  mac_abi::boot::monitor::Signalling::Cells(
-                                        BootMemoryRange { base:   CLINT_BASE,
-                                                          length: CLINT_BYTES }),
+                                    signalling:  ROUTE,
                                     image:       images.as_ptr() };
         directory.checked(&entries,
                           cpus,
@@ -208,9 +212,7 @@ impl Published
         // reset already cleared MSIP; this is not a CPU-only restart protocol.
         for entry in &entries
         {
-            unsafe {
-                ptr::write_volatile(entry.signal as *mut u32, 0);
-            }
+            post(entry, 0);
         }
         let owner_control = owner.storage.base;
         // No fallible allocation remains after publication. These physical
@@ -254,9 +256,7 @@ impl Published
         {
             // First fresh post-reset hardware notification authorizes only
             // reading the published directory and joining an M-mode park.
-            unsafe {
-                ptr::write_volatile(entry.signal as *mut u32, 1);
-            }
+            post(entry, 1);
         }
         unsafe {
             asm!("fence iorw,iorw", options(nostack));
@@ -312,6 +312,26 @@ fn now() -> u64
         asm!("rdtime {}", out(reg)ticks, options(nomem,nostack));
     }
     ticks
+}
+/// Writes one hart's cell in this board's MSIP bank.
+///
+/// The address comes from the platform's own declared signalling kind, never
+/// from the published target directly, so a target encoding cannot be mistaken
+/// for a cell address. `checked` has already validated every entry against that
+/// same kind, so a non-cell route here would be a bootstrap contradicting the
+/// record it publishes; it writes nothing rather than a wrong address.
+fn post(entry: &Entry, level: u32)
+{
+    let Routed::Cell(cell) = ROUTE.route(entry.signal)
+    else
+    {
+        return;
+    };
+    // SAFETY: the cell is one of this hart's MSIP registers inside the CLINT
+    // window `checked` validated, and this bootstrap owns M-mode signalling.
+    unsafe {
+        ptr::write_volatile(cell.address() as *mut u32, level);
+    }
 }
 unsafe extern "C" {
     fn __monitor_vector();
