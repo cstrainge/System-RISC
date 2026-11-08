@@ -1,12 +1,40 @@
 //! The single audited QEMU fw_cfg DMA binding. DMA storage remains pinned even
 //! on timeout; the device never receives a pointer into a departing Rust frame.
-use core::{arch::asm,
-           ptr::{addr_of_mut, read_volatile, write_volatile}};
+use core::ptr::{addr_of_mut, read_volatile, write_volatile};
 
 use super::{Configuration, Dma, Error, Ownership, bus_address, completion, configuration_size,
             directory_count};
 
 static OWNER: Ownership = Ownership::new();
+
+/// Orders the descriptor write before the doorbell, and the completion signal
+/// before the configuration is read back.
+///
+/// The instruction differs per architecture, so it is named here once instead of
+/// at each transfer site, and every machine that runs this binding calls the
+/// same function. A host build links this crate for the packaging tools, where
+/// no device exists; there the compiler fence orders the same accesses in the
+/// same program and claims nothing about hardware it is not running on.
+#[inline]
+fn barrier()
+{
+    #[cfg(target_arch = "riscv64")]
+    {
+        // SAFETY: a full fence has no memory operands and no side effects beyond
+        // ordering.
+        unsafe { core::arch::asm!("fence iorw, iorw", options(nostack)) };
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: a system-wide data synchronization barrier has no memory
+        // operands and no side effects beyond ordering.
+        unsafe { core::arch::asm!("dsb sy", options(nostack)) };
+    }
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    {
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 struct Device(usize);
 impl Device
@@ -84,14 +112,14 @@ impl Device
     unsafe fn transfer(&self, command: *mut Dma, command_bus: u64) -> Result<(), Error>
     {
         unsafe {
-            asm!("fence iorw, iorw", options(nostack));
+            barrier();
             write_volatile((self.0 + 16) as *mut u64, command_bus.to_be());
             for _ in 0..100_000
             {
                 let control = u32::from_be(read_volatile(addr_of_mut!((*command).control)));
                 if let Some(result) = completion(control)
                 {
-                    asm!("fence iorw, iorw", options(nostack));
+                    barrier();
                     return result;
                 }
             }

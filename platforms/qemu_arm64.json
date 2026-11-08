@@ -42,6 +42,10 @@
       "bytes": "0x1000000"
     },
     "fdt_tail_bytes": "0x200000",
+    "fw_cfg": {
+      "base": "0x9020000",
+      "bytes": "0x1000"
+    },
     "bootstrap_io": {
       "uart": {
         "base": "0x9000000",

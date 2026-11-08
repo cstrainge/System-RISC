@@ -2,10 +2,8 @@
 //! distinct even when a particular bootstrap happens to use identity mapping.
 use core::fmt;
 
-#[cfg(target_arch = "riscv64")]
 #[allow(unsafe_code)]
 mod native;
-#[cfg(target_arch = "riscv64")]
 pub use native::{PreparedTerminal, configure, prepare_terminal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,17 +131,14 @@ impl fmt::Display for Error
         }
     }
 }
-#[cfg(any(target_arch = "riscv64", test))]
 fn directory_count(observed: u32) -> Result<(), Error>
 {
     if observed > 4096 { Err(Error::DirectoryCount { observed }) } else { Ok(()) }
 }
-#[cfg(any(target_arch = "riscv64", test))]
 fn configuration_size(observed: u32) -> Result<(), Error>
 {
     if observed != 28 { Err(Error::ConfigurationSize { observed }) } else { Ok(()) }
 }
-#[cfg(any(target_arch = "riscv64", test))]
 fn completion(control: u32) -> Option<Result<(), Error>>
 {
     if control == 0
@@ -159,7 +154,6 @@ fn completion(control: u32) -> Option<Result<(), Error>>
         None
     }
 }
-#[cfg(any(target_arch = "riscv64", test))]
 #[repr(C, align(8))]
 struct Dma
 {
@@ -167,7 +161,6 @@ struct Dma
     length:  u32,
     address: u64
 }
-#[cfg(any(target_arch = "riscv64", test))]
 impl Dma
 {
     const fn empty() -> Self
@@ -186,9 +179,7 @@ impl Dma
 }
 /// One device's exclusive ownership, shared by normal and terminal paths.
 /// No lock or waiter is needed: contending callers receive a typed refusal.
-#[cfg(any(target_arch = "riscv64", test))]
 struct Ownership(core::sync::atomic::AtomicU8);
-#[cfg(any(target_arch = "riscv64", test))]
 impl Ownership
 {
     const IDLE: u8 = 0;
@@ -244,7 +235,6 @@ impl Ownership
             .map_err(|_| Error::InFlight)
     }
 }
-#[cfg(any(target_arch = "riscv64", test))]
 struct Claim<'a>
 {
     owner:    &'a Ownership,
@@ -252,7 +242,6 @@ struct Claim<'a>
     retained: bool,
     armed:    bool
 }
-#[cfg(any(target_arch = "riscv64", test))]
 impl Claim<'_>
 {
     fn submitted(&mut self)
@@ -271,7 +260,6 @@ impl Claim<'_>
         self.armed = false;
     }
 }
-#[cfg(any(target_arch = "riscv64", test))]
 impl Drop for Claim<'_>
 {
     fn drop(&mut self)
@@ -290,7 +278,6 @@ impl core::error::Error for Error
 /// The QEMU fw_cfg RAMFB backend. `translate` proves the pixel buffer's
 /// device-visible address; a bootstrap that identity-maps passes
 /// `|pointer, _| Some(pointer as u64)`.
-#[cfg(target_arch = "riscv64")]
 pub struct Ramfb
 {
     registers:   usize,
@@ -299,7 +286,6 @@ pub struct Ramfb
     height:      usize,
     translate:   fn(*const u8, usize) -> Option<u64>
 }
-#[cfg(target_arch = "riscv64")]
 #[allow(unsafe_code)]
 impl Ramfb
 {
@@ -322,7 +308,6 @@ impl Ramfb
                translate }
     }
 }
-#[cfg(target_arch = "riscv64")]
 #[allow(unsafe_code)]
 impl crate::backend::Backend for Ramfb
 {
@@ -351,9 +336,7 @@ impl crate::backend::Backend for Ramfb
     }
 }
 
-#[cfg(any(target_arch = "riscv64", test))]
 struct Configuration([u8; 28]);
-#[cfg(any(target_arch = "riscv64", test))]
 impl Configuration
 {
     fn new(physical: u64, width: usize, height: usize) -> Result<Self, Error>
@@ -380,7 +363,6 @@ impl Configuration
         Ok(Self(output))
     }
 }
-#[cfg(any(target_arch = "riscv64", test))]
 fn bus_address(pointer: *const u8, bytes: usize, alignment: u64,
                translate: &mut impl FnMut(*const u8, usize) -> Option<u64>)
                -> Result<u64, Error>

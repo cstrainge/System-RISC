@@ -1,11 +1,17 @@
-//! QEMU virt display and clock; System owns the framebuffers.
-use core::{arch::asm,
-           sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
+//! The display adapter every machine shares; System owns the framebuffers.
+//!
+//! None of this is an ISA mechanism. The framebuffer placement is generated
+//! from the platform record's display reservation, the scanout is configured
+//! through the shared fw_cfg RAMFB binding, and the only instruction this file
+//! needs — a barrier before the device is told the descriptor is ready — comes
+//! from the selected architecture's `cpu` adapter. A second machine therefore
+//! supplies a record and the `cpu` primitives, not a copy of this file.
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use super::video::DamageRegion;
 /// Live display geometry comes from `crate::display`; the platform record only
 /// fixes the default and the maximum the reservations are sized for.
 use crate::display::{height, pixels, width};
-use crate::machine::video::DamageRegion;
 use crate::toolbox::quickdraw::{Rect, geometry::union_rect};
 
 static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -160,7 +166,7 @@ pub fn setup_framebuffer() -> bool
                                           height(),
                                           |pointer, bytes| {
                                               crate::machine::paging::bus_address(pointer as u64,
-                                                                         bytes as u64)
+                                                                                  bytes as u64)
                                           })
     };
     if let Err(error) = &result
@@ -187,13 +193,7 @@ pub fn setup_framebuffer() -> bool
 
 pub fn ticks() -> u64
 {
-    {
-        let value;
-        unsafe {
-            asm!("rdtime {}",out(reg)value,options(nomem,nostack));
-        }
-        value
-    }
+    super::cpu::ticks()
 }
 pub fn present(back: &[u32])
 {
@@ -255,13 +255,13 @@ pub(crate) fn present_rects(back: &[u32],
             PresentEvent::OutlineChanged(_) => ()
         }
     });
-    unsafe {
-        asm!("fence iorw, iorw", options(nostack));
-    }
+    // The copied scene must be visible to whatever scans this buffer out before
+    // the next frame can be composed over it.
+    super::cpu::barrier();
     restore_dirty(damage);
 }
 
-/// The terminal display backend. This is the one place the shared emergency path
-/// reaches a display, so a second architecture supplies its own rather than the
-/// shared code naming a framebuffer it may not have.
+/// The terminal display backend: the same fw_cfg RAMFB binding the normal
+/// scanout is configured through, prepared in advance so the terminal path does
+/// no discovery of its own.
 pub(crate) use mac_boot_screen::ramfb::{Error as TerminalError, PreparedTerminal, prepare_terminal};

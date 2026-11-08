@@ -9,7 +9,8 @@ as the list of things fixed.
 `cargo xtask boot-check --platform qemu_arm64` runs two cases.
 
 - `no-disk` passes.
-- `raw-hfs-b` reaches `TRAPS_READY` and then faults inside `start_services`.
+- `raw-hfs-b` reaches `EMERGENCY_KIT_READY` and then faults in the machine
+  monitor's instruction publication, before the scanout is configured.
 
 The markers printed before the fault, in order:
 
@@ -26,7 +27,13 @@ CPU_TOPOLOGY / STACK_POLICY / PAGE_BANK
 MMU_READY
 SYSTEM_HEAP_READY
 SYSTEM_STACK_READY
+EMERGENCY_KIT_READY services=terminal ...
 TRAPS_READY: resident ecall dispatcher ABI=1
+SYSTEM_LEASE_PROBE: ok
+System: native service table ready
+BOOT_FINDER_DOMAIN app=4294967392
+SYSTEM_TRAP_NO_CONTROL hart=0000000080000000 ESR=0000000096000046 \
+ELR=ffffffd00034bda4 FAR=0000000000000002 ...
 ```
 
 AArch64 has never reached `DESKTOP_READY` in this environment.
@@ -417,36 +424,126 @@ reported value is correct. But it is currently correct *by accident* if it is
 inferred from the tree's silence, because silence and assertion are being
 treated alike. It must rest on the specification, in a comment that says so.
 
+## The display adapter: the stub, not the machine, said there was no framebuffer
+
+`system/src/machine/aarch64/display.rs` was a stub whose every entry point
+reported that no display existed, so `start_services` refused the boot with
+`BOOT_EMERGENCY_KIT_REJECTED: no framebuffer is available on this platform`.
+The record disagrees: `platforms/qemu_arm64.json` declares `virtio-gpu` with a
+`ramfb` framebuffer, the generated launch attaches both, and the install set
+packages the `Virtio Gpu` module. The machine has a display; the adapter could
+not find one.
+
+The display path was already shared and only the aarch64 binding was missing.
+`crates/mac-boot-screen` holds the one audited fw_cfg RAMFB binding, but every
+item in it was gated `#[cfg(target_arch = "riscv64")]` — the shared mechanism
+compiled for exactly one architecture. The RISC-V adapter that drives it,
+`system/src/machine/riscv64/display.rs`, was also machine-neutral apart from two
+instructions (`rdtime` for the tick source and a `fence iorw, iorw` before
+publishing a frame), both of which already exist in the selected architecture's
+`cpu` adapter.
+
+So the port is a deletion and a move, not a second implementation:
+
+- the `riscv64` cfg gates are gone from the RAMFB binding, and the one
+  architecture-specific instruction in it — the barrier before the device
+  doorbell — is selected in one `barrier()` function with a host fallback,
+  matching `crates/mac-driver/src/arch.rs`;
+- the adapter moved to `system/src/machine/display.rs`, a machine-neutral module
+  above the selection point, using `cpu::ticks()` and `cpu::barrier()`;
+- both architecture `display.rs` files are deleted, including the stub.
+
+Two things were wrong beyond the stub. The record did not declare the machine's
+fw_cfg window, so the generated `FW_CFG_BASE` was `0`; the window is
+`0x09020000`+`0x18`, confirmed from the tree QEMU 11.1 supplies for
+`-machine virt` (`fw-cfg@9020000`, compatible `qemu,fw-cfg-mmio`), and is now
+declared as `memory.fw_cfg`. It does not overlap the declared UART or virtio
+windows, so validation accepts it, and the page it needs was already being mapped
+identity from the tree's node; declaring it also excludes it from the heap.
+
+Evidence: `qemu_arm64` now prints `EMERGENCY_KIT_READY` with the same
+`frame_bytes=1920000` as `qemu_riscv`, which means the RAMFB binding reached the
+real fw_cfg window, matched its signature and DMA interface, found `etc/ramfb` at
+28 bytes, and translated both DMA buffers — the first time this path ran on
+arm64. The scanout is *not* configured: that is `setup_framebuffer()`, which runs
+later, and the boot faults before it. The display is prepared and unproven, not
+working. `qemu_riscv` still passes 19/19 and still prints
+`RAMFB 800x600 addr=0x88000000` followed by `DESKTOP_READY`.
+
+## The next stop: `signal` is an address on one machine and a target on the other
+
+After the display fix the boot faults in
+`machine::monitor::PublicationLease::finish`, reached from
+`paging::modules::Mapping::publish` → `monitor::publish_instructions()`:
+
+```
+SYSTEM_TRAP_NO_CONTROL hart=0000000080000000 ESR=0000000096000046 ELR=ffffffd00034bda4 FAR=0000000000000002
+```
+
+`ESR` decodes as a data abort at the same EL writing to VA `2`; `FAR=2` is
+`notify()`'s `ptr::write_volatile(entry.signal as *mut u32, 1)`, and `2` is
+`bootrom-aarch64-virt`'s `signal(hart) = 1 << hart` for hart 1.
+
+The ABI already states the two meanings and forbids exactly this:
+`mac_abi::boot::monitor::Control::signal` is "the address of its CLINT `msip`
+cell" on a `Signalling::Cells` platform and "a target encoding this platform
+defines" on a `Signalling::Controller` one, and "nothing that is not implementing
+signalling for that platform may interpret it". `bootrom-aarch64-virt` publishes
+`Signalling::Controller` with a GIC window and a target bitmask; the kernel's
+`notify()` implements only the `Cells` meaning and never consults the published
+`Signalling` at all. The admission check compares `Control.signal` with
+`Entry.signal`, which are the same value written twice, so it cannot detect the
+disagreement — the same shape as the virtio stride: one value, two meanings, no
+comparison that could fail.
+
+It is not only a wrong address. The parked harts are `wfe` loops in the bootrom
+with no vector table installed, so they could not acknowledge a controller
+interrupt even if one were sent. The aarch64 monitor transport does not exist on
+either side; the kernel's publication loop simply assumes the RISC-V one.
+
+Not fixed here, deliberately. Implementing the controller route means sending a
+GIC SGI and giving the parked harts a vector and an acknowledgement loop — SMP
+bring-up, which the project keeps behind its own gate, and which the record
+currently forbids anyway (`maximum_active_harts: 1`). Notifying harts that are
+not admitted would make this boot proceed while leaving the same fault waiting
+for the first real second hart.
+
+## Ordering in `emergency::prepare()`
+
+`input::prepare_terminal()` runs before `display::prepare_terminal()`. Neither
+depends on the other: input claims and pre-builds its dedicated virtio rings, and
+display performs fw_cfg discovery and reserves its terminal DMA, and each refuses
+on its own terms. The order is therefore not load-bearing for correctness, and
+nothing enforces it. The one argument for keeping it is failure order: input
+enumeration is the step that can refuse on machine facts (it requires exactly the
+recorded device count), and running it first refuses the boot before the
+terminal's claim on the fw_cfg device has been published. That claim does not
+block normal configuration — `configure()` may still run against a prepared
+device — so this is a preference about which refusal is reported first, not a
+requirement, and it is worth knowing that a display failure can only be reported
+after input has already succeeded.
+
 ## Where the boot now stops
 
-After the enumeration change there is **no fault at all** on `qemu_arm64`: the
-serial log contains no `ESR=`, no `BOOT_TRAP` and no `SYSTEM_PANIC`. It reaches
+The emergency kit is accepted and the boot reaches `BOOT_FINDER_DOMAIN`. It then
+faults in monitor instruction publication, described above. `raw-hfs-b` still
+fails, now on the readiness marker timing out behind that fault.
 
-```
-MMU_READY ... SYSTEM_HEAP_READY ... SYSTEM_STACK_READY control=0xffffffe010914000
-BOOT_EMERGENCY_KIT_REJECTED: no framebuffer is available on this platform
-```
-
-`raw-hfs-b` still fails, but on the readiness marker timing out rather than on an
-exception, which is a different class of failure and an honest one.
-
-The cause is a contradiction, not a crash. `system/src/machine/aarch64/display.rs`
-is a stub that reports no framebuffer; `start_services` treats that as fatal;
-while the adapter's own documentation says a machine with no display still boots
-and reports through serial. One of those two statements is wrong, nothing
-compares them, and the disagreement surfaced as a rejected boot. This is the
-recurring shape of this project yet again, and it is not worked around.
-
-Worth recording alongside it: `emergency::prepare()` runs `input::prepare_terminal()`
-before `display::prepare_terminal()`, so the original `0xa004000` abort was
-inside *resident input* enumeration, not the display path it was first guessed
-to be.
+Nothing was done to make the marker appear. The fatal `start_services` path is
+unchanged: a missing framebuffer on a machine whose record declares one is still
+a refused boot, and `BOOT_EMERGENCY_KIT_REJECTED` is still fatal. The boot passes
+that check because a framebuffer is now found, not because the check was relaxed.
 
 ## Not attempted, deliberately
 
 A typed wrapper that makes a firmware pointer unusable without the switch. The
 `cfg` fix makes the invariant hold by construction for every `firmware_call`;
 the wrapper is the better end state and belongs after the boot is green.
+
+The aarch64 monitor signalling route, for the reasons in its own section: it is
+SMP bring-up, the record admits one hart, and making the current boot proceed by
+not notifying non-participating harts would leave the same fault waiting for the
+first real second hart rather than fixing anything.
 
 ## Baseline warning
 
