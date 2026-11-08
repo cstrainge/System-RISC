@@ -371,7 +371,9 @@ it. A zero reading therefore has only two possible mechanisms:
   is demonstrably wrong. The `qemu_arm64` launch uses `-smp 4`, and the serial
   log records `CPU_TOPOLOGY enabled=4 primary=0 admission=primary-only`, so
   three secondaries exist and are never admitted. Any fault attributed to one of
-  them reads `TPIDR_EL1 == 0` by construction.
+  them reads `TPIDR_EL1 == 0` by construction. That is topology, not a failure:
+  the resident scheduler is single-hart by design and admits the primary only,
+  with multi-hart dispatch belonging to the multi-scheduler extension.
 * **It was written and then lost** between `hart.rs:472` and the fault — which
   requires an exception return or context restore that carries a stale copy back
   into the register, since nothing writes zero.
@@ -501,12 +503,29 @@ with no vector table installed, so they could not acknowledge a controller
 interrupt even if one were sent. The aarch64 monitor transport does not exist on
 either side; the kernel's publication loop simply assumes the RISC-V one.
 
-Not fixed here, deliberately. Implementing the controller route means sending a
-GIC SGI and giving the parked harts a vector and an acknowledgement loop — SMP
-bring-up, which the project keeps behind its own gate, and which the record
-currently forbids anyway (`maximum_active_harts: 1`). Notifying harts that are
-not admitted would make this boot proceed while leaving the same fault waiting
-for the first real second hart.
+Not fixed here, deliberately, and the reason is a scope boundary rather than an
+unfinished feature. **The resident scheduler is single-hart by design**: it
+schedules one core, and that is its entire authority. Multi-hart dispatch
+belongs to the multi-scheduler extension — `extensions/multi-scheduler/`
+(SCHD v1, `SCTL`/`MLIF`), `crates/mac-scheduler-interface/src/control.rs`
+(`TAKEOVER | MULTI_HART | PARK`), with `crates/mac-driver/src/scheduler.rs`
+refusing rather than simulating. Hart *count* is topology, not dispatch
+authority. So the resident path cannot own a hart it does not schedule, and
+implementing a GIC SGI route there would put dispatch authority in the wrong
+place; a rejected takeover must leave boot scheduling dependable.
+
+An earlier version of this section justified the omission by the record's
+`maximum_active_harts: 1`. That was the wrong reason: the resident scheduler has
+one hart because it schedules one hart, not because a record caps it. The
+record's count is a machine fact; the scheduler's single-hart scope is the
+design.
+
+What must still change in the resident path is the **type**, not the recipient
+list. `signal` meaning an address on one machine and a target encoding on the
+other has to become unrepresentable, so that the extension cannot inherit the
+cast when it takes over. Notifying only the hart the scheduler owns is correct
+scope; leaving the cast in place so the extension can reinterpret it later is
+the defect.
 
 ## Ordering in `emergency::prepare()`
 
@@ -540,10 +559,10 @@ A typed wrapper that makes a firmware pointer unusable without the switch. The
 `cfg` fix makes the invariant hold by construction for every `firmware_call`;
 the wrapper is the better end state and belongs after the boot is green.
 
-The aarch64 monitor signalling route, for the reasons in its own section: it is
-SMP bring-up, the record admits one hart, and making the current boot proceed by
-not notifying non-participating harts would leave the same fault waiting for the
-first real second hart rather than fixing anything.
+The aarch64 monitor signalling route, for the reasons in its own section: the
+resident scheduler is single-hart by design and multi-hart dispatch belongs to
+the multi-scheduler extension behind its takeover seam, so a GIC route does not
+belong in the resident path at all.
 
 ## Baseline warning
 
