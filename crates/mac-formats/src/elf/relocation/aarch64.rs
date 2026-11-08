@@ -253,6 +253,13 @@ impl Relocations
         {
             return Err(Error::Malformed("duplicate ADR_GOT_PAGE relocation site"));
         }
+        // Each load is looked up by the symbol it addresses, so the order the
+        // lookup assumes is the target's. Sorting by site address and then
+        // searching by target visits the pages in an order binary search
+        // cannot follow: it answers "absent" for pages that are present as soon
+        // as the two orders differ, which a small image often hides and a large
+        // one does not.
+        pages.sort_unstable_by_key(|page| page.target);
         let image_end = base.checked_add(super::span(image, base)?)
                             .ok_or(Error::Malformed("GOT image span overflows"))?;
         for load in loads
@@ -263,16 +270,49 @@ impl Relocations
                 return Err(Error::Malformed("LD64_GOT_LO12_NC relocation has no matching \
                                              ADR_GOT_PAGE relocation"));
             };
-            let page = &mut pages[at];
-            let upper = instruction(bytes, image, page.address)?;
             let lower = instruction(bytes, image, load.address)?;
-            let target_page = adrp_page(upper, page.address)?;
             let (offset, base_register, _) = ldr_offset(lower)?;
-            if base_register == 31 || base_register != (upper & 31) || load.address == page.address
+            if base_register == 31
             {
                 return Err(Error::Malformed("GOT relocation does not identify a matching \
                                              ADRP/LDR register pair"));
             }
+            // More than one `ADR_GOT_PAGE` site can name the same cell, and a
+            // search over equal targets cannot tell them apart. The register is
+            // what pairs a site with the load that reads through it, so the
+            // candidate is a site whose `Rd` is this load's base register; an
+            // unpaired site is preferred so that every site is accounted for by
+            // the check at the end.
+            let mut first = at;
+            while first > 0 && pages[first - 1].target == load.high
+            {
+                first -= 1;
+            }
+            let mut last = at + 1;
+            while last < pages.len() && pages[last].target == load.high
+            {
+                last += 1;
+            }
+            let choice = {
+                let names = |index: usize| {
+                    pages[index].address != load.address
+                    && instruction(bytes, image, pages[index].address).is_ok_and(|upper| {
+                                                                          upper & 31
+                                                                          == base_register
+                                                                      })
+                };
+                (first..last).find(|&index| names(index) && !pages[index].paired)
+                             .or_else(|| (first..last).find(|&index| names(index)))
+            };
+            let Some(choice) = choice
+            else
+            {
+                return Err(Error::Malformed("GOT relocation does not identify a matching \
+                                             ADRP/LDR register pair"));
+            };
+            let page = &mut pages[choice];
+            let upper = instruction(bytes, image, page.address)?;
+            let target_page = adrp_page(upper, page.address)?;
             let cell = target_page.checked_add(offset)
                                   .ok_or(Error::Malformed("resolved GOT cell address \
                                                            overflows"))?;
