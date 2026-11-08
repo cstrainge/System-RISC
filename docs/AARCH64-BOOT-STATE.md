@@ -234,6 +234,103 @@ and flushes every writable block device before it calls the provider, so a PSCI
 provider would inherit that ordering rather than bypass it. The hazard would be
 a power path that skipped those gates, not PSCI itself.
 
+## Measured: the launch freeze is guest provisioning with IRQ masked
+
+Symptom, reported from an interactive `qemu_arm64` session: launching an
+application freezes the whole desktop for one to two seconds, and the mouse
+cursor stops moving too.
+
+Two independent clocks were put on it, because either alone would have been an
+impression:
+
+- **Guest.** Temporary `LAUNCH_PROBE phase=<name> t=<cntvct_el0> irq=<0|1>` lines
+  at every boundary of the real launch path, from the `LAUNCH` trap entry through
+  the application's first image loads. The counter is the machine's admitted
+  62.5 MHz generic timer (`BOOT_AARCH64_COUNTER: hz=0x3b9aca0`), so a tick delta
+  is a duration the guest measured itself.
+- **Host.** Physical input over QMP (`input-send-event` to the record's
+  `virtio-tablet-device`) and a `screendump` every ~89 ms, hashed. An interval in
+  which consecutive frames are byte-identical is the desktop painting nothing —
+  the symptom, as a number, independent of anything the guest says.
+
+Configuration: the platform record's own invocation
+(`cargo xtask run --platform qemu_arm64` renders it; only `-serial stdio` became
+a socket and `-qmp` was added), `-display none`, the record's read-only disk,
+one fresh emulator per launch, and host load recorded because a guest counter is
+also the host clock.
+
+### The desktop paints nothing for about a second
+
+| launch | paint gap (host clock) |
+| --- | --- |
+| Control Suite, run A | 1036 ms |
+| Control Suite, run B | 1070 ms |
+| Control Suite, run C | 966 ms |
+| Control Suite, run D | 815 ms |
+| QuickDraw Test | 933 ms |
+
+The gap runs from ~80 ms after the double click to ~1.0-1.1 s after it.
+
+### Where the second goes (guest counter, Control Suite run B)
+
+| phase | guest time | what it is |
+| --- | --- | --- |
+| `request.enter` → `read.done` | 20.5 ms | read the application's resource fork from HFS |
+| → `roots.done` | 13.0 ms | process admission, heap and TLS roots, service selection |
+| → `commit.done` | 14.8 ms | directory binding, flight commit |
+| → `image.done` | 12.4 ms | parse code resource, `LoadPlan`, zero/write/relocate image, publish PTEs |
+| → `space.tables` | **212.8 ms** | `paging::process::clone_space` — copy 29 page tables from the kernel root |
+| → `space.done` | 18.6 ms | publish the new root, install the user image, translation ACK |
+| → `spawn.done` | **463.7 ms** | create the THRD: allocate and zero the 4 MiB application stack, publish stack PTEs, admit the row |
+| → `activate.done` | 53.3 ms | desktop activation for the new process |
+| → `started` | 2.0 ms | make the thread runnable |
+| → last definition image | 378.0 ms | the new application's own startup to its first window/definition loads |
+
+Three runs of the same launch put `clone_space` at 176/213/220 ms and
+`spawn_process` at 357/464/415 ms; `activate` at 44/53/53 ms. The spread is
+host-load spread, not a difference in the code path: a CPU-bound phase measured
+by a counter that is also the host clock stretches when the host is busy.
+
+### What the measurement settles
+
+**It is the guest, not the emulator.** The counter advances by 1246 ms across a
+launch whose paint gap is 1070 ms, and the named phases account for that whole
+span. Nothing in the launch waits on a timeout, a poll or a wake that never
+arrives: the largest intervals are bounded loops the guest is executing
+(zeroing and copying pages, walking 29 tables).
+
+**It is one IRQ-masked resident sequence.** `irq=0` at every probe: the resident
+masks IRQ for the whole launch and restores it when the trap returns. That is
+why the cursor stops as well as the paint — input is not merely delayed behind a
+busy CPU, interrupts are off. Input queued at the controller is serviced only
+after `PROCESS_LAUNCHED`, so the desktop appears frozen for the entire measurement
+above rather than for a portion of it.
+
+**It is a fixed cost, not application size.** Control Suite's resource fork is
+85 KB and QuickDraw Test's is 136 KB; their resident launch paths cost 637 ms and
+639 ms respectively. The read does scale with the fork (20.5 ms for 85 KB), but
+the total is dominated by the 4 MiB stack and the 29-table space clone, which do
+not depend on the application at all. A bigger application makes the freeze
+slightly worse, not fundamentally different.
+
+**The aarch64 GOT pairing is not in this path.** `elf::relocation::extract`,
+and therefore `crates/mac-formats/src/elf/relocation/aarch64.rs` with its
+ADRP/LDR claim scan, is called only by `tools/mac-build` at packaging time
+(`manifest.rs:894`, `package.rs:167`). The guest applies the precomputed `RLC1`
+table linearly (`crates/mac-formats/src/relocation.rs::patches`, at most 65536
+records) and that work is inside the 12.4 ms `image` phase above. The GOT fix
+cannot be timed here because it never runs here.
+
+### One defect found on the way, not the stall
+
+Screendumps show the desktop drawing at **1280x800** (`DISPLAY_MODE_CHANGED
+1280x800`) while the platform record declares 800x600, and the guest's pointer
+driver normalises absolute tablet coordinates against the declared geometry.
+A request for framebuffer pixel (600, 500) lands at (960, 667). That is a second
+convention stated twice with nothing comparing the two, and it makes every
+synthetic click land somewhere other than where it was aimed; it is not the
+launch freeze and is recorded here rather than fixed as part of it.
+
 ## Fixed: the classic tick ran 6.25 times too fast, so a double click never fit
 
 Symptom: double-clicking did nothing, so a folder on the boot volume could not be
