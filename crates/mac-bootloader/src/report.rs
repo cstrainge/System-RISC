@@ -41,6 +41,32 @@ pub fn no_system(disks: usize) -> String
 /// The part of [`no_system`] that does not depend on how many disks were tried.
 pub const NO_SYSTEM_PREFIX: &str = "BOOT_NO_SYSTEM: ";
 
+/// A candidate startup was refused, and the cause follows.
+///
+/// One volume failing to yield a bootable System is one fact, however it failed:
+/// a blessed folder that is not there, a startup file that is not there, a
+/// native image the shared reader will not decode, or a record the kernel's own
+/// admission checks reject. Each bootstrap states that fact with this prefix and
+/// the reason the shared stack produced, and the terminal [`no_system`] line
+/// says that no candidate worked, so a refusal is reported once in a vocabulary
+/// the gate can read on either machine.
+pub const REFUSED_PREFIX: &str = "BOOT_REFUSED: ";
+
+/// A refusal in the shared words, with the cause that follows.
+pub fn refused(cause: impl core::fmt::Display) -> String
+{
+    alloc::format!("{REFUSED_PREFIX}{cause}")
+}
+
+/// The volume carried a native System that states no ABI resource.
+pub const NO_NATIVE_ABI: &str = "System has no native ABI resource";
+
+/// The volume carried a native System that states no code resource.
+pub const NO_CODE_RESOURCE: &str = "System has no native code resource";
+
+/// The volume carried a System this build cannot start.
+pub const NOT_COMPATIBLE_SYSTEM: &str = "startup executable is not a compatible System";
+
 /// A volume was found but is not in the format native boot requires.
 ///
 /// Not a per-machine judgement: the answer is the same whichever medium carried

@@ -10,6 +10,7 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 use linked_list_allocator::LockedHeap;
+use mac_bootloader::report;
 
 mod memory;
 mod monitor;
@@ -325,7 +326,7 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     init_heap();
     // The banner and the conditions below are the shared vocabulary; only the
     // stage markers carry this architecture's name.
-    puts(mac_bootloader::report::BANNER);
+    puts(report::BANNER);
     puthex(BOOT_BASE);
     puts("\n");
     let Some(bytes) = firmware_tree(tree_address)
@@ -610,7 +611,7 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
                 });
     if disks.is_empty()
     {
-        puts(&alloc::format!("{}\n", mac_bootloader::report::no_system(disks.len())));
+        puts(&alloc::format!("{}\n", report::no_system(disks.len())));
         return 0;
     }
     let mut loaded: Option<Loaded> = None;
@@ -627,7 +628,10 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     let Some(loaded) = loaded
     else
     {
-        puts("BOOT_AARCH64_HANDOFF_REFUSED: no System image was loaded\n");
+        // Every attached disk was examined and refused; that is the shared
+        // outcome, stated once, rather than a name of this machine's own for
+        // the same fact.
+        puts(&alloc::format!("{}\n", report::no_system(disks.len())));
         return 0;
     };
     // The storage contract is expressed over trait objects because the ABI
@@ -685,12 +689,9 @@ fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volu
             Ok(resources) => resources,
             Err(error) =>
             {
-                puts("BOOT_AARCH64_SYSTEM_REFUSED: resources unreadable: ");
-                puts(match error
-                     {
-                         _ => "resource stream refused"
-                     });
-                puts("\n");
+                // The cause comes from the shared reader, so the same unreadable
+                // fork reads the same on either bootstrap.
+                puts(&alloc::format!("{}\n", report::refused(error)));
                 return None;
             }
         };
@@ -698,35 +699,35 @@ fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volu
     let Some(abi) = find(*b"NABI")
     else
     {
-        puts("BOOT_AARCH64_SYSTEM_REFUSED: no native ABI resource\n");
+        puts(&alloc::format!("{}\n", report::refused(report::NO_NATIVE_ABI)));
         return None;
     };
     let descriptor = match Descriptor::decode(&abi.data)
     {
         Ok(descriptor) => descriptor,
-        Err(_) =>
+        Err(error) =>
         {
-            puts("BOOT_AARCH64_SYSTEM_REFUSED: the ABI resource is malformed\n");
+            puts(&alloc::format!("{}\n", report::refused(error)));
             return None;
         }
     };
     if descriptor.role != Role::System || descriptor.abi_version != mac_abi::ABI_VERSION
     {
-        puts("BOOT_AARCH64_SYSTEM_REFUSED: the executable is not a compatible System\n");
+        puts(&alloc::format!("{}\n", report::refused(report::NOT_COMPATIBLE_SYSTEM)));
         return None;
     }
     let Some(code) = find(*b"RV64")
     else
     {
-        puts("BOOT_AARCH64_SYSTEM_REFUSED: no code resource\n");
+        puts(&alloc::format!("{}\n", report::refused(report::NO_CODE_RESOURCE)));
         return None;
     };
     let plan = match image::LoadPlan::new(&code.data, &descriptor, None, descriptor.load_base)
     {
         Ok(plan) => plan,
-        Err(_) =>
+        Err(error) =>
         {
-            puts("BOOT_AARCH64_SYSTEM_REFUSED: the code resource does not match its ABI record\n");
+            puts(&alloc::format!("{}\n", report::refused(error)));
             return None;
         }
     };
@@ -752,7 +753,7 @@ fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volu
     let output = unsafe { core::slice::from_raw_parts_mut(IMAGE_BASE as *mut u8, plan.length()) };
     if plan.write(output).is_err()
     {
-        puts("BOOT_AARCH64_IMAGE_REFUSED: the decoded plan does not fit its window\n");
+        puts(&alloc::format!("{}\n", report::refused("the decoded plan does not fit its window")));
         return None;
     }
     // Read back through the window rather than trusting the write: the point of
@@ -818,16 +819,12 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
             Ok(volume) => volume,
             Err(error) =>
             {
-                puts("BOOT_AARCH64_MOUNT_FAILED: start=");
-                puthex(candidate.start);
-                puts(" sectors=");
-                puthex(candidate.sectors);
-                puts(" cause=");
-                for byte in alloc::format!("{error}").bytes()
-                {
-                    putc(byte);
-                }
-                puts("\n");
+                // A candidate that will not mount is a refusal like any other,
+                // stated with the shared reader's cause; the sector stays so a
+                // reader knows which candidate said it.
+                puts(&alloc::format!("{}\n",
+                                     report::refused(alloc::format!("mount at {}: {error}",
+                                                                    candidate.start))));
                 continue;
             }
         };
@@ -848,23 +845,25 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
             // the native format is a different answer from a disk with nothing
             // on it, and the shared vocabulary is how the gate can tell them
             // apart on either machine.
-            puts(mac_bootloader::report::NOT_NATIVE_VOLUME);
+            puts(report::NOT_NATIVE_VOLUME);
             puts("\n");
             continue;
         }
         let folder = match volume.blessed_folder()
         {
             Ok(folder) => folder,
-            Err(_) =>
+            Err(error) =>
             {
-                puts("BOOT_AARCH64_SYSTEM_REFUSED: the blessed System Folder is missing\n");
+                // The shared reader names which condition failed, so this
+                // bootstrap states the refusal without paraphrasing it.
+                puts(&alloc::format!("{}\n", report::refused(error)));
                 return None;
             }
         };
         // The same condition the RISC-V bootstrap reports, in the same words: a
         // gate that had to know two vocabularies could not compare two boots.
         puts(&alloc::format!("{}\n",
-                             mac_bootloader::report::blessed_folder(core::str::from_utf8(&folder.name)
+                             report::blessed_folder(core::str::from_utf8(&folder.name)
                                                                         .unwrap_or("?"),
                                                                     folder.id)));
         puts("BOOT_AARCH64_BLESSED: cnid=");
@@ -897,11 +896,12 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
                                                          loaded
                                                      });
             }
-            Err(_) => puts("startup file is missing\n")
+            Err(error) => puts(&alloc::format!("{}\n", report::refused(error)))
         }
         return None;
     }
-    puts("BOOT_AARCH64_SYSTEM_REFUSED: no mountable volume\n");
+    // The terminal outcome belongs to the disk walk, not to one candidate: it
+    // is `no_system` once every attached disk has been examined.
     None
 }
 
@@ -990,9 +990,11 @@ fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
     let account = match memory.checked(memory::PAGE_BYTES)
     {
         Ok(account) => account,
-        Err(_) =>
+        Err(error) =>
         {
-            puts("BOOT_AARCH64_HANDOFF_REFUSED: the memory account does not satisfy the kernel\n");
+            puts(&alloc::format!("{}\n",
+                                 report::refused(alloc::format!("the memory account does not \
+                                                                 satisfy the kernel: {error}"))));
             halt();
         }
     };
@@ -1004,7 +1006,8 @@ fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
     // window that was too small.
     if loaded.extent > IMAGE_TABLES as u64 * BLOCK
     {
-        puts("BOOT_AARCH64_HANDOFF_REFUSED: the image is larger than the mapped window\n");
+        puts(&alloc::format!("{}\n",
+                             report::refused("the image is larger than the mapped window")));
         halt();
     }
     let virtual_image = BootMemoryRange { base:   loaded.load_base,
@@ -1019,9 +1022,11 @@ fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
                                                             memory::PAGE_BYTES)
         {
             Ok(regions) => regions,
-            Err(_) =>
+            Err(error) =>
             {
-                puts("BOOT_AARCH64_HANDOFF_REFUSED: the image mapping record is not admissible\n");
+                // The record builder names the region it rejected, so the cause
+                // is carried rather than replaced with "not admissible".
+                puts(&alloc::format!("{}\n", report::refused(error)));
                 halt();
             }
         };
@@ -1086,12 +1091,7 @@ fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
         // Named rather than summarised: "the record is not admissible" would
         // send a reader back to this function with no idea which field the
         // kernel rejected.
-        puts("BOOT_AARCH64_HANDOFF_REFUSED: ");
-        for byte in alloc::format!("{cause}").bytes()
-        {
-            putc(byte);
-        }
-        puts("\n");
+        puts(&alloc::format!("{}\n", report::refused(cause)));
         halt();
     }
     let mut context = mac_bootloader::volume::BootVolume { disks:      disks.as_mut_ptr(),
@@ -1178,7 +1178,7 @@ fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
     puts(" regions=");
     puthex(regions.len() as u64);
     puts("\n");
-    puts(mac_bootloader::report::ENTERING_SYSTEM);
+    puts(report::ENTERING_SYSTEM);
     puts(" at ");
     puthex(loaded.entry);
     puts(" privilege=EL1\n");

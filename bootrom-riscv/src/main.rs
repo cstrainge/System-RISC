@@ -250,11 +250,11 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
                                         })?;
     let abi = resources.iter()
                        .find(|r| r.kind == *b"NABI" && r.id == 0)
-                       .ok_or(Error::Malformed("System has no native ABI resource"))?;
+                       .ok_or(Error::Malformed(mac_bootloader::report::NO_NATIVE_ABI))?;
     let descriptor = Descriptor::decode(&abi.data)?;
     if descriptor.role != Role::System || descriptor.abi_version != mac_abi::ABI_VERSION
     {
-        return Err(Error::Malformed("startup executable is not a compatible System"));
+        return Err(Error::Malformed(mac_bootloader::report::NOT_COMPATIBLE_SYSTEM));
     }
     // Placement policy is generated from the checked platform record.
     if descriptor.load_base != virtual_memory::VM_SYSTEM_IMAGE_BASE
@@ -265,7 +265,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     }
     let code = resources.into_iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
-                        .ok_or(Error::Malformed("System has no RV64 executable resource"))?
+                        .ok_or(Error::Malformed(mac_bootloader::report::NO_CODE_RESOURCE))?
                         .data;
     let image = image::decode(&code, &descriptor)?;
     Ok(Startup { descriptor,
@@ -742,7 +742,9 @@ extern "C" fn boot_main(tree_address: usize) -> !
                 }
                 Err(error) =>
                 {
-                    serial!("BOOT REJECTED: {}", error);
+                    // The refusal is the shared one, and so is the cause: this
+                    // bootstrap does not have a spelling of its own for either.
+                    serial!("{}", mac_bootloader::report::refused(&error));
                 }
             }
         }
