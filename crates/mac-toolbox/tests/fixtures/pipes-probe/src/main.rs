@@ -169,9 +169,9 @@ fn block(system: &System<'_>) -> Result<(), Line>
     ARMED.store(false, Ordering::Release);
     DONE.store(false, Ordering::Release);
     // The pipe parks this child inside a write, so the creator's read is what
-    // lets it finish. The child is an ordinary Rust thread; nothing here
-    // depends on a probe-specific thread mechanism.
-    let right = match std::thread::Builder::new().stack_size(64 * 1024).spawn(blocked_writer)
+    // lets it finish. The child is an ordinary Rust thread with the platform's
+    // default stack; nothing here depends on a probe-specific thread mechanism.
+    let right = match std::thread::Builder::new().spawn(blocked_writer)
     {
         Ok(right) => right,
         Err(failure) =>
@@ -309,8 +309,7 @@ fn reader_park(system: &System<'_>) -> Result<(), Line>
     // Releasing consumes the reader, so the handle has no second owner here.
     let slot = core::mem::ManuallyDrop::new(reader.release());
     let handoff = Handoff((&*slot as *const Endpoint<'_>).cast_mut().cast::<u8>());
-    let right = match std::thread::Builder::new().stack_size(64 * 1024)
-                                                 .spawn(move || parked_reader(handoff))
+    let right = match std::thread::Builder::new().spawn(move || parked_reader(handoff))
     {
         Ok(right) => right,
         Err(failure) =>

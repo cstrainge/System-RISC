@@ -21,7 +21,7 @@ Measured with `cargo xtask boot-check --platform qemu_arm64` at `debb17ae`:
 | `no-disk` | passed |
 | `raw-hfs-b` | passed — `FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY:` |
 | `fonts-probe` | passed — `FONTS_PROBE_CATALOG families=23`, `FONTS_PROBE_STYLE_OK`, `FONTS_PROBE_PASS cases=5` |
-| `pipes-probe` | **failed**: five markers, then a user fault; see below |
+| `pipes-probe` | **failed**: the second case, five markers, then a user fault on the woken thread; see below |
 
 So the arm64 case count is 3 of 19 passing, and the first remaining failure is
 `pipes-probe`. Before the port the gate reported 2 of 19 and exited while
@@ -1304,13 +1304,14 @@ Both fixtures are now ordinary `std` applications:
 * The per-fixture `package` binary is gone; `xtask` packages the fixture with
   the same `mac_build::package::build` call the removed binary made. That binary
   was the second reason `mac-build` had to be a guest dependency.
-* The pipes probe's two worker threads are `std::thread::spawn`. The previous
-  `Client::create_native_thread` is documented as the `no_std` CRT's own
+* The pipes probe's two worker threads are `std::thread::Builder::spawn`. The
+  previous `Client::create_native_thread` is documented as the `no_std` CRT's own
   construction primitive and is not std's `Send` handle; a `std` process must
   create threads through the `std` runtime so their TLS is the runtime's. The
   endpoint token is still handed over as an address, with a `Send` marker for
   the address and the creator keeping the token alive until the child reports
-  `ARMED`.
+  `ARMED`. The children take the platform's default stack, as an application's
+  threads do.
 
 `xtask` builds a fixture through the platform's private SDK
 (`sdk::standalone_application`): the same target specification, sysroot,
@@ -1324,8 +1325,13 @@ is built by `xtask`; the remaining fixtures are used by the host suite.
 
 ## The pipes probe faults after its first child thread completes
 
-`pipes-probe` on aarch64 stops in the second of its eleven cases, and the
-serial record is:
+`pipes-probe` on aarch64 stops in the second of its eleven cases. The thread
+that is woken after blocking inside a pipe call is the one that faults, and
+which thread that is depends only on which of the two threads the wake reaches
+first:
+
+With the child on a 64 KiB stack, the child completes its write and the
+**creating** thread faults when the child's completion wakes it:
 
 ```
 PIPES_PROBE_ECHO_OK bytes=5
@@ -1340,39 +1346,48 @@ CRASH_REPORT_READY app=4294967394 window=4294967529 bytes=1013 lines=40 page_lin
 NATIVE_EXIT_RECOVERY_QUEUED app=4294967394 kind=abort code=255 thread=4294967440 report=SystemDiagnostic ...
 ```
 
-Read what the record says:
+With the child on the platform's default stack, the **child** faults when the
+creating thread's drain wakes it, one marker earlier:
 
-* The pipe data path works. A child thread writes into a pipe, parks because the
-  pipe is full, the creating thread drains it, and the child resumes and
-  transfers all 512 bytes. Those are the markers `WRITER_ARMED` through
-  `WRITER_RESUMED`.
-* `PROCESS_THREAD_RECLAIMED` names the child thread (`…489`), not the main
-  thread (`…440`). The child completed normally.
-* The fault is on the **main** thread, and `pc=0x41c0c8` is inside
-  `systemrisc_std_traps::emergency::exit_returned` in the probe's own ELF. That
-  function is reached only from `emergency::abort`, after a PROCESS exit trap
-  returned instead of terminating the process; its last instruction is a
-  deliberate `brk #0`.
-* `cause=4060086272` is `0xF2000000`: `ESR_EL1` exception class 0x3C with `IL`
-  set and ISS 0 — the `BRK #0` that `exit_returned` executes, taken at EL0
-  (`status=0x80000000`).
+```
+PIPES_PROBE_MAKE_ROOM
+USER_FAULT_CAPTURED app=4294967394 thread=4294967513 cause=4060086272 pc=0x41c550 address=0x0 status=0x80000000
+CRASH_REPORT_READY app=4294967394 window=4294967565 bytes=1013 lines=40 page_lines=22 flags=0
+NATIVE_EXIT_RECOVERY_QUEUED app=4294967394 kind=abort code=255 thread=4294967513 report=SystemDiagnostic ...
+```
+
+Both PCs are inside `systemrisc_std_traps::emergency::exit_returned` in the
+probe's own ELF — `+0x74` in the first build, the corresponding offset in the
+second — and that function's last instruction is a deliberate `brk #0`.
+`cause=4060086272` is `0xF2000000`: `ESR_EL1` exception class 0x3C with `IL` set
+and ISS 0, which is that `BRK #0` taken at EL0 (`status=0x80000000`).
+`exit_returned` is reached only from `emergency::abort`, after a PROCESS exit
+trap returned instead of terminating the process.
+
+Read what the record does and does not say:
+
+* The pipe data path works. A child writes into a pipe, parks because the pipe
+  is full, the creating thread drains it, and the child resumes and transfers
+  all 512 bytes. That is `WRITER_ARMED` through `WRITER_RESUMED` in the first
+  run.
+* The fault is always on the thread that was woken, never on the one that did
+  the waking.
 * Neither `emergency::abort`'s own diagnostic nor any probe marker between the
-  child's completion and the fault reached the serial log, and neither
-  `NATIVE_EXIT_REFUSED` nor `NATIVE_EXIT_PENDING` appears. The published report
-  is the resident's own fault report (`report=SystemDiagnostic`, 1013 bytes and
-  40 lines in both runs), not an application report: `failure::report` appended
-  nothing.
+  wake and the fault reached the serial log, and neither `NATIVE_EXIT_REFUSED`
+  nor `NATIVE_EXIT_PENDING` appears. The published report is the resident's own
+  fault report (`report=SystemDiagnostic`, 1013 bytes and 40 lines every time),
+  not an application report: `failure::report` appended nothing.
 * The same source on `qemu_riscv` continues past this point:
   `PROCESS_THREAD_RECLAIMED` for the child, then `PIPES_PROBE_BLOCK_OK
   parked=1 resumed=1 eof=1`, and the case passes with eleven cases.
 
-So the ordering of the child's completion is the same on both platforms, and
-what differs is what the blocked main thread does when it is resumed. On
-aarch64 it does not continue after its `svc`; the first thing it executes that
-reaches the record is the terminal-fault path. That is a defect in the resume of
-a thread that blocked inside a service call across another thread's completion —
-a path the arm64 gate had never exercised before, because no earlier case blocks
-a user thread inside a service. It is not a pipe defect and not a probe defect.
+So the ordering of the block and the wake is the same on both platforms, and
+what differs is what the woken thread does when it resumes. On aarch64 it does
+not continue after its `svc`; the first thing it executes that reaches the
+record is the terminal-fault path. That is a defect in the resume of a thread
+that blocked inside a service call — a path the arm64 gate had never exercised
+before, because no earlier case blocks a user thread inside a service. It is not
+a pipe defect and not a probe defect.
 
 This was not worked around. The candidate causes are all in the aarch64
 exception/resume path (`system/src/machine/aarch64/`, the shared `TrapFrame`
@@ -1380,8 +1395,8 @@ carried by `trap_frame.rs`, and the scheduler's resume), which this change was
 not permitted to touch.
 
 What the fault line does not establish: whether the resumed context's program
-counter came from the wrong frame slot, or whether the resumed thread ran
-correctly and then had its first two service calls refused. Distinguishing those
+counter was restored from the wrong frame slot, or whether the resumed thread
+ran correctly and then had its first service calls refused. Distinguishing those
 needs the resident to name the caller of `emergency::abort`, which it does not do
 today. The line that made this diagnosable at all — `USER_FAULT_CAPTURED` — was
 added in the same change, because until then a fault named no cause, PC or
