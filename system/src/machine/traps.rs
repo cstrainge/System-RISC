@@ -1,9 +1,10 @@
 //! The only native trap entry: register/CSR preservation and checked ABI dispatch.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use mac_abi::{traps::*, *};
 
 use crate::{machine::trap_frame as abi, toolbox};
-use core::sync::atomic::{AtomicBool, Ordering};
 mod state;
 mod definition_services;
 pub(crate) mod user;
