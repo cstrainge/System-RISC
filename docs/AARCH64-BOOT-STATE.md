@@ -15,8 +15,8 @@ ROM check no-disk: passed
 ROM check raw-hfs-b: failed after 3.6 s
 ```
 
-`raw-hfs-b` fails in System startup, after the definition that supplies the
-fonts has been loaded and invoked:
+`raw-hfs-b` fails in System startup, after the System font catalog has been
+loaded and immediately before the Progress Bar CDEF is used for the first time:
 
 ```
 BOOT_AARCH64_EL1_READY
@@ -809,8 +809,8 @@ RISC-V-shaped, so enabling the call would not produce a working trap — it woul
 produce a worse one:
 
 * `dispatch_frame` decides `user_origin` from `status & (1 << 8)`, which is
-  `sstatus.SPP` on RISC-V and `SPSR_EL1`'s FIQ mask on AArch64, where the source
-  EL is `M[3:0]`.
+  `sstatus.SPP` on RISC-V and `SPSR_EL1`'s SError mask on AArch64, where the
+  source EL is `M[3:0]` and the IRQ mask is bit 7.
 * It compares `cause` against RISC-V `scause` values (`(1 << 63) | 1`,
   `(1 << 63) | 5`), while the aarch64 entry stores `ESR_EL1`.
 * It reads the trap number from `registers[15]` and the arguments from
