@@ -224,6 +224,26 @@ fn output_address(bits: u64) -> PhysicalAddress
     PhysicalAddress(bits & OUTPUT_MASK)
 }
 
+/// The permissions a leaf descriptor encodes. Stated once, so the block and
+/// page branches cannot disagree about which bit means what.
+fn permissions_from(bits: u64) -> Permissions
+{
+    // `AP[1]` (bit 6) grants EL0 access when set; `AP[2]` (bit 7) is the
+    // read-only bit. A page executes only when both `PXN` and `UXN` are clear.
+    Permissions { read:    true,
+                  write:   bits & (1 << 7) == 0,
+                  execute: bits & (PXN | UXN) == 0,
+                  access:  if bits & (1 << 6) != 0
+                  {
+                      Access::User
+                  }
+                  else
+                  {
+                      Access::Supervisor
+                  },
+                  global:  bits & (1 << 11) == 0 }
+}
+
 /// One encoded descriptor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry(u64);
@@ -263,7 +283,12 @@ impl Entry
         {
             return Err(Error::Permissions);
         }
-        let ap1 = if permissions.access == Access::Supervisor { 1 << 6 } else { 0 };
+        // `AP[2:1]` (bits 7:6): `0b01`/`0b11` grant EL0 access and
+        // `0b00`/`0b10` keep the page to EL1. Bit 6 is `AP[1]`, the
+        // unprivileged-access bit, so it is set for an application page and
+        // clear for a supervisor page.
+        let ap1 = if permissions.access == Access::User { 1 << 6 } else { 0 };
+        // `AP[2]` (bit 7) is the read-only bit: set means read-only.
         let ap2 = if permissions.write { 0 } else { 1 << 7 };
         let never_execute = if permissions.execute { 0 } else { PXN | UXN };
         // Bit 1 separates a table pointer from a leaf only at the page level.
@@ -312,18 +337,7 @@ impl Entry
             }
             return Ok(Decoded::Leaf { physical: output_address(bits),
                                       size,
-                                      permissions: Permissions { read:    true,
-                                                                  write:   bits & (1 << 7) == 0,
-                                                                  execute: bits & (PXN | UXN) == 0,
-                                                                  access:  if bits & (1 << 6) != 0
-                                                                  {
-                                                                      Access::Supervisor
-                                                                  }
-                                                                  else
-                                                                  {
-                                                                      Access::User
-                                                                  },
-                                                                  global:  bits & (1 << 11) == 0 },
+                                      permissions: permissions_from(bits),
                                       ownership: ownership_from(bits) });
         }
         if size != LeafSize::Page
@@ -332,22 +346,10 @@ impl Entry
                                        global:    bits & (1 << 11) == 0,
                                        ownership: ownership_from(bits) });
         }
-        let supervisor = bits & (1 << 6) != 0;
-        Ok(Decoded::Leaf { physical: output_address(bits),
+        Ok(Decoded::Leaf { physical:    output_address(bits),
                            size,
-                           permissions: Permissions { read:    true,
-                                                       write:   bits & (1 << 7) == 0,
-                                                       execute: bits & (PXN | UXN) == 0,
-                                                       access:  if supervisor
-                                                       {
-                                                           Access::Supervisor
-                                                       }
-                                                       else
-                                                       {
-                                                           Access::User
-                                                       },
-                                                       global:  bits & (1 << 11) == 0 },
-                           ownership: ownership_from(bits) })
+                           permissions: permissions_from(bits),
+                           ownership:   ownership_from(bits) })
     }
 }
 
@@ -484,6 +486,66 @@ mod tests
                 other => panic!("{size:?} decoded as {other:?}, not a leaf"),
             }
         }
+    }
+
+    /// `AP[1]` as hardware reads it: set means EL0 is granted access. This is
+    /// stated from the encoded word, not from the permission enum, so the test
+    /// below cannot agree with the encoder by construction.
+    fn el0_accessible(bits: u64) -> bool
+    {
+        bits & (1 << 6) != 0
+    }
+
+    fn decoded_access(bits: u64) -> Access
+    {
+        match Entry::decode_raw(bits, LeafSize::Page.level())
+            .expect("what the encoder wrote, the decoder reads")
+        {
+            Decoded::Leaf { permissions, .. } => permissions.access,
+            other => panic!("a leaf decoded as {other:?}")
+        }
+    }
+
+    #[test]
+    fn a_supervisor_leaf_denies_el0_and_an_application_leaf_grants_it()
+    {
+        // `AP[2:1]` is `0b00`/`0b10` for EL1-only and `0b01`/`0b11` for
+        // EL0-accessible, so bit 6 belongs to an *unprivileged* page. Both
+        // directions are asserted, because a boot that succeeds by leaving
+        // kernel pages EL0-readable is worse than the fault it hides: an
+        // application must reach its own page, and a supervisor page must be
+        // unreachable from EL0.
+        use mac_kernel_model::pages::{Access, Descriptor, PageOwnership, Permissions};
+        let leaf = |access: Access, write: bool| {
+            let permissions = Permissions { read:    true,
+                                             write,
+                                             execute: true,
+                                             access,
+                                             global:  false };
+            Descriptor::bits(Entry::leaf(PhysicalAddress(0x4000_0000),
+                                         LeafSize::Page,
+                                         permissions,
+                                         PageOwnership::Manual).expect("an aligned leaf encodes"))
+        };
+        let supervisor = leaf(Access::Supervisor, true);
+        let application = leaf(Access::User, true);
+        assert!(!el0_accessible(supervisor),
+                "AP[2:1]={:02b} on the supervisor leaf grants EL0 access",
+                (supervisor >> 6) & 0b11);
+        assert!(el0_accessible(application),
+                "AP[2:1]={:02b} on the application leaf denies EL0 access",
+                (application >> 6) & 0b11);
+        // `AP[2]` is the read-only bit, independent of `AP[1]`, and a writable
+        // leaf must have it clear in both directions.
+        assert_eq!(supervisor >> 7 & 1, 0, "a writable supervisor leaf has AP[2] clear");
+        assert_eq!(application >> 7 & 1, 0, "a writable application leaf has AP[2] clear");
+        assert_eq!(leaf(Access::Supervisor, false) >> 7 & 1,
+                   1,
+                   "a read-only leaf has AP[2] set");
+        // The decoder must read the same bits the encoder wrote; a mirror in
+        // the wrong direction agrees with the encoder and with nothing else.
+        assert_eq!(decoded_access(supervisor), Access::Supervisor);
+        assert_eq!(decoded_access(application), Access::User);
     }
 
     #[test]
