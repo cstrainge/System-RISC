@@ -6,6 +6,32 @@ as the list of things fixed.
 
 ## Position
 
+### Position after the probe fixtures were ported to `std` (2026-11-08)
+
+The two probe fixtures now build and run on aarch64, so the gate constructs
+every case instead of stopping while it assembles the table. `fonts-probe`
+passes. `pipes-probe` is the first case that fails, and it fails on a real guest
+fault rather than on a missing artifact — see *The pipes probe faults after its
+first child thread completes*.
+
+Measured with `cargo xtask boot-check --platform qemu_arm64` at `debb17ae`:
+
+| case | result |
+| --- | --- |
+| `no-disk` | passed |
+| `raw-hfs-b` | passed — `FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY:` |
+| `fonts-probe` | passed — `FONTS_PROBE_CATALOG families=23`, `FONTS_PROBE_STYLE_OK`, `FONTS_PROBE_PASS cases=5` |
+| `pipes-probe` | **failed**: five markers, then a user fault; see below |
+
+So the arm64 case count is 3 of 19 passing, and the first remaining failure is
+`pipes-probe`. Before the port the gate reported 2 of 19 and exited while
+building `fonts-probe` for `aarch64-unknown-none`.
+
+The same tree on `qemu_riscv` passes **19 of 19**, with `RAMFB 800x600`,
+`FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY:` in `raw-hfs-b` and
+`PIPES_PROBE_PASS cases=11` / `DESKTOP_READY: pipes probe pass` in
+`pipes-probe`. The ported fixtures are the same source on both platforms.
+
 ### Position after the `x4` fix (2026-11-08)
 
 The intermittent level-3 permission fault on a read of the per-hart control
@@ -22,7 +48,7 @@ Measured on `9f5fd6c9`+ the fix, artifact `dist-arm64-el0` built from
 | --- | --- |
 | `no-disk` | passed, 11 of 11 |
 | `raw-hfs-b` | passed, 11 of 11 — `FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY:` in every serial log, no `CRASH_REPORT_READY` in any of them |
-| `fonts-probe` and later | **not constructed.** `boot-check` builds the probe fixtures while it assembles the case table, and those fixtures cannot be built for aarch64 — see *What the arm64 gate still cannot reach* |
+| `fonts-probe` and later | **not constructed** in that run. `boot-check` builds the probe fixtures while it assembles the case table, and those fixtures could not then be built for aarch64. That limit is gone: see *The probe fixtures are `std` applications now* |
 
 So the arm64 case count is 2 of 19: the two cases that do not need a probe
 fixture. The gate exits 1 on the fixture build, not on a guest failure, and the
@@ -1251,29 +1277,115 @@ The control block is still supervisor-only, the `AP[1]` fix stands, and nothing
 was added to make kernel memory reachable from EL0. The fault sites were not
 stubbed; they were fixed at the one place that produced the bad pointer.
 
-## What the arm64 gate still cannot reach
+## The probe fixtures are `std` applications now
 
-`boot-check` builds the `fonts-probe` and `pipes-probe` images while it
-assembles the case table, so the remaining seventeen arm64 cases cannot be
-constructed on this platform. Three separate gates stop the fixture build, and
-each is a deliberate declaration rather than an accident:
+`boot-check` builds two probe fixtures while it assembles the case table:
+`fonts-probe` and `pipes-probe`. Both were `no_std` applications using
+`mac_toolbox::application!`, whose entry scaffold is RISC-V only — the macro
+states `compile_error!("System RISC application runtime currently requires its
+native RV64 target")`, and the scaffold underneath it is a `no_std` one
+(`GlobalAlloc`, `#[panic_handler]`, `#[alloc_error_handler]`, `mac_traps`
+application heap and TLS teardown). P8 makes `std` the default for every native
+application, so the port was the work, not a widened `cfg`.
 
-1. every fixture declares `mac-build` — a host tool with `std` and
-   `serde_json` — under `[target.'cfg(not(target_arch = "riscv64"))'.dependencies]`.
-   That is true for an aarch64 guest, so `serde_core` is compiled for
-   `aarch64-unknown-none` and fails for want of `std`. The predicate the
-   manifest means is "not a bare-metal guest", i.e. `cfg(not(target_os = "none"))`.
-2. `crates/mac-toolbox/src/panic.rs` gates `diagnostic`, `handle`, `fail` and
-   the `PANICKING` flag on `all(target_arch = "riscv64", not(target_os = "systemrisc"))`.
-   Nothing in those functions is RISC-V specific.
-3. `mac_toolbox::application!` states `compile_error!("System RISC application
-   runtime currently requires its native RV64 target")`, so the no_std
-   application entry has no aarch64 implementation at all.
+Both fixtures are now ordinary `std` applications:
 
-Only the third is a real limit: P8 makes `std` the default for applications, and
-these fixtures are the older no_std probes. Making the arm64 gate report more
-than two cases therefore means porting the probe fixtures to the `std` target,
-not widening a `cfg`. That work was not started here.
+* `fn main() -> Result<(), Box<dyn Error>>` with `System::new()`, no
+  `#![no_std]`, no `#![no_main]`, no `application!`.
+* `mac-toolbox` without the `application` feature; `mac-build` only as a
+  build-dependency. The `[target.'cfg(not(target_arch = "riscv64"))'.dependencies]`
+  entry is gone: its predicate meant "not a bare-metal guest", which is also
+  true of an aarch64 guest, so it put a host tool with `std` into the target
+  dependency graph and the build died in `serde_core`.
+* `build.rs` calls `mac_build::build_guest()` unconditionally. The old script
+  ran only when `TARGET` was the bare RISC-V triple, so on any other target it
+  silently skipped the resource manifest, the generated platform constants and
+  the linker script.
+* The per-fixture `package` binary is gone; `xtask` packages the fixture with
+  the same `mac_build::package::build` call the removed binary made. That binary
+  was the second reason `mac-build` had to be a guest dependency.
+* The pipes probe's two worker threads are `std::thread::spawn`. The previous
+  `Client::create_native_thread` is documented as the `no_std` CRT's own
+  construction primitive and is not std's `Send` handle; a `std` process must
+  create threads through the `std` runtime so their TLS is the runtime's. The
+  endpoint token is still handed over as an address, with a `Send` marker for
+  the address and the creator keeping the token alive until the child reports
+  `ARMED`.
+
+`xtask` builds a fixture through the platform's private SDK
+(`sdk::standalone_application`): the same target specification, sysroot,
+compiler proxy and `relocation-model=pic` flags an installed application uses,
+selected by `--manifest-path` because a fixture is its own workspace. A fixture
+built any other way would be evidence about a different image than the one the
+platform installs.
+
+No probe genuinely needs `no_std`. Nothing else in `crates/mac-toolbox/tests/fixtures`
+is built by `xtask`; the remaining fixtures are used by the host suite.
+
+## The pipes probe faults after its first child thread completes
+
+`pipes-probe` on aarch64 stops in the second of its eleven cases, and the
+serial record is:
+
+```
+PIPES_PROBE_ECHO_OK bytes=5
+PIPES_PROBE_WRITER_ARMED
+PIPES_PROBE_WRITER_PARKED
+PIPES_PROBE_MAKE_ROOM
+PIPES_PROBE_WRITER_RESUMED transferred=512
+
+PROCESS_THREAD_RECLAIMED app=4294967394 thread=4294967489
+USER_FAULT_CAPTURED app=4294967394 thread=4294967440 cause=4060086272 pc=0x41c0c8 address=0x0 status=0x80000000
+CRASH_REPORT_READY app=4294967394 window=4294967529 bytes=1013 lines=40 page_lines=22 flags=0
+NATIVE_EXIT_RECOVERY_QUEUED app=4294967394 kind=abort code=255 thread=4294967440 report=SystemDiagnostic ...
+```
+
+Read what the record says:
+
+* The pipe data path works. A child thread writes into a pipe, parks because the
+  pipe is full, the creating thread drains it, and the child resumes and
+  transfers all 512 bytes. Those are the markers `WRITER_ARMED` through
+  `WRITER_RESUMED`.
+* `PROCESS_THREAD_RECLAIMED` names the child thread (`…489`), not the main
+  thread (`…440`). The child completed normally.
+* The fault is on the **main** thread, and `pc=0x41c0c8` is inside
+  `systemrisc_std_traps::emergency::exit_returned` in the probe's own ELF. That
+  function is reached only from `emergency::abort`, after a PROCESS exit trap
+  returned instead of terminating the process; its last instruction is a
+  deliberate `brk #0`.
+* `cause=4060086272` is `0xF2000000`: `ESR_EL1` exception class 0x3C with `IL`
+  set and ISS 0 — the `BRK #0` that `exit_returned` executes, taken at EL0
+  (`status=0x80000000`).
+* Neither `emergency::abort`'s own diagnostic nor any probe marker between the
+  child's completion and the fault reached the serial log, and neither
+  `NATIVE_EXIT_REFUSED` nor `NATIVE_EXIT_PENDING` appears. The published report
+  is the resident's own fault report (`report=SystemDiagnostic`, 1013 bytes and
+  40 lines in both runs), not an application report: `failure::report` appended
+  nothing.
+* The same source on `qemu_riscv` continues past this point:
+  `PROCESS_THREAD_RECLAIMED` for the child, then `PIPES_PROBE_BLOCK_OK
+  parked=1 resumed=1 eof=1`, and the case passes with eleven cases.
+
+So the ordering of the child's completion is the same on both platforms, and
+what differs is what the blocked main thread does when it is resumed. On
+aarch64 it does not continue after its `svc`; the first thing it executes that
+reaches the record is the terminal-fault path. That is a defect in the resume of
+a thread that blocked inside a service call across another thread's completion —
+a path the arm64 gate had never exercised before, because no earlier case blocks
+a user thread inside a service. It is not a pipe defect and not a probe defect.
+
+This was not worked around. The candidate causes are all in the aarch64
+exception/resume path (`system/src/machine/aarch64/`, the shared `TrapFrame`
+carried by `trap_frame.rs`, and the scheduler's resume), which this change was
+not permitted to touch.
+
+What the fault line does not establish: whether the resumed context's program
+counter came from the wrong frame slot, or whether the resumed thread ran
+correctly and then had its first two service calls refused. Distinguishing those
+needs the resident to name the caller of `emergency::abort`, which it does not do
+today. The line that made this diagnosable at all — `USER_FAULT_CAPTURED` — was
+added in the same change, because until then a fault named no cause, PC or
+address anywhere in the serial record.
 
 ## Not attempted, deliberately
 
