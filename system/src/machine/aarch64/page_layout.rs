@@ -93,12 +93,20 @@ pub(crate) use mac_aarch64_pages::Error as EncodingError;
 /// The table index one address selects at `level`, counting from the finest
 /// leaf. The arithmetic is shared geometry; only the level-to-leaf mapping is
 /// this format's.
+///
+/// `level` counts from the finest leaf, which is the shared convention and the
+/// one every caller uses. `leaf_sizes` is written largest-first for this format
+/// because the mapping plan splits a span by taking the largest leaf that fits,
+/// so indexing that list with `level` would pick the wrong leaf — and did: the
+/// root slot was written at the 4 KiB index and the leaves at the 1 GiB index,
+/// so every dynamically mapped definition was published under an entry the
+/// walk never reads. `leaf_at` derives the leaf from the geometry for exactly
+/// this reason, and it is the one statement of the mapping.
 pub(crate) fn index(address: u64, level: usize) -> Result<usize, EncodingError>
 {
     use mac_kernel_model::pages::PageLayout;
-    let leaf = leaf_sizes().get(level)
-                           .copied()
-                           .ok_or(EncodingError::Level { level: level as u8 })?;
+    let leaf = <Aarch64Layout as PageLayout>::leaf_at(level)
+        .ok_or(EncodingError::Level { level: level as u8 })?;
     let range = AddressRange::new(address, address.saturating_add(1))
         .map_err(|_| EncodingError::NonCanonical { address })?;
     if !Aarch64Layout::valid_virtual_range(range)

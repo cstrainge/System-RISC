@@ -1188,7 +1188,6 @@ impl Registry
             .map(|(id, i)| (id, *i))
     }
 
-    #[cfg(target_arch = "riscv64")]
     pub(crate) fn execution_handlers(&self) -> Result<Vec<u64>>
     {
         use mac_abi::processes::execution as wire;
