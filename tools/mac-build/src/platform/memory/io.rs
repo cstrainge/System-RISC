@@ -204,7 +204,8 @@ mod tests
         bad.uart.base = "0x80000000".into();
         assert!(check(&bad).unwrap_err().to_string().contains("outside RAM/flash"));
         let mut bad = original.clone();
-        bad.rtc = bad.uart.clone();
+        bad.rtc = Some(Region { base:  bad.uart.base.clone(),
+                                bytes: bad.uart.bytes.clone() });
         assert!(check(&bad).unwrap_err().to_string().contains("overlap"));
         let mut bad = original.clone();
         bad.virtio_mmio.base = "0x10001001".into();
