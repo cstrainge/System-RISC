@@ -660,8 +660,8 @@ was not a workaround target — the check stays.
 
 That refusal is now history. With `std` building for aarch64, `boot-check`
 regenerates the packages, Finder passes the fingerprint check, `FONTS_READY`
-prints, and the boot stops one step later in `launch()` on a page-table slot that
-is not empty. See *What still blocks `qemu_arm64`*.
+prints, and the boot now stops in the boot Progress Bar's paint, on the
+`mac_traps` blocker. See *What still blocks `qemu_arm64`*.
 
 Nothing was done to make a marker appear. The fatal `start_services` path is
 unchanged: a missing framebuffer on a machine whose record declares one is still
@@ -771,40 +771,109 @@ Still not carried: the floating-point and NEON state. That is a real gap for any
 context that traps with live floating-point registers, and user code is built
 with `+neon`.
 
-### Open: the definition mapping is published into a slot that is not empty
+### Fixed: the firmware root's own table could not be recognised as reusable
 
-`SYSTEM_STARTUP_FAILED` comes from `system/src/kernel.rs:1610`, i.e. from
-`launch()`, not from Finder. The refusal is `Error::Conflict` raised by the
-`edits` loop in `system/src/machine/paging/modules.rs:1901`, which requires every
-slot it is about to fill with a new table descriptor to still read zero:
+`SYSTEM_STARTUP_FAILED` came from `system/src/kernel.rs:1610`, i.e. from
+`launch()`, not from Finder:
 
 ```
 SYSTEM_STARTUP_FAILED: executable PTE 0x430fd000 changed: expected 0x0, observed 0x80000040928003; original mapping/backing retained
 ```
 
-The address is the Progress Bar CDEF entry, `0x430fd000`, the same address the
-level-index fix (`cfe1c119`) made mappable. The observed value is a *table*
-descriptor — bit 0 valid, bit 1 set, output address `0x40928000` — not a leaf, so
-the slot was already holding the table this plan wanted to create, and the only
-difference from `Entry::table(0x40928000, _, Manual)` (`0x40928003`) is bit 63,
-which no aarch64 paging code in this tree sets.
+**Decoding the occupant.** `0x80000040928003` is
+`Entry::table(0x40928000, _, PageOwnership::Automatic)`: valid, leaf bit set,
+output address `0x40928000`, software bit 55 set. It is a *table*, not a leaf.
+Above the page level AArch64 writes `0b01` for a block and `0b11` for a table, so
+`0b11` here is a pointer to the next level, and `AF` and `SH_INNER` are correctly
+absent because a table descriptor has no attributes. Two earlier readings of this
+value — "bit 63" and "a leaf with the wrong physical" — were a nibble miscount
+(the value has 14 hex digits, so the set bit is 55, which is `SOFTWARE_SHIFT`) and
+a misread of the leaf bit.
 
-Two readings fit: the same definition is being published twice, or the slot
-coordinate is not the one the plan means. A second `boot-check` run at
-`567cb1b2` reproduced the identical address and the identical observed value, so
-the conflict is deterministic rather than a shifted-allocation artefact, which
-favours the first reading. This is paging-owned code and was not touched here.
+**Two writers, named by measurement.** Instrumenting `Plan::table` printed, in
+order, while publishing the Progress Bar CDEF (the instrumentation was removed
+before the fix was committed):
+
+```
+PGTBL root=0x40007000 level=1 prefix=0x40000000 addr=0x430fd000 cpu=0xffffffe000007000 idx=0x1  observed=0x0
+PGTBL root=0x40007000 level=0 prefix=0x43000000 addr=0x430fd000 cpu=0xffffffe00090f000 idx=0x18 observed=0x0
+PGTBL root=0x5092a000 level=1 prefix=0x40000000 addr=0x430fd000 cpu=0xffffffe01092a000 idx=0x1  observed=0x80000040928003
+PGTBL NOT-TABLE root=0x5092a000 level=1 addr=0x430fd000 observed=0x80000040928003
+```
+
+`0x40007000` is the kernel root and `0x5092a000` the firmware root, both from
+`MMU_READY`. The refusal is therefore **not** the `edits` loop; it is
+`Plan::table`'s `let Decoded::Table { .., global: false, .. } = ... else
+{ Conflict }` arm, whose message is word for word the `edits` loop's. The kernel
+root's 1 GiB slot was empty and was created; the firmware root's was not.
+
+* **The owner that was already there.** `system/src/machine/paging.rs:791`
+  (`prepare_space`) maps every `boot.regions` entry into the firmware root,
+  including the `FIRMWARE_ONLY` ones. The aarch64 bootloader declares the
+  firmware heap at `0x52430000` with an identity `virtual_base`
+  (`bootrom-aarch64-virt/src/main.rs:1011`), which lies inside the 1 GiB region
+  `0x40000000`, so `prepare_space` had to create that level-2 table. The entry is
+  written by `crates/mac-kernel-model/src/pages/mapping.rs:339` with
+  `PageOwnership::Automatic`, which is what bit 55 records. The kernel root skips
+  `FIRMWARE_ONLY` regions (`paging.rs:793`), which is why its slot was empty.
+* **The owner that was refused.** `system/src/machine/paging/modules.rs:1746`
+  (`Plan::table`), reached from `Plan::add_space` for the firmware root because
+  `Plan::prepare` publishes every definition into both permanent roots
+  (`modules.rs:1615`).
+
+**Why it did not simply reuse that table.** The reuse arm required the decoded
+descriptor to report `global: false`. AArch64 has no global bit on a table
+descriptor — bit 11 is `nG` and `Entry::table`
+(`crates/mac-aarch64-pages/src/lib.rs:243`) never writes it — so `decode_raw`
+reports every aarch64 table as `global: true` and the pattern could never match.
+RISC-V's `GLOBAL` is a real bit that `Entry::table` leaves clear, so there the
+same pattern matched and `qemu_riscv` never reached the refusal. The shared check
+encoded one architecture's descriptor convention and was unsatisfiable under the
+other's: the same shape as the `execution_handlers` and RAMFB gates, one level
+down.
+
+**The fix removes the test, not the check.** `Decoded::Table` is the complete
+statement that a slot holds a table pointer — the encoder derives it from the
+descriptor's leaf bit, which is the only thing separating a table from a block at
+these levels. Retention is still proved: by `TABLES.lock().find(key)` for a
+managed branch, or by `space.tables.node(physical)` for a bootstrap branch the
+space's own table owner still holds. The reuse arm therefore still cannot adopt
+an arbitrary physical page, `commit()`'s `observed != 0` assertion is untouched,
+and nothing unmaps or overwrites a live entry — the firmware root's bootstrap
+table is retained and extended with the one level-3 table and one leaf the
+definition needs.
+
+**What this establishes.** After the fix `raw-hfs-b` publishes the CDEF, creates
+and draws the boot Progress Bar control, and the failure moves past paging
+entirely (see *What still blocks `qemu_arm64`*).
 
 ### Open: `mac_traps::invoke` is still RISC-V only
 
-`crates/mac-traps/src/lib.rs:30` implements the local trap instruction under
+`crates/mac-traps/src/lib.rs:32` implements the local trap instruction under
 `#[cfg(target_arch = "riscv64")]` and returns `NOT_SUPPORTED` otherwise. Every
-`Client` method funnels through it, so on aarch64 an application's first service
-call returns `NOT_SUPPORTED` without ever trapping — `std` startup reaches
-`__system_risc_thread_id_v1` and aborts at `STD_STARTUP_SERVICES_REFUSED`. This
-is the fourth instance of the same shape as the RAMFB binding,
-`Registry::execution_handlers` and the TLS adapter: an architecture gate
-stranding shared code.
+`Client` method funnels through it. This is the fourth instance of the same shape
+as the RAMFB binding, `Registry::execution_handlers` and the TLS adapter: an
+architecture gate stranding shared code.
+
+**This is now the only thing between the boot and Finder**, and it stops the boot
+earlier than `std` startup does. With the paging conflict fixed, `raw-hfs-b`
+publishes the Progress Bar CDEF, creates and draws the control, and then:
+
+```
+BOOT_PROGRESS_REFUSED stage=paint status=-4
+SYSTEM_STARTUP_FAILED: boot Progress Bar control failed; see stage and status in boot log
+```
+
+`status=-4` is `NOT_SUPPORTED`. The path is
+`system/src/toolbox/controls/paint.rs:404` (`Call::visit`) →
+`definitions::invoke` → the CDEF's own handler, which returns the status. The
+Progress Bar's `Initialize` message only reads its own state and geometry, so
+`CREATE_STANDARD` and `DRAW_OBJECT` succeed; its `Draw` message calls
+`services.theme()`, and `crates/mac-definition/src/binding.rs:98` builds the
+`Services` client from `mac_traps::Client`, so the trap is what refuses. The same
+gate would then stop `std` startup at `__system_risc_thread_id_v1` and
+`STD_STARTUP_SERVICES_REFUSED`, and `FINDER_FOLDER_LAYOUT window=` is never
+printed.
 
 It was deliberately not changed here. The kernel side it would reach is still
 RISC-V-shaped, so enabling the call would not produce a working trap — it would
