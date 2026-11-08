@@ -25,6 +25,30 @@ const CAUSE_SOFTWARE: usize = INTERRUPT_BIT | 1;
 /// Supervisor timer interrupt: the running quantum expired.
 const CAUSE_TIMER: usize = INTERRUPT_BIT | 5;
 
+/// `sstatus` bit 8 is `SPP`: set when the trap was taken from supervisor mode,
+/// clear from user mode.
+const SPP: usize = 1 << 8;
+
+/// The `sstatus` a System-owned frame resumes at: supervisor mode (`SPP`), the
+/// previous interrupt-enable bit set so `sret` leaves interrupts on, and the
+/// floating-point state marked dirty. `SIE` itself is clear while the handler
+/// runs; `sret` copies `SPIE` into it.
+pub(crate) const INITIAL_STATUS: usize = 0x120 | 0x6600;
+
+/// The `sstatus` an application frame resumes at: user mode (`SPP` clear),
+/// interrupts enabled after `sret`, and `SUM`/`MXR` clear so the kernel cannot
+/// read application memory through this word.
+pub(crate) const USER_STATUS: usize = (INITIAL_STATUS & !SPP) & !((1 << 18) | (1 << 19));
+
+// The two words must stay on the side of the origin test their name claims.
+const _: () = assert!(INITIAL_STATUS & SPP != 0 && USER_STATUS & SPP == 0);
+
+/// Whether this frame was taken from unprivileged execution.
+pub(crate) fn from_user(frame: &TrapFrame) -> bool
+{
+    frame.status & SPP == 0
+}
+
 /// The cause the shared dispatcher classifies: `scause` already names a call.
 pub(crate) fn cause(frame: &TrapFrame) -> usize
 {

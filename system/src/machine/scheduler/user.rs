@@ -266,7 +266,8 @@ fn capture(frame: &super::TrapFrame, definition: Option<DefinitionFault>) -> Res
     // including one that is already stopping. Ordinary user-memory/service
     // admission remains stricter; rejection there cannot classify this fault
     // as privileged or permit a dying author to kill the System.
-    if frame.prior_depth != 0 || frame.status & (1 << 8) != 0
+    if frame.prior_depth != 0
+       || !crate::machine::trap_frame::from_user(frame)
     {
         return Err(ACCESS_DENIED);
     }

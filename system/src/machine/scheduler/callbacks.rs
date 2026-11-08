@@ -233,7 +233,7 @@ pub(crate) fn prepare(source: &crate::images::Read) -> Result<CallbackThread, St
             let top = stack.user_top()?;
             let mut frame = TrapFrame::default();
             frame.pc = runtime.callback_loop();
-            frame.status = crate::machine::traps::USER_STATUS;
+            frame.status = crate::machine::trap_frame::USER_STATUS;
             frame.stack_pointer = top;
             crate::machine::trap_frame::set_return_link(&mut frame, runtime.thread_return());
             crate::machine::trap_frame::set_result(&mut frame, runtime.descriptor());

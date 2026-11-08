@@ -696,7 +696,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
         let top = stack.user_top()?;
         let mut initial = TrapFrame::default();
         initial.pc = loaded.entry();
-        initial.status = crate::machine::traps::USER_STATUS;
+        initial.status = crate::machine::trap_frame::USER_STATUS;
         initial.stack_pointer = top;
         crate::machine::trap_frame::set_result(&mut initial, runtime.descriptor());
         cpu.initialize(initial).map_err(|cause| cause.status())?;
@@ -864,7 +864,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
         let top = stack.user_top()?;
         let mut frame = TrapFrame::default();
         frame.pc = loaded.entry();
-        frame.status = crate::machine::traps::USER_STATUS;
+        frame.status = crate::machine::trap_frame::USER_STATUS;
         frame.stack_pointer = top;
         crate::machine::trap_frame::set_result(&mut frame, runtime.descriptor());
         cpu.initialize(frame).map_err(|cause| cause.status())?;
@@ -1073,7 +1073,7 @@ fn prepare_system_idle(target: crate::machine::traps::execution::IdleTarget)
                 })?;
             let mut initial = TrapFrame::default();
             initial.pc = idle as *const () as usize;
-            initial.status = crate::machine::traps::INITIAL_STATUS;
+            initial.status = crate::machine::trap_frame::INITIAL_STATUS;
             initial.stack_pointer = stack.top();
             let cpu =
                 Foundation::<crate::machine::traps::SavedState>::new(initial).map_err(|cause| {

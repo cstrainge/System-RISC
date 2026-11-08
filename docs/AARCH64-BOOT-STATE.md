@@ -1007,55 +1007,76 @@ bank on AArch64.
 `LAUNCH_DIRECTORY_READY`, `SYSTEM_FINDER_LAUNCH entry=0x400000` and
 `BOOT_PROGRESS completed=7 total=7`.
 
-## The next blocker: every application page is mapped EL1-only
+## Fixed: `AP[1]` was inverted, and System's frames ran at EL0
 
-Finder is launched and takes a data abort on its own stack — permission fault,
+Finder was launched and took a data abort on its own stack — permission fault,
 level 3, on a write, at `0xfa8fe0` with the stack at `0xfa9000` — and the
-recovered instance aborts the same way. `crates/mac-aarch64-pages/src/lib.rs`
+recovered instance aborted the same way. `crates/mac-aarch64-pages/src/lib.rs`
 encoded `AP[1]` inverted:
 
 ```
 let ap1 = if permissions.access == Access::Supervisor { 1 << 6 } else { 0 };
 ```
 
-`AP[2:1]` is `0b00`/`0b10` for EL1-only and `0b01`/`0b11` for EL0-accessible, so
-bit 6 belongs to an **unprivileged** page. As written, every application page was
-EL1-only and every kernel page was EL0-accessible — read, write and execute. The
-decoder mirrors the inversion, so the crate's round-trip tests agree with the
-encoder and with nothing else.
+`AP[2:1]` is the stage-1 access-permission field, and bit 6 is `AP[1]`, the
+**unprivileged**-access bit:
 
-The second half is why this is one change and not two. The EL0 idle frame is
-entered with `INITIAL_STATUS`, which is a RISC-V `sstatus` word and names `EL0t`
-in `SPSR_EL1.M[3:0]`, while its `pc` is a kernel address. It executes because
-kernel pages are (wrongly) EL0-accessible; a monitor sample during the hang reads
-`PC=ffffffd0005032ac PSTATE=0000000000000300 ---- EL0t`. Fixing `AP[1]` alone
-therefore turns the first idle fetch into a privileged fault and the boot stops
-earlier than it does now.
+| `AP[2]` | `AP[1]` | EL0 read | EL0 write | EL1 read | EL1 write |
+|---------|---------|----------|-----------|----------|-----------|
+| 0       | 0       | no       | no        | yes      | yes       |
+| 1       | 0       | no       | no        | yes      | no        |
+| 0       | 1       | yes      | yes       | yes      | yes       |
+| 1       | 1       | yes      | no        | yes      | no        |
 
-Both halves must land together: `AP[1]` set for `Access::User`, and the
-System-owned frames — the canonical idle and the module-worker frames that use
-the same word — entering at EL1. `USER_STATUS`, `INITIAL_STATUS` and `user_origin`
-are deliberately untouched here: `user_origin` reads `SPSR_EL1.A`, so moving the
-status words without moving that test reclassifies every application's service
-calls, and that is one change with one owner.
+As written, every application page was EL1-only and every kernel page was
+EL0-accessible — read, write and execute. The decoder mirrored the inversion, so
+the crate's round-trip tests agreed with the encoder and with nothing else. The
+decoder now states the leaf permissions once, in `permissions_from`, and both the
+block and page branches use it.
 
-The `AP[1]` fix was written, compiled and measured to be correct in isolation, then
-reverted rather than shipped on its own, because on its own it regresses the boot
-and the coupling's owner is this deferred status-word change.
+The round-trip test asks the EL0 question of the encoded `AP[2:1]` bits, not of
+the input enum, in both directions: a supervisor leaf must encode `AP[1] = 0` and
+an application leaf `AP[1] = 1`, and the decoder must read those same bits back.
+Before the flip it failed with
+
+```
+AP[2:1]=01 on the supervisor leaf grants EL0 access
+```
+
+**The frame status words, in the same change.** `INITIAL_STATUS` and
+`USER_STATUS` were RISC-V `sstatus` values used unchanged as `SPSR_EL1`.
+`INITIAL_STATUS = 0x66120` has `M[3:0] = 0b0000`, so the System idle and
+module-worker frames were *entered at `EL0t`* while carrying kernel addresses.
+They ran because every kernel page was (wrongly) EL0-accessible; a monitor sample
+during the hang reads `PC=ffffffd0005032ac PSTATE=0000000000000300 ---- EL0t`.
+
+The origin test used `SPSR_EL1.A` (bit 8). That bit is the SError mask, not the
+exception level: it is always clear at EL0, and clear at EL1 whenever SError is
+unmasked, so an EL1 frame would have been classified as an application call. It
+appeared to work because the RISC-V words put `SPP` in bit 8 — set in the System
+word, clear in the application word — so the test agreed with the intent while
+the hardware executed System's frames at EL0.
+
+Both words are now real `SPSR_EL1` values, stated in
+`machine/aarch64/trap_frame.rs`:
+
+| word             | `M[3:0]` | meaning                                      |
+|------------------|----------|----------------------------------------------|
+| `INITIAL_STATUS` | `0b0101` | `EL1h`, DAIF unmasked — System-owned frames   |
+| `USER_STATUS`    | `0b0000` | `EL0t`, DAIF unmasked — application frames    |
+
+and the origin test reads `M[3:0]`. The RISC-V words moved unchanged into
+`machine/riscv64/trap_frame.rs` behind the same two names and the same
+`from_user`, so the shared dispatcher asks one question instead of testing a bit
+of its own: `machine/traps.rs` and `machine/scheduler/user.rs` both call
+`trap_frame::from_user`, and the "was preemptible" test in `machine/traps.rs` and
+`machine/scheduler/service.rs` both call `page_layout::interrupts_enabled` — which
+already existed for exactly this and which three call sites had bypassed with a
+hand-written `1 << 5`.
 
 
 
 ## Not attempted, deliberately
-
-The frame status words. `INITIAL_STATUS` and `USER_STATUS`
-(`system/src/machine/traps.rs:54`) are RISC-V `sstatus` values — `SPP`, `SPIE`,
-`FS` — used unchanged as AArch64 `SPSR_EL1`. `INITIAL_STATUS` therefore names
-`EL0t` for the System idle and module-worker frames, and `USER_STATUS` names
-`EL0t` with `A` clear, which is what makes the existing `user_origin` test work
-for applications. They are not changed here: `user_origin` reads `SPSR_EL1.A`,
-so rewriting either word without also moving that test to `M[3:0]` would
-reclassify every application's calls as privileged. That is one change with one
-owner and belongs in its own step.
 
 The floating-point/NEON part of an aarch64 thread context. `TPIDR_EL0` and `x30`
 are now carried (see *What still blocks `qemu_arm64`*); the 32 128-bit vector

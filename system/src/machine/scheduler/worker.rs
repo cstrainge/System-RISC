@@ -178,7 +178,7 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
         let (stack, cpu, _) = charges.allocate(&owner, |top| {
                                          let mut frame = TrapFrame::default();
                                          frame.pc = worker_entry as *const () as usize;
-                                         frame.status = traps::INITIAL_STATUS;
+                                         frame.status = crate::machine::trap_frame::INITIAL_STATUS;
                                          frame.stack_pointer = top;
                                          frame
                                      })

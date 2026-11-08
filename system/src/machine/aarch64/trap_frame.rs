@@ -36,16 +36,42 @@ const EC_MASK: usize = 0x3f;
 /// A supervisor call executed in AArch64 state.
 const EC_SVC_AARCH64: usize = 0x15;
 
+/// `SPSR_EL1.M[3:0]`: the exception level and stack-pointer selection an
+/// `eret` returns to. `M[3:2]` is the level — `0b00` is EL0, `0b01` is EL1 —
+/// and `M[1:0]` selects SP_EL0 at a lower level and SP_ELx at the current one.
+const MODE_MASK: usize = 0xf;
+const MODE_EL0T: usize = 0b0000;
+const MODE_EL1H: usize = 0b0101;
+
+/// The status a System-owned frame resumes at: EL1h with DAIF unmasked, so the
+/// idle and module-worker frames run privileged with the timer able to
+/// preempt them.
+///
+/// This is a real `SPSR_EL1` word. It used to be RISC-V's `sstatus` value
+/// `0x66120`, whose `M[3:0]` is zero: System's own frames were entered at
+/// `EL0t` and reached kernel memory only because the page encoder granted EL0
+/// every supervisor page. The word's `SPP` bit (bit 8) was being read as if it
+/// were `SPSR_EL1.A` to call those frames privileged.
+pub(crate) const INITIAL_STATUS: usize = MODE_EL1H;
+
+/// The status an application frame resumes at: `EL0t` with DAIF unmasked, so a
+/// running application can be preempted by the timer.
+pub(crate) const USER_STATUS: usize = MODE_EL0T;
+
+// The two words must stay on the side of the mode test their name claims.
+const _: () = assert!(INITIAL_STATUS & MODE_MASK == MODE_EL1H
+                      && USER_STATUS & MODE_MASK == MODE_EL0T);
+
 /// Whether this frame was taken from unprivileged execution.
 ///
-/// `SPSR_EL1.A` is set in privileged execution and clear at EL0, which is the
-/// test the shared dispatcher already makes. It is not the architectural test -
-/// `SPSR_EL1.M[3:0]` is - and moving to that is its own change with its own
-/// owner, because `INITIAL_STATUS` and `USER_STATUS` are the words that would
-/// have to move with it.
-fn from_user(frame: &TrapFrame) -> bool
+/// The architectural test is `SPSR_EL1.M[3:0]`. It is not `SPSR_EL1.A`, which
+/// was used while the frame words were RISC-V `sstatus` values: `A` is the
+/// SError mask, it is always clear at EL0, and it is clear at EL1 whenever
+/// SError happens to be unmasked, so an EL1 frame would have been classified
+/// as an application call.
+pub(crate) fn from_user(frame: &TrapFrame) -> bool
 {
-    frame.status & (1 << 8) == 0
+    frame.status & MODE_MASK == MODE_EL0T
 }
 
 /// The cause the shared dispatcher classifies.

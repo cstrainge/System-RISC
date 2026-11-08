@@ -63,10 +63,8 @@ pub(crate) struct TrapFrame
 // fixed frame size are generated above from this one Rust representation.
 const _: () = assert!(core::mem::offset_of!(TrapFrame, pc) == 240
                       && core::mem::offset_of!(TrapFrame, status) == 248);
-pub(crate) const INITIAL_STATUS: usize = 0x120 | 0x6600;
-// FS/VS and SPIE are enabled, while SPP/SUM/MXR remain clear. User frames
-// may only be published after their own executable and stack maps exist.
-pub(crate) const USER_STATUS: usize = (INITIAL_STATUS & !(1 << 8)) & !((1 << 18) | (1 << 19));
+// The frame status words are the architecture's own; see `trap_frame`.
+
 /// Validate the selected sizes against this CPU before allocating pools or
 /// starting services. This is policy admission, not System-stack activation.
 pub(crate) fn validate_stack_configuration(
@@ -345,7 +343,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     #[cfg(feature = "event-trace")]
     hart::observe_entry(frame as *mut TrapFrame as usize);
 
-    let user_origin = frame.status & (1 << 8) == 0;
+    let user_origin = abi::from_user(frame);
     // The cause this architecture reports for a service call. A genuine fault
     // keeps the value the hardware produced, so a fault is never classified as
     // a call and a call is never classified as a fault.
@@ -750,7 +748,7 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
     use mac_module::abi::{WorkerCall, worker};
     let operation = || -> Result<bool, Status> {
         if frame.prior_depth != 0
-           || frame.status & (1 << 5) == 0
+           || !crate::machine::page_layout::interrupts_enabled(frame.status)
            || crate::context::critical_active()
         {
             return Err(WRONG_THREAD);

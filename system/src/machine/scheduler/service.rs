@@ -172,7 +172,7 @@ fn fixed_primary() -> bool
 fn movable(frame: &TrapFrame) -> bool
 {
     frame.prior_depth == 0
-    && frame.status & (1 << 5) != 0
+    && crate::machine::page_layout::interrupts_enabled(frame.status)
     && !super::in_io()
     && !super::critical_active()
 }
@@ -599,7 +599,7 @@ pub(crate) fn request_identity(frame: &TrapFrame) -> RequestIdentity
 pub(crate) fn request_suspension_allowed(frame: &TrapFrame) -> Result<(), Status>
 {
     if frame.prior_depth != 0
-       || frame.status & (1 << 5) == 0
+       || !crate::machine::page_layout::interrupts_enabled(frame.status)
        || super::critical_active()
        || super::in_io()
     {
