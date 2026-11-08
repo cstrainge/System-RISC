@@ -789,9 +789,11 @@ the slot was already holding the table this plan wanted to create, and the only
 difference from `Entry::table(0x40928000, _, Manual)` (`0x40928003`) is bit 63,
 which no aarch64 paging code in this tree sets.
 
-Two readings fit and the log does not distinguish them: the same definition is
-being published twice, or the slot coordinate is not the one the plan means.
-This is paging-owned code and was not touched here.
+Two readings fit: the same definition is being published twice, or the slot
+coordinate is not the one the plan means. A second `boot-check` run at
+`567cb1b2` reproduced the identical address and the identical observed value, so
+the conflict is deterministic rather than a shifted-allocation artefact, which
+favours the first reading. This is paging-owned code and was not touched here.
 
 ### Open: `mac_traps::invoke` is still RISC-V only
 
