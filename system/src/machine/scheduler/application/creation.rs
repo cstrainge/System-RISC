@@ -87,8 +87,8 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
     frame.pc = entry;
     frame.status = crate::machine::traps::USER_STATUS;
     frame.stack_pointer = top;
-    frame.registers[0] = runtime.thread_return();
-    frame.registers[8] = data;
+    crate::machine::trap_frame::set_return_link(&mut frame, runtime.thread_return());
+    crate::machine::trap_frame::set_result(&mut frame, data);
     cpu.initialize(frame).map_err(|cause| {
                               Error::Admission { status: cause.status(),
                                                  stage:  "child unpublished CPU initialization" }

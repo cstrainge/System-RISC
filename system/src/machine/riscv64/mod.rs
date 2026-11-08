@@ -15,6 +15,7 @@ pub(crate) mod page_layout;
 pub(crate) mod power;
 pub(crate) mod primary_service;
 pub(crate) mod trap_entry;
+pub(crate) mod trap_frame;
 
 /// Bootstrap hardware identity only; never an application or OS-thread identity.
 pub(crate) fn hart_id() -> usize

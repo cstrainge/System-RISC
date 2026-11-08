@@ -3,10 +3,8 @@
 #![no_std]
 #![deny(unsafe_code)]
 
-#[cfg(target_arch = "riscv64")]
 mod machine;
 
-#[cfg(target_arch = "riscv64")]
 mod driver
 {
     use mac_driver::{Client, Completion, Driver, Error, Request, Result};
@@ -55,5 +53,4 @@ mod driver
     }
 }
 
-#[cfg(target_arch = "riscv64")]
 pub use driver::DRIVER;

@@ -2,7 +2,7 @@
 
 use mac_abi::{traps::*, *};
 
-use crate::toolbox;
+use crate::{machine::trap_frame as abi, toolbox};
 mod state;
 mod definition_services;
 pub(crate) mod user;
@@ -289,7 +289,11 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     }
 
     let user_origin = frame.status & (1 << 8) == 0;
-    if user_origin && frame.cause & (1usize << 63) == 0 && frame.cause != 8
+    // The cause this architecture reports for a service call. A genuine fault
+    // keeps the value the hardware produced, so a fault is never classified as
+    // a call and a call is never classified as a fault.
+    let cause = abi::cause(frame.cause, user_origin);
+    if user_origin && cause & (1usize << 63) == 0 && cause != 8
     {
         if frame.prior_depth != 0
         {
@@ -307,7 +311,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             }
         }
     }
-    if !matches!((user_origin, frame.cause), (true, 8) | (false, 9))
+    if !matches!((user_origin, cause), (true, 8) | (false, 9))
     {
         crate::machine::emergency::serial(format_args!("SYSTEM_TRAP: cause={} pc=0x{:x} \
                                                         value=0x{:x}",
@@ -321,22 +325,22 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                                                        safely continue.",
                                                       frame.cause, frame.pc, frame.value));
     }
-    let number = frame.registers[15] as u32;
+    let number = abi::number(frame);
     if user_origin
        && (frame.prior_depth != 0
            || number == mac_module::abi::worker::TRAP
            || number == crate::machine::scheduler::service::host::TRAP)
     {
-        frame.registers[8] = ACCESS_DENIED as usize;
-        frame.pc = frame.pc.wrapping_add(4);
+        abi::set_result(frame, ACCESS_DENIED as usize);
+        abi::advance(frame);
         return Dispatch::Resume;
     }
     if execution::policy::deny(execution::policy::Operation::Service)
     {
         // Refuse before a request pointer or an executor-owned trap scope is
         // borrowed. A policy may neither park nor enter ordinary services.
-        frame.registers[8] = ACCESS_DENIED as usize;
-        frame.pc = frame.pc.wrapping_add(4);
+        abi::set_result(frame, ACCESS_DENIED as usize);
+        abi::advance(frame);
         return Dispatch::Resume;
     }
     if number == mac_module::abi::worker::TRAP
@@ -359,8 +363,8 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         Ok(crate::machine::scheduler::service::Entry::Migrate) => return Dispatch::Schedule,
         Err(status) =>
         {
-            frame.registers[8] = status as isize as usize;
-            frame.pc = frame.pc.wrapping_add(4);
+            abi::set_result(frame, status as isize as usize);
+            abi::advance(frame);
             return Dispatch::Resume;
         }
     };
@@ -389,9 +393,9 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         finish_service(frame, completion, SERVICE_BUSY as i64);
         return Dispatch::Resume;
     }
-    let number = frame.registers[15] as u32;
-    let user_pointer = frame.registers[8] as *mut ();
-    let user_size = frame.registers[9];
+    let number = abi::number(frame);
+    let user_pointer = abi::argument(frame);
+    let user_size = abi::bytes(frame);
     let identity = crate::machine::scheduler::service::request_identity(frame);
     let mut user_call = if user_origin
     {
@@ -618,7 +622,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     // to the user. Never inspect request memory for a report.
     if user_origin
        && action == crate::machine::scheduler::service::RequestAction::Return
-       && frame.registers[8] as isize == SERVICE_BUSY as isize
+       && abi::result(frame) as isize == SERVICE_BUSY as isize
        && !thread.traps.terminal_busy_reported()
     {
         let identity = thread.identity();
@@ -674,11 +678,11 @@ fn retain_user_call(call: Option<user::Call>)
 fn finish_service(frame: &mut TrapFrame,
                   completion: Option<crate::machine::scheduler::service::Completion>, result: i64)
 {
-    frame.registers[8] = result as usize;
-    frame.pc = frame.pc.wrapping_add(4);
+    abi::set_result(frame, result as usize);
+    abi::advance(frame);
     if let Err(status) = crate::machine::scheduler::service::complete(completion)
     {
-        frame.registers[8] = status as isize as usize;
+        abi::set_result(frame, status as isize as usize);
     }
 }
 
@@ -705,7 +709,7 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
             return Err(WRONG_THREAD);
         }
         let call = unsafe {
-                       request::<WorkerCall>(frame.registers[8] as *mut (), frame.registers[9])
+                       request::<WorkerCall>(abi::argument(frame), abi::bytes(frame))
                    }.ok_or(BAD_ARGUMENT)?;
         if !call.header.valid::<WorkerCall>()
            || call.flags != 0
@@ -752,8 +756,8 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
         }
     };
     let result = operation();
-    frame.pc = frame.pc.wrapping_add(4);
-    frame.registers[8] = result.as_ref().map_or_else(|e| *e, |_| OK) as usize;
+    abi::advance(frame);
+    abi::set_result(frame, result.as_ref().map_or_else(|e| *e, |_| OK) as usize);
     if matches!(result, Ok(true)) { Dispatch::Schedule } else { Dispatch::Resume }
 }
 
@@ -1545,7 +1549,7 @@ pub(crate) fn worker_resume_status(state: &SavedState, status: Status)
     // its execution claim is absent or backed by this hart's complete outer
     // capture. The mutable dispatch borrow has ended; no restore is concurrent.
     unsafe {
-        (*state.frame()).registers[8] = status as usize;
+        abi::set_result(&mut *state.frame(), status as usize);
     }
 }
 pub(crate) fn publish_cpu(state: &SavedState)

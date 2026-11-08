@@ -660,8 +660,9 @@ was not a workaround target — the check stays.
 
 That refusal is now history. With `std` building for aarch64, `boot-check`
 regenerates the packages, Finder passes the fingerprint check, `FONTS_READY`
-prints, and the boot now stops in the boot Progress Bar's paint, on the
-`mac_traps` blocker. See *What still blocks `qemu_arm64`*.
+prints, and the boot paints the Progress Bar, loads its drivers and reaches
+`SYSTEM_CPUS_READY`. It then stops there, waiting for an interrupt source that
+does not exist yet. See *What still blocks `qemu_arm64`*.
 
 Nothing was done to make a marker appear. The fatal `start_services` path is
 unchanged: a missing framebuffer on a machine whose record declares one is still
@@ -847,61 +848,134 @@ definition needs.
 and draws the boot Progress Bar control, and the failure moves past paging
 entirely (see *What still blocks `qemu_arm64`*).
 
-### Open: `mac_traps::invoke` is still RISC-V only
+### Fixed: the client service call had no aarch64 path, and the entry could not record one
 
-`crates/mac-traps/src/lib.rs:32` implements the local trap instruction under
-`#[cfg(target_arch = "riscv64")]` and returns `NOT_SUPPORTED` otherwise. Every
-`Client` method funnels through it. This is the fourth instance of the same shape
-as the RAMFB binding, `Registry::execution_handlers` and the TLS adapter: an
-architecture gate stranding shared code.
+Two independent defects, both invisible until a definition actually trapped.
 
-**This is now the only thing between the boot and Finder**, and it stops the boot
-earlier than `std` startup does. With the paging conflict fixed, `raw-hfs-b`
-publishes the Progress Bar CDEF, creates and draws the control, and then:
+**The client entry.** `crates/mac-traps/src/lib.rs:30` implemented `invoke` only
+under `#[cfg(target_arch = "riscv64")]` and returned `NOT_SUPPORTED` otherwise,
+so every `Client` method refused by construction and the boot Progress Bar's
+`Draw` reported `BOOT_PROGRESS_REFUSED stage=paint status=-4`. The aarch64 arm
+now issues `svc #0` with the number in `x8` and the request and its length in
+`x0`/`x1`, returning the result in `x0`. The instruction is emitted inline
+rather than called through a System symbol, because an application or definition
+is linked as its own module and resolves no resident code address.
+
+**The classification.** `system/src/machine/traps.rs:310` accepted only
+`(user_origin, 8)` and `(!user_origin, 9)`, which are RISC-V `scause` values for
+ECALL from U-mode and S-mode. AArch64 reports a supervisor call in `ESR_EL1.EC`,
+so its `0x56000000` matched neither and every `svc` — and every other synchronous
+trap — was classified as a fault. No `ESR_EL1` decoding existed anywhere in the
+tree.
+
+**The frame.** Three further defects in `system/src/machine/aarch64/trap_entry.S`
+made the entry unable to record a frame at all, which is why none of this had
+ever been observed:
+
+* The frame bound compared `frames + depth*stride` against `ctl_top`. `top` is
+  the System stack's limit; the frame array is a different allocation in a
+  different window (`0xffffffe0…` against `0xffffffd0…`), so the comparison could
+  never succeed and every trap took the no-frame report.
+* The entry read `prior_depth` instead of writing it, and `__system_restore_frame`
+  never put `ctl_depth` back, so the nesting counter could only accumulate.
+* The restore reloaded `x2` as the frame base and then read through it, so a
+  return read the interrupted `x2` as an address. It also never installed the
+  interrupted stack pointer, and never set `SP_EL0` for a frame that returns to
+  EL0.
+
+**The one owner.** The shared dispatcher, the scheduler and the private Host gate
+name the frame slots a call uses, and those slots are RISC-V's. Rather than a
+`cfg` per call site, `system/src/machine/trap_frame.rs` is now the single
+statement of the difference, implemented once per architecture and selected at
+the machine boundary. It answers: which `cause` a call reports, which slot
+carries the number, the argument and its length, which slot returns the result,
+which link a new context returns through, where the call instruction is, and
+whether the entry must step over it. The RISC-V implementation is the identity,
+so that side is unchanged by construction, and `dispatch_frame` still names the
+two call causes it names.
+
+`user_origin` is still `status & (1 << 8) == 0`, which on AArch64 is `SPSR_EL1.A`
+rather than the exception level. It separates EL0 from EL1 because `A` is set in
+privileged execution and clear at EL0, and the observed privileged-fault reports
+agree with it, so it was left alone: changing it at the same time as the cause
+translation would make a later regression unattributable. `M[3:0] == 0` is the
+architectural test and belongs in its own change.
+
+**What it establishes.** `raw-hfs-b` now paints the Progress Bar, loads the
+Virtio Gpu and VirtIO RNG modules, attaches the video driver, reaches
+`BOOT_SYSTEM_READY` and admits the primary as a single-hart dispatcher:
 
 ```
-BOOT_PROGRESS_REFUSED stage=paint status=-4
-SYSTEM_STARTUP_FAILED: boot Progress Bar control failed; see stage and status in boot log
+BOOT_PROGRESS completed=5 total=7
+BOOT_SYSTEM_READY: services=0xffffffd000a43280
+SYSTEM_IDLE_REGISTERED thread=… hart=0 name=System idle
+SYSTEM_CPUS_READY primary=0 admitted_peers=0 dispatch=primary-only
 ```
 
-`status=-4` is `NOT_SUPPORTED`. The path is
-`system/src/toolbox/controls/paint.rs:404` (`Call::visit`) →
-`definitions::invoke` → the CDEF's own handler, which returns the status. The
-Progress Bar's `Initialize` message only reads its own state and geometry, so
-`CREATE_STANDARD` and `DRAW_OBJECT` succeed; its `Draw` message calls
-`services.theme()`, and `crates/mac-definition/src/binding.rs:98` builds the
-`Services` client from `mac_traps::Client`, so the trap is what refuses. The same
-gate would then stop `std` startup at `__system_risc_thread_id_v1` and
-`STD_STARTUP_SERVICES_REFUSED`, and `FINDER_FOLDER_LAYOUT window=` is never
-printed.
+### Fixed: the entropy driver was gated to RISC-V
 
-`boot-check` on `qemu_arm64` reports 1 case passed (`no-disk`) and stops on
-`raw-hfs-b` after those two lines; a second run at the same commit prints the
-identical pair. `qemu_riscv` at the same commit is 19/19 with `RAMFB 800x600`,
-`FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY` intact. This refusal is a
-definition-service call, not a paging or mapping failure: nothing in the page
-tables is now in conflict.
+The next refusal was not `theme`:
 
-It was deliberately not changed here. The kernel side it would reach is still
-RISC-V-shaped, so enabling the call would not produce a working trap — it would
-produce a worse one:
+```
+PROCESS_SERVICE_REFUSED app=4294967394 class=ClassId([69, 78, 84, 82]) version=1 status=-3
+RECOVERY_BOOT_REFUSED service=Finder required provider admission refused status=-3
+```
 
-* `dispatch_frame` decides `user_origin` from `status & (1 << 8)`, which is
-  `sstatus.SPP` on RISC-V and `SPSR_EL1`'s SError mask on AArch64, where the
-  source EL is `M[3:0]` and the IRQ mask is bit 7.
-* It compares `cause` against RISC-V `scause` values (`(1 << 63) | 1`,
-  `(1 << 63) | 5`), while the aarch64 entry stores `ESR_EL1`.
-* It reads the trap number from `registers[15]` and the arguments from
-  `registers[8]`/`registers[9]` — RISC-V's `a7`/`a0`/`a1` — while aarch64 callers
-  put the number in `x8` and the arguments in `x0`/`x1`, and the aarch64 entry
-  stores raw `x0..x29` into slots 0..29.
+`ENTR` had no provider because `platforms/qemu_arm64.json` declared the
+`virtio-rng` device in `emulation.entropy` and did not list its driver in
+`install.modules` — the same shape again, a capability declared in two places
+with nothing comparing them. Adding it exposed the second half:
+`drivers/virtio-rng` gated its device module, its `Driver` export and its
+build-script guest contract behind `target_arch = "riscv64"`, although
+`machine.rs` names no instruction — the ordering comes from `mac-driver::arch`.
+It now takes the form `virtio-gpu` already used: `TARGET != HOST` for the guest
+contract and `target_os = "none"` for the lock. `MODULE_PUBLISHED name=VirtIO RNG`
+follows, and the provider refusal is gone.
 
-An aarch64 `svc` would therefore take `ESR_EL1` as a fault cause and be routed
-into `capture_fault`, killing the application. The trap-frame register ABI needs
-one owner and one decision before `invoke` gains an aarch64 arm.
+### Open: aarch64 has no interrupt source, so the scheduler never ticks
+
+`raw-hfs-b` now stops silently after `SYSTEM_CPUS_READY`. The last thing the boot
+does is `system/src/machine/scheduler.rs:1190`: with the Finder startup flight
+pending it selects idle, arms the generic timer, and enters the idle frame. Every
+remaining boot step — `FONTS_PUBLISHED`, the launch directory,
+`SYSTEM_FINDER_LAUNCH` — is reached only from `scheduler::schedule()`
+(`scheduler.rs:1650`), and `schedule()` is reached only from `Dispatch::Schedule`,
+i.e. from a trap. The idle loop is `loop { wfi }` (`scheduler.rs:1262`) and has no
+other body.
+
+Nothing on aarch64 raises that trap:
+
+* `aarch64::cpu::clear_software_interrupt` and `enable_software_interrupt` are
+  documented no-ops that defer to a GIC the resident path does not program.
+* `set_timer_deadline` programs `CNTP_CVAL_EL0`/`CNTP_CTL_EL0`, but nothing
+  enables the distributor or the CPU interface, so the PPI is never delivered.
+  Neither the bootloader nor System writes `GICD_CTLR` or `GICC_CTLR` anywhere
+  in the tree; the bootloader only records the controller's address.
+* `dispatch_frame` could not classify an IRQ in any case: the sixteen vector
+  slots converge on one entry and the frame records only `ESR_EL1`, which an
+  interrupt never writes. A stale `ESR_EL1` still holding a call's exception
+  class would make an interrupt look like a call.
+
+`qemu_riscv` progresses past this point because its timer interrupt arrives. This
+is the gate this record already names for the monitor route, and enabling
+delivery — distributor, CPU interface, PPI enable, `IAR`/`EOIR`, and a
+vector-slot record so an IRQ is never mistaken for a call — is the interrupt
+controller path, which the current work order excludes. It is reported rather
+than worked around: a polling idle or a synthetic tick would be a different
+scheduler, not this one.
 
 
 ## Not attempted, deliberately
+
+The frame status words. `INITIAL_STATUS` and `USER_STATUS`
+(`system/src/machine/traps.rs:54`) are RISC-V `sstatus` values — `SPP`, `SPIE`,
+`FS` — used unchanged as AArch64 `SPSR_EL1`. `INITIAL_STATUS` therefore names
+`EL0t` for the System idle and module-worker frames, and `USER_STATUS` names
+`EL0t` with `A` clear, which is what makes the existing `user_origin` test work
+for applications. They are not changed here: `user_origin` reads `SPSR_EL1.A`,
+so rewriting either word without also moving that test to `M[3:0]` would
+reclassify every application's calls as privileged. That is one change with one
+owner and belongs in its own step.
 
 The floating-point/NEON part of an aarch64 thread context. `TPIDR_EL0` and `x30`
 are now carried (see *What still blocks `qemu_arm64`*); the 32 128-bit vector

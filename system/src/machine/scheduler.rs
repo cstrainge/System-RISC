@@ -698,7 +698,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
         initial.pc = loaded.entry();
         initial.status = crate::machine::traps::USER_STATUS;
         initial.stack_pointer = top;
-        initial.registers[8] = runtime.descriptor();
+        crate::machine::trap_frame::set_result(&mut initial, runtime.descriptor());
         cpu.initialize(initial).map_err(|cause| cause.status())?;
         let core = Arc::try_new(ThreadCore { address: Mutex::new(None),
                                              backing:
@@ -866,7 +866,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
         frame.pc = loaded.entry();
         frame.status = crate::machine::traps::USER_STATUS;
         frame.stack_pointer = top;
-        frame.registers[8] = runtime.descriptor();
+        crate::machine::trap_frame::set_result(&mut frame, runtime.descriptor());
         cpu.initialize(frame).map_err(|cause| cause.status())?;
         Ok((stack, top))
     })();

@@ -35,8 +35,6 @@ global_asm!(include_str!("trap_entry.S"),
     ctl_entering=const core::mem::offset_of!(hart::Control,entering),
     ctl_depth=const core::mem::offset_of!(hart::Control,depth),
     ctl_frames=const core::mem::offset_of!(hart::Control,frames),
-    ctl_top=const core::mem::offset_of!(hart::Control,top),
-    ctl_sp=const core::mem::offset_of!(hart::Control,interrupted_sp),
     cpu_slots=const CPU_SLOTS,
     uart=const crate::machine::memory::UART_BASE);
 

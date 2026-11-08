@@ -21,3 +21,4 @@ pub(crate) mod page_layout;
 pub(crate) mod power;
 pub(crate) mod primary_service;
 pub(crate) mod trap_entry;
+pub(crate) mod trap_frame;

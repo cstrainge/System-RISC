@@ -235,8 +235,8 @@ pub(crate) fn prepare(source: &crate::images::Read) -> Result<CallbackThread, St
             frame.pc = runtime.callback_loop();
             frame.status = crate::machine::traps::USER_STATUS;
             frame.stack_pointer = top;
-            frame.registers[0] = runtime.thread_return();
-            frame.registers[8] = runtime.descriptor();
+            crate::machine::trap_frame::set_return_link(&mut frame, runtime.thread_return());
+            crate::machine::trap_frame::set_result(&mut frame, runtime.descriptor());
             cpu.initialize(frame).map_err(|cause| cause.status())?;
             let core = Arc::try_new(ThreadCore { address:Mutex::new(None),
             backing:Mutex::new(Some(ThreadBacking {cpu,stack,image:Some(ApplicationImageUse::Child { _execution: code })})),

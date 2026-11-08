@@ -22,38 +22,64 @@ __system_trap_vector:
 // ESR_EL1 and FAR_EL1 hold the fault. The per-CPU control block is in TPIDR_EL1
 // and carries the frame stack this path allocates from.
 __system_trap_common:
-    // Reserve room for the two saved scratch registers below the frame.
-    sub sp, sp, #16
+    // Reserve room for the six scratch registers this entry uses below.
+    sub sp, sp, #48
     stp x0, x1, [sp]
+    stp x2, x3, [sp, #16]
+    stp x4, x5, [sp, #32]
 
     // Load the control block. A zero pointer means no per-CPU state was
     // published, so there is nowhere to record a frame; report and halt rather
     // than dereferencing it.
     mrs x0, tpidr_el1
-    cbz x0, __system_trap_no_control
+    cbz x0, __system_trap_no_frame
+
+    // The entering flag is set only while an entry or a restore is in progress.
+    // A trap that arrives while it is set cannot be recorded on the fixed frame
+    // stack without overwriting a frame that is still live.
+    ldr x4, [x0, #{ctl_entering}]
+    cbnz x4, __system_trap_no_frame
+    mov x4, #1
+    str x4, [x0, #{ctl_entering}]
 
     // x1 = depth. Frames are a fixed stride from `frames`, indexed by depth.
     ldr x1, [x0, #{ctl_depth}]
 
-    // Bounds check before computing the frame address: depth must be below the
-    // slot count, and the frame must stay below `top`.
+    // The frame array holds exactly `cpu_slots` frames of `frame_bytes`, so the
+    // depth is the whole bound. `top` is the System stack's limit, which is a
+    // different allocation from the frame array; bounding one against the other
+    // could never succeed.
     cmp x1, #{cpu_slots}
-    b.hs __system_trap_no_control
+    b.hs __system_trap_no_frame
     ldr x2, [x0, #{ctl_frames}]
+    cbz x2, __system_trap_no_frame
     mov x3, #{frame_bytes}
     madd x2, x1, x3, x2
-    ldr x3, [x0, #{ctl_top}]
-    cmp x2, x3
-    b.hs __system_trap_no_control
 
-    // x2 is now the frame base. Restore the two registers saved above.
+    // x2 is now the frame base. Write the interrupted context into its own
+    // slots, restoring the six registers saved above.
     ldp x4, x5, [sp]
-    add sp, sp, #16
     stp x4, x5, [x2, #{registers}]
-
-    // Save x2..x29. x0..x1 came from the stack, so start at x2.
-    stp x2, x3, [x2, #{registers} + 16]
+    ldp x4, x5, [sp, #16]
+    stp x4, x5, [x2, #{registers} + 16]
+    ldp x4, x5, [sp, #32]
     stp x4, x5, [x2, #{registers} + 32]
+
+    // The interrupted stack pointer. From EL0 the hardware switched to SP_EL1,
+    // so the interrupted value is SP_EL0; from EL1 an exception does not switch
+    // stacks, so it is this sp plus the entry's own reservation.
+    mrs x4, spsr_el1
+    and x4, x4, #0xf
+    cbnz x4, .Lentry_sp_privileged
+    mrs x4, sp_el0
+    b .Lentry_sp_ready
+.Lentry_sp_privileged:
+    add x4, sp, #48
+.Lentry_sp_ready:
+    str x4, [x2, #{saved_sp}]
+    add sp, sp, #48
+
+    // Save x6..x29.
     stp x6, x7, [x2, #{registers} + 48]
     stp x8, x9, [x2, #{registers} + 64]
     stp x10, x11, [x2, #{registers} + 80]
@@ -85,25 +111,19 @@ __system_trap_common:
     mrs x4, far_el1
     str x4, [x2, #{value}]
 
-    // The interrupted stack pointer. On an exception from a lower or same level
-    // with SPx, the interrupted SP is not directly readable, so the control
-    // block's recorded value is used where the entry saved it.
-    ldr x4, [x0, #{ctl_sp}]
-    str x4, [x2, #{saved_sp}]
+    // The interrupted stack pointer is recorded above from the entry's own
+    // stack; nothing else in this entry reads the control block's copy.
 
-    // Publish this frame as the current one before any handler runs, so a nested
-    // fault can find its way back.
-    ldr x4, [x2, #{prior_depth}]
-    cmp x4, #0
-    b.ne 1f
-    // First frame: record the entering context.
-    mov x5, #1
-    str x5, [x0, #{ctl_entering}]
-1:
+    // Record this frame's own nesting depth, then publish the next one. The
+    // restore path puts the counter back from this field, so nesting cannot
+    // accumulate across returns.
+    str x1, [x2, #{prior_depth}]
     add x5, x1, #1
     str x5, [x0, #{ctl_depth}]
 
-    // The shared dispatch takes the frame in x0 and returns a dispatch decision.
+    // The handler runs with the entering flag clear, which is the state the
+    // restore path publishes for interrupted code; `captured_outer` requires it.
+    str xzr, [x0, #{ctl_entering}]
     mov x0, x2
     bl __system_trap_dispatch
 
@@ -117,12 +137,29 @@ __system_restore_frame:
     msr elr_el1, x4
     ldr x4, [x2, #{status}]
     msr spsr_el1, x4
-    // Restore the interrupted context's thread pointer and return link while
+    // Publish the state interrupted code resumes in: the entering flag set, and
+    // the nesting counter back at the depth this frame interrupted. Without the
+    // counter restore it would accumulate and the next trap would look nested.
+    mrs x5, tpidr_el1
+    mov x4, #1
+    str x4, [x5, #{ctl_entering}]
+    ldr x4, [x2, #{prior_depth}]
+    str x4, [x5, #{ctl_depth}]
+    // Restore the interrupted stack pointer, thread pointer and return link while
     // x2 still holds the frame base; the register reload below overwrites it.
+    // A return to EL0 uses SP_EL0; a return to EL1 uses sp.
+    ldr x5, [x2, #{status}]
+    and x5, x5, #0xf
+    ldr x4, [x2, #{saved_sp}]
+    cbnz x5, .Lrestore_sp_privileged
+    msr sp_el0, x4
+    b .Lrestore_sp_ready
+.Lrestore_sp_privileged:
+    mov sp, x4
+.Lrestore_sp_ready:
     ldr x4, [x2, #{thread_pointer}]
     msr tpidr_el0, x4
     ldr x30, [x2, #{link_register}]
-    ldp x2, x3, [x2, #{registers} + 16]
     ldp x4, x5, [x2, #{registers} + 32]
     ldp x6, x7, [x2, #{registers} + 48]
     ldp x8, x9, [x2, #{registers} + 64]
@@ -137,7 +174,21 @@ __system_restore_frame:
     ldp x26, x27, [x2, #{registers} + 208]
     ldp x28, x29, [x2, #{registers} + 224]
     ldp x0, x1, [x2, #{registers}]
+    // x2 is the address every reload above reads through, so the pair that
+    // restores x2 itself has to be the last load. The entering flag is cleared
+    // just before it, as nothing between here and `eret` can trap.
+    mrs x4, tpidr_el1
+    str xzr, [x4, #{ctl_entering}]
+    ldp x2, x3, [x2, #{registers} + 16]
     eret
+
+// No usable frame: either no per-CPU state was published, the entering flag says
+// another entry or restore is still in progress, or the control block names no
+// frame for this depth. Undo the entry's own reservation so the report states
+// the interrupted stack pointer, and fall through to the one reporting path.
+__system_trap_no_frame:
+    add sp, sp, #48
+    b __system_trap_no_control
 
 // No per-CPU state: there is no frame to record and no way to report through the
 // shared path. Write the fault registers straight to the bootstrap console and
@@ -172,6 +223,9 @@ __system_trap_no_control:
     // and overrides PXN. A writable, descriptor-executable page that still
     // faults on fetch is exactly that signature.
     mrs x28, sctlr_el1
+    // TPIDR_EL1 separates "no per-CPU state was published" from "the control
+    // block exists but has no frame for this depth"; both reach this report.
+    mrs x29, tpidr_el1
     ldr x0, =no_control_text
     bl no_control_puts
     mov x0, x22
@@ -211,6 +265,10 @@ __system_trap_no_control:
     ldr x0, =no_control_sctlr_text
     bl no_control_puts
     mov x0, x28
+    bl no_control_hex
+    ldr x0, =no_control_tpidr_text
+    bl no_control_puts
+    mov x0, x29
     bl no_control_hex
     ldr x0, =no_control_nl
     bl no_control_puts
@@ -255,12 +313,10 @@ no_control_hex:
     ret
 
 // Enter a freshly built frame rather than returning to an interrupted context.
-// The frame carries the stack pointer the new context must run on, so unlike an
-// exception return this path has to install it explicitly before eret.
+// The frame states the level it resumes at, and the restore path installs the
+// matching stack pointer, so this is the same return.
     .global __system_start_frame
 __system_start_frame:
-    ldr x4, [x0, #{saved_sp}]
-    mov sp, x4
     b __system_restore_frame
 
 // Request a trap from an ordinary call frame: (number, argument, length) in
@@ -294,5 +350,7 @@ no_control_lr_text:
     .asciz " LR="
 no_control_sctlr_text:
     .asciz " SCTLR="
+no_control_tpidr_text:
+    .asciz " TPIDR="
 no_control_nl:
     .asciz "\n"
