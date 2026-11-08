@@ -1,0 +1,382 @@
+import std::io
+visible `__json
+visible `__json_source
+visible "__JsonDocument"
+visible "__JsonNumber"
+visible "__JsonCodec"
+pub visible "__json_SyntaxError"
+pub visible "__json_EncodingError"
+pub visible "__json_MappingError"
+pub visible "__json_PathError"
+pub visible "__json_LimitError"
+pub visible "__json_ValidationError"
+
+pub type Document = __JsonDocument
+pub type Number = __JsonNumber
+pub type Codec = __JsonCodec
+pub type Error = SyntaxError | EncodingError | MappingError | PathError | LimitError | ValidationError
+
+pub enum NumberMode { Native, Exact }
+pub enum DuplicateNames { Reject, FirstWins, LastWins }
+pub enum UnknownFields { Reject, Ignore }
+pub enum Kind { Null, Boolean, Number, String, Array, Object }
+
+pub struct StructOptions
+{
+    pub rename_fields: [String: String] | (),
+    pub omit_null_fields: [String] | (),
+    pub unknown_fields: UnknownFields | (),
+}
+
+pub fn enum_codec($target: Type, $names: HashMap): Codec | Error
+{
+    __json "enum_codec" $target $names
+}
+
+pub fn struct_codec($target: Type, $options: StructOptions | ()): Codec | Error
+{
+    __json "struct_codec" $target $options
+}
+
+pub struct ParseOptions
+{
+    pub number_mode: NumberMode | (),
+    pub duplicate_names: DuplicateNames | (),
+    pub max_bytes: Integer | (),
+    pub max_depth: Integer | (),
+    pub max_scalar: Integer | (),
+    pub max_members: Integer | (),
+}
+
+pub struct MappingOptions
+{
+    pub unknown_fields: UnknownFields | (),
+    pub max_depth: Integer | (),
+    pub max_members: Integer | (),
+}
+
+pub struct EncodeOptions
+{
+    pub pretty: Boolean | (),
+    pub max_bytes: Integer | (),
+    pub max_depth: Integer | (),
+    pub max_scalar: Integer | (),
+    pub max_members: Integer | (),
+}
+
+pub fn parse($text: String, $options: ParseOptions | ()): Document | Error
+{
+    __json "parse" $text $options
+}
+
+pub fn decode($text: String, $options: ParseOptions | ()): any | Error
+{
+    __json "decode" $text $options
+}
+
+pub fn wrap($value: any, $options: EncodeOptions | ()): Document | Error
+{
+    __json "wrap" $value $options
+}
+
+pub fn encode($value: any, $options: EncodeOptions | ()): String | Error
+{
+    __json "encode" $value $options
+}
+
+pub fn read($reader: std::io::Reader, $options: ParseOptions | ()): Document | Error | std::io::Error
+{
+    let $maximum = if $options == () { 16777216 }
+        else if $options.max_bytes == () { 16777216 } else { $options.max_bytes }
+    let $text = String($reader.read_all $maximum)
+    parse $text $options
+}
+
+pub fn write($value: any, $writer: std::io::Writer, $options: EncodeOptions | ()): Integer | Error | std::io::Error
+{
+    let $text = encode $value $options
+    $writer.write std::io::Bytes($text)
+}
+
+pub fn array_source($items: any, $options: EncodeOptions | ()): std::io::ByteSource | Error | std::io::Error
+{
+    __json_source "array" $items $options
+}
+
+pub fn lines_source($items: any, $options: EncodeOptions | ()): std::io::ByteSource | Error | std::io::Error
+{
+    __json_source "lines" $items $options
+}
+
+pub fn convert($value: any, $target: Type, $options: MappingOptions | ()): any | ErrorValue
+{
+    __json "convert" $value $target $options
+}
+
+pub fn decode_as($text: String, $target: Type, $options: MappingOptions | ()): any | ErrorValue
+{
+    let $document = parse $text
+    convert $document $target $options
+}
+
+pub fn set($document: Document, $pointer: String, $value: any): Document | Error
+{
+    __json "set" $document $pointer $value
+}
+
+pub fn remove($document: Document, $pointer: String): Document | Error
+{
+    __json "remove" $document $pointer
+}
+
+pub fn append($document: Document, $pointer: String, $value: any): Document | Error
+{
+    __json "append" $document $pointer $value
+}
+
+pub fn number($token: String): Number | Error { __json "number" $token }
+pub fn Number::get_text(): String { __json "number_text" $self }
+pub fn Number::require_integer(): Integer | Error { __json "number_integer" $self }
+pub fn Number::require_float(): Float | Error { __json "number_float" $self }
+
+pub fn Document::get_kind(): Kind | Error
+{
+    match (__json "kind" $self)
+    {
+        "Null" => { Kind::Null },
+        "Boolean" => { Kind::Boolean },
+        "Number" => { Kind::Number },
+        "String" => { Kind::String },
+        "Array" => { Kind::Array },
+        "Object" => { Kind::Object },
+    }
+}
+
+pub fn Document::get_value(): any | Error { __json "value" $self }
+pub fn Document::at($pointer: String): Document | Error { __json "at" $self $pointer }
+pub fn Document::find($pointer: String): Document | () | Error { __json "find" $self $pointer }
+pub fn Document::has($pointer: String): Boolean | Error { __json "has" $self $pointer }
+pub fn Document::require_string($pointer: String | ()): String | Error
+{
+    __json "require_string" $self $pointer
+}
+pub fn Document::require_boolean($pointer: String | ()): Boolean | Error
+{
+    __json "require_boolean" $self $pointer
+}
+pub fn Document::require_integer($pointer: String | ()): Integer | Error
+{
+    __json "require_integer" $self $pointer
+}
+pub fn Document::array_items($pointer: String | ()): [Document] | Error
+{
+    __json "array_items" $self $pointer
+}
+pub fn Document::get_members(): [String: Document] | Error { __json "members" $self }
+pub fn Document::get_number_text(): String | Error { __json "document_number_text" $self }
+pub fn Document::detach(): Document | Error { __json "detach" $self }
+pub fn Document::to_json(): Document { $self }
+
+import std::stream
+pub fn encode_line($value: any, $options: EncodeOptions | ()): String | Error
+{
+    if $options != () && $options.pretty == true
+    { return ValidationError(message: "JSON Lines requires compact encoding", path: "", line: 0, column: 0) }
+    (encode $value $options) + "\n"
+}
+pub fn read_lines($reader: std::io::Reader, $options: ParseOptions | ()): std::stream::Reader | ErrorValue
+{
+    let $lines = std::io::lines $reader 1048576
+    std::stream::Reader(
+        next: fn (): Document | () | Error | std::io::Error
+        {
+            let $line = $lines.next_item
+            if $line == () { return () }
+            parse $line $options
+        },
+        close: fn (): () | std::io::Error { $lines.close },
+    )
+}
+
+visible `__json_reader
+visible "__JsonArrayReader"
+type ArrayReader = __JsonArrayReader
+fn ArrayReader::next_item(): Document | () | Error | std::io::Error
+{ __json_reader "next" $self }
+fn ArrayReader::close(): () | std::io::Error { __json_reader "close" $self }
+pub fn read_array($reader: std::io::Reader, $pointer: String | (),
+                  $options: ParseOptions | ()): std::stream::Reader | ErrorValue
+{
+    let $array: ArrayReader = __json_reader "array" $reader $pointer $options
+    std::stream::Reader(
+        next: fn (): Document | () | Error | std::io::Error { $array.next_item },
+        close: fn (): () | std::io::Error { $array.close },
+    )
+}
+
+visible `__json_bind
+visible `__json_apply
+visible `__stream
+pub fn std::stream::Reader::read_as($target: Type, $options: MappingOptions | (),
+                                   $boxed: Boolean | ()): std::stream::Reader | ErrorValue
+{
+    if $boxed != true && (__json "accepts_null" $target)
+    { return MappingError(message: "Target accepts null; select boxed mapping", path: "", line: 0, column: 0) }
+    let $source = $self
+    let $conversion = __json_bind $target
+    let $reader = std::stream::Reader(
+        next: fn (): any | ErrorValue
+        {
+            let $document = $source.next_item
+            if $document == () { return () }
+            let $value = __json_apply $document $conversion $options
+            if $boxed == true { return std::stream::Item(value: $value) }
+            if $value == ()
+            { return MappingError(message: "Unboxed hook returned null", path: "", line: 0, column: 0) }
+            $value
+        },
+        result: fn (): any | ErrorValue { $source.result },
+        close: fn (): () | ErrorValue { $source.close },
+    )
+    __stream "inherit_iteration" $reader $source
+}
+
+# Single-document chunk decoder. finish is the explicit end-of-input boundary; an
+# incomplete number such as "1e" must never be accepted at a transport chunk boundary.
+pub enum DecodeState { NeedInput, End }
+pub struct Decoder
+{
+    input: std::io::Bytes,
+    options: ParseOptions | (),
+    finished: Boolean,
+    delivered: Boolean,
+    document: Document | (),
+}
+pub fn Decoder::new($options: ParseOptions | ()): Decoder | std::io::Error
+{ Decoder(input: std::io::Bytes(""), options: $options, finished: false, delivered: false) }
+pub fn Decoder::feed($bytes: std::io::Bytes): () | Error | std::io::Error
+{
+    if $self.::finished
+    { return ValidationError(message: "Decoder input is already finished", path: "", line: 0, column: 0) }
+    let $maximum = if $self.::options == () || $self.::options.max_bytes == ()
+        { 16777216 } else { $self.::options.max_bytes }
+    if $self.::input.count + $bytes.count > $maximum
+    { return LimitError(message: "Decoder exceeds document byte limit", path: "", line: 0, column: 0) }
+    $self.::input = $self.::input.concat $bytes
+}
+pub fn Decoder::finish(): () | Error | std::io::Error
+{
+    if $self.::finished { return () }
+    let $document = parse (String($self.::input)) $self.::options
+    $self.::document = $document
+    $self.::input = std::io::Bytes("")
+    $self.::finished = true
+}
+pub fn Decoder::poll(): Document | DecodeState
+{
+    if !$self.::finished { return DecodeState::NeedInput }
+    if $self.::delivered { return DecodeState::End }
+    $self.::delivered = true
+    let $document: any = $self.::document
+    $document
+}
+pub fn read_sequence($reader: std::io::Reader, $options: ParseOptions | ()): std::stream::Reader | ErrorValue
+{
+    let $maximum = if $options == () || $options.max_bytes == () { 1048576 } else { $options.max_bytes }
+    let $records = std::io::records $reader 30 $maximum
+    let $started = false
+    std::stream::Reader(
+        next: fn (): Document | () | ErrorValue
+        {
+            if !$started
+            {
+                let $prefix = $records.next_bytes
+                $started = true
+                if $prefix == () { return () }
+                if $prefix.count != 0
+                { return SyntaxError(message: "JSON sequence must start with RS", path: "", line: 0, column: 0) }
+            }
+            let $bytes = $records.next_bytes
+            if $bytes == () { return () }
+            let $text = String($bytes)
+            if !($text.ends_with "\n")
+            { return SyntaxError(message: "JSON sequence record must end with LF", path: "", line: 0, column: 0) }
+            parse $text $options
+        },
+        close: fn (): () | std::io::Error { $records.close },
+    )
+}
+pub fn encode_sequence($value: any, $options: EncodeOptions | ()): String | Error
+{ "\x1e" + (encode $value $options) + "\n" }
+
+pub enum EventKind { StartObject, EndObject, StartArray, EndArray, Member, Value }
+pub struct Event
+{
+    pub kind: EventKind,
+    pub path: String,
+    pub name: String | (),
+    pub value: Document | (),
+}
+struct EventWork
+{
+    pub value: Document,
+    pub path: String,
+    pub started: Boolean,
+    pub offset: Integer,
+}
+pub fn events($document: Document): std::stream::Reader | ErrorValue
+{
+    # Keep only the ancestor stack. Wide containers do not enqueue every child.
+    let $work = [EventWork(value:$document, path:"", started:false, offset:0)]
+    let $pending = ()
+    std::stream::Reader(
+        next: fn (): Event | () | ErrorValue
+        {
+            loop
+            {
+                if $pending != ()
+                { $work = [$work..., $pending]; $pending = () }
+                if $work.count == 0 { return () }
+                let $last = $work.count - 1
+                let $entry = $work[$last]
+                let $kind = $entry.value.kind
+                if $kind != Kind::Array && $kind != Kind::Object
+                {
+                    $work = $work[0..$last]
+                    return Event(kind:EventKind::Value, path:$entry.path, value:$entry.value)
+                }
+                if !$entry.started
+                {
+                    $entry.started = true
+                    $work[$last] = $entry
+                    return Event(kind:(if $kind == Kind::Array { EventKind::StartArray } else { EventKind::StartObject }), path:$entry.path)
+                }
+                if $entry.offset == $entry.value.count
+                {
+                    $work = $work[0..$last]
+                    return Event(kind:(if $kind == Kind::Array { EventKind::EndArray } else { EventKind::EndObject }), path:$entry.path)
+                }
+                let $offset = $entry.offset
+                $entry.offset = $entry.offset + 1
+                $work[$last] = $entry
+                if $kind == Kind::Array
+                {
+                    $pending = EventWork(value:($entry.value.at "/${offset}"), path:"${entry.path}/${offset}", started:false, offset:0)
+                }
+                else
+                {
+                    let $member = $entry.value.member_at $offset
+                    let $name = $member[0]
+                    let $path = $entry.path + "/" + (($name.replace "~" "~0").replace "/" "~1")
+                    $pending = EventWork(value:$member[1], path:$path, started:false, offset:0)
+                    return Event(kind:EventKind::Member, path:$path, name:$name)
+                }
+            }
+        },
+    )
+}
+pub fn Document::get_count(): Integer | Error { __json "count" $self }
+pub fn Document::member_at($index: Integer): [String, Document] | Error { __json "member_at" $self $index }
+
+pub fn Document::require_float($pointer: String | ()): Float | Error
+{ __json "require_float" $self $pointer }

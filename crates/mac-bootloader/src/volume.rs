@@ -87,11 +87,15 @@ pub unsafe extern "C" fn disk_info(context: *mut (), index: u32, output: *mut Di
 }
 
 /// # Safety
-/// As [`disk_info`], with `output` writable for one 512-byte sector.
-pub unsafe extern "C" fn read_sector(context: *mut (), index: u32, sector: u64, output: *mut u8)
-                                     -> Status
+/// As [`disk_info`], with `output` writable for `count` contiguous 512-byte sectors.
+/// `count` must be between one and `FIRMWARE_READ_SECTORS`, inclusive.
+pub unsafe extern "C" fn read_sectors(context: *mut (), index: u32, sector: u64, count: u32,
+                                      output: *mut u8)
+                                      -> Status
 {
-    if context.is_null() || output.is_null()
+    if context.is_null()
+       || output.is_null()
+       || !(1..=mac_abi::FIRMWARE_READ_SECTORS as u32).contains(&count)
     {
         return BAD_ARGUMENT;
     }
@@ -101,17 +105,19 @@ pub unsafe extern "C" fn read_sector(context: *mut (), index: u32, sector: u64, 
     {
         return NOT_FOUND;
     };
-    if sector >= disk.sector_count()
+    if sector.checked_add(u64::from(count)).is_none_or(|end| end > disk.sector_count())
     {
         return BAD_ARGUMENT;
     }
-    let output = unsafe { &mut *output.cast::<[u8; 512]>() };
-    match disk.read_sector(sector, output)
+    let output =
+        unsafe { core::slice::from_raw_parts_mut(output.cast::<[u8; 512]>(), count as usize) };
+    match disk.read_sectors(sector, output)
     {
         Ok(()) => OK,
         Err(error) =>
         {
-            super::log(format_args!("DISK_READ_FAILED: disk={} sector={} {}", index, sector, error));
+            super::log(format_args!("DISK_READ_FAILED: disk={} sector={} {}",
+                                    index, sector, error));
             // Preserved from the bootstrap this moved out of: a failed read has
             // always reported NOT_SUPPORTED here, and changing it would alter
             // what System sees for an existing failure.

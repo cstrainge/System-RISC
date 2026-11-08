@@ -1,12 +1,12 @@
 //! Modern virtio-mmio, split queue, one outstanding read/write/flush request.
 use alloc::boxed::Box;
-use core::{
-           fmt::Write,
+use core::{fmt::Write,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
 use mac_filesystem::{BlockDevice, Error, Result, WritableBlockDevice};
 
 const N: usize = 8;
+const READ_BYTES: usize = mac_abi::FIRMWARE_READ_SECTORS * 512;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Descriptor
@@ -53,7 +53,7 @@ struct Queue
     available:   Available,
     used:        Used,
     request:     Request,
-    data:        [u8; 512],
+    data:        [u8; READ_BYTES],
     status:      u8
 }
 impl Queue
@@ -77,7 +77,7 @@ impl Queue
                request:     Request { kind:     0,
                                       reserved: 0,
                                       sector:   0 },
-               data:        [0; 512],
+               data:        [0; READ_BYTES],
                status:      0xff }
     }
 }
@@ -235,14 +235,19 @@ impl<M: Machine> BlockDevice for Disk<M>
 
     fn read_sector(&mut self, sector: u64, output: &mut [u8; 512]) -> Result<()>
     {
-        if sector >= self.sectors
+        self.read_sectors(sector, core::slice::from_mut(output))
+    }
+
+    fn read_sectors(&mut self, sector: u64, output: &mut [[u8; 512]]) -> Result<()>
+    {
+        if sector.checked_add(output.len() as u64).is_none_or(|end| end > self.sectors)
         {
             return Err(Error::Malformed("virtio read outside disk"));
         }
-        self.request(0, sector, None)?;
-        for (index, byte) in output.iter_mut().enumerate()
+        for (index, chunk) in output.chunks_mut(mac_abi::FIRMWARE_READ_SECTORS).enumerate()
         {
-            *byte = unsafe { read_volatile(addr_of_mut!(self.queue.data[index])) };
+            self.read_batch(sector + (index * mac_abi::FIRMWARE_READ_SECTORS) as u64,
+                            chunk.as_flattened_mut())?;
         }
         Ok(())
     }
@@ -250,6 +255,16 @@ impl<M: Machine> BlockDevice for Disk<M>
 
 impl<M: Machine> Disk<M>
 {
+    fn read_batch(&mut self, sector: u64, output: &mut [u8]) -> Result<()>
+    {
+        self.request(0, sector, output.len() as u32, None)?;
+        for (index, byte) in output.iter_mut().enumerate()
+        {
+            *byte = unsafe { read_volatile(addr_of_mut!(self.queue.data[index])) };
+        }
+        Ok(())
+    }
+
     fn request_error(&mut self, kind: u32, sector: u64, start: u64, reason: &'static str,
                      poison: bool)
                      -> Error
@@ -282,7 +297,8 @@ impl<M: Machine> Disk<M>
         Error::Malformed(reason)
     }
 
-    fn request(&mut self, kind: u32, sector: u64, input: Option<&[u8; 512]>) -> Result<()>
+    fn request(&mut self, kind: u32, sector: u64, length: u32, input: Option<&[u8; 512]>)
+               -> Result<()>
     {
         if self.failed
         {
@@ -293,10 +309,11 @@ impl<M: Machine> Disk<M>
         q.request.sector = sector.to_le();
         if let Some(input) = input
         {
-            q.data.copy_from_slice(input);
+            q.data[..512].copy_from_slice(input);
         }
         q.descriptors[0].next = if kind == 4 { 2 } else { 1 };
         q.descriptors[1].flags = if kind == 0 { 3 } else { 1 };
+        q.descriptors[1].length = length;
         unsafe {
             write_volatile(addr_of_mut!(q.status), 0xff);
         }
@@ -313,30 +330,30 @@ impl<M: Machine> Disk<M>
         loop
         {
             let result = crate::completion::poll(self.index,
-                                                   || unsafe {
-                                                       u16::from_le(read_volatile(core::ptr::addr_of!(self.queue.used.index)))
-                                                   },
-                                                   || {
-                                                       let elapsed = M::counter().wrapping_sub(start);
-                                                       if elapsed < next_status_check
-                                                       {
-                                                           return None;
-                                                       }
-                                                       next_status_check =
-                                                           elapsed.saturating_add(10_000);
-                                                       if self.read(0x70) & 0xc0 != 0
-                                                       {
-                                                           Some("virtio block device failed")
-                                                       }
-                                                       else if elapsed > 10_000_000
-                                                       {
-                                                           Some("virtio block request timed out")
-                                                       }
-                                                       else
-                                                       {
-                                                           None
-                                                       }
-                                                   });
+                                                 || unsafe {
+                                                     u16::from_le(read_volatile(core::ptr::addr_of!(self.queue.used.index)))
+                                                 },
+                                                 || {
+                                                     let elapsed = M::counter().wrapping_sub(start);
+                                                     if elapsed < next_status_check
+                                                     {
+                                                         return None;
+                                                     }
+                                                     next_status_check =
+                                                         elapsed.saturating_add(10_000);
+                                                     if self.read(0x70) & 0xc0 != 0
+                                                     {
+                                                         Some("virtio block device failed")
+                                                     }
+                                                     else if elapsed > 10_000_000
+                                                     {
+                                                         Some("virtio block request timed out")
+                                                     }
+                                                     else
+                                                     {
+                                                         None
+                                                     }
+                                                 });
             match result
             {
                 crate::completion::Poll::Ready => break,
@@ -355,7 +372,7 @@ impl<M: Machine> Disk<M>
             read_volatile(addr_of_mut!(q.used.ring[self.index.wrapping_sub(1) as usize % N]))
         };
         if u32::from_le(completion.id) != 0
-           || u32::from_le(completion.length) != (if kind == 0 { 513 } else { 1 })
+           || u32::from_le(completion.length) != (if kind == 0 { length + 1 } else { 1 })
         {
             return Err(self.request_error(kind, sector, start,
                                           "virtio block completion is invalid", true));
@@ -390,7 +407,7 @@ impl<M: Machine> WritableBlockDevice for Disk<M>
         {
             return Err(Error::Malformed("virtio write outside disk"));
         }
-        self.request(1, sector, Some(input))
+        self.request(1, sector, 512, Some(input))
     }
 
     fn flush(&mut self) -> Result<()>
@@ -399,7 +416,7 @@ impl<M: Machine> WritableBlockDevice for Disk<M>
         {
             return Err(Error::Malformed("virtio block lacks FLUSH"));
         }
-        self.request(4, 0, None)
+        self.request(4, 0, 0, None)
     }
 }
 

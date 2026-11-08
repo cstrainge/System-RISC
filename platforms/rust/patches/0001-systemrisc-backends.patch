@@ -375,3 +375,112 @@ diff --git a/library/std/src/process.rs b/library/std/src/process.rs
                  io::attempt_print_to_stderr(format_args_nl!("Error: {err:?}"));
                  ExitCode::FAILURE
              }
+diff --git a/library/std/src/sys/process/mod.rs b/library/std/src/sys/process/mod.rs
+--- a/library/std/src/sys/process/mod.rs
++++ b/library/std/src/sys/process/mod.rs
+@@ -1,4 +1,8 @@
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        use systemrisc as imp;
++    }
+     target_family = "unix" => {
+         mod unix;
+         use unix as imp;
+diff --git a/library/std/src/hash/random.rs b/library/std/src/hash/random.rs
+--- a/library/std/src/hash/random.rs
++++ b/library/std/src/hash/random.rs
+@@ -8,7 +8,12 @@
+ //! [`collections`]: crate::collections
+
+ use super::{BuildHasher, Hasher, SipHasher13};
++#[cfg(not(target_os = "systemrisc"))]
+ use crate::cell::Cell;
++#[cfg(target_os = "systemrisc")]
++use crate::sync::atomic::{AtomicU64, Ordering};
++#[cfg(target_os = "systemrisc")]
++use crate::sync::OnceLock;
+ use crate::fmt;
+ use crate::sys::random::hashmap_random_keys;
+
+@@ -53,26 +58,39 @@
+     #[must_use]
+     #[stable(feature = "hashmap_build_hasher", since = "1.7.0")]
+     pub fn new() -> RandomState {
+-        // Historically this function did not cache keys from the OS and instead
+-        // simply always called `rand::thread_rng().gen()` twice. In #31356 it
+-        // was discovered, however, that because we re-seed the thread-local RNG
+-        // from the OS periodically that this can cause excessive slowdown when
+-        // many hash maps are created on a thread. To solve this performance
+-        // trap we cache the first set of randomly generated keys per-thread.
+-        //
+-        // Later in #36481 it was discovered that exposing a deterministic
+-        // iteration order allows a form of DOS attack. To counter that we
+-        // increment one of the seeds on every RandomState creation, giving
+-        // every corresponding HashMap a different iteration order.
+-        thread_local!(static KEYS: Cell<(u64, u64)> = {
+-            Cell::new(hashmap_random_keys())
+-        });
++        #[cfg(target_os = "systemrisc")]
++        {
++            // Each process has its own writable image and secret seed. An
++            // atomic sequence gives each map a distinct seed without a TLS trap.
++            static KEYS: OnceLock<(u64, u64)> = OnceLock::new();
++            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
++            let &(k0, k1) = KEYS.get_or_init(hashmap_random_keys);
++            let k0 = k0.wrapping_add(SEQUENCE.fetch_add(1, Ordering::Relaxed));
++            RandomState { k0, k1 }
++        }
++        #[cfg(not(target_os = "systemrisc"))]
++        {
++            // Historically this function did not cache keys from the OS and instead
++            // simply always called `rand::thread_rng().gen()` twice. In #31356 it
++            // was discovered, however, that because we re-seed the thread-local RNG
++            // from the OS periodically that this can cause excessive slowdown when
++            // many hash maps are created on a thread. To solve this performance
++            // trap we cache the first set of randomly generated keys per-thread.
++            //
++            // Later in #36481 it was discovered that exposing a deterministic
++            // iteration order allows a form of DOS attack. To counter that we
++            // increment one of the seeds on every RandomState creation, giving
++            // every corresponding HashMap a different iteration order.
++            thread_local!(static KEYS: Cell<(u64, u64)> = {
++                Cell::new(hashmap_random_keys())
++            });
+
+-        KEYS.with(|keys| {
+-            let (k0, k1) = keys.get();
+-            keys.set((k0.wrapping_add(1), k1));
+-            RandomState { k0, k1 }
+-        })
++            KEYS.with(|keys| {
++                let (k0, k1) = keys.get();
++                keys.set((k0.wrapping_add(1), k1));
++                RandomState { k0, k1 }
++            })
++        }
+     }
+ }
+
+diff --git a/library/std/src/sys/args/mod.rs b/library/std/src/sys/args/mod.rs
+--- a/library/std/src/sys/args/mod.rs
++++ b/library/std/src/sys/args/mod.rs
+@@ -7,6 +7,7 @@
+     target_family = "windows",
+     target_os = "hermit",
+     target_os = "motor",
++    target_os = "systemrisc",
+     target_os = "uefi",
+     target_os = "wasi",
+     target_os = "xous",
+@@ -14,6 +15,10 @@
+ mod common;
+
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        pub use systemrisc::*;
++    }
+     any(
+         all(
+             target_family = "unix",

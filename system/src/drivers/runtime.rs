@@ -983,6 +983,12 @@ fn resolve_kernel(class: ClassId, version: u32) -> Result<u64, Status>
 }
 
 /// Select a provider by declared capabilities, independently of driver names.
+pub(crate) fn execution_handlers() -> Result<alloc::vec::Vec<u64>, Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.execution_handlers().map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
 pub(crate) fn find_kernel_provider(class: ClassId, version: u32, capabilities: u64)
                                    -> Result<u64, Status>
 {

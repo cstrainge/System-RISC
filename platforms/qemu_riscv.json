@@ -12,7 +12,10 @@
       "panic-test",
       "resedit",
       "reactor",
-      "control-suite"
+      "control-suite",
+      "mac-terminal",
+      "shelly-shell",
+      "mac-echo"
     ],
     "modules": [
       "mac-system",
@@ -21,6 +24,7 @@
       "virtio-rng",
       "virtio-gpu",
       "host-clipboard-extension",
+      "cli-extension",
       "multi-scheduler-extension",
       "vhost-filesystem",
       "stuffit-filesystem",
@@ -33,7 +37,10 @@
       "extensions": "System Folder/Extensions"
     },
     "exceptions": {
-      "mac-finder": "System Folder"
+      "mac-finder": "System Folder",
+      "mac-terminal": "Applications/Utility",
+      "shelly-shell": "Applications/Utility/Cli",
+      "mac-echo": "Applications/Utility/Cli"
     }
   },
   "bootloader": {

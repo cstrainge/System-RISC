@@ -69,7 +69,7 @@ pub struct Crate
     /// Directory relative to the checkout with forward slashes, `apps/finder`.
     pub relative:     String,
     pub directory:    PathBuf,
-    /// The package's `resources.json`, when it has one. Not read here.
+    /// The package's `resources.json`, when it has one.
     pub manifest:     Option<PathBuf>,
     pub stage:        Stage,
     /// Path dependencies, by package name.
@@ -165,8 +165,17 @@ impl Crates
                                    .into_iter()
                                    .flat_map(|features| features.keys().cloned())
                                    .collect();
-            let stage = stage(&name, &relative, &features)?;
             let manifest = directory.join("resources.json");
+            let mut stage = stage(&name, &relative, &features)?;
+            // A vendored executable can declare its application role without
+            // moving its source fork into the OS-owned apps directory.
+            if stage == Stage::Host
+               && relative.starts_with("vendor/")
+               && manifest.is_file()
+               && mac_build::Manifest::read(&manifest)?.role == "application"
+            {
+                stage = Stage::Application;
+            }
             by_directory.insert(canonical(&directory), name.clone());
             packages.insert(name.clone(),
                             Crate { name,

@@ -1,0 +1,15 @@
+import std::io
+visible `__socket
+visible `__socket_close
+visible "__socket_Connection"
+visible "__socket_Listener"
+pub type Connection = __socket_Connection
+pub type Listener = __socket_Listener
+pub type Error = std::io::Error
+pub fn connect($path: String): Connection | Error { __socket "unix_connect" $path }
+pub fn listen($path: String): Listener | Error { __socket "unix_listen" $path }
+pub fn Listener::accept(): Connection | Error { __socket "unix_accept" $self }
+pub fn Listener::close(): () | Error { __socket_close $self }
+pub fn Connection::get_reader(): std::io::Reader | Error { __socket "reader" $self }
+pub fn Connection::get_writer(): std::io::Writer | Error { __socket "writer" $self }
+pub fn Connection::close(): () | Error { __socket_close $self }

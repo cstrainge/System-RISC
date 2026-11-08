@@ -1,0 +1,10 @@
+{
+  "name": "Shelly",
+  "binary_name": "shelly",
+  "file_type": "CLAP",
+  "creator": "SHLY",
+  "role": "application",
+  "abi_version": 1,
+  "description": "Shelly interactive shell",
+  "resources": []
+}

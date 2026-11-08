@@ -52,6 +52,14 @@ impl TryFrom<mac_abi::processes::ProcessInfo> for ProcessInfo
 }
 use mac_abi::processes::*;
 pub use mac_traps::{Client, Result};
+/// A terminal result for a command-line child, independent of its cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChildExit
+{
+    pub code:    i32,
+    pub aborted: bool
+}
+
 #[derive(Clone, Copy)]
 pub struct Processes<'a>
 {
@@ -86,6 +94,16 @@ impl<'a> Processes<'a>
         self.call(ProcessCall { operation: FINDER_DESKTOP_READY,
                                 ..Default::default() })
             .map(|_| ())
+    }
+
+    /// Whether the current instance started to receive a document batch.
+    /// Delivery may still be pending when the application main first runs.
+    pub fn opened_for_documents(self) -> Result<bool>
+    {
+        Ok(self.call(ProcessCall { operation: CURRENT,
+                                   ..Default::default() })?
+               .index
+           != 0)
     }
 
     pub fn count(self) -> Result<u32>
@@ -123,6 +141,34 @@ impl<'a> Processes<'a>
                                 ..Default::default() })?
             .info
             .try_into()
+    }
+
+    /// Inspect a CLAP child launched by the caller. The result remains
+    /// available after the child is reaped, until explicitly forgotten.
+    pub fn try_wait_child(self, id: ProcessId) -> Result<Option<ChildExit>>
+    {
+        let call = self.call(ProcessCall { operation: CHILD_STATUS,
+                                           id: id.0,
+                                           ..Default::default() })?;
+        match call.index
+        {
+            CHILD_RUNNING => Ok(None),
+            CHILD_EXITED | CHILD_ABORTED =>
+            {
+                Ok(Some(ChildExit { code:    call.exit_code,
+                                    aborted: call.index == CHILD_ABORTED }))
+            }
+            _ => Err(mac_traps::Error::BadAbi)
+        }
+    }
+
+    /// Release result retention without stopping the child.
+    pub fn forget_child(self, id: ProcessId) -> Result<()>
+    {
+        self.call(ProcessCall { operation: CHILD_FORGET,
+                                id: id.0,
+                                ..Default::default() })
+            .map(|_| ())
     }
 
     pub fn activate(self, id: ProcessId) -> Result<()>

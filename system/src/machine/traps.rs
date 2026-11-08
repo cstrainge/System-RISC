@@ -24,19 +24,19 @@ pub(crate) use __system_trap_gateway as gateway;
 #[derive(Default)]
 pub(crate) struct TrapFrame
 {
-    pub registers:     [usize; 30],
-    pub pc:            usize,
-    pub status:        usize,
-    pub(crate) cause:  usize,
-    pub(crate) value:  usize,
-    pub(crate) floating:          [u64; 32],
-    pub(crate) fcsr:              usize,
-    pub(crate) vl:                usize,
-    pub(crate) vtype:             usize,
-    pub(crate) vstart:            usize,
-    pub(crate) vcsr:              usize,
-    pub stack_pointer: usize,
-    pub prior_depth:   usize
+    pub registers:       [usize; 30],
+    pub pc:              usize,
+    pub status:          usize,
+    pub(crate) cause:    usize,
+    pub(crate) value:    usize,
+    pub(crate) floating: [u64; 32],
+    pub(crate) fcsr:     usize,
+    pub(crate) vl:       usize,
+    pub(crate) vtype:    usize,
+    pub(crate) vstart:   usize,
+    pub(crate) vcsr:     usize,
+    pub stack_pointer:   usize,
+    pub prior_depth:     usize
 }
 // Integer offsets remain the assembly gate contract. The extended offsets and
 // fixed frame size are generated above from this one Rust representation.
@@ -292,22 +292,25 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             Err(status) =>
             {
                 crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
-                                        format_args!("User fault lost its genuine running \
-                                                      Process claim: status {status}."))
+                                                 format_args!("User fault lost its genuine \
+                                                               running Process claim: status \
+                                                               {status}."))
             }
         }
     }
     if !matches!((user_origin, frame.cause), (true, 8) | (false, 9))
     {
-        crate::machine::emergency::serial(format_args!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}",
-                                              frame.cause, frame.pc, frame.value));
+        crate::machine::emergency::serial(format_args!("SYSTEM_TRAP: cause={} pc=0x{:x} \
+                                                        value=0x{:x}",
+                                                       frame.cause, frame.pc, frame.value));
         // No context/definition/registry lock is safe to reacquire after an
         // arbitrary privileged fault. Report trusted CPU fields and terminate;
         // this is a terminal screen/reset, never mid-call recovery (M-D04).
         crate::machine::emergency::enter(crate::emergency::Kind::PrivilegedFault,
-                                format_args!("Privileged trap: cause {}, PC {:#x}, fault \
-                                              address {:#x}. Execution cannot safely continue.",
-                                             frame.cause, frame.pc, frame.value));
+                                         format_args!("Privileged trap: cause {}, PC {:#x}, \
+                                                       fault address {:#x}. Execution cannot \
+                                                       safely continue.",
+                                                      frame.cause, frame.pc, frame.value));
     }
     let number = frame.registers[15] as u32;
     if user_origin
@@ -451,6 +454,20 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         (WRONG_THREAD as i64, crate::machine::scheduler::service::RequestAction::Return)
     }
+    else if user_call.is_some() && number == COROUTINE_STACK
+    {
+        let status = hart::service_scope(physical_depth == 1, || {
+            match unsafe { self::request::<mac_abi::coroutine_stack::Call>(request, size) }
+            {
+                Some(call) =>
+                {
+                    super::scheduler::coroutine_stack(call, frame.stack_pointer).err().unwrap_or(OK)
+                }
+                None => BAD_ARGUMENT
+            }
+        });
+        (i64::from(status), super::scheduler::service::RequestAction::Return)
+    }
     else if user_call.is_some() && number == USER_CALLBACK
     {
         let suspension = crate::machine::scheduler::service::request_suspension_allowed(frame);
@@ -475,7 +492,9 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         (i64::from(response.status), response.action)
     }
     else if matches!(number, NATIVE_THREAD | ADDRESS_WAIT | PIPES)
-              || (number == PROCESS && size == size_of::<mac_abi::processes::NativeExitCall>())
+              || (number == PROCESS
+                  && (size == size_of::<mac_abi::processes::NativeExitCall>()
+                      || size == size_of::<mac_abi::processes::ChildWaitCall>()))
     {
         let suspension = crate::machine::scheduler::service::request_suspension_allowed(frame);
         let response = hart::service_scope(physical_depth == 1, || unsafe {
@@ -549,9 +568,10 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                         Err(status) =>
                         {
                             crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
-                                                    format_args!("Owned user I/O lost its \
-                                                                  original request binding: \
-                                                                  status {status}."))
+                                                             format_args!("Owned user I/O lost \
+                                                                           its original request \
+                                                                           binding: status \
+                                                                           {status}."))
                         }
                     }
                 }
@@ -634,8 +654,8 @@ fn retain_user_call(call: Option<user::Call>)
         // lost internal binding cannot free an in-flight buffer: the returned
         // envelope remains live on this terminal, nonunwinding path.
         crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
-                                format_args!("Owned user request lost its native continuation: \
-                                              status {status}."));
+                                         format_args!("Owned user request lost its native \
+                                                       continuation: status {status}."));
     }
 }
 
@@ -786,6 +806,14 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
     use crate::machine::scheduler::service::RequestResult;
     match number
     {
+        PROCESS if size == size_of::<mac_abi::processes::ChildWaitCall>() =>
+        {
+            match unsafe { request::<mac_abi::processes::ChildWaitCall>(pointer, size) }
+            {
+                Some(call) => toolbox::processes::wait_child(call, suspension),
+                None => RequestResult::done(BAD_ARGUMENT)
+            }
+        }
         PROCESS =>
         {
             match unsafe { request::<mac_abi::processes::NativeExitCall>(pointer, size) }
@@ -843,7 +871,10 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
         {
             match unsafe { request::<mac_abi::address_wait::Call>(pointer, size) }
             {
-                Some(call) => crate::machine::scheduler::address::request(call, identity, suspension),
+                Some(call) =>
+                {
+                    crate::machine::scheduler::address::request(call, identity, suspension)
+                }
                 None =>
                 {
                     crate::machine::scheduler::address::cancel_current();
@@ -863,7 +894,9 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
                     // pointer with a nonzero count.
                     let empty_in: &[u8] = &[];
                     let empty_out: &mut [u8] = &mut [];
-                    let (input, output) = if call.operation == mac_abi::pipes::READ
+                    let (input, output) = if matches!(call.operation,
+                                                      mac_abi::pipes::READ
+                                                      | mac_abi::pipes::READ_WAIT)
                     {
                         let output: &mut [u8] = if call.length == 0
                         {
@@ -1130,9 +1163,12 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             let bytes = kind.to_be_bytes();
             let family = core::str::from_utf8(&bytes).unwrap_or("invalid family");
             let identity = crate::context::current_thread_context().identity();
-            crate::machine::emergency::serial(format_args!("DEFINITION_PANIC_FATAL: kind={family} \
-                                                   id={id} app={} thread={} flags={} {text}",
-                                                  identity.app.0, identity.thread.0, report.flags));
+            crate::machine::emergency::serial(format_args!("DEFINITION_PANIC_FATAL: \
+                                                            kind={family} id={id} app={} \
+                                                            thread={} flags={} {text}",
+                                                           identity.app.0,
+                                                           identity.thread.0,
+                                                           report.flags));
             if report.flags & mac_abi::definitions::DefinitionPanic::TRUNCATED != 0
             {
                 crate::machine::emergency::serial(format_args!("DEFINITION_DIAGNOSTIC_TRUNCATED: \
@@ -1148,15 +1184,61 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             crate::kernel::qualify_emergency_with_allocator_locked();
             #[cfg(not(feature = "emergency-qualification"))]
             crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
-                                    format_args!("Definition panic: {family} {id}, app {}, \
-                                                  thread {}, flags {}.\n{text}",
-                                                 identity.app.0, identity.thread.0, report.flags))
+                                             format_args!("Definition panic: {family} {id}, app \
+                                                           {}, thread {}, flags {}.\n{text}",
+                                                          identity.app.0,
+                                                          identity.thread.0,
+                                                          report.flags))
         }
         THEME =>
         {
             let palette = read_request!(mac_abi::theme::Palette);
             *palette = toolbox::theme::palette();
             OK as i64
+        }
+        PROCESS if size == size_of::<mac_abi::processes::LaunchArgvCall>() =>
+        {
+            let call = read_request!(mac_abi::processes::LaunchArgvCall);
+            let length = call.length as usize;
+            let Some(total) =
+                length.checked_add(call.path_length as usize)
+                      .filter(|&total| total != 0 && total <= mac_abi::processes::ARGUMENT_BYTES)
+            else
+            {
+                return BAD_ARGUMENT as i64;
+            };
+            if call.bytes.is_null() || call.reserved != 0
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            // The user envelope owns a validated read-only copy for this turn.
+            let bytes = unsafe { core::slice::from_raw_parts(call.bytes, total) };
+            toolbox::processes::request_with_argv(&mut call.launch, bytes, length, call.count)
+            as i64
+        }
+        PROCESS if size == size_of::<mac_abi::processes::StartupArgvCall>() =>
+        {
+            let call = read_request!(mac_abi::processes::StartupArgvCall);
+            if call.bytes.is_null()
+               || call.capacity == 0
+               || call.capacity as usize > mac_abi::processes::ARGUMENT_BYTES
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            // The output buffer belongs to the checked user envelope.
+            let output =
+                unsafe { core::slice::from_raw_parts_mut(call.bytes, call.capacity as usize) };
+            match toolbox::processes::startup_argv(output, call.path_length)
+            {
+                Ok((length, count, path_length)) =>
+                {
+                    call.length = length;
+                    call.count = count;
+                    call.path_length = path_length;
+                    OK as i64
+                }
+                Err(status) => status as i64
+            }
         }
         PROCESS if size == size_of::<mac_abi::processes::DocumentCall>() =>
         {

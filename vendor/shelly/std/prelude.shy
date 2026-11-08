@@ -1,0 +1,546 @@
+
+# The prelude of the Shelly standard library. Everything published from here is included in every
+# loaded module.
+
+visible `__report_error
+visible `__env
+visible `__get_env
+visible `__test
+pub visible "VariableVisibility"
+pub visible "VariableInfo"
+
+
+# Inspect the caller's visible variables without converting their values to process text.
+pub fn get_env(): [String: VariableInfo]
+{
+    __get_env
+}
+
+
+# Read the caller's exported environment without launching a process. Missing names
+# return (), or the supplied fallback; an existing empty value remains an empty String.
+pub fn optional_env($name: String, $fallback: String | ()): String | ()
+{
+    __env $name $fallback
+}
+
+
+# Report an error to the caller with the given call stack and error value.
+pub fn report_error($stack: CallStack, $error: ErrorValue): ()
+{
+    __report_error $stack $error
+}
+
+
+# Helper function to return the min of the list of supplied parameters.
+pub fn min($values: Number...): Number | ()
+{
+    $values.min
+}
+
+
+# Helper function to return the max of the supplied parameters.
+pub fn max($values: Number...): Number | ()
+{
+    $values.max
+}
+
+
+fn pretty_print_none_value($expected: Type): String
+{
+    match $expected
+    {
+        Array   => { "[]"    },
+        HashMap => { "[:]"   },
+        String  => { '""'    },
+        Integer => { "0"     },
+        Float   => { "0.0"   },
+        Boolean => { "false" },
+        _       => { "()"    }
+    }
+}
+
+
+fn is_key_type($name: String): Boolean
+{
+    match $name
+    {
+        "value_type" => { true  },
+        "key_type"   => { true  },
+        _            => { false }
+    }
+}
+
+
+# Append a pretty print for all type's properties method.
+pub fn any::print_properties()
+{
+    let $properties = $self.properties
+    # Let the caller know what type we're printing properties for, for clarity.
+    echo "Properties for:" $properties["type"]
+    echo
+
+    # Whip through the list of keys and figure out how much padding we're going to need to print
+    # the values all aligned with each other.
+    let $padding: Integer = 0
+
+    for ($key, _) in $properties
+    {
+        $padding = max $padding $key.count
+    }
+
+    # Finally print the keys and the values with their assigned padding.
+    for ($key, $value) in $properties
+    {
+        if    $key == "value"
+           && !$value
+        {
+            echo ($key.pad $padding) "->" (pretty_print_none_value $self.type)
+        }
+        else if    $value.type == Type
+                && (is_key_type $key)
+        {
+            echo ($key.pad $padding) "->" $value.name
+        }
+        else
+        {
+            echo ($key.pad $padding) "->" $value
+        }
+    }
+}
+
+
+# Just a quick access method to avoid always having to jump into the chars first.
+pub fn String::count(): Integer
+{
+    $self.chars.count
+}
+
+
+# Pad out the end of the string with the given amount of spaces or characters.
+pub fn String::pad($count: Integer, $text: String | ()): String
+{
+    let $padding = if $text == () { " " } else { $text }
+    let $added = ""
+
+    if $self.count < $count
+    {
+        for _ in 0..($count - $self.count)
+        {
+            $added = $added + $padding
+        }
+
+        $self + $added
+    }
+    else
+    {
+        $self
+    }
+}
+
+
+# Strip the given prefix from the string if it's there, otherwise return the string unchanged.
+pub fn String::strip_prefix($prefix: String): String
+{
+    if $self.starts_with $prefix
+    {
+        $self[$prefix.count..]
+    }
+    else
+    {
+        $self
+    }
+}
+
+
+# Strip the given suffix from the string if it's there, otherwise return the string unchanged.
+pub fn String::strip_suffix($suffix: String): String
+{
+    if $self.ends_with $suffix
+    {
+        $self[0..($self.count - $suffix.count)]
+    }
+    else
+    {
+        $self
+    }
+}
+
+
+# Given a list of numbers sum them all up and return the result.
+pub fn sum($args: Number...): Number
+{
+    $args.sum
+}
+
+
+# Take the number at the parameters and sum them all up returning the answer. The original number
+# is left untouched.
+pub fn Integer::sum($args: Integer...): Integer
+{
+    $self + $args.sum
+}
+
+
+# Given a float value add it to the rest of the parameters and return the result leaving the
+# original untouched.
+pub fn Float::sum($args: Float...): Float
+{
+    $self + $args.sum
+}
+
+
+# Convert colon-separated text into an array, preserving empty entries.
+pub fn Array::from_string($value: String): [String]
+{
+    $value.split ":"
+}
+
+
+# Convert a string array back into colon-separated text.
+pub fn Array::to_string(): String
+{
+    let $text = ""
+    let $separator = ""
+
+    for $value in $self
+    {
+        $text = $text + $separator + String($value)
+        $separator = ":"
+    }
+
+    $text
+}
+
+
+# Check to see if an array is empty.
+pub fn Array::empty(): Boolean
+{
+    $self.count == 0
+}
+
+
+# Sum up the values of an array if they're numbers or "sum-able."
+pub fn Array::sum(): Number
+{
+    let $value = 0
+
+    for $next in $self
+    {
+        $value = $value + $next
+    }
+
+    $value
+}
+
+
+# Get the minimum value of an array of numbers or "comparable items." Returns the least item or ()
+# if the array is empty.
+pub fn Array::min(): $self.value_type | ()
+{
+    if $self.empty
+    {
+        return ()
+    }
+
+    let $value = $self[0]
+
+    for $next in $self[1..]
+    {
+        if $next < $value
+        {
+            $value = $next
+        }
+    }
+
+    $value
+}
+
+
+# Get the maximum value of an array of numbers or "comparable items." Returns the greatest item or
+# () if the array is empty.
+pub fn Array::max(): $self.value_type | ()
+{
+    if $self.empty
+    {
+        return ()
+    }
+
+    let $value = $self[0]
+
+    for $next in $self[1..]
+    {
+        if $next > $value
+        {
+            $value = $next
+        }
+    }
+
+    $value
+}
+
+
+# Filter the array to only include unique items, returning a new array with duplicates removed.
+pub fn Array::unique(): [$self.value_type]
+{
+    if $self.empty
+    {
+        return []
+    }
+
+    let $seen: [$self.value_type: Boolean] = [:]
+    let $result: [$self.value_type] = []
+
+    for $item in $self
+    {
+        if $seen[$item] == ()
+        {
+            $seen[$item] = true
+            $result = [$result..., $item]
+        }
+    }
+
+    $result
+}
+
+
+# Combine this array with another array and return the results as a new array.
+pub fn Array::append($other: [$self.value_type]): [$self.value_type]
+{
+    [$self..., $other...]
+}
+
+
+# Prepend a list of items to the beginning of the array.
+pub fn Array::prepend($other: [$self.value_type]): [$self.value_type]
+{
+    [$other..., $self...]
+}
+
+
+# Let the array be treated as a stack, push a new item to the beginning of the array.
+pub fn Array::push($value: $self.value_type)
+{
+    $self = [$value, $self...]
+}
+
+
+# Push each supplied item in order; the last supplied item becomes the top of the stack.
+pub fn Array::push_many($values: $self.value_type...)
+{
+    $self = [$values.reverse..., $self...]
+}
+
+
+# Attempt to pop the first item from the beginning of the stack, return () if the stack is empty.
+pub fn Array::pop(): $self.value_type | ()
+{
+    if $self.empty
+    {
+        return ()
+    }
+
+    let $item = $self[0]
+    $self = $self[1..]
+
+    $item
+}
+
+
+# Peek at the item at the top of the stack without removing it. Returns () if the stack is empty.
+pub fn Array::peek(): $self.value_type | ()
+{
+    if $self.empty
+    {
+        return ()
+    }
+
+    $self[0]
+}
+
+
+# Keep track of the path stack for pushd and popd.
+let $paths: [String] = []
+
+
+# Display the current state of the push/popd stack.
+fn echo_paths()
+{
+    echo "Stack:" $paths.count
+
+    for $path in $paths
+    {
+        echo ":" $path
+    }
+}
+
+
+# Push the current directory onto the directory stack and then cd to the requested directory. If
+# called with 0 arguments then we swap the current directory with the one on the TOS.  (If there is
+# one.)
+#
+# The stack is only updated if the cd is successful.
+pub fn pushd($path: String | ())
+{
+    let $swap = $path == ()
+
+    if $swap
+    {
+        if $paths.empty
+        {
+            echo "No paths in directory stack."
+            return
+        }
+
+        $path = $paths[0]
+    }
+
+    let $previous = $pwd
+    let $result = cd $path
+
+    if $result
+    {
+        if $swap
+        {
+            let _ = $paths.pop
+        }
+
+        $paths.push $previous
+    }
+
+    echo_paths
+}
+
+
+# Pop the top of the directory stack and change back to that directory. If the stack is empty then
+# an error is reported and nothing is done.
+#
+# The stack is only altered if the cd is successful.
+pub fn popd()
+{
+    if $paths.empty
+    {
+        echo "No paths in directory stack."
+        return
+    }
+
+    let $path = $paths[0]
+    let $result = cd $path
+
+    if $result
+    {
+        let _ = $paths.pop
+    }
+
+    echo_paths
+}
+
+
+# Show the current path as a list of directories.
+pub fn path()
+{
+    let $found_path: [String] = if $PATH.type == String
+        {
+            Array($PATH)
+        }
+        else
+        {
+            $PATH
+        }
+
+    let $bad_paths: Integer = 0
+
+    for $path in $found_path
+    {
+        if !(dir_exists $path)
+        {
+            if is_color
+            {
+                echo "\x1b[31m${path}\x1b[0m"
+            }
+            else
+            {
+                echo "[Doesn't Exist]: $path"
+            }
+
+            $bad_paths = $bad_paths + 1
+        }
+        else
+        {
+            echo $path
+        }
+    }
+
+    if $bad_paths > 0
+    {
+        echo
+
+        if is_color
+        {
+            echo "\x1b[31mThe path contains ${bad_paths} bad paths.\x1b[0m"
+        }
+        else
+        {
+            echo "The path contains ${bad_paths} bad paths."
+        }
+    }
+
+    ()
+}
+
+
+# Does the specified directory exist? And is it a directory?
+pub fn dir_exists($path: String): Boolean
+{
+    __test "-d" $path
+}
+
+
+
+# Does the specified file exist? And is it a regular file?
+pub fn file_exists($path: String): Boolean
+{
+    __test "-f" $path
+}
+
+
+# Is the standard output a pipe?
+pub fn is_pipe(): Boolean
+{
+    __test "-p" 1
+}
+
+
+# Is the standard output a terminal?
+pub fn is_tty(): Boolean
+{
+    __test "-t" 1
+}
+
+
+# Is the terminal capable of displaying colors?
+pub fn is_color(): Boolean
+{
+    if (is_tty) && !(is_pipe)
+    {
+        $tty_color_mode != TtyColorMode::TtyMonochrome
+    }
+    else
+    {
+        false
+    }
+}
+
+
+# Convert an execution result to a Boolean value.
+pub fn Boolean::from_exec_result($result: ExecResult): Boolean
+{
+    if $result { true } else { false }
+}
+
+
+# Convert a Boolean value to an execution result.
+pub fn Boolean::to_exec_result(): ExecResult
+{
+    if $self { ExecResult(0) } else { ExecResult(1) }
+}

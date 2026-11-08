@@ -20,6 +20,7 @@ pub const ENTROPY: u32 = 0x1002d;
 pub const USER_CALLBACK: u32 = 0x1002e;
 /// Byte-transport pipes; the first unoccupied number after the full native block.
 pub const PIPES: u32 = 0x1002f;
+pub const COROUTINE_STACK: u32 = 0x10030;
 pub const PSTRING_SCROLL_BOX: u32 = SCROLL_BOX | PSTRING_BIT;
 pub const STANDARD_FILE: u32 = 0x10020;
 pub const PSTRING_STANDARD_FILE: u32 = STANDARD_FILE | PSTRING_BIT;

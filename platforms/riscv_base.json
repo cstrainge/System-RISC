@@ -15,7 +15,7 @@
   ],
   "scheduling": {
     "maximum_active_harts": 1,
-    "quantum_microseconds": 250,
+    "quantum_microseconds": 2000,
     "callback_budget_microseconds": 1000
   },
   "fatal_shutdown": {

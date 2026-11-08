@@ -1,0 +1,15 @@
+\x1b[38;2;159;107;255mS H E L L Y\x1b[0m
+\x1b[38;2;202;173;255m-----------\x1b[0m
+
+\x1b[38;2;49;216;224mHost:\x1b[0m  \x1b[38;2;107;144;255m${HOSTNAME}\x1b[0m
+\x1b[38;2;49;216;224mUser:\x1b[0m  \x1b[38;2;107;144;255m${USER}\x1b[0m
+
+\x1b[38;2;49;216;224mPath:\x1b[0m  \x1b[38;2;107;144;255m${pwd}\x1b[0m
+
+\x1b[38;2;49;216;224mInit:\x1b[0m  \x1b[38;2;107;144;255m${rc_path}\x1b[0m
+
+\x1b[38;2;49;216;224mBuild:\x1b[0m \x1b[38;2;107;144;255m${shelly}\x1b[0m
+       \x1b[38;2;107;144;255m${build_date} - ${build_time}\x1b[0m
+       \x1b[38;2;107;144;255m${version}\x1b[0m
+
+\x1b[38;2;49;216;224mhttps://github.com/cstrainge/shelly\x1b[0m

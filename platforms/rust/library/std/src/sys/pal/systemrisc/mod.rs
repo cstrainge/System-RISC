@@ -19,9 +19,10 @@ pub fn unsupported_err() -> io::Error
 }
 
 // Services/current-thread context must already exist before std enters init.
-pub unsafe fn init(_argc: isize, _argv: *const *const u8, _sigpipe: u8)
+pub unsafe fn init(argc: isize, argv: *const *const u8, _sigpipe: u8)
 {
     runtime::client();
+    unsafe { crate::sys::args::init(argc, argv) };
     crate::sys::env::init();
 }
 

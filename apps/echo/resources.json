@@ -1,0 +1,10 @@
+{
+  "name": "echo",
+  "binary_name": "echo",
+  "file_type": "CLAP",
+  "creator": "ECHO",
+  "role": "application",
+  "abi_version": 1,
+  "description": "Write arguments to standard output",
+  "resources": []
+}

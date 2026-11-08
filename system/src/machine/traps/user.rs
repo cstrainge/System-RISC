@@ -914,6 +914,27 @@ impl Call
         let number = native_string_trap(self.number).unwrap_or(self.number);
         match number
         {
+            PROCESS if self.size == size_of::<abi::processes::LaunchArgvCall>() =>
+            {
+                use abi::processes::{ARGUMENT_BYTES, LaunchArgvCall};
+                let call = unsafe { &*self.owned_mut(0)?.pointer().cast::<LaunchArgvCall>() };
+                let bytes =
+                    (call.length as usize).checked_add(call.path_length as usize)
+                                          .filter(|&bytes| bytes != 0 && bytes <= ARGUMENT_BYTES)
+                                          .ok_or(BAD_ARGUMENT)?;
+                self.point(0, offset_of!(LaunchArgvCall, bytes), bytes, 1, false)?;
+            }
+            PROCESS if self.size == size_of::<abi::processes::StartupArgvCall>() =>
+            {
+                use abi::processes::{ARGUMENT_BYTES, StartupArgvCall};
+                let capacity =
+                    unsafe { (*self.owned_mut(0)?.pointer().cast::<StartupArgvCall>()).capacity };
+                if capacity == 0 || capacity as usize > ARGUMENT_BYTES
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                span!(StartupArgvCall, bytes, capacity, u8, true);
+            }
             DEFINITION => self.definition_nested()?,
             USER_CALLBACK =>
             {
@@ -969,7 +990,7 @@ impl Call
                     return Err(BAD_ARGUMENT);
                 }
                 // READ writes into the caller's buffer; WRITE only reads it.
-                let writable = call.operation == abi::pipes::READ;
+                let writable = matches!(call.operation, abi::pipes::READ | abi::pipes::READ_WAIT);
                 self.point(0,
                            offset_of!(abi::pipes::Call, buffer),
                            call.length,
@@ -1229,10 +1250,14 @@ fn layout(number: u32, bytes: usize) -> Result<Layout, Status>
         {
             select!(abi::processes::ProcessCall,
                     abi::processes::DocumentCall,
-                    abi::processes::NativeExitCall)
+                    abi::processes::NativeExitCall,
+                    abi::processes::ChildWaitCall,
+                    abi::processes::LaunchArgvCall,
+                    abi::processes::StartupArgvCall)
         }
         APPLICATION_HEAP => select!(abi::application_heap::Call),
         NATIVE_THREAD => select!(abi::native_threads::Call),
+        COROUTINE_STACK => select!(abi::coroutine_stack::Call),
         ADDRESS_WAIT => select!(abi::address_wait::Call),
         PIPES => select!(abi::pipes::Call),
         TLS => select!(abi::tls::Call),

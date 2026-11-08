@@ -69,6 +69,30 @@ impl fmt::Display for Error
 }
 pub(crate) use crate::allocation::account_status;
 
+pub(super) fn coroutine_stack(allocation: &AllocationAuthority, requested: u64)
+                              -> Result<Charged<pages::Stack>, mac_abi::Status>
+{
+    use crate::machine::memory::{APPLICATION_STACK_MAX_BYTES, APPLICATION_STACK_MIN_BYTES,
+                                 PAGE_BYTES};
+    let bytes = requested.checked_add(PAGE_BYTES - 1)
+                         .map(|bytes| bytes / PAGE_BYTES * PAGE_BYTES)
+                         .filter(|bytes| {
+                             (APPLICATION_STACK_MIN_BYTES..=APPLICATION_STACK_MAX_BYTES)
+                                 .contains(bytes)
+                         })
+                         .and_then(|bytes| usize::try_from(bytes).ok())
+                         .ok_or(mac_abi::BAD_ARGUMENT)?;
+    let planned = pages::Backing::planned_bytes(bytes).map_err(|cause| cause.status())?;
+    let charge = allocation.reserve_application(planned).map_err(|cause| account_status(&cause))?;
+    let value = pages::Stack::allocate(bytes).map_err(|cause| cause.status())?;
+    if value.backing_bytes() != planned
+    {
+        return Err(mac_abi::BAD_ABI);
+    }
+    Ok(Charged { value,
+                 _charge: charge.commit() })
+}
+
 /// Sealed, unique reservations taken from the actual process-directory account.
 /// A failed preparation drops these and refunds without publishing a thread.
 pub(crate) struct ThreadCharges

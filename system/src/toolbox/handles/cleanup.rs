@@ -6,6 +6,11 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cause
 {
+    PipeEndpointsPending
+    {
+        readers: u32,
+        writers: u32
+    },
     WindowPaintPending
     {
         window: mac_object_table::domain::ResourceKey
@@ -148,6 +153,13 @@ impl core::fmt::Display for Cause
     {
         match self
         {
+            Self::PipeEndpointsPending { readers,
+                                         writers } =>
+            {
+                write!(f,
+                       "pipe cleanup still has {readers} readers and {writers} writers; ring and \
+                        original cleanup ticket remain retained")
+            }
             Self::WindowPaintPending { window } =>
             {
                 write!(f,
@@ -380,6 +392,14 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    pub(crate) fn pipe_endpoints_pending(ticket: ReleasedResource, readers: u32, writers: u32)
+                                         -> Self
+    {
+        Self { ticket,
+               cause: Cause::PipeEndpointsPending { readers,
+                                                    writers } }
+    }
+
     pub(crate) fn window_paint_pending(ticket: ReleasedResource) -> Self
     {
         let window = ticket.key();

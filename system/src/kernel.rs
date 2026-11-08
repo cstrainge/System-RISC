@@ -981,6 +981,12 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
     let finder = crate::loader::read_startup_application("Finder")?;
     let original_catalog = finder.catalog;
     let mut processes = crate::toolbox::processes::Manager::new();
+    match crate::toolbox::files::application::installed_terminal(original_catalog.volume)
+    {
+        Ok(terminal) => processes.terminal_host = Some(terminal),
+        Err(NOT_FOUND) => (),
+        Err(status) => serial!("TERMINAL_HOST_UNAVAILABLE status={status}")
+    }
     let finder_id = processes.provision("Finder", original_catalog.volume, original_catalog.id)
                              .map_err(|status| {
                                  serial!("FINDER_DOMAIN_REFUSED status={status}");
@@ -1350,7 +1356,7 @@ pub(crate) fn finish_initial_finder(finder_admission: &mut crate::toolbox::proce
                        })?;
     let thread =
         with_toolbox(|toolbox| {
-            toolbox.spawn_process(crate::context::finder_app().0, finder_loaded, finder_space)
+            toolbox.spawn_process(crate::context::finder_app().0, finder_loaded, finder_space, true)
         }).map_err(|_| mac_formats::Error::Malformed("Finder owner directory is unavailable"))?
           .map_err(|status| {
               serial!("FINDER_THREAD_CREATION_FAILED status={status}");
@@ -1424,10 +1430,10 @@ pub unsafe extern "C" fn start(payload: *const (), bytes: usize, role: u64)
     {
         // Terminal rather than returning: the caller does not exist, so a return
         // re-enters the same refusal and buries the one message that says why.
-        crate::machine::emergency::refuse(format_args!("BOOT_SUPERVISOR_REJECTED: native BootInfo \
-                                                        layout is incompatible: version {} size \
-                                                        {}, expected version {} size {}; rebuild \
-                                                        ROM and System together",
+        crate::machine::emergency::refuse(format_args!("BOOT_SUPERVISOR_REJECTED: native \
+                                                        BootInfo layout is incompatible: \
+                                                        version {} size {}, expected version {} \
+                                                        size {}; rebuild ROM and System together",
                                                        header.version,
                                                        header.size,
                                                        ABI_VERSION,

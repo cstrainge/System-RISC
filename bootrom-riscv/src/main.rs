@@ -40,16 +40,19 @@ impl virtio_blk::Machine for BootMachine
     {
         let value;
         // SAFETY: reading the time counter has no side effects.
-        unsafe { core::arch::asm!("rdtime {value}", value = out(reg) value, options(nomem, nostack)) };
+        unsafe {
+            core::arch::asm!("rdtime {value}", value = out(reg) value, options(nomem, nostack))
+        };
         value
     }
 }
 
+use alloc::boxed::Box;
+
 use bootrom_riscv::memory;
 use linked_list_allocator::LockedHeap;
-use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NOT_FOUND, NOT_SUPPORTED, OK, Status};
+use mac_abi::{BootInfo, Header, OK, Status};
 use mac_filesystem::{BlockDevice, Error, Partition, Result, Volume, WritableBlockDevice};
-use alloc::boxed::Box;
 use mac_formats::{native::{Descriptor, Role, image},
                   resource};
 
@@ -355,9 +358,9 @@ fn machine_windows(tree: &bootrom_riscv::devicetree::Tree<'_>, memory: &memory::
                 // with the mapping that already exists.
                 let overlaps = |low: u64, high: u64| start < high && low < end;
                 if overlaps(memory::FLASH_BASE, flash_end)
-                   || memory.ram.iter().any(|bank| {
-                                     overlaps(bank.base, bank.base.saturating_add(bank.length))
-                                 })
+                   || memory.ram
+                            .iter()
+                            .any(|bank| overlaps(bank.base, bank.base.saturating_add(bank.length)))
                 {
                     return;
                 }
@@ -515,7 +518,7 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
                           log:                     Some(log),
                           storage_context:         (&mut context as *mut BootVolume).cast(),
                           disk_info:               Some(mac_bootloader::volume::disk_info),
-                          read_sector:             Some(mac_bootloader::volume::read_sector),
+                          read_sectors:            Some(mac_bootloader::volume::read_sectors),
                           write_sector:            Some(mac_bootloader::volume::write_sector),
                           flush_disk:              Some(mac_bootloader::volume::flush_disk),
                           startup_disk:            disk_index as u32,
@@ -611,13 +614,13 @@ extern "C" fn boot_main(tree_address: usize) -> !
             serial!("BOOT_MEMORY_REJECTED: DTB exceeds platform reservation");
             halt();
         }
-        bootrom_riscv::devicetree::Tree::new(core::slice::from_raw_parts(tree_address as *const u8, size))
+        bootrom_riscv::devicetree::Tree::new(core::slice::from_raw_parts(tree_address as *const u8,
+                                                                         size))
     };
-    let tree = match tree.map_err(bootrom_riscv::devicetree::envelope)
-                         .and_then(|tree| {
-                             memory::admit(&tree)?;
-                             Ok(tree)
-                         })
+    let tree = match tree.map_err(bootrom_riscv::devicetree::envelope).and_then(|tree| {
+                                                                          memory::admit(&tree)?;
+                                                                          Ok(tree)
+                                                                      })
     {
         Ok(tree) => tree,
         Err(error) =>
@@ -677,9 +680,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
             memory.ram[0].length,
             memory.ram.len(),
             memory.reserved.len());
-    serial!("{}{:x}",
-            mac_bootloader::report::BANNER,
-            boot_main as *const () as usize);
+    serial!("{}{:x}", mac_bootloader::report::BANNER, boot_main as *const () as usize);
     if let Err(error) = screen::init(&memory, monitor.directory.timebase_hz)
     {
         serial!("BOOT_VIDEO_OWNERSHIP_REJECTED: {error}; DMA quiescence is unproven; refusing \
@@ -724,8 +725,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
             match result.map_err(EntryError::Format).and_then(|startup| {
                                                         enter(startup, &mut disks, disk_index,
                                                               partition, &mut memory, &cpus,
-                                                              &monitor, &tree,
-                                                              tree_address as u64)
+                                                              &monitor, &tree, tree_address as u64)
                                                     })
             {
                 Ok(()) =>

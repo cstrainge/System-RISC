@@ -1,0 +1,188 @@
+# Byte operations and resource policy live here; Rust owns buffers and native waits.
+visible `__bytes
+visible `__io
+visible `__io_close
+visible "__io_Bytes"
+visible "__io_Reader"
+visible "__io_Writer"
+visible "__io_ByteSource"
+visible "__io_ByteSink"
+pub visible "__io_ReadError"
+pub visible "__io_WriteError"
+pub visible "__io_OpenError"
+pub visible "__io_ClosedError"
+pub visible "__io_TimeoutError"
+pub visible "__io_CancelledError"
+pub visible "__io_LimitError"
+pub visible "__io_DecodeError"
+pub visible "__io_LeaseError"
+
+pub type Bytes = __io_Bytes
+pub type Reader = __io_Reader
+pub type Writer = __io_Writer
+pub type ByteSource = __io_ByteSource
+pub type ByteSink = __io_ByteSink
+pub type Error = ReadError | WriteError | OpenError | ClosedError | TimeoutError | CancelledError | LimitError | DecodeError | LeaseError | ShortReadError
+
+pub fn Bytes::from_string($value: String): Bytes | Error { __bytes "from_string" $value }
+pub fn Bytes::from_array_integer($value: [Integer]): Bytes | Error { __bytes "from_array" $value }
+pub fn Bytes::from_array_any($value: [any]): Bytes | Error { __bytes "from_array" $value }
+pub fn Bytes::get_count(): Integer { __bytes "count" $self }
+pub fn Bytes::decode_utf8(): String | Error { __bytes "utf8" $self }
+pub fn Bytes::encode_base64(): String | Error { __bytes "base64" $self }
+pub fn Bytes::to_array(): [Integer] | Error { __bytes "array" $self }
+pub fn Bytes::concat($other: Bytes): Bytes | Error { __bytes "concat" $self $other }
+pub fn Bytes::slice($start: Integer, $end: Integer): Bytes | Error { __bytes "slice" $self $start $end }
+pub fn String::from_bytes($value: Bytes): String | Error { $value.decode_utf8 }
+pub fn decode_base64($value: String): Bytes | Error { __bytes "from_base64" $value }
+
+pub fn memory_reader($value: Bytes): Reader | Error { __io "memory_reader" $value }
+pub fn open_reader($path: String): Reader | Error { __io "open_reader" $path }
+pub fn open_writer($path: String): Writer | Error { __io "open_writer" $path }
+pub fn Reader::read($max_bytes: Integer | ()): Bytes | () | Error
+{
+    __io "read" $self $max_bytes
+}
+pub fn Reader::next_item(): Bytes | () | Error { $self.read 65536 }
+pub fn Reader::close(): () | Error { __io_close $self }
+pub fn Writer::write($bytes: Bytes): Integer | Error { __io "write" $self $bytes }
+pub fn Writer::flush(): () | Error { __io "flush" $self }
+pub fn Writer::close(): () | Error { __io_close $self }
+pub fn Reader::lease(): Reader | Error { __io "lease_reader" $self }
+pub fn byte_source($reader: Reader): ByteSource | Error { __io "byte_source" $reader false }
+pub fn read_file($path: String): ByteSource | Error
+{
+    let $reader = open_reader $path
+    __io "byte_source" $reader true
+}
+pub fn ByteSource::next_item(): Bytes | () | Error
+{
+    let $reader: Reader = __io "source_reader" $self
+    let $chunk = $reader.read 65536
+    if $chunk == () { $self.close }
+    $chunk
+}
+pub fn ByteSource::close(): () | Error { __io_close $self }
+pub fn byte_sink($writer: Writer): ByteSink | Error { __io "byte_sink" $writer false }
+pub fn write_file($path: String): ByteSink | Error
+{
+    let $writer = open_writer $path
+    __io "byte_sink" $writer true
+}
+pub fn ByteSink::close(): () | Error { __io_close $self }
+
+pub fn Reader::read_all($max_bytes: Integer | ()): Bytes | Error
+{
+    let $maximum = if $max_bytes == () { 16777216 } else { $max_bytes }
+    if ($maximum < 1) || ($maximum > 67108864)
+    { return LimitError(message: "read_all limit must be 1..67108864", operation: "read_all") }
+    let $reader = $self.lease
+    try { return read_all_leased $reader $maximum }
+    finally { $reader.close }
+}
+
+fn read_all_leased($reader: Reader, $maximum: Integer): Bytes | Error
+{
+    let $result = Bytes("")
+    loop
+    {
+        let $chunk = $reader.read 65536
+        if $chunk == () { return $result }
+        if $result.count + $chunk.count > $maximum
+        {
+            return LimitError(message: "Reader exceeds byte limit", operation: "read_all")
+        }
+        $result = $result.concat $chunk
+    }
+}
+
+pub fn Reader::read_exact($count: Integer): Bytes | Error
+{
+    if ($count < 0) || ($count > 67108864)
+    { return LimitError(message: "read_exact count must be 0..67108864", operation: "read_exact") }
+    let $reader = $self.lease
+    try { return read_exact_leased $reader $count }
+    finally { $reader.close }
+}
+
+fn read_exact_leased($reader: Reader, $count: Integer): Bytes | Error
+{
+    let $result = Bytes("")
+    while $result.count < $count
+    {
+        let $chunk = $reader.read (min ($count - $result.count) 65536)
+        if $chunk == ()
+        { return ShortReadError(message: "Unexpected EOF", expected: $count, received: $result) }
+        $result = $result.concat $chunk
+    }
+    $result
+}
+
+pub fn read_bytes($path: String, $max_bytes: Integer | ()): Bytes | Error
+{
+    let $reader = open_reader $path
+    try { return $reader.read_all $max_bytes }
+    finally { $reader.close }
+}
+
+pub fn read_text($path: String, $max_bytes: Integer | ()): String | Error
+{
+    String(read_bytes $path $max_bytes)
+}
+
+pub fn write_bytes($path: String, $bytes: Bytes): Integer | Error
+{
+    let $writer = open_writer $path
+    try
+    {
+        let $count = $writer.write $bytes
+        $writer.flush
+        return $count
+    }
+    finally { $writer.close }
+}
+
+pub fn write_text($path: String, $text: String): Integer | Error
+{
+    write_bytes $path Bytes($text)
+}
+
+pub fn copy($reader: Reader, $writer: Writer): Integer | Error
+{
+    let $count = 0
+    for $chunk in $reader
+    {
+        $count = $count + ($writer.write $chunk)
+    }
+    $writer.flush
+    $count
+}
+
+visible "__io_Lines"
+pub type Lines = __io_Lines
+pub fn lines($reader: Reader, $max_bytes: Integer | (), $universal: Boolean | ()): Lines | Error
+{
+    __io "lines" $reader $max_bytes $universal
+}
+pub fn Lines::next_item(): String | () | Error
+{
+    let $bytes: Bytes | () = __io "read_line" $self
+    if $bytes == () { return () }
+    String($bytes)
+}
+pub fn Lines::close(): () | Error { __io_close $self }
+pub fn utf8($value: String): Bytes | Error { Bytes($value) }
+
+pub fn Writer::lease(): Writer | Error { __io "lease_writer" $self }
+pub fn Writer::shutdown_write(): () | Error { __io "shutdown_write" $self }
+pub error struct ShortReadError
+{
+    pub message: String,
+    pub expected: Integer,
+    pub received: Bytes,
+}
+
+# Binary records keep UTF-8 conversion separate from framing.
+pub fn records($reader: Reader, $separator: Integer, $max_bytes: Integer | ()): Lines | Error
+{ __io "records" $reader $max_bytes $separator }
+pub fn Lines::next_bytes(): Bytes | () | Error { __io "read_line" $self }

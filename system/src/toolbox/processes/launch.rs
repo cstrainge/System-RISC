@@ -19,6 +19,7 @@ pub(super) struct Prepared
     pub tls:             native_threads::RootBinding,
     pub loaded:          Option<super::super::files::application::Loaded>,
     pub ready:           Option<OwnedJob>,
+    pub argv:            Option<super::Arguments>,
     pub directory:       Option<crate::toolbox::files::local::directory::LaunchDirectory>,
     pub directory_bound: bool
 }
@@ -68,6 +69,8 @@ struct Slot
     thread:    ThreadId,
     volume:    u32,
     cnid:      u32,
+    session:   u64,
+    streams:   [u64; 3],
     prepared:  Option<Prepared>,
     cancelled: bool,
     committed: bool
@@ -163,6 +166,8 @@ fn claim(call: &ProcessCall, resume: bool, origin: Origin)
                    || slot.cancelled
                    || slot.volume != call.volume
                    || slot.cnid != call.cnid
+                   || slot.session != call.id
+                   || slot.streams != call.streams
                 {
                     return Err(BAD_ABI);
                 }
@@ -188,6 +193,8 @@ fn claim(call: &ProcessCall, resume: bool, origin: Origin)
                                 thread,
                                 volume: call.volume,
                                 cnid: call.cnid,
+                                session: call.id,
+                                streams: call.streams,
                                 prepared: None,
                                 cancelled: false,
                                 committed: false });
@@ -257,19 +264,19 @@ pub(crate) fn ready_job(tls: &native_threads::RootBinding,
 }
 
 pub(super) fn start(call: &mut ProcessCall, loaded: super::super::files::application::Loaded,
-                    origin: Origin)
+                    origin: Origin, argv: Option<(&[u8], usize, u32)>)
                     -> Result<(), Status>
 {
-    drive(call, Some(loaded), origin)
+    drive(call, Some(loaded), origin, argv)
 }
 
 pub(super) fn resume(call: &mut ProcessCall, origin: Origin) -> Result<(), Status>
 {
-    drive(call, None, origin)
+    drive(call, None, origin, None)
 }
 
 fn drive(call: &mut ProcessCall, loaded: Option<super::super::files::application::Loaded>,
-         origin: Origin)
+         origin: Origin, argv: Option<(&[u8], usize, u32)>)
          -> Result<(), Status>
 {
     let (mut turn, previous) = match claim(call, loaded.is_none(), origin)
@@ -286,7 +293,7 @@ fn drive(call: &mut ProcessCall, loaded: Option<super::super::files::application
         Some(value) => value,
         None =>
         {
-            match super::prepare_launch(call, loaded.ok_or(BAD_ABI)?)?
+            match super::prepare_launch(call, loaded.ok_or(BAD_ABI)?, argv)?
             {
                 Some(value) => value,
                 None => return Ok(())
@@ -348,7 +355,7 @@ fn drive(call: &mut ProcessCall, loaded: Option<super::super::files::application
         prepared.directory_bound = true;
     }
     commit(&turn)?;
-    super::finish_launch(call, &mut prepared)
+    super::finish_launch(call, &mut prepared, origin)
 }
 
 fn refusal(call: &mut ProcessCall, status: Status) -> Result<(), Status>

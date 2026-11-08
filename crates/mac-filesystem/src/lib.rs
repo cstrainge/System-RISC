@@ -91,7 +91,15 @@ fn native_error(e: mac_hfs_b::Error) -> Error
         {
             Error::Malformed("unclean HFS-B volume; check/recreate before mounting")
         }
-        _ => Error::Malformed("HFS-B filesystem operation failed")
+        mac_hfs_b::Error::Corrupt => Error::Malformed("malformed HFS-B metadata"),
+        mac_hfs_b::Error::NotFound => Error::Missing("HFS-B object not found"),
+        mac_hfs_b::Error::Exists => Error::Malformed("HFS-B name already exists"),
+        mac_hfs_b::Error::Protected => Error::Malformed("HFS-B object is protected"),
+        mac_hfs_b::Error::ReadOnly => Error::Malformed("HFS-B volume is read-only"),
+        mac_hfs_b::Error::Full => Error::Malformed("HFS-B volume is full"),
+        mac_hfs_b::Error::Io => Error::Malformed("HFS-B disk I/O failed"),
+        mac_hfs_b::Error::RollbackFailed => Error::Malformed("HFS-B rollback failed"),
+        mac_hfs_b::Error::Stale => Error::Malformed("stale HFS-B object")
     }
 }
 pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
@@ -224,6 +232,39 @@ pub struct Volume<'a, D: BlockDevice>
     pub attributes:       u16,
     pub finder_info:      [u8; 32]
 }
+enum ReaderStorage<'v, 'd, D: BlockDevice>
+{
+    Hfs(&'v mut mac_hfs::Volume<'d, D>, mac_hfs::Fork),
+    HfsB(mac_hfs_b::ForkReader<'v, 'd, D>)
+}
+/// An immutable fork read transaction holding the exclusive volume borrow.
+/// Its metadata cannot become stale through another operation on this volume.
+pub struct ForkReader<'v, 'd, D: BlockDevice>
+{
+    storage: ReaderStorage<'v, 'd, D>,
+    length:  u64
+}
+impl<D: BlockDevice> ForkReader<'_, '_, D>
+{
+    pub fn length(&self) -> u64
+    {
+        self.length
+    }
+
+    pub fn read(&mut self, offset: u64, output: &mut [u8]) -> Result<usize>
+    {
+        if offset >= self.length
+        {
+            return Ok(0);
+        }
+        match &mut self.storage
+        {
+            ReaderStorage::Hfs(volume, fork) => volume.read(fork, offset, output),
+            ReaderStorage::HfsB(reader) => reader.read(offset, output).map_err(native_error)
+        }
+    }
+}
+
 impl<'a, D: BlockDevice> Volume<'a, D>
 {
     pub fn mount(disk: &'a mut D, partition: Partition) -> Result<Self>
@@ -320,6 +361,28 @@ impl<'a, D: BlockDevice> Volume<'a, D>
     pub fn allocation_info(&mut self, id: u32) -> Result<Option<(u64, u64)>>
     {
         Ok(self.entry(id)?.map(|e| (e.data_allocated, e.resource_allocated)))
+    }
+
+    pub fn fork_reader(&mut self, fork: &Fork) -> Result<ForkReader<'_, 'a, D>>
+    {
+        let (storage, length) = match (&mut self.backend, &fork.storage)
+        {
+            (Backend::Hfs(volume), ForkStorage::Hfs(f)) =>
+            {
+                (ReaderStorage::Hfs(volume, f.clone()), fork.length)
+            }
+            (Backend::HfsB(volume),
+             ForkStorage::HfsB { id,
+                                 kind }) =>
+            {
+                let reader = volume.fork_reader(*id, *kind).map_err(native_error)?;
+                let length = reader.length();
+                (ReaderStorage::HfsB(reader), length)
+            }
+            _ => return Err(Error::Malformed("foreign filesystem fork descriptor"))
+        };
+        Ok(ForkReader { storage,
+                        length })
     }
 
     pub fn read(&mut self, fork: &mut Fork, offset: u64, output: &mut [u8]) -> Result<usize>

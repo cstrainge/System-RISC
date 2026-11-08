@@ -481,7 +481,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 if !existing && !resumed
                 {
                     let loaded = match crate::context::without_recovery(|| {
-                              application::read(owner, volume, cnid)
+                              application::read(owner, volume, cnid, 0, [0; 3])
                           })
                     {
                         Ok(loaded) => loaded,
@@ -514,7 +514,8 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                         if let Err(error) =
                             super::launch_application(&mut launch,
                                                       *loaded,
-                                                      super::launch::Origin::Document(call.handle))
+                                                      super::launch::Origin::Document(call.handle),
+                                                      None)
                         {
                             call.requirement_class = launch.requirement_class;
                             call.requirement_version = launch.requirement_version;

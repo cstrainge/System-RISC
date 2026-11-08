@@ -4,9 +4,12 @@ fn main()
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
     println!("cargo:rerun-if-env-changed={}", mac_build::platform::PLATFORM_ENV);
     let platform = mac_build::platform::current();
-    let definition = Path::new(env!("CARGO_MANIFEST_DIR")).join("../platforms")
-                                                          .join(format!("{}.json", platform.name));
-    println!("cargo:rerun-if-changed={}", definition.display());
+    for definition in mac_build::platform::record_files(&platform.name).expect("firmware platform \
+                                                                                source records \
+                                                                                must resolve")
+    {
+        println!("cargo:rerun-if-changed={}", definition.display());
+    }
     if env::var("TARGET") != env::var("HOST")
     {
         mac_build::platform::validate_pic_flags().expect("native PIC dependency contract; use \

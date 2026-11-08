@@ -628,7 +628,7 @@ impl Toolbox
     }
 
     pub(crate) fn spawn_process(&self, id: u64, loaded: crate::kernel::LoadedImage,
-                                space: crate::machine::paging::process::Pin)
+                                space: crate::machine::paging::process::Pin, runnable: bool)
                                 -> Result<u64, Status>
     {
         let owner = self.processes.ledger(id)?;
@@ -642,7 +642,8 @@ impl Toolbox
                                          charges,
                                          self.processes.heap(id)?,
                                          self.processes.tls(id)?,
-                                         space)
+                                         space,
+                                         runnable)
     }
 
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
@@ -1199,7 +1200,7 @@ impl Toolbox
                                           icon:   Default::default() };
                                    crate::toolbox::processes::menu::MAX_APPLICATIONS];
                 let mut count = 0;
-                for process in self.processes.iter()
+                for process in self.processes.iter().filter(|process| !process.console())
                 {
                     let row = entries.get_mut(count).ok_or(NO_MEMORY)?;
                     *row = Entry { id:     process.info.id,
@@ -1239,7 +1240,10 @@ impl Toolbox
             return Err(NOT_FOUND);
         }
         crate::trace::record(crate::trace::ACTIVATE, self.owner, id, self.foreground, 0, 0);
-        self.processes.get(id)?;
+        if self.processes.get(id)?.console()
+        {
+            return Err(ACCESS_DENIED);
+        }
         if self.foreground == id
            && self.processes.get(id)?.info.hidden == 0
            && focus == GroupFocus::Front
@@ -1342,10 +1346,11 @@ impl Toolbox
     pub(crate) fn activate_existing_application(&mut self, call: &mut ProcessCall)
                                                 -> Result<bool, Status>
     {
-        let existing = self.processes
-                           .iter()
-                           .find(|p| p.info.volume == call.volume && p.info.cnid == call.cnid)
-                           .map(|p| p.info.id);
+        let existing =
+            self.processes
+                .iter()
+                .find(|p| !p.console() && p.info.volume == call.volume && p.info.cnid == call.cnid)
+                .map(|p| p.info.id);
         if let Some(id) = existing
         {
             self.activate_process(id)?;
@@ -1372,7 +1377,12 @@ impl Toolbox
         {
             return Err(BAD_ABI);
         }
-        if self.activate_existing_application(call)?
+        let console = catalog.file_type == *b"CLAP";
+        if console != (call.streams != [0; 3])
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if !console && self.activate_existing_application(call)?
         {
             return Ok(None);
         }
@@ -1396,14 +1406,42 @@ impl Toolbox
         }
     }
 
+    pub(crate) fn console_session(&self, caller: u64, window: u64) -> Result<(u64, u64), Status>
+    {
+        let session = self.processes.get(caller)?.console_session.unwrap_or((caller, window));
+        let installed = self.processes.terminal_host.ok_or(ACCESS_DENIED)?;
+        let host = self.processes.original_catalog(session.0)?;
+        if host.volume != installed.volume
+           || host.id != installed.id
+           || host.created != installed.created
+           || window == 0
+           || session.1 != window
+           || !self.processes.ledger(session.0)?.accepting()
+           || self.windows.window_for_owner(WindowId(window), session.0).is_none()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(session)
+    }
+
     pub(crate) fn finish_application_launch(&mut self, call: &mut ProcessCall,
                                             catalog: mac_abi::files::CatalogInfo,
                                             loaded: crate::kernel::LoadedImage,
                                             space: crate::machine::paging::process::Pin,
-                                            admission: &mut crate::toolbox::processes::LaunchAdmission)
+                                            admission: &mut crate::toolbox::processes::LaunchAdmission,
+                                            opened_for_documents: bool)
                                             -> Result<(), Status>
     {
         let id = admission.id();
+        let session = if catalog.file_type == *b"CLAP"
+        {
+            let caller = crate::context::current_thread_context().identity().app.0;
+            Some(self.console_session(caller, call.id)?)
+        }
+        else
+        {
+            None
+        };
         if self.processes.ledger(id)?.owner() != admission.owner().owner()
            || self.processes.heap(id)?.owner() != admission.owner().owner()
            || !space.matches(admission.owner(), loaded.binding())
@@ -1439,7 +1477,7 @@ impl Toolbox
             self.locals.push(local);
             return Err(error);
         }
-        let thread = match self.spawn_process(id, loaded, space)
+        let thread = match self.spawn_process(id, loaded, space, false)
         {
             Ok(t) => t,
             Err(e) =>
@@ -1451,12 +1489,63 @@ impl Toolbox
             }
         };
         self.locals.push(local);
-        self.processes.get_mut(id)?.info.thread = thread;
-        self.activate_process(id)?;
-        call.info = self.processes.snapshot(id)?;
+        let process = self.processes.get_mut(id)?;
+        process.info.thread = thread;
+        process.opened_for_documents = opened_for_documents;
+        let console = session.is_some();
+        if !console
+        {
+            self.activate_process(id)?;
+        }
+        let info = self.processes.snapshot(id)?;
+        let sender = if console
+        {
+            let sender = crate::context::current_owner()?;
+            self.processes.retain_child(sender.owner().incarnation(), id)?;
+            Some(sender)
+        }
+        else
+        {
+            None
+        };
+        // As with Finder recovery, a published THRD stays inert until all
+        // fallible startup preparation has completed.
+        let publication = {
+            use mac_object_table::shared::InvocationGate as _;
+            crate::toolbox::handles::InvocationGate::run(|| {
+                if let Some(sender) = &sender
+                {
+                    let allocation = self.processes.allocation(id)?;
+                    let process = self.processes.get_mut(id)?;
+                    process.console_session = session;
+                    crate::toolbox::pipes::attach_for_launch(sender,
+                                                             admission.owner(),
+                                                             allocation,
+                                                             call.streams,
+                                                             |streams| {
+                                                                 process.streams = streams;
+                                                                 crate::machine::scheduler::start_prepared(thread, admission.owner())
+                                                             })?;
+                }
+                else
+                {
+                    crate::machine::scheduler::start_prepared(thread, admission.owner())?;
+                }
+                admission.started();
+                Ok::<_, Status>(())
+            })
+        };
+        if let Err(status) = publication
+        {
+            if let Some(sender) = &sender
+            {
+                let _ = self.processes.forget_child(sender.owner().incarnation(), id);
+            }
+            return Err(status);
+        }
+        call.info = info;
         self.notify_finder_file_state(call.volume, call.cnid, true);
         serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
-        admission.started();
         Ok(())
     }
 
@@ -1520,7 +1609,26 @@ impl Toolbox
     {
         match call.operation
         {
-            CURRENT => call.info = self.processes.snapshot(caller)?,
+            CURRENT =>
+            {
+                call.info = self.processes.snapshot(caller)?;
+                call.index = u32::from(self.processes.get(caller)?.opened_for_documents);
+            }
+            CONSOLE_SESSION =>
+            {
+                let window =
+                    self.processes
+                        .get(caller)?
+                        .console_session
+                        .map(|(_, window)| window)
+                        .or_else(|| self.windows.front_for_owner(caller).map(|window| window.0))
+                        .ok_or(ACCESS_DENIED)?;
+                self.console_session(caller, window)?;
+                call.id = window;
+            }
+            STANDARD_STREAMS => call.streams = self.processes.get(caller)?.streams,
+            CHILD_STATUS => self.processes.child_status(caller, call)?,
+            CHILD_FORGET => self.processes.forget_child(caller, call.id)?,
             IS_RUNNING =>
             {
                 call.index =

@@ -1,110 +1,99 @@
 # Terminal and CLAP applications
 
-Status: design/backlog, tracked as [P11](CORE-TOOLBOX-ROADMAP.md#p11--terminal-and-clap-applications).
-Introduce `CLAP` as the Macintosh file type for command-line applications, with
-a resource-based Terminal application hosting their sessions. This is not yet a
-new manifest option, process service or installed application.
+Terminal, Cli Extension, Shelly and echo are installed by the `qemu_riscv`
+platform. This is an initial usable implementation, not full POSIX terminal or
+PTY compatibility. Sub-second shell startup and the shared async runtime remain
+unfinished; the intended async contract is in [ASYNC-SDK.md](ASYNC-SDK.md).
 
-## Application and session contract
+## Launch and ownership
 
-- Terminal is an ordinary std-based APPL with its own OS thread, resource menus,
-  icon, windows and JSON preferences. Each CLAP is a separate std process with
-  its own AppId, main thread, memory, environment and exit status; it does not
-  execute on Terminal's UI thread. Native workers remain within their process.
-- CLAP packages retain normal native application code/descriptors/relocations
-  and Cargo-derived versions. CLAP is a file/launch class, not a new instruction
-  format or code-resource type. Extend mac-build/xtask and FORMAT.md when the
-  exact launch metadata and startup ABI are implemented.
-- A CLAP must have a live, kernel-validated Terminal session before entry.
-  Finder opening/double-clicking CLAP routes to Terminal to create a session and
-  launch the command. Direct launch without a valid session is rejected; merely
-  supplying streams, an environment variable or a claimed Terminal name is not
-  sufficient. Only the registered Terminal host creates sessions; children may
-  inherit a session through checked process creation.
-- Each command invocation creates a new process, even for the same file. Keep
-  APPL's existing activate-running-file behavior separate. Runtime running-file
-  state still uses actual volume/CNID identity. Terminal owns session UI and app
-  switching; commands do not each create a separate GUI menu bar/window. A CLAP
-  may request launch of a separate APPL through normal services.
-- Terminal and Process Manager expose checked session/child identities through
-  the shared generation-tagged facility, with separate ownership/delegation.
-  Session identity is out-of-band authority, not an environment string or PID.
-  Document UI-service restrictions for the terminal-only launch class.
+Terminal is a normal std APPL. Cli Extension claims executables whose Macintosh
+file type is `CLAP`; each command runs in its own real process and OS thread.
+Execution extensions query the executable information they need. The native
+default handler is tried after registered handlers. A CLI process does not
+register an application menu entry or own a GUI menu bar.
 
-## Environment preferences and inheritance
+Finder routes a CLAP open to Terminal, which creates another window for that
+command. Opening Terminal normally starts Shelly. Multiple Terminal windows own
+separate sessions. Session authority comes from System's authenticated Terminal
+host and owned window, not an environment variable or a claimed process name.
+A failed launch leaves the existing window usable and retains the caller's
+endpoints. GUI applications retain the default stub-stream behavior.
 
-Terminal's versioned JSON preferences own a `base_environment` string map and
-the default command/search-path settings. Provide a preferences UI to edit them;
-do not borrow the host computer's environment or treat Finder's environment as
-the defaults. Validate keys/values, limits and native path-list syntax together
-with P8, rejecting unsupported encodings and embedded NULs.
+System attaches the selected stdin, stdout and stderr pipe ends only after
+execution/session admission succeeds. Endpoints are owned, generation checked
+and transferred to the child as part of launch publication. Rust
+`std::process::Command` supports checked CLAP creation, piped streams, blocking
+wait, output collection and exit status. This does not imply that every std
+process option, stream-inheritance mode or termination operation is supported.
+Unsupported operations return errors.
 
-When starting a session, snapshot the configured base map, then apply explicit
-session and top-level launch overrides. Child CLAPs inherit their parent's
-effective snapshot plus explicit per-child changes. Support std Command env,
-env_remove and env_clear semantics; clearing environment does not discard the
-out-of-band Terminal attachment. Changes made by a child or later preferences
-edits must not mutate running siblings/parents. Preference changes affect future
-sessions unless an explicit session update is requested.
+## Installation and shell defaults
 
-Derive terminal capability values from the emulation actually implemented.
-Define precedence and validation for TERM and session-provided values rather than
-advertising unsupported behavior. Working directory and argv are separate launch
-fields, with owned snapshots and fallible argument parsing; they are not inferred
-from arbitrary environment entries. Command search follows the defined native
-PATH syntax and explicit path rules.
+- Terminal: `Applications:Utility:Terminal`.
+- Shelly and echo: `Applications:Utility:Cli`.
+- Terminal supplies the CLI executable search path. It does not import the host
+  computer's PATH.
+- Shelly starts in the user's Documents directory; `~` names that directory.
+- Shelly reads `.shelly_init.shy` from Preferences.
 
-## Streams, terminal behavior and lifecycle
+Shelly is an implicit source fork under `vendor/shelly`, with its upstream
+identity and license retained. Networking and other facilities unavailable on
+System RISC remain unavailable. `echo` is a separate native CLAP and receives
+real argv through the platform startup contract.
 
-System owns session admission, endpoint lifetimes and process lifecycle;
-Terminal owns presentation. Byte transport is the resident pipes facility, which
-ships: `docs/PIPES.md` is its contract, and a guest probe proves the transport,
-the `Pipes` folder and open-as-connect as part of `cargo xtask boot-check`. What
-the std platform must still do is bind its streams to that facility rather than
-to the null profile, through the normal service boundary, without growing a
-parallel pipe stack in the resident kernel. Define stdin/stdout/stderr, terminal
-detection,
-partial reads/writes, EOF, backpressure, resize notifications and readiness.
-Redirection and pipelines keep the same Terminal session even when a particular
-stream is a file/pipe rather than the display. A GUI caller requesting a CLAP
-must route through Terminal or receive a defined session-required error.
+## Input, output and rendering
 
-Start with a documented UTF-8/VT-style emulation profile, then expand tested
-escape/control support. Use resident fonts, monospace cell metrics and explicit
-emoji/wide-cluster rules; render and select graphemes without corrupting original
-text. Include keyboard input, line editing/paste, selection/copy, configurable
-bounded scrollback and CDEF scroll controls. Separate terminal emulation from
-command parsing; a command runner or future shell is itself a CLAP.
+The terminal engine parses input/output and owns buffering and terminal state;
+the renderer owns its view of that text. The initial profile includes UTF-8 text,
+VT cursor operations, ANSI foreground/background colors, alternate-screen state,
+a blinking cell-width box cursor and a 2000-line scrollback buffer. The managed
+right scrollbar bounds the text viewport. Only damaged paint regions are drawn.
+These implemented pieces do not establish complete xterm, Unicode grapheme,
+full-screen TUI or sixel protocol compatibility.
 
-Specify cooked/raw input, echo, interrupt/end-of-input actions and foreground job
-routing. The current host Ctrl-to-Command mapping needs a deliberate Terminal
-input policy so command interruption and Copy do not conflict; do not globally
-change other apps' shortcuts. POSIX signal/job-control compatibility is a later
-explicit profile, not implied by implementing an interrupt command.
+Child stdout and stderr use their own byte streams and the terminal's styles;
+stderr is not automatically painted red. Terminal's own diagnostics can use an
+error style. Reedline controls its prompts and syntax highlighting. Sixel
+rendering exists, but Shelly's startup logo still needs completed capability
+negotiation and startup-cost qualification.
 
-Drain output and retain exit status after a command finishes. Define Terminal
-close/quit, disconnected sessions, blocked writers, broken pipes, cancellation
-and child-tree cleanup so no command runs orphaned outside Terminal. Panics use
-P8's default System-owned bomb dialog, with session/process context; they do not
-replace the reporter with a terminal-only message. App/kernel fault domains
-follow [P13](PROCESS-ISOLATION.md).
+The QEMU key mapping uses left Alt for Command, Ctrl for Control, and right Alt
+for Option. This preserves terminal control keys while keeping host-intercepted
+Windows keys out of application shortcuts. Future hardware mapping is separate.
 
-## Delivery and acceptance
+The native Crossterm input adapter uses a per-call pipe read deadline. It does
+not toggle the shared endpoint mode or wake every four milliseconds to test an
+empty pipe. A read timeout is `WouldBlock`, not EOF, and leaves the caller's
+buffer unchanged. Ready bytes and real EOF take precedence over expiry. See
+[PIPES.md](PIPES.md) and the public `PipeReader::read_wait` contract.
 
-1. Extend packaging/launch classification, session authority and normal-main
-   startup. Add Terminal plus simple echo/env/exit CLAP fixtures using P8 std.
-2. Deliver session queues, terminal input/output, resize/scrollback and JSON
-   environment preferences; prove parent/child inheritance and isolation.
-3. Add command runner, redirection/pipes and Command integration with readiness,
-   cancellation and complete process status. Then qualify interactive tools.
+## Closing and cleanup
 
-Canonical public service checks belong in `crates/mac-toolbox/tests`; std guests
-also exercise env/args/streams/Command through P8. Private graphical tests cover
-Finder-to-Terminal launch, repeated invocation, two sessions/apps, output floods,
-Unicode/escape boundaries, EOF/exit/panic, stale/foreign sessions, rejected direct
-launch and Terminal shutdown. Verify defaults persist across reboot and changes
-affect only intended sessions. Bounded queues, row/cell damage and readiness
-wakes must preserve Cursor Test and input/present timings under sustained output.
+Closing a session sends stdin EOF and keeps the output readers and original
+child receipt until output EOF and actual process exit are observed. Late launch
+results are retained and drained too. Closing the last window leaves Terminal
+running so another window can be opened. Quit is explicit and drains sessions.
 
-This is the command application foundation for [hosted Rust tools](HOSTED-TOOLCHAIN.md),
-not a claim that a shell, Unix process model or compiler already runs.
+EOF is not a forced process kill. A child that ignores EOF remains owned and can
+keep shutdown pending. A cleanup refusal retains its original ticket and cause;
+it does not count as released memory. Normal process exit is reported only after
+the original account's cleanup requirements are met.
+
+## Remaining work
+
+The shared event-driven SDK executor and resident readiness/completion facilities
+will replace Terminal's remaining output/child polling. Completion state must
+survive UI queue overflow, wake only interested work, preserve UI thread affinity,
+and distinguish cancellation requests from acknowledged cleanup.
+
+Splits using the managed splitter control, themes, a configuration dialog,
+selection/copy/paste, richer menus and window arrangements remain subsequent
+Terminal work. Preferences UI and the complete environment/profile editor are
+not implemented. External Shelly pipelines, general PTY/foreground-job and signal
+semantics, and broader process options remain incomplete. Do not advertise those
+facilities based on the existing VT parser or a successful echo command.
+
+Kernel, std, boot firmware, extensions and applications must be rebuilt together
+when these unreleased ABI contracts change. The development ABI version stays
+one; descriptor fingerprints reject incompatible native layouts.

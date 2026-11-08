@@ -13,3 +13,6 @@ platforms/rust/patches/*.patch text eol=lf whitespace=-blank-at-eol
 *.hfs binary
 *.rsrc binary
 *.rgb binary
+
+# Encoded terminal controls contain meaningful carriage returns.
+vendor/shelly/banner_sixel.txt -text

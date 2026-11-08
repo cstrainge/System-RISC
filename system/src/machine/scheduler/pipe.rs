@@ -14,45 +14,82 @@ pub(super) struct Pending
     identity:  RequestIdentity,
     handle:    u64,
     operation: u32,
-    pipe:      u64
+    pipe:      u64,
+    turn:      Turn
 }
 
-/// Consume this thread's pending pipe wait when the same request is replayed.
-/// A changed handle or operation is refused rather than applied to a different
-/// endpoint than the one that parked.
-pub(crate) fn begin(identity: RequestIdentity, handle: u64, operation: u32)
-                    -> Result<bool, Status>
+/// One invocation's deadline survives every replay and spurious peer wake.
+#[derive(Clone, Copy)]
+pub(crate) struct Turn
 {
-    let scheduler = SCHEDULER.lock();
-    let Some(thread) = scheduler.thread(current())
-    else
+    pub(crate) resumed: bool,
+    wait_nanoseconds:   Option<u64>,
+    deadline:           Option<u64>
+}
+impl Turn
+{
+    pub(crate) fn expired(self) -> bool
     {
-        return Ok(false);
-    };
+        self.deadline.is_some_and(|deadline| crate::platform::ticks() >= deadline)
+    }
+}
+
+/// Consume only an exact replay. Calculate a fresh deadline outside the
+/// scheduler lock, never on replay (which would extend the caller's timeout).
+pub(crate) fn begin(identity: RequestIdentity, handle: u64, operation: u32,
+                    wait_nanoseconds: Option<u64>)
+                    -> Result<Turn, Status>
+{
     let record = {
-        let Some(record) = thread.core.pending_pipe.lock().take()
+        let scheduler = SCHEDULER.lock();
+        if let Some(thread) = scheduler.thread(current())
+        {
+            let record = thread.core.pending_pipe.lock().take();
+            if record.is_some() && matches!(thread.state.get().waiting, Some(Wait::Pipe { .. }))
+            {
+                thread.update(|state| state.waiting = None);
+            }
+            record
+        }
         else
         {
-            return Ok(false);
-        };
-        record
+            None
+        }
     };
-    if matches!(thread.state.get().waiting, Some(Wait::Pipe { .. }))
+    if let Some(record) = record
     {
-        thread.update(|state| state.waiting = None);
+        if record.identity != identity
+           || record.handle != handle
+           || record.operation != operation
+           || record.turn.wait_nanoseconds != wait_nanoseconds
+        {
+            return Err(mac_abi::BAD_ARGUMENT);
+        }
+        return Ok(Turn { resumed: true,
+                         ..record.turn });
     }
-    if record.identity != identity || record.handle != handle || record.operation != operation
-    {
-        return Err(mac_abi::BAD_ARGUMENT);
-    }
-    Ok(true)
+    let deadline =
+        match wait_nanoseconds
+        {
+            Some(value) if value != u64::MAX =>
+            {
+                Some(service::relative_deadline(value / 1_000_000_000,
+                                                (value % 1_000_000_000) as u32).map_err(|cause| {
+                                                                                   cause.status()
+                                                                               })?)
+            }
+            _ => None
+        };
+    Ok(Turn { resumed: false,
+              wait_nanoseconds,
+              deadline })
 }
 
 /// Park the calling thread until the pipe's state changes. Called with the pipe
 /// manager guard held, so no peer can change the condition before the wait is
 /// published.
 pub(crate) fn park(pipe: u64, handle: u64, operation: u32, identity: RequestIdentity,
-                   suspension: Result<(), Status>)
+                   suspension: Result<(), Status>, turn: Turn)
                    -> Result<(), Status>
 {
     suspension?;
@@ -72,10 +109,12 @@ pub(crate) fn park(pipe: u64, handle: u64, operation: u32, identity: RequestIden
         *pending = Some(Pending { identity,
                                   handle,
                                   operation,
-                                  pipe });
+                                  pipe,
+                                  turn });
     }
     thread.update(|state| {
-              state.waiting = Some(Wait::Pipe { pipe });
+              state.waiting = Some(Wait::Pipe { pipe,
+                                                deadline: turn.deadline });
               state.woken = 0;
           });
     Ok(())
@@ -92,7 +131,7 @@ pub(crate) fn wake(pipe: u64)
         {
             continue;
         }
-        if !matches!(thread.state.get().waiting, Some(Wait::Pipe { pipe: waiting }) if waiting == pipe)
+        if !matches!(thread.state.get().waiting, Some(Wait::Pipe { pipe: waiting, .. }) if waiting == pipe)
         {
             continue;
         }

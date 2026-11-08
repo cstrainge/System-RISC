@@ -9,8 +9,8 @@ use core::{cell::Cell,
 use mac_object_table::{domain::ReleasedResource, store::CompletionKey};
 use spinning_top::Spinlock as Mutex;
 
-use crate::machine::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
+            machine::traps::TrapFrame,
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
 mod admission;
@@ -22,7 +22,7 @@ pub(crate) use stack::{StackPinError, StackWaitPin, pin_application_stack};
 mod user;
 pub(crate) mod callbacks;
 pub(crate) use user::{Fault as UserFault, FaultSnapshot, capture_definition_panic, capture_fault,
-                      current_user_space, pump_faults};
+                      coroutine_stack, current_user_space, pump_faults};
 mod worker;
 pub(crate) mod service;
 pub(crate) mod wake;
@@ -39,12 +39,13 @@ pub(crate) use worker::{activate_workers, prepare_worker, publish_worker, worker
 pub(crate) mod accounting;
 pub(crate) use lifetime::{ReleaseThreads, specification};
 
-use crate::machine::traps::execution::{HartKey, IDLE, activate_idle_context, current, idle_frame, in_io,
-                              select_current, selected_hart, with_system_maintenance};
-pub(crate) use crate::machine::traps::execution::{activate_context, authenticate_module, critical_active,
-                                         current_context, io_enter, io_leave,
-                                         module_callback_allowed, module_owner,
-                                         reserve_allocation, reserve_replacement};
+use crate::machine::traps::execution::{HartKey, IDLE, activate_idle_context, current, idle_frame,
+                                       in_io, select_current, selected_hart,
+                                       with_system_maintenance};
+pub(crate) use crate::machine::traps::execution::{activate_context, authenticate_module,
+                                                  critical_active, current_context, io_enter,
+                                                  io_leave, module_callback_allowed, module_owner,
+                                                  reserve_allocation, reserve_replacement};
 // Generated from the same checked platform policy as the linker artifacts.
 const STACK_BYTES: usize = crate::machine::memory::APPLICATION_STACK_BYTES as usize;
 const IDLE_STACK_BYTES: usize = crate::machine::memory::SYSTEM_STACK_BYTES as usize;
@@ -58,8 +59,8 @@ fn timer_interval() -> u64
     let ticks = TIMER_INTERVAL.load(Ordering::Acquire);
     if ticks == 0
     {
-        crate::machine::traps::entry_lost("scheduler frame commitment preceded validated platform timer \
-                                  initialization");
+        crate::machine::traps::entry_lost("scheduler frame commitment preceded validated \
+                                           platform timer initialization");
     }
     ticks
 }
@@ -466,7 +467,12 @@ enum Wait
     /// changing the ring or an endpoint count.
     Pipe
     {
-        pipe: u64
+        pipe:     u64,
+        deadline: Option<u64>
+    },
+    Child
+    {
+        child: u64
     }
 }
 struct Scheduler
@@ -617,8 +623,8 @@ impl ThreadCore
         else
         {
             crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
-                                    format_args!("Claimed thread lost CPU backing before frame \
-                                                  publication."));
+                                             format_args!("Claimed thread lost CPU backing \
+                                                           before frame publication."));
         };
         crate::machine::traps::publish_cpu(&backing.cpu);
     }
@@ -712,7 +718,8 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              callback_queue: None,
                                              name: Mutex::new(None),
                                              application: None,
-                                             pending_join: Mutex::new(None), pending_pipe: Mutex::new(None) }).map_err(|_| {
+                                             pending_join: Mutex::new(None),
+                                             pending_pipe: Mutex::new(None) }).map_err(|_| {
                                                                                   mac_abi::NO_MEMORY
                                                                               })?;
         Ok((core, allocation))
@@ -781,14 +788,14 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
             {
                 return Err(mac_abi::ACCESS_DENIED);
             }
-            let space = crate::machine::paging::process::admit_recovery(&owner,
-                                                               charges.allocation(),
-                                                               &loaded,
-                                                               permit.clone()).map_err(|cause| {
-                            serial!("PROCESS_SPACE_REFUSED owner={} {cause}",
-                                    owner.owner().incarnation());
-                            cause.status()
-                        })?;
+            let space =
+                crate::machine::paging::process::admit_recovery(&owner,
+                                                                charges.allocation(),
+                                                                &loaded,
+                                                                permit.clone()).map_err(|cause| {
+                    serial!("PROCESS_SPACE_REFUSED owner={} {cause}", owner.owner().incarnation());
+                    cause.status()
+                })?;
             let runtime = user::Runtime::prepare(&owner, &loaded, &space)?;
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
             let slots =
@@ -816,7 +823,8 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     callback_queue: None,
                                     name: Mutex::new(None),
                                     application: None,
-                                    pending_join: Mutex::new(None), pending_pipe: Mutex::new(None) };
+                                    pending_join: Mutex::new(None),
+                                    pending_pipe: Mutex::new(None) };
             let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
             Ok::<_, mac_abi::Status>((core, stack_preparation))
         })
@@ -1020,7 +1028,7 @@ pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                     charges: accounting::ThreadCharges,
                     heap: crate::toolbox::application_heap::RootBinding,
                     tls: crate::toolbox::native_threads::RootBinding,
-                    space: crate::machine::paging::process::Pin)
+                    space: crate::machine::paging::process::Pin, runnable: bool)
                     -> Result<u64, mac_abi::Status>
 {
     let prepared = prepare(owner, loaded, charges, heap, tls, space).map_err(|failure| {
@@ -1033,7 +1041,7 @@ pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                        drop(loaded);
                        status
                    })?;
-    spawn_prepared(prepared, true).map_err(|failure| failure.status)
+    spawn_prepared(prepared, runnable).map_err(|failure| failure.status)
 }
 
 fn arm()
@@ -1067,11 +1075,12 @@ fn prepare_system_idle(target: crate::machine::traps::execution::IdleTarget)
             initial.pc = idle as *const () as usize;
             initial.status = crate::machine::traps::INITIAL_STATUS;
             initial.stack_pointer = stack.top();
-            let cpu = Foundation::<crate::machine::traps::SavedState>::new(initial).map_err(|cause| {
-                          serial!("SYSTEM_IDLE_BACKING_REFUSED hart={} resource=CPU cause={cause}",
-                                  target.number());
-                          cause.status()
-                      })?;
+            let cpu =
+                Foundation::<crate::machine::traps::SavedState>::new(initial).map_err(|cause| {
+                    serial!("SYSTEM_IDLE_BACKING_REFUSED hart={} resource=CPU cause={cause}",
+                            target.number());
+                    cause.status()
+                })?;
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
 
             let name = ThreadName::new("System idle")?;
@@ -1422,6 +1431,38 @@ pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
           });
     Ok(true)
 }
+/// The Process Manager holds the result condition until the wait is armed.
+pub(crate) fn park_child(child: u64, suspension: Result<(), mac_abi::Status>)
+                         -> Result<(), mac_abi::Status>
+{
+    suspension?;
+    let scheduler = SCHEDULER.lock();
+    let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
+    service::suspension_allowed(thread.state.get())?;
+    thread.update(|state| {
+              state.waiting = Some(Wait::Child { child });
+              state.woken = 0;
+          });
+    Ok(())
+}
+
+pub(crate) fn wake_child(child: u64)
+{
+    let scheduler = SCHEDULER.lock();
+    for (_, thread) in scheduler.iter()
+    {
+        if thread.state.get().live
+           && matches!(thread.state.get().waiting, Some(Wait::Child { child: id }) if id == child)
+        {
+            thread.update(|state| {
+                      state.waiting = None;
+                      state.woken = 1;
+                  });
+            wake::runnable(thread.state.get().requires_primary());
+        }
+    }
+}
+
 pub fn wake_io(identity: u64, job: crate::context::DeferredIo)
 {
     let scheduler = SCHEDULER.lock();
@@ -1500,11 +1541,11 @@ pub(crate) fn reclaim_retired()
 fn claim_lost(hart: HartKey, slot: usize, reason: &str) -> !
 {
     crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
-                            format_args!("Scheduler execution claim invariant: hart {}, slot \
-                                          {}, {}.",
-                                         hart.number(),
-                                         slot,
-                                         reason));
+                                     format_args!("Scheduler execution claim invariant: hart \
+                                                   {}, slot {}, {}.",
+                                                  hart.number(),
+                                                  slot,
+                                                  reason));
 }
 fn validate_capture(scheduler: &Scheduler, capture: &crate::machine::traps::OuterCapture)
 {
@@ -1740,8 +1781,8 @@ pub(super) fn schedule(capture: crate::machine::traps::OuterCapture) -> *mut Tra
 
 /// Bounded frame/claim commitment only: no foreign callback, allocation,
 /// owning retirement or fallible work follows the first ownership mutation.
-fn commit_choice(scheduler: &Scheduler, capture: &crate::machine::traps::OuterCapture, index: usize,
-                 quantum: u64)
+fn commit_choice(scheduler: &Scheduler, capture: &crate::machine::traps::OuterCapture,
+                 index: usize, quantum: u64)
                  -> Option<(*mut TrapFrame, u64, bool)>
 {
     let hart = capture.hart();
@@ -1783,7 +1824,7 @@ fn wake_deadlines(scheduler: &Scheduler, now: u64)
     {
         address::observe(thread, now, invalidated);
         if matches!(thread.state.get().waiting,
-            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) } | Wait::Sleep { deadline }) if now >= deadline)
+            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) } | Wait::Pipe { deadline: Some(deadline), .. } | Wait::Sleep { deadline }) if now >= deadline)
         {
             thread.update(|state| state.waiting = None);
             if let Some(worker) = &thread.worker
@@ -1796,7 +1837,8 @@ fn wake_deadlines(scheduler: &Scheduler, now: u64)
     }
 }
 
-fn bootstrap_choice(scheduler: &Scheduler, capture: &crate::machine::traps::OuterCapture) -> Option<usize>
+fn bootstrap_choice(scheduler: &Scheduler, capture: &crate::machine::traps::OuterCapture)
+                    -> Option<usize>
 {
     let current = capture.current();
     let hart = capture.hart();

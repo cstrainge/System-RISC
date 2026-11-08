@@ -50,6 +50,7 @@ members = [
     "system",
     "apps/finder",
     "apps/*",
+    "vendor/shelly",
     "tools/mac-build",
     "tools/mac-extract",
     "tools/mac-fonts",
@@ -125,3 +126,4 @@ strip = "none"
 [patch.crates-io]
 skrifa = { path = "vendor/skrifa" }
 ab_glyph_rasterizer = { path = "vendor/ab_glyph_rasterizer" }
+crossterm = { path = "vendor/shelly/platform/crossterm" }

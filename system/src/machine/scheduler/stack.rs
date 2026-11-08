@@ -6,14 +6,17 @@ use core::{fmt,
            sync::atomic::{AtomicBool, Ordering}};
 
 use super::*;
+use crate::machine::paging::user::Mapping;
+
 pub(super) struct StackBacking
 {
     // Real backing leaves before its original-account charge (Charged's order).
-    stack:     spin::Once<Arc<accounting::Charged<crate::machine::pages::Stack>>>,
-    user:      Mutex<UserSlot>,
-    owner:     OwnerRef,
-    identity:  spin::Once<CompletionKey>,
-    accepting: AtomicBool
+    stack:      spin::Once<Arc<accounting::Charged<crate::machine::pages::Stack>>>,
+    user:       Mutex<UserSlot>,
+    coroutines: Mutex<Option<alloc::vec::Vec<Mapping>>>,
+    owner:      OwnerRef,
+    identity:   spin::Once<CompletionKey>,
+    accepting:  AtomicBool
 }
 struct UserSlot
 {
@@ -25,19 +28,21 @@ impl StackBacking
 {
     pub(super) fn prepay(owner: &OwnerRef) -> Result<PrepaidStack, mac_abi::Status>
     {
-        let backing = Arc::try_new(Self { stack:     spin::Once::new(),
-                                          user:      Mutex::new(UserSlot { mapping: None,
-                                                                           busy:    false,
-                                                                           waiting: false }),
-                                          owner:     owner.clone(),
-                                          identity:  spin::Once::new(),
-                                          accepting: AtomicBool::new(true) }).map_err(|_| {
-                                                                                 mac_abi::NO_MEMORY
-                                                                             })?;
+        let backing = Arc::try_new(Self { stack:      spin::Once::new(),
+                                          user:       Mutex::new(UserSlot { mapping: None,
+                                                                            busy:    false,
+                                                                            waiting: false }),
+                                          coroutines: Mutex::new(Some(alloc::vec::Vec::new())),
+                                          owner:      owner.clone(),
+                                          identity:   spin::Once::new(),
+                                          accepting:  AtomicBool::new(true) }).map_err(|_| {
+                                                                                  mac_abi::NO_MEMORY
+                                                                              })?;
         Ok(PrepaidStack { backing })
     }
 
-    pub(super) fn prepare(owner: &OwnerRef, stack: accounting::Charged<crate::machine::pages::Stack>)
+    pub(super) fn prepare(owner: &OwnerRef,
+                          stack: accounting::Charged<crate::machine::pages::Stack>)
                           -> Result<Arc<Self>, mac_abi::Status>
     {
         Self::prepay(owner)?.finish(stack, None)
@@ -100,7 +105,67 @@ impl StackBacking
 
     pub(super) fn retire_user(&self) -> Result<(), super::user::retirement::Failure>
     {
+        self.with_coroutines(|stacks| {
+                while let Some(stack) = stacks.last_mut()
+                {
+                    stack.retire().map_err(|cause| {
+                                       super::user::retirement::Failure::mapping(cause, stack)
+                                   })?;
+                    stacks.pop();
+                }
+                Ok(())
+            })
+            .map_err(super::user::retirement::Failure::rejected)??;
         self.mapping_turn(|mapping| mapping.retire())
+    }
+
+    fn with_coroutines<R>(&self, operation: impl FnOnce(&mut alloc::vec::Vec<Mapping>) -> R)
+                          -> Result<R, mac_abi::Status>
+    {
+        let mut stacks = self.coroutines.lock().take().ok_or(mac_abi::SERVICE_BUSY)?;
+        let result = operation(&mut stacks);
+        *self.coroutines.lock() = Some(stacks);
+        Ok(result)
+    }
+
+    pub(super) fn allocate_coroutine(&self, space: &super::super::paging::process::Pin,
+                                     allocation: &accounting::AllocationAuthority, bytes: u64)
+                                     -> Result<(usize, usize), mac_abi::Status>
+    {
+        use super::super::paging::user::{Access, Kind};
+        if space.owner() != self.owner.owner() || allocation.owner() != self.owner.owner()
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        self.with_coroutines(|stacks| {
+                let target = crate::allocator::Target::Owner {
+                account: allocation.clone(),
+                class: mac_kernel_model::policy::MemoryClass::Kernel
+            };
+                crate::allocator::with_target(target.clone(), || stacks.try_reserve(1))
+                .map_err(|_| mac_abi::NO_MEMORY)?;
+                let backing = accounting::coroutine_stack(allocation, bytes)?;
+                let backing = crate::allocator::with_target(target, || Arc::try_new(backing))
+                .map_err(|_| mac_abi::NO_MEMORY)?;
+                let mapping = Mapping::prepare(space, backing, Kind::Stack, Access::ReadWrite)?;
+                let bounds = (mapping.user_base(), mapping.user_top());
+                mapping.publish().map_err(|cause| cause.status())?;
+                stacks.push(mapping);
+                Ok(bounds)
+            })?
+    }
+
+    pub(super) fn release_coroutine(&self, base: usize, top: usize) -> Result<(), mac_abi::Status>
+    {
+        self.with_coroutines(|stacks| {
+                let index =
+                    stacks.iter()
+                          .position(|stack| stack.user_base() == base && stack.user_top() == top)
+                          .ok_or(mac_abi::NOT_FOUND)?;
+                stacks[index].retire().map_err(|cause| cause.status())?;
+                drop(stacks.swap_remove(index));
+                Ok(())
+            })?
     }
 
     pub(super) fn user_top(&self) -> Result<usize, mac_abi::Status>

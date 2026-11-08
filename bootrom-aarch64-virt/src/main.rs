@@ -67,9 +67,8 @@ fn firmware_tree(address: usize) -> Option<&'static [u8]>
     {
         return None;
     }
-    let total = u32::from_be(unsafe {
-                      core::ptr::read_volatile(header.add(4) as *const u32)
-                  }) as usize;
+    let total =
+        u32::from_be(unsafe { core::ptr::read_volatile(header.add(4) as *const u32) }) as usize;
     if total < 40 || total as u64 > FDT_TAIL_BYTES
     {
         return None;
@@ -104,7 +103,7 @@ const DEVICE: u64 = 0x405 | (1 << 54) | (1 << 53);
 // addresses. Cacheable walks are what the resident kernel expects.
 const TCR: u64 = 0x2_8019_3519;
 // MAIR[0] normal write-back, MAIR[1] Device-nGnRnE.
-const MAIR: u64 = 0xFF;
+const MAIR: u64 = 0xff;
 const KERNEL_HALF: u64 = 0xffff_ff80_0000_0000;
 /// Level-3 tables the image window is given, so the window is 32 MiB.
 ///
@@ -139,8 +138,7 @@ pub extern "C" fn mmu_init()
     // extent rather than any individual peripheral address.
     assert!(PHYSICAL_RAM_BYTES % BLOCK == 0, "RAM must end on a block boundary");
     assert!(physmap_index < 512, "the physmap must sit inside the kernel half");
-    unsafe
-    {
+    unsafe {
         for table in [L1_LOW, L2_LOW, L1_HIGH, L2_PHYSMAP, L2_LOWDEV, L2_IMAGE]
         {
             clear(table);
@@ -193,8 +191,7 @@ pub extern "C" fn mmu_init()
         // loader's own code.
         let image_tables = IMAGE_TABLES; // 32 MiB of window, covering the System image
         assert!(image_l1 < 512, "the image window must sit inside the kernel half");
-        assert!(image_first + image_tables <= 512,
-                "the image window must fit one level-2 table");
+        assert!(image_first + image_tables <= 512, "the image window must fit one level-2 table");
         assert!(L3_BASE + image_tables as u64 * 0x1000 <= IMAGE_BASE,
                 "the image window's page tables must stay clear of the loaded image");
         entry(L1_HIGH, image_l1, L2_IMAGE | TABLE);
@@ -244,7 +241,9 @@ pub extern "C" fn physmap_check() -> u64
     // ram_base, so the probe has to start from there.
     let at = PHYSICAL_RAM_BASE + 0x1000;
     let identity = unsafe { core::ptr::read_volatile(at as *const u64) };
-    let aliased = unsafe { core::ptr::read_volatile((PHYSMAP_BASE + (at - PHYSICAL_RAM_BASE)) as *const u64) };
+    let aliased = unsafe {
+        core::ptr::read_volatile((PHYSMAP_BASE + (at - PHYSICAL_RAM_BASE)) as *const u64)
+    };
     u64::from(identity == aliased)
 }
 
@@ -285,7 +284,9 @@ impl mac_bootloader::virtio_blk::Machine for BootMachine
     {
         let value: u64;
         // SAFETY: reading the virtual counter has no side effects.
-        unsafe { core::arch::asm!("mrs {value}, cntvct_el0", value = out(reg) value, options(nomem, nostack)) };
+        unsafe {
+            core::arch::asm!("mrs {value}, cntvct_el0", value = out(reg) value, options(nomem, nostack))
+        };
         value
     }
 }
@@ -400,12 +401,12 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     let mut harts = 0u64;
     let mut primary_hart = 0u64;
     let counted = tree.cpus(|hart| {
-                        if harts == 0
-                        {
-                            primary_hart = hart;
-                        }
-                        harts += 1;
-                    });
+                          if harts == 0
+                          {
+                              primary_hart = hart;
+                          }
+                          harts += 1;
+                      });
     if counted.is_err()
     {
         puts("BOOT_AARCH64_DT_REFUSED: the machine's tree is malformed while reading CPUs\n");
@@ -461,23 +462,27 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
         {
             puts("BOOT_AARCH64_MEMORY_REFUSED: ");
             puts(match cause
-            {
-                memory::Error::NoRam => "the machine describes no RAM",
-                memory::Error::Unaligned => "a RAM bank is not page aligned",
-                memory::Error::Overlap => "two RAM banks overlap",
-                memory::Error::Reservation => "a reservation is empty, unaligned or outside RAM",
-                memory::Error::Duplicate => "two reservations overlap",
-                memory::Error::TreeOutsideRam => "the tree lies outside the RAM it describes",
-                memory::Error::Allocation => "allocation failed",
-                memory::Error::TreeUnreadable => "the machine's tree could not be walked"
-            });
+                 {
+                     memory::Error::NoRam => "the machine describes no RAM",
+                     memory::Error::Unaligned => "a RAM bank is not page aligned",
+                     memory::Error::Overlap => "two RAM banks overlap",
+                     memory::Error::Reservation =>
+                     {
+                         "a reservation is empty, unaligned or outside RAM"
+                     }
+                     memory::Error::Duplicate => "two reservations overlap",
+                     memory::Error::TreeOutsideRam => "the tree lies outside the RAM it describes",
+                     memory::Error::Allocation => "allocation failed",
+                     memory::Error::TreeUnreadable => "the machine's tree could not be walked"
+                 });
             puts("\n");
             return 0;
         }
     };
     match account.checked(memory::PAGE_BYTES)
     {
-        Ok(_) => {}
+        Ok(_) =>
+        {}
         Err(_) =>
         {
             puts("BOOT_AARCH64_MEMORY_REFUSED: the account does not satisfy the kernel's checks\n");
@@ -495,16 +500,17 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     // hardware this platform may not have.
     let mut controller = (0u64, 0u64);
     let _ = tree.for_each_node(|node| {
-          if controller.1 == 0
-             && node.compatible.is_some_and(|name| {
-                 name == "arm,cortex-a15-gic" || name == "arm,gic-400"
-                 || name == "arm,gic-v3"
-             })
-             && let Some((base, bytes)) = node.window()
-          {
-              controller = (base, bytes);
-          }
-      });
+                    if controller.1 == 0
+                       && node.compatible.is_some_and(|name| {
+                                             name == "arm,cortex-a15-gic"
+                                             || name == "arm,gic-400"
+                                             || name == "arm,gic-v3"
+                                         })
+                       && let Some((base, bytes)) = node.window()
+                    {
+                        controller = (base, bytes);
+                    }
+                });
     puts("BOOT_AARCH64_CONTROLLER: base=");
     puthex(controller.0);
     puts(" bytes=");
@@ -519,21 +525,26 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
         puts("BOOT_AARCH64_CPUS_REFUSED: the machine's topology is not admissible\n");
         return 0;
     }
-    let monitor = match monitor::prepare(&account, &cpus,
+    let monitor = match monitor::prepare(&account,
+                                         &cpus,
                                          mac_abi::BootMemoryRange { base:   controller.0,
                                                                     length: controller.1 },
-                                         counter, primary_hart)
+                                         counter,
+                                         primary_hart)
     {
         Ok(monitor) => monitor,
         Err(cause) =>
         {
             puts("BOOT_AARCH64_MONITOR_REFUSED: ");
             puts(match cause
-            {
-                monitor::Error::NoController => "the machine declares no interrupt controller",
-                monitor::Error::Allocation => "monitor storage could not be allocated",
-                monitor::Error::Directory => "the directory fails the kernel's admission checks"
-            });
+                 {
+                     monitor::Error::NoController => "the machine declares no interrupt controller",
+                     monitor::Error::Allocation => "monitor storage could not be allocated",
+                     monitor::Error::Directory =>
+                     {
+                         "the directory fails the kernel's admission checks"
+                     }
+                 });
             puts("\n");
             return 0;
         }
@@ -560,43 +571,43 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     // models one node per slot and one that models a single bank are both
     // answered by the same walk.
     let _ = tree.for_each_node(|node| {
-          if node.compatible != Some("virtio,mmio") || !node.enabled()
-          {
-              return;
-          }
-          let Some((base, _bytes)) = node.window()
-          else
-          {
-              return;
-          };
-          if !mac_bootloader::virtio_blk::is_block(base as usize)
-          {
-              return;
-          }
-          match mac_bootloader::virtio_blk::Disk::<BootMachine>::open(base as usize)
-          {
-              Ok(disk) =>
-              {
-                  puts("BOOT_AARCH64_VIRTIO_BLK: base=");
-                  puthex(base);
-                  puts(" sectors=");
-                  puthex(disk.sector_count());
-                  puts("\n");
-                  disks.push(disk);
-              }
-              Err(error) =>
-              {
-                  puts("BOOT_AARCH64_VIRTIO_BLK_REFUSED: base=");
-                  puthex(base);
-                  puts(" cause=");
-                  for byte in alloc::format!("{error}").bytes()
-                  {
-                      putc(byte);
-                  }
-                  puts("\n");
-              }
-          }
-      });
+                    if node.compatible != Some("virtio,mmio") || !node.enabled()
+                    {
+                        return;
+                    }
+                    let Some((base, _bytes)) = node.window()
+                    else
+                    {
+                        return;
+                    };
+                    if !mac_bootloader::virtio_blk::is_block(base as usize)
+                    {
+                        return;
+                    }
+                    match mac_bootloader::virtio_blk::Disk::<BootMachine>::open(base as usize)
+                    {
+                        Ok(disk) =>
+                        {
+                            puts("BOOT_AARCH64_VIRTIO_BLK: base=");
+                            puthex(base);
+                            puts(" sectors=");
+                            puthex(disk.sector_count());
+                            puts("\n");
+                            disks.push(disk);
+                        }
+                        Err(error) =>
+                        {
+                            puts("BOOT_AARCH64_VIRTIO_BLK_REFUSED: base=");
+                            puthex(base);
+                            puts(" cause=");
+                            for byte in alloc::format!("{error}").bytes()
+                            {
+                                putc(byte);
+                            }
+                            puts("\n");
+                        }
+                    }
+                });
     if disks.is_empty()
     {
         puts(&alloc::format!("{}\n", mac_bootloader::report::no_system(disks.len())));
@@ -625,9 +636,9 @@ pub extern "C" fn virt_probe(tree_address: usize) -> u64
     let mut storage: alloc::vec::Vec<alloc::boxed::Box<dyn mac_block::WritableBlockDevice>> =
         disks.into_iter()
              .map(|disk| {
-                      alloc::boxed::Box::new(disk) as
-                      alloc::boxed::Box<dyn mac_block::WritableBlockDevice>
-                  })
+                 alloc::boxed::Box::new(disk)
+                 as alloc::boxed::Box<dyn mac_block::WritableBlockDevice>
+             })
              .collect();
     enter_system(&account, &cpus, &monitor, &mut storage, &tree, tree_address as u64, &loaded)
 }
@@ -676,9 +687,9 @@ fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volu
             {
                 puts("BOOT_AARCH64_SYSTEM_REFUSED: resources unreadable: ");
                 puts(match error
-                {
-                    _ => "resource stream refused"
-                });
+                     {
+                         _ => "resource stream refused"
+                     });
                 puts("\n");
                 return None;
             }
@@ -753,13 +764,13 @@ fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volu
     puts(" entry_word=");
     puthex(u64::from(entry_word));
     puts("\n");
-    Some(Loaded { entry:      plan.entry(),
-                  load_base:  descriptor.load_base,
-                  load_limit: descriptor.load_limit,
-                  extent:     plan.length() as u64,
-                  segments:   plan.segments().to_vec(),
+    Some(Loaded { entry:           plan.entry(),
+                  load_base:       descriptor.load_base,
+                  load_limit:      descriptor.load_limit,
+                  extent:          plan.length() as u64,
+                  segments:        plan.segments().to_vec(),
                   partition_start: 0,
-                  disk_index: 0 })
+                  disk_index:      0 })
 }
 
 /// Locates the blessed System Folder on the card. The partition table, the
@@ -859,7 +870,8 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
         puts("BOOT_AARCH64_BLESSED: cnid=");
         puthex(u64::from(folder.id));
         puts(" name=");
-        let folder_end = folder.name.iter().position(|byte| *byte == 0).unwrap_or(folder.name.len());
+        let folder_end =
+            folder.name.iter().position(|byte| *byte == 0).unwrap_or(folder.name.len());
         for byte in &folder.name[..folder_end]
         {
             putc(*byte);
@@ -880,10 +892,10 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
                 puthex(file.resources.length);
                 puts("\n");
                 return load_system(&mut volume, file).map(|mut loaded| {
-                              loaded.partition_start = candidate.start;
-                              loaded.disk_index = disk_index;
-                              loaded
-                          });
+                                                         loaded.partition_start = candidate.start;
+                                                         loaded.disk_index = disk_index;
+                                                         loaded
+                                                     });
             }
             Err(_) => puts("startup file is missing\n")
         }
@@ -914,16 +926,14 @@ struct Loaded
 /// monitor from its own admission checks, and the storage contract from the
 /// shared module. The only constants are the ones the record states, and each is
 /// checked by the kernel against the same value on the other side of the jump.
-fn enter_system(memory: &memory::Memory,
-                cpus: &[mac_abi::boot::topology::Cpu],
+fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
                 monitor: &monitor::Published,
                 disks: &mut alloc::vec::Vec<alloc::boxed::Box<dyn mac_block::WritableBlockDevice>>,
-                tree: &mac_devicetree::Tree<'_>, tree_address: u64, loaded: &Loaded) -> !
+                tree: &mac_devicetree::Tree<'_>, tree_address: u64, loaded: &Loaded)
+                -> !
 {
-    use mac_abi::{BootInfo,
-                  BootMemoryRange,
-                  Header,
-                  boot::execution::{Execution, EXECUTE, FIRMWARE_ONLY, READ, Region, WRITE}};
+    use mac_abi::{BootInfo, BootMemoryRange, Header,
+                  boot::execution::{EXECUTE, Execution, FIRMWARE_ONLY, READ, Region, WRITE}};
     let account = match memory.checked(memory::PAGE_BYTES)
     {
         Ok(account) => account,
@@ -934,7 +944,7 @@ fn enter_system(memory: &memory::Memory,
         }
     };
     let physical_image = BootMemoryRange { base:   IMAGE_BASE,
-                                           length: loaded.extent };    // The window was mapped before the image was decoded, so the plan is checked
+                                           length: loaded.extent }; // The window was mapped before the image was decoded, so the plan is checked
     // against the ceiling rather than the ceiling being derived from the plan. A
     // plan that outgrew the mapping would be written past the last table and
     // fault on first instruction, which reads as a code defect rather than as a
@@ -986,22 +996,20 @@ fn enter_system(memory: &memory::Memory,
     // executable window made every call into firmware take a permission fault
     // on fetch, which is why the window is split here.
     regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE,
-                                                           length: FIRMWARE_CODE_BYTES },
+                                                          length: FIRMWARE_CODE_BYTES },
                           virtual_base: BOOT_BASE,
                           flags:        READ | EXECUTE | FIRMWARE_ONLY,
                           reserved:     0 });
-    regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE
-                                                                        + FIRMWARE_CODE_BYTES,
-                                                           length: BOOT_BYTES
-                                                                   - FIRMWARE_CODE_BYTES },
-                          virtual_base: BOOT_BASE + FIRMWARE_CODE_BYTES,
-                          flags:        READ | WRITE | FIRMWARE_ONLY,
-                          reserved:     0 });
+    regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE + FIRMWARE_CODE_BYTES,
+                                                   length: BOOT_BYTES - FIRMWARE_CODE_BYTES },
+                   virtual_base: BOOT_BASE + FIRMWARE_CODE_BYTES,
+                   flags:        READ | WRITE | FIRMWARE_ONLY,
+                   reserved:     0 });
     // The firmware heap the record declares, identity mapped for the same
     // reason the window above is: the bootstrap allocates from it by its own
     // address, and the physmap alias is not where its allocator points.
     regions.push(Region { physical:     BootMemoryRange { base:   FW_HEAP_BASE,
-                                                           length: FW_HEAP_BYTES },
+                                                          length: FW_HEAP_BYTES },
                           virtual_base: FW_HEAP_BASE,
                           flags:        READ | WRITE | FIRMWARE_ONLY,
                           reserved:     0 });
@@ -1039,10 +1047,10 @@ fn enter_system(memory: &memory::Memory,
                           ram_base:                memory.ram[0].base,
                           ram_size:                memory.ram[0].length,
                           log:                     Some(log),
-                          storage_context:         (&mut context as *mut
-                                                    mac_bootloader::volume::BootVolume).cast(),
+                          storage_context:
+                              (&mut context as *mut mac_bootloader::volume::BootVolume).cast(),
                           disk_info:               Some(mac_bootloader::volume::disk_info),
-                          read_sector:             Some(mac_bootloader::volume::read_sector),
+                          read_sectors:            Some(mac_bootloader::volume::read_sectors),
                           write_sector:            Some(mac_bootloader::volume::write_sector),
                           flush_disk:              Some(mac_bootloader::volume::flush_disk),
                           startup_disk:            loaded.disk_index as u32,
@@ -1073,13 +1081,11 @@ fn enter_system(memory: &memory::Memory,
     // word. The seal is written last, because an unsealed profile is refused.
     let vector = vector_address();
     let image = monitor.image();
-    image.required_isa
-         .store(REQUIRED_ISA, core::sync::atomic::Ordering::Release);
+    image.required_isa.store(REQUIRED_ISA, core::sync::atomic::Ordering::Release);
     image.entry.store(loaded.entry, core::sync::atomic::Ordering::Release);
     image.image_base.store(loaded.load_base, core::sync::atomic::Ordering::Release);
     image.image_bytes.store(loaded.extent, core::sync::atomic::Ordering::Release);
-    image.physical_limit
-         .store(physical_limit(memory, tree), core::sync::atomic::Ordering::Release);
+    image.physical_limit.store(physical_limit(memory, tree), core::sync::atomic::Ordering::Release);
     image.vector_bytes.store(VECTOR_BYTES, core::sync::atomic::Ordering::Release);
     image.hardware_tag_mask.store(0xffff, core::sync::atomic::Ordering::Release);
     // Both stubs are this bootstrap's own trap vector: it receives a fault taken
@@ -1101,7 +1107,9 @@ fn enter_system(memory: &memory::Memory,
     // SAFETY: reading the stack pointer has no side effects.
     unsafe { core::arch::asm!("mov {}, sp", out(reg) stack, options(nomem, nostack)) };
     let stack_virtual = physical(stack);
-    puts("BOOT_AARCH64_HANDOFF: entry=");    puthex(loaded.entry);    puts(" info=");
+    puts("BOOT_AARCH64_HANDOFF: entry=");
+    puthex(loaded.entry);
+    puts(" info=");
     puthex(info_virtual);
     puts(" stack=");
     puthex(stack_virtual);
@@ -1215,16 +1223,16 @@ fn physical_limit(memory: &memory::Memory, tree: &mac_devicetree::Tree<'_>) -> u
     // parts here would make a machine with an unfamiliar peripheral fail its own
     // seal.
     let _ = tree.for_each_node(|node| {
-                                if !node.enabled()
-                                {
-                                    return;
-                                }
-                                if let Some((base, bytes)) = node.window()
-                                   && bytes != 0
-                                {
-                                    end = end.max(base.saturating_add(bytes));
-                                }
-                            });
+                    if !node.enabled()
+                    {
+                        return;
+                    }
+                    if let Some((base, bytes)) = node.window()
+                       && bytes != 0
+                    {
+                        end = end.max(base.saturating_add(bytes));
+                    }
+                });
     end
 }
 

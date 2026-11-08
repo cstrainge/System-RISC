@@ -1102,7 +1102,8 @@ pub fn with_disks<R>(bytes: &[&[u8]], startup_disk: u32, run: impl FnOnce(&Syste
         };
         OK
     }
-    unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, out: *mut u8) -> Status
+    unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, count: u32, out: *mut u8)
+                              -> Status
     {
         let disks = unsafe { &*context.cast::<Disk<'_>>() };
         let Some(disk) = disks.0.get(index as usize)
@@ -1115,12 +1116,17 @@ pub fn with_disks<R>(bytes: &[&[u8]], startup_disk: u32, run: impl FnOnce(&Syste
         {
             return BAD_ARGUMENT;
         };
-        let Some(bytes) = start.checked_add(512).and_then(|end| disk.get(start..end))
+        if count == 0 || count as usize > mac_abi::FIRMWARE_READ_SECTORS
+        {
+            return BAD_ARGUMENT;
+        }
+        let length = count as usize * 512;
+        let Some(bytes) = start.checked_add(length).and_then(|end| disk.get(start..end))
         else
         {
             return BAD_ARGUMENT;
         };
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, 512) };
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, length) };
         OK
     }
     let mut disk = Disk(bytes);
@@ -1130,7 +1136,7 @@ pub fn with_disks<R>(bytes: &[&[u8]], startup_disk: u32, run: impl FnOnce(&Syste
                           log: None,
                           storage_context: core::ptr::from_mut(&mut disk).cast(),
                           disk_info: Some(info),
-                          read_sector: Some(read),
+                          read_sectors: Some(read),
                           write_sector: None,
                           flush_disk: None,
                           startup_disk,
@@ -1239,7 +1245,8 @@ pub fn with_file_disks<R>(paths: &[&std::path::Path], read_only: bool, faults: D
         }
         OK
     }
-    unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, output: *mut u8)
+    unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, count: u32,
+                              output: *mut u8)
                               -> Status
     {
         let disks = unsafe { &mut *context.cast::<Disks>() };
@@ -1248,12 +1255,14 @@ pub fn with_file_disks<R>(paths: &[&std::path::Path], read_only: bool, faults: D
         {
             return NOT_FOUND;
         };
-        if sector >= d.sectors
+        if count == 0
+           || count as usize > mac_abi::FIRMWARE_READ_SECTORS
+           || sector.checked_add(u64::from(count)).is_none_or(|end| end > d.sectors)
         {
             return BAD_ARGUMENT;
         }
-        let output = unsafe { core::slice::from_raw_parts_mut(output, 512) };
-        d.activity.reads += 1;
+        let output = unsafe { core::slice::from_raw_parts_mut(output, count as usize * 512) };
+        d.activity.reads += count as usize;
         d.file
          .seek(SeekFrom::Start(sector * 512))
          .and_then(|_| d.file.read_exact(output))
@@ -1329,7 +1338,7 @@ pub fn with_file_disks<R>(paths: &[&std::path::Path], read_only: bool, faults: D
                           log:                     None,
                           storage_context:         core::ptr::from_mut(&mut disk).cast(),
                           disk_info:               Some(info),
-                          read_sector:             Some(read),
+                          read_sectors:            Some(read),
                           write_sector:            Some(write),
                           flush_disk:              Some(flush),
                           startup_disk:            0,

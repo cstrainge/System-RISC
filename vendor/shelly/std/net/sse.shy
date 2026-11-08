@@ -1,0 +1,140 @@
+import std::io
+import std::json
+import std::stream
+import std::net::http
+visible `__json
+visible `__json_bind
+visible `__json_apply
+
+pub error struct FrameError { pub message: String }
+pub type Error = FrameError | std::io::Error | std::json::Error | std::net::http::Error
+pub struct Event
+{
+    pub data: String,
+    pub event: String,
+    pub id: String,
+    pub retry: Integer | (),
+}
+
+# State and framing are Shelly code. Native line reads preserve boundaries across byte chunks.
+struct Parser
+{
+    lines: std::io::Lines,
+    reader: std::io::Reader,
+    first: Boolean,
+    data: String,
+    has_data: Boolean,
+    event: String,
+    id: String,
+    retry: Integer | (),
+    size: Integer,
+}
+fn Parser::new($reader: std::io::Reader): Parser | Error
+{
+    Parser(lines: (std::io::lines $reader 16384 true), reader: $reader, first: true,
+        data: "", has_data: false, event: "", id: "", size: 0)
+}
+fn Parser::next(): Event | () | Error
+{
+    loop
+    {
+        let $line = $self.::lines.next_item
+        if $line == () { return () }
+        if $self.::first
+        {
+            $self.::first = false
+            $line = $line.strip_prefix "\xfeff"
+        }
+        if $line == ""
+        {
+            let $has_data = $self.::has_data
+            let $result = Event(data: $self.::data,
+                event: (if $self.::event == "" { "message" } else { $self.::event }),
+                id: $self.::id, retry: $self.::retry)
+            $self.::data = ""
+            $self.::has_data = false
+            $self.::event = ""
+            $self.::size = 0
+            if $has_data { return $result }
+            continue
+        }
+        if $line.starts_with ":" { continue }
+        let $parts = $line.split ":"
+        let $field = $parts[0]
+        let $value = if $parts.count == 1 { "" } else { $line[($field.count + 1)..] }
+        $value = $value.strip_prefix " "
+        $self.::size = $self.::size + std::io::Bytes($line).count
+        if $self.::size > 1048576 { return FrameError(message: "SSE event exceeds 1 MiB") }
+        match $field
+        {
+            "data" =>
+                {
+                    if $self.::has_data { $self.::data = $self.::data + "\n" }
+                    $self.::data = $self.::data + $value
+                    $self.::has_data = true
+                },
+            "event" => { $self.::event = $value },
+            "id" => { if !($value.contains "\00") { $self.::id = $value } },
+            "retry" =>
+                {
+                    let $digits = $value != ""
+                    for $c in $value.chars
+                    { if !("0123456789".contains $c) { $digits = false } }
+                    # An overflowing retry value is ignored; it never affects reconnection here.
+                    if $digits && $value.count <= 9 { $self.::retry = Integer($value) }
+                },
+            _ => {},
+        }
+        if std::io::Bytes($self.::id).count + std::io::Bytes($self.::event).count > 16384
+        { return FrameError(message: "SSE metadata exceeds 16 KiB") }
+    }
+}
+fn Parser::close(): () | Error
+{
+    try { $self.::lines.close }
+    finally { $self.::reader.close }
+}
+
+pub type Reader = std::stream::Reader
+pub fn read($input: std::io::Reader | std::net::http::Response): Reader | ErrorValue
+{
+    let $reader = match $input.type
+    {
+        std::net::http::Response =>
+            {
+                let $reply: std::net::http::Response = $input
+                let $type = $reply.headers.get "content-type"
+                if $type == () || ($type.split ";")[0].trim != "text/event-stream"
+                { return FrameError(message: "Expected text/event-stream response") }
+                $reply.take_body
+            },
+        std::io::Reader => { $input },
+    }
+    let $parser = Parser(reader: $reader)
+    std::stream::Reader(
+        next: fn (): Event | () | Error { $parser.next },
+        close: fn (): () | Error { $parser.close },
+    )
+}
+
+pub fn Reader::read_as($target: Type, $options: std::json::MappingOptions | (), $boxed: Boolean | ()): Reader | ErrorValue
+{
+    if $boxed != true && (__json "accepts_null" $target)
+    { return FrameError(message: "Target accepts null; select boxed mapping") }
+    let $source = $self
+    let $conversion = __json_bind $target
+    std::stream::Reader(
+        next: fn (): any | ErrorValue
+        {
+            let $event = $source.next_item
+            if $event == () { return () }
+            let $document = std::json::parse $event.data
+            let $value = __json_apply $document $conversion $options
+            if $boxed == true { return std::stream::Item(value: $value) }
+            if $value == () { return FrameError(message: "Null stream item requires boxed mapping") }
+            $value
+        },
+        close: fn (): () | ErrorValue { $source.close },
+    )
+}
+pub fn String::from_frame_error($error: FrameError): String { $error.message }

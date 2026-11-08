@@ -115,7 +115,8 @@ unsafe extern "C" fn info(context: *mut (), index: u32, out: *mut DiskInfo) -> S
     };
     OK
 }
-unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, out: *mut u8) -> Status
+unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, count: u32, out: *mut u8)
+                          -> Status
 {
     let context = unsafe { &mut *context.cast::<Context>() };
     let Some(d) = context.disks.get(index as usize)
@@ -123,19 +124,29 @@ unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, out: *mut u
     {
         return NOT_FOUND;
     };
-    let Some(bytes) = d.get(sector as usize * 512..sector as usize * 512 + 512)
+    if count == 0 || count as usize > mac_abi::FIRMWARE_READ_SECTORS
+    {
+        return BAD_ARGUMENT;
+    }
+    let length = count as usize * 512;
+    let Some(start) = usize::try_from(sector).ok().and_then(|sector| sector.checked_mul(512))
     else
     {
         return BAD_ARGUMENT;
     };
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, 512) };
+    let Some(bytes) = start.checked_add(length).and_then(|end| d.get(start..end))
+    else
+    {
+        return BAD_ARGUMENT;
+    };
+    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, length) };
     OK
 }
 fn manager(context: &mut Context) -> Manager
 {
     Manager::new(BootStorage { context:                 (context as *mut Context).cast(),
                                disk_info:               info,
-                               read_sector:             read,
+                               read_sectors:            read,
                                write_sector:            None,
                                flush_disk:              None,
                                startup_disk:            1,
@@ -356,7 +367,7 @@ fn actual_disk_catalog_and_both_forks()
     // stay streamed from this immutable host file; no 500 MiB disk copy is made.
     let storage = BootStorage { context:                 (&mut d as *mut HostDisk).cast(),
                                 disk_info:               host_info,
-                                read_sector:             host_read,
+                                read_sectors:            host_read,
                                 write_sector:            None,
                                 flush_disk:              None,
                                 startup_disk:            0,
@@ -498,7 +509,8 @@ unsafe extern "C" fn host_info(context: *mut (), index: u32, output: *mut DiskIn
     }
     OK
 }
-unsafe extern "C" fn host_read(context: *mut (), index: u32, sector: u64, output: *mut u8)
+unsafe extern "C" fn host_read(context: *mut (), index: u32, sector: u64, count: u32,
+                               output: *mut u8)
                                -> Status
 {
     if index != 0
@@ -506,8 +518,13 @@ unsafe extern "C" fn host_read(context: *mut (), index: u32, sector: u64, output
         return NOT_FOUND;
     }
     let disk = unsafe { &mut *context.cast::<HostDisk>() };
-    let buffer = unsafe { &mut *output.cast::<[u8; 512]>() };
-    disk.read_sector(sector, buffer).map_or(NOT_SUPPORTED, |_| OK)
+    if count == 0 || count as usize > mac_abi::FIRMWARE_READ_SECTORS
+    {
+        return BAD_ARGUMENT;
+    }
+    let buffer =
+        unsafe { core::slice::from_raw_parts_mut(output.cast::<[u8; 512]>(), count as usize) };
+    disk.read_sectors(sector, buffer).map_or(NOT_SUPPORTED, |_| OK)
 }
 
 #[test]
@@ -525,7 +542,7 @@ fn bounded_discovery_empty_system_invalid_ids_and_parent_cycles_are_explicit()
     let mut context = Context { disks: vec![disk(); MAX_DISKS as usize + 1] };
     let storage = BootStorage { context:                 (&mut context as *mut Context).cast(),
                                 disk_info:               info,
-                                read_sector:             read,
+                                read_sectors:            read,
                                 write_sector:            None,
                                 flush_disk:              None,
                                 startup_disk:            0,

@@ -1,0 +1,63 @@
+{
+  "name": "Terminal",
+  "binary_name": "Terminal",
+  "file_type": "APPL",
+  "creator": "TRML",
+  "role": "application",
+  "abi_version": 1,
+  "description": "System RISC Terminal",
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 128,
+      "symbol": "FILE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "New Shell",
+            "command": "nshl",
+            "command_symbol": "NEW_SHELL",
+            "enabled": true,
+            "key": "N"
+          },
+          {
+            "text": "Open Command…",
+            "command": "open",
+            "command_symbol": "OPEN_COMMAND",
+            "enabled": true,
+            "key": "O"
+          },
+          {
+            "text": "Send EOF",
+            "command": "seof",
+            "command_symbol": "SEND_EOF",
+            "enabled": true,
+            "key": "D"
+          },
+          "-",
+          {
+            "text": "Quit",
+            "command": "quit",
+            "command_symbol": "QUIT",
+            "enabled": true,
+            "key": "Q"
+          }
+        ]
+      }
+    },
+    {
+      "type": "open",
+      "id": 128,
+      "symbol": "OPEN_TYPES",
+      "payload": {
+        "format": "open_types",
+        "signature": "TRML",
+        "types": [
+          "CLAP"
+        ]
+      }
+    }
+  ]
+}

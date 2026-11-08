@@ -1,0 +1,4 @@
+import std::io
+import std::net::tcp
+pub type Error = std::io::Error
+pub fn resolve($host: String): [String] | Error { std::net::tcp::resolve $host }

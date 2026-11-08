@@ -136,7 +136,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
             {
                 let catalog =
                     super::super::catalog(state.volume, &bytes, Some(flight.key.cnid), None)?;
-                if catalog.kind != FILE || catalog.file_type != *b"APPL"
+                if catalog.kind != FILE || catalog.file_type != state.selection.file_type()
                 {
                     return Err(BAD_ARGUMENT);
                 }
@@ -237,7 +237,8 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32,
         return Err(WRONG_THREAD);
     }
     let key = Key { record: Record::Application,
-                    operation: if selection == super::super::super::application::Selection::All
+                    operation: if selection
+                                  != super::super::super::application::Selection::OpenTypes
                     {
                         mac_abi::processes::LAUNCH
                     }
@@ -255,8 +256,15 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32,
                     resource: None,
                     metadata: None,
                     when: 0 };
-    if let Some(flight) = claim(owner, thread, key, "")?
+    if let Some(mut flight) = claim(owner, thread, key, "")?
     {
+        if !matches!(&flight.step, Step::Application(state) if state.selection == selection)
+        {
+            flight.abandon();
+            FLIGHTS.lock().push(flight);
+            REAP.store(true, Ordering::Release);
+            return Err(BAD_ABI);
+        }
         return deliver(super::advance(flight));
     }
     // Allocate all state before reserving the fork mark or submitting any work.

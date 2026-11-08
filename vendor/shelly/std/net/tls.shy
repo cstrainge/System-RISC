@@ -1,0 +1,15 @@
+import std::io
+import std::net::tcp
+visible `__socket
+visible `__socket_close
+visible "__socket_Connection"
+pub type Connection = __socket_Connection
+pub type Error = std::io::Error
+# Additional trust is an explicitly supplied DER certificate. Verification stays enabled.
+pub fn connect($hostname: String, $port: Integer, $trust: std::io::Bytes | ()): Connection | Error
+{ __socket "tls_connect" $hostname $port $trust }
+pub fn wrap($transport: std::net::tcp::Connection, $hostname: String, $trust: std::io::Bytes | ()): Connection | Error
+{ __socket "tls_wrap" $transport $hostname $trust }
+pub fn Connection::get_reader(): std::io::Reader | Error { __socket "reader" $self }
+pub fn Connection::get_writer(): std::io::Writer | Error { __socket "writer" $self }
+pub fn Connection::close(): () | Error { __socket_close $self }

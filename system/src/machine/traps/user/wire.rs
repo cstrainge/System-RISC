@@ -1160,9 +1160,24 @@ wire_struct!(mac_abi::processes::ProcessCall { operation:           u32,
                                                id:                  u64,
                                                volume:              u32,
                                                cnid:                u32,
+                                               streams:             [u64; 3],
+                                               exit_code:           i32,
                                                info:                mac_abi::processes::ProcessInfo,
                                                requirement_class:   [u8; 4],
                                                requirement_version: u32 });
+
+wire_struct!(mac_abi::processes::LaunchArgvCall { launch: mac_abi::processes::ProcessCall,
+                                                  bytes:  *const u8,
+                                                  length: u32,
+                                                  count:  u32,
+                                                  path_length: u32,
+                                                  reserved: u32 });
+
+wire_struct!(mac_abi::processes::StartupArgvCall { bytes:    *mut u8,
+                                                   capacity: u32,
+                                                   length:   u32,
+                                                   count:    u32,
+                                                   path_length: u32 });
 
 wire_struct!(mac_abi::processes::DocumentCall { drag:                u32,
                                                 operation:           u32,
@@ -1181,6 +1196,11 @@ wire_struct!(mac_abi::processes::DocumentCall { drag:                u32,
                                                     mac_abi::processes::ProcessInfo,
                                                 requirement_class:   [u8; 4],
                                                 requirement_version: u32 });
+
+wire_struct!(mac_abi::processes::ChildWaitCall { child:    u64,
+                                                 state:    u32,
+                                                 code:     i32,
+                                                 reserved: [u64; 2] });
 
 wire_struct!(mac_abi::processes::NativeExitCall { code:     i32,
                                                   flags:    u32,
@@ -1234,6 +1254,13 @@ wire_struct!(mac_abi::address_wait::Call { operation:     u32,
                                            reserved2:     u32,
                                            detail:        [u8; mac_abi::address_wait::DETAIL_BYTES] });
 
+wire_struct!(mac_abi::coroutine_stack::Call { operation: u32,
+                                              reserved:  u32,
+                                              bytes:     u64,
+                                              base:      usize,
+                                              top:       usize,
+                                              limit:     usize });
+
 wire_struct!(mac_abi::tls::Call { operation:     u32,
                                   flags:         u32,
                                   reserved:      [u64; 2],
@@ -1271,7 +1298,8 @@ wire_struct!(mac_abi::pipes::Call {
     reader: u64,
     writer: u64,
     name: [u8; mac_abi::pipes::NAME_BYTES],
-    reserved: [u64; 2],
+    reserved: [u64; 1],
+    wait_nanoseconds: u64,
     writers: u64,
 });
 

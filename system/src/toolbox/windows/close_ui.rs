@@ -123,6 +123,10 @@ fn cleanup_status_of(cause: crate::toolbox::handles::cleanup::Cause) -> Status
 {
     match cause
     {
+        crate::toolbox::handles::cleanup::Cause::PipeEndpointsPending { .. } =>
+        {
+            mac_abi::SERVICE_BUSY
+        }
         crate::toolbox::handles::cleanup::Cause::WindowDefinitionDisposal { reply,
                                                                             .. } =>
         {

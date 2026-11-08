@@ -254,10 +254,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                    registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;
                                }
-                               for handles in [true, false] {
+                               for kind in crate::toolbox::pipes::Registration::ALL {
                                    registry.register(&owner,
-                                       crate::toolbox::pipes::specification(handles),
-                                       cleanup::context::Toolbox(crate::toolbox::pipes::ReleasePipes))
+                                       kind.specification(),
+                                       cleanup::context::Toolbox(kind))
                                        .map_err(KindAccessError::Registry)?;
                                }
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
@@ -410,11 +410,17 @@ pub(crate) fn file_fork_kinds() -> Result<(KindLease, KindLease), mac_abi::Statu
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }
 
-/// Pipe object and endpoint handles, in that order.
-pub(crate) fn pipe_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+/// Pipe objects/backing followed by endpoints/backing.
+pub(crate) fn pipe_kinds()
+    -> Result<(KindLease, KindLease, KindLease, KindLease), mac_abi::Status>
 {
-    registry(|registry| Ok((registry.get(KindCode(*b"PPST"))?, registry.get(KindCode(*b"PIPE"))?)))
-        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+    registry(|registry| {
+        Ok((registry.get(KindCode(*b"PPST"))?,
+            registry.get(KindCode(*b"PPBS"))?,
+            registry.get(KindCode(*b"PIPE"))?,
+            registry.get(KindCode(*b"PEBS"))?))
+    }).map_err(|error| error.status())?
+      .map_err(|error| registry_status(&error))
 }
 
 pub(crate) fn projection_status(error: mac_object_table::projected::Error) -> mac_abi::Status

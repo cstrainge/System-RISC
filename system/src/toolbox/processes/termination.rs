@@ -323,7 +323,16 @@ impl super::Manager
         {
             return Err(ACCESS_DENIED);
         }
-        self.get_mut(id)?.termination.stopped(outcome, thread);
+        let process = self.get_mut(id)?;
+        process.termination.stopped(outcome, thread);
+        let result = process.termination.record().map(|record| record.outcome);
+        if let Some(parent) = process.parent
+           && let Ok(parent) = self.get_mut(parent)
+           && let Some(receipt) = parent.children.iter_mut().find(|receipt| receipt.id == id)
+        {
+            receipt.outcome = result;
+            scheduler::wake_child(id);
+        }
         Ok(())
     }
 

@@ -13,6 +13,19 @@ pub trait BlockDevice
 {
     fn sector_count(&self) -> u64;
     fn read_sector(&mut self, sector: u64, output: &mut [u8; SECTOR_SIZE]) -> Result<()>;
+
+    fn read_sectors(&mut self, sector: u64, output: &mut [[u8; SECTOR_SIZE]]) -> Result<()>
+    {
+        if sector.checked_add(output.len() as u64).is_none_or(|end| end > self.sector_count())
+        {
+            return Err(Error::Malformed("sector range outside device"));
+        }
+        for (index, chunk) in output.iter_mut().enumerate()
+        {
+            self.read_sector(sector + index as u64, chunk)?;
+        }
+        Ok(())
+    }
 }
 
 /// Success from flush means all preceding writes reached durable storage.
@@ -37,6 +50,11 @@ impl<T: BlockDevice + ?Sized> BlockDevice for Box<T>
     fn read_sector(&mut self, sector: u64, output: &mut [u8; SECTOR_SIZE]) -> Result<()>
     {
         (**self).read_sector(sector, output)
+    }
+
+    fn read_sectors(&mut self, sector: u64, output: &mut [[u8; SECTOR_SIZE]]) -> Result<()>
+    {
+        (**self).read_sectors(sector, output)
     }
 }
 
