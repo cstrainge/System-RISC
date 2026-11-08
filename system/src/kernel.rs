@@ -1544,6 +1544,11 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
     unsafe {
         HEAP.initialize(heap_base as *mut u8, heap_bytes);
     }
+    if let Err(error) = crate::machine::platform_devices::retain_inventory()
+    {
+        serial!("BOOT_DEVICE_INVENTORY_REFUSED: {error}");
+        return ptr::null();
+    }
     if info.flags & mac_abi::BOOT_GRAPHICAL != 0
     {
         if let Err(status) = crate::recovery::initialize()

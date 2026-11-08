@@ -12,6 +12,8 @@
 //! refusal that names it - never a default, never a skip, and never a fallback
 //! to a compiled-in window.
 
+use alloc::vec::Vec;
+
 use mac_abi::BootInfo;
 use mac_devicetree::{Node, Tree};
 
@@ -61,6 +63,8 @@ pub(crate) enum Cause
 {
     /// The machine supplied no readable device tree.
     Tree,
+    /// Ordinary memory could not retain the admitted peripheral inventory.
+    Allocation,
     /// The machine's tree does not describe this peripheral.
     Missing,
     /// The node is present but does not describe a usable register window.
@@ -103,7 +107,7 @@ impl Refusal
     /// one is the thing that came up short.
     pub(crate) fn unresolved() -> Self
     {
-        Refusal { key: NO_KEY,
+        Refusal { key:   NO_KEY,
                   cause: Cause::Unpublished }
     }
 }
@@ -115,6 +119,7 @@ impl core::fmt::Display for Refusal
         match self.cause
         {
             Cause::Tree => out.write_str("the machine supplied no readable device tree"),
+            Cause::Allocation => out.write_str("no memory for the admitted peripheral inventory"),
             Cause::Missing =>
             {
                 write!(out, "the machine's device tree does not describe `{}`", self.name())
@@ -126,8 +131,8 @@ impl core::fmt::Display for Refusal
             Cause::NoInterruptParent =>
             {
                 write!(out,
-                       "`{}` declares interrupts but no interrupt controller can be resolved \
-                        for it",
+                       "`{}` declares interrupts but no interrupt controller can be resolved for \
+                        it",
                        self.name())
             }
             Cause::Unpublished =>
@@ -138,13 +143,80 @@ impl core::fmt::Display for Refusal
     }
 }
 
-/// The machine's own description, pinned at admission.
-///
-/// The kernel keeps no peripheral list. It keeps the tree the machine supplied
-/// and reads it where a window is needed, so nothing is copied, nothing is
-/// bounded, and a machine that describes more peripherals than another needs no
-/// change here.
+/// The pinned firmware description is used while boot is still allocation-free.
+/// Once ordinary heap storage exists, `retain_inventory` publishes immutable
+/// resolved descriptors. Paging and device queries then read that inventory
+/// without reparsing the tree or resolving interrupt ancestry on every request.
 static TREE_BLOB: spin::Once<&'static [u8]> = spin::Once::new();
+
+struct Inventory
+{
+    devices:    Vec<Device>,
+    transports: Vec<Transport>
+}
+static INVENTORY: spin::Once<Inventory> = spin::Once::new();
+
+/// Retain the machine-derived inventory after heap initialization, before
+/// services or application roots can use it. There is no fixed device limit;
+/// ordinary memory admission bounds storage. Failure publishes nothing and
+/// refuses service startup, rather than dropping peripherals from the view.
+pub(crate) fn retain_inventory() -> Result<(), Refusal>
+{
+    if INVENTORY.get().is_some()
+    {
+        return Ok(());
+    }
+    let tree = admitted_tree().ok_or(Refusal { key:   NO_KEY,
+                                               cause: Cause::Tree })?;
+    let mut inventory = Inventory { devices:    Vec::new(),
+                                    transports: Vec::new() };
+    let mut allocation_failed = false;
+    let mut retain = |node: &Node<'_>| {
+        if allocation_failed
+        {
+            return;
+        }
+        if let Some(device) = device_of(&tree, node)
+        {
+            if inventory.devices.try_reserve(1).is_err()
+            {
+                allocation_failed = true;
+                return;
+            }
+            inventory.devices.push(device);
+        }
+    };
+    tree.for_each_node(&mut retain).map_err(|_| {
+                                        Refusal { key:   NO_KEY,
+                                                  cause: Cause::Tree }
+                                    })?;
+    tree.for_each_compatible(VIRTIO_MMIO, |node| {
+            if allocation_failed
+            {
+                return;
+            }
+            if let Some(transport) = transport_of(&tree, &node)
+            {
+                if inventory.transports.try_reserve(1).is_err()
+                {
+                    allocation_failed = true;
+                    return;
+                }
+                inventory.transports.push(transport);
+            }
+        })
+        .map_err(|_| {
+            Refusal { key:   NO_KEY,
+                      cause: Cause::Tree }
+        })?;
+    if allocation_failed
+    {
+        return Err(Refusal { key:   NO_KEY,
+                             cause: Cause::Allocation });
+    }
+    INVENTORY.call_once(|| inventory);
+    Ok(())
+}
 
 /// Check that the machine supplied a tree this kernel can read, and pin it.
 ///
@@ -162,11 +234,15 @@ pub(crate) unsafe fn admit(info: &BootInfo) -> Result<(), Refusal>
         return Ok(());
     }
     let blob = unsafe {
-        super::memory::primary_slice(info, info.device_tree, info.device_tree_bytes)
-    }.map_err(|_| Refusal { key: NO_KEY,
-                             cause: Cause::Tree })?;
-    Tree::new(blob).map_err(|_| Refusal { key: NO_KEY,
-                                          cause: Cause::Tree })?;
+                   super::memory::primary_slice(info, info.device_tree, info.device_tree_bytes)
+               }.map_err(|_| {
+                    Refusal { key:   NO_KEY,
+                              cause: Cause::Tree }
+                })?;
+    Tree::new(blob).map_err(|_| {
+                       Refusal { key:   NO_KEY,
+                                 cause: Cause::Tree }
+                   })?;
     TREE_BLOB.call_once(|| blob);
     Ok(())
 }
@@ -185,17 +261,22 @@ fn admitted_tree() -> Option<Tree<'static>>
 /// no change here.
 fn for_each_device(mut visit: impl FnMut(Device))
 {
+    if let Some(inventory) = INVENTORY.get()
+    {
+        inventory.devices.iter().copied().for_each(visit);
+        return;
+    }
     let Some(tree) = admitted_tree()
     else
     {
         return;
     };
     let _ = tree.for_each_node(|node| {
-                                if let Some(device) = device_of(&tree, &node)
-                                {
-                                    visit(device);
-                                }
-                            });
+                    if let Some(device) = device_of(&tree, &node)
+                    {
+                        visit(device);
+                    }
+                });
 }
 
 /// The peripheral a node describes, or `None` when it describes none.
@@ -233,6 +314,10 @@ fn device_of(tree: &Tree<'_>, node: &Node<'_>) -> Option<Device>
 /// How many peripherals the machine described.
 pub(crate) fn count() -> usize
 {
+    if let Some(inventory) = INVENTORY.get()
+    {
+        return inventory.devices.len();
+    }
     let mut count = 0;
     for_each_device(|_| count += 1);
     count
@@ -265,6 +350,11 @@ fn transport_of(tree: &Tree<'_>, node: &Node<'_>) -> Option<Transport>
 /// as any other peripheral's are.
 pub(crate) fn for_each_transport(mut visit: impl FnMut(Transport)) -> usize
 {
+    if let Some(inventory) = INVENTORY.get()
+    {
+        inventory.transports.iter().copied().for_each(visit);
+        return inventory.transports.len();
+    }
     let Some(tree) = admitted_tree()
     else
     {
@@ -272,12 +362,12 @@ pub(crate) fn for_each_transport(mut visit: impl FnMut(Transport)) -> usize
     };
     let mut count = 0;
     let _ = tree.for_each_compatible(VIRTIO_MMIO, |node| {
-                  if let Some(transport) = transport_of(&tree, node)
-                  {
-                      visit(transport);
-                      count += 1;
-                  }
-              });
+                    if let Some(transport) = transport_of(&tree, node)
+                    {
+                        visit(transport);
+                        count += 1;
+                    }
+                });
     count
 }
 
@@ -291,6 +381,10 @@ pub(crate) fn transport_count() -> usize
 /// fewer transports than that.
 pub(crate) fn transport(index: usize) -> Option<Transport>
 {
+    if let Some(inventory) = INVENTORY.get()
+    {
+        return inventory.transports.get(index).copied();
+    }
     let mut found = None;
     let mut seen = 0usize;
     for_each_transport(|transport| {
@@ -307,6 +401,10 @@ pub(crate) fn transport(index: usize) -> Option<Transport>
 /// number the machine described.
 pub(crate) fn get(index: usize) -> Option<Device>
 {
+    if let Some(inventory) = INVENTORY.get()
+    {
+        return inventory.devices.get(index).copied();
+    }
     let mut found = None;
     let mut seen = 0usize;
     for_each_device(|device| {
@@ -351,12 +449,12 @@ fn interrupt_of<'a>(tree: &Tree<'a>, node: &Node<'a>) -> Result<u32, ()>
     }
     let phandle = phandle.ok_or(())?;
     let controller = tree.find(|candidate| {
-                            candidate.interrupt_controller
-                            && (candidate.phandle == Some(phandle)
-                                || candidate.linux_phandle == Some(phandle))
-                        })
-                        .map_err(|_| ())?
-                        .ok_or(())?;
+                             candidate.interrupt_controller
+                             && (candidate.phandle == Some(phandle)
+                                 || candidate.linux_phandle == Some(phandle))
+                         })
+                         .map_err(|_| ())?
+                         .ok_or(())?;
     let cells = controller.interrupt_cells.ok_or(())? as usize;
     if cells == 0 || specifier.len() != cells * 4
     {
