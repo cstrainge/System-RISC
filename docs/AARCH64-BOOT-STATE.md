@@ -1648,6 +1648,40 @@ measured, so the exact terminal refusal that follows a missed replay is still
 inferred from the code rather than instrumented. The resume address, which is
 the defect, was measured directly.
 
+### The result on `qemu_arm64`
+
+With `rewind` at the two deferred-replay returns, `pipes-probe` no longer faults
+and no longer crashes. It runs from `PIPES_PROBE_ECHO_OK` through
+`PIPES_PROBE_SCAN_RESTART_OK entries=2`, and the case it used to die in now
+passes outright:
+
+```
+PIPES_PROBE_ECHO_OK bytes=5
+PIPES_PROBE_WRITER_ARMED
+PIPES_PROBE_WRITER_PARKED
+PIPES_PROBE_MAKE_ROOM
+PIPES_PROBE_WRITER_RESUMED transferred=512
+PROCESS_THREAD_RECLAIMED app=4294967394 thread=4294967528
+PIPES_PROBE_BLOCK_OK parked=1 resumed=1 eof=1
+PIPES_PROBE_READER_ARMED
+PIPES_PROBE_READER_PARKED
+PIPES_PROBE_READER_RESUMED transferred=5
+PIPES_PROBE_READER_OK parked=1 resumed=1 bytes=5
+```
+
+No `USER_FAULT_CAPTURED` and no `CRASH_REPORT_READY` appears anywhere in that
+log. `PIPES_PROBE_BLOCK_OK` is the exact marker the woken-writer case produces
+on `qemu_riscv`.
+
+The case still does not pass, and the reason is a different defect:
+`PIPES_PROBE_FAIL the Pipes folder has no icon of its own`, raised by the
+`PIPES_ICON_FOLDER_OK` assertion after `PIPES_SCAN_RESTART_OK`. That is an
+icon/glyph coverage gap on this platform, not a resume defect, and it is not
+touched here. The arm64 case count therefore stays at 3 of 19: `no-disk`,
+`raw-hfs-b` and `fonts-probe`. What changed is that the first failure is no
+longer the resume path — the probe now reaches the same point in its own
+coverage that the icon assertion guards.
+
 ## Not attempted, deliberately
 
 The floating-point/NEON part of an aarch64 thread context. `TPIDR_EL0` and `x30`
