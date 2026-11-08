@@ -6,6 +6,30 @@ as the list of things fixed.
 
 ## Position
 
+### Position after the `x4` fix (2026-11-08)
+
+The intermittent level-3 permission fault on a read of the per-hart control
+block is fixed. The cause was the aarch64 exception return: it restored the
+interrupted `x4` and then used `x4` to clear the entering flag, so **every**
+resumed context — application or System — carried the control block's address in
+the fifth argument register. See *Fixed: the exception return handed every
+resumed context the control block in `x4`* for the trace.
+
+Measured on `9f5fd6c9`+ the fix, artifact `dist-arm64-el0` built from
+`0995b36c`, six `cargo xtask boot-check --platform qemu_arm64` invocations:
+
+| case | result |
+| --- | --- |
+| `no-disk` | passed, 6 of 6 |
+| `raw-hfs-b` | passed, 6 of 6 — `FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY:` in every serial log, no `CRASH_REPORT_READY` in any of them |
+| `fonts-probe` and later | **not constructed.** `boot-check` builds the probe fixtures while it assembles the case table, and those fixtures cannot be built for aarch64 — see *What the arm64 gate still cannot reach* |
+
+So the arm64 case count is 2 of 19: the two cases that do not need a probe
+fixture. The gate exits 1 on the fixture build, not on a guest failure, and the
+desktop case is no longer intermittent.
+
+### How it stood when the physmap read was unexplained
+
 `cargo xtask boot-check --platform qemu_arm64` builds its private SDK and enters
 the case table. `raw-hfs-b` reaches the desktop; this is one of the observed
 runs, and the intermittency described below is part of the state:
@@ -1120,6 +1144,121 @@ architecture now states `trap_frame::interrupts_were_enabled` separately from
 `page_layout::interrupts_enabled`, and the two questions have two names.
 
 
+
+## Fixed: the exception return handed every resumed context the control block in `x4`
+
+The physmap read described above was not an application defect and not a page
+permission defect. It was the exception return.
+
+`__system_restore_frame` reloads the interrupted integer file and then, to clear
+`Control.entering`, read `TPIDR_EL1` through `x4` — a register it had restored
+sixteen instructions earlier and never reloaded:
+
+```
+ldp x4, x5, [x2, #{registers} + 32]   // x4 = the interrupted x4
+...
+mrs x4, tpidr_el1                     // x4 = the control block, for good
+str xzr, [x4, #{ctl_entering}]
+ldp x2, x3, [x2, #{registers} + 16]
+eret
+```
+
+`x4` is the fifth argument register. A trap that lands between a caller placing
+its fifth argument and the callee reading it therefore delivers the control
+block instead of the caller's pointer. That is why three unrelated Finder sites
+faulted, why they faulted at different offsets, and why the fault was
+intermittent: it needs a trap inside a window of a few instructions. Before
+`9f5fd6c9` the read succeeded, because `AP[1]` was inverted and every supervisor
+leaf was EL0-readable.
+
+The fix reads `TPIDR_EL1` through `x0` and reloads `x0` afterwards, which is the
+ordering the RISC-V entry already uses for its own scratch (`t0`/`t1`):
+
+```
+mrs x0, tpidr_el1
+str xzr, [x0, #{ctl_entering}]
+ldp x0, x1, [x2, #{registers}]
+ldp x2, x3, [x2, #{registers} + 16]
+eret
+```
+
+The rule the two entries now share: **a scratch register may not be one the
+frame has already restored, and a register used as scratch after its reload must
+be reloaded again.**
+
+### The trace
+
+QEMU's `-d int` names the fault but not the general registers, and `-d cpu` is
+unusable here (2.5 GB of trace in 70 s). Two things did work, and they agree:
+
+- the crash report text lives in guest RAM and carries the whole captured
+  register file (`FaultSnapshot`, rendered into the report window);
+- `system/src/machine/traps/state.rs` keeps the same frame at the address
+  `PROCESS_THREAD` prints as `cpu_state=`, so the frame is readable directly.
+
+Dump with the machine **stopped** (`stop` on the monitor, then `pmemsave`);
+otherwise the guest reclaims the faulting thread's stack while the 2 GB dump is
+still being read, and the stack copy of the frame is gone by the time it is
+reached.
+
+Two captures, two runs, two different call sites, the same value:
+
+| | capture 1 | capture 2 |
+| --- | --- | --- |
+| `PC` | `0x43c600` `Browser::draw_items+0x284` | `0x42bf6c` `Startup::poll_watches+0x6d8` |
+| instruction | `ldrh w8, [x23, #0x2]` | `ldr w13, [x23, #0x638]` |
+| `FAR` | `0xffffffe010914002` | `0xffffffe010914638` |
+| `SP` | `0xf76580` | `0xf83aa0` |
+| `x4` | `0xffffffe010914000` | `0xffffffe010914000` |
+| `x23` | `0xffffffe010914000` | `0xffffffe010914000` |
+| `x5` | `1` | `0` |
+
+`0xffffffe010914000` is the control block the same run prints as
+`SYSTEM_STACK_READY … control=`. In both functions `x23` is `x4`-derived: the
+first line of `draw_items` is `mov x23, x4`, and `poll_watches` computes
+`add x23, x13, x19` from the `&mut Browser` it received in `x4`. The callers put
+the argument there immediately before the call:
+
+```
+add x4, sp, #0x130        add x4, sp, #0x2b8
+bl  draw_items            bl  poll_watches
+```
+
+So the caller was correct and the callee was correct; the register in between
+was overwritten by the exception return. The same shape reaches the third
+recorded site: `Startup::advance` takes its `browser` in `x4` and reads
+`browser + 0x1e64` at `advance+0x7b0`, which is the `Cell<bool>` at
+`browser.rs:487` named in the earlier crash report.
+
+### What this does not change
+
+The control block is still supervisor-only, the `AP[1]` fix stands, and nothing
+was added to make kernel memory reachable from EL0. The fault sites were not
+stubbed; they were fixed at the one place that produced the bad pointer.
+
+## What the arm64 gate still cannot reach
+
+`boot-check` builds the `fonts-probe` and `pipes-probe` images while it
+assembles the case table, so the remaining seventeen arm64 cases cannot be
+constructed on this platform. Three separate gates stop the fixture build, and
+each is a deliberate declaration rather than an accident:
+
+1. every fixture declares `mac-build` — a host tool with `std` and
+   `serde_json` — under `[target.'cfg(not(target_arch = "riscv64"))'.dependencies]`.
+   That is true for an aarch64 guest, so `serde_core` is compiled for
+   `aarch64-unknown-none` and fails for want of `std`. The predicate the
+   manifest means is "not a bare-metal guest", i.e. `cfg(not(target_os = "none"))`.
+2. `crates/mac-toolbox/src/panic.rs` gates `diagnostic`, `handle`, `fail` and
+   the `PANICKING` flag on `all(target_arch = "riscv64", not(target_os = "systemrisc"))`.
+   Nothing in those functions is RISC-V specific.
+3. `mac_toolbox::application!` states `compile_error!("System RISC application
+   runtime currently requires its native RV64 target")`, so the no_std
+   application entry has no aarch64 implementation at all.
+
+Only the third is a real limit: P8 makes `std` the default for applications, and
+these fixtures are the older no_std probes. Making the arm64 gate report more
+than two cases therefore means porting the probe fixtures to the `std` target,
+not widening a `cfg`. That work was not started here.
 
 ## Not attempted, deliberately
 
