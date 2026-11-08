@@ -320,8 +320,11 @@ fn region(node: &Node<'_>, index: usize) -> Option<(u64, u64)>
     }
     let cells = address_cells + size_cells;
     let entry = reg.get(index * cells * 4..(index + 1) * cells * 4)?;
+    // A cell is one big-endian word; the slice above is exactly `cells` of them,
+    // so these four-byte reads cannot come up short.
     let cell = |offset: usize| -> u64 {
-        u32::from_be_bytes(entry[offset..offset + 4].try_into().unwrap()) as u64
+        let bytes = &entry[offset..offset + 4];
+        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64
     };
     let mut address = 0;
     for index in 0..address_cells
@@ -360,8 +363,8 @@ fn timer_of(tree: &Tree<'_>, controller: &Node<'_>) -> Result<u32, Refusal>
     // non-secure physical, virtual, hypervisor - and `CNTP_*`, which is the
     // timer the scheduler arms, is the non-secure physical one.
     let entry = specifiers.get(cells * 4..cells * 8).ok_or(Refusal::NoTimerSpecifier)?;
-    let kind = u32::from_be_bytes(entry[0..4].try_into().unwrap());
-    let number = u32::from_be_bytes(entry[4..8].try_into().unwrap());
+    let kind = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]);
+    let number = u32::from_be_bytes([entry[4], entry[5], entry[6], entry[7]]);
     // Type 1 is a private peripheral interrupt, which is what a timer is on this
     // controller, and its number is an index inside that bank rather than the
     // number the distributor uses. A shared interrupt here would mean the

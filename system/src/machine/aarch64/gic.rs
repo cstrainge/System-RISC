@@ -159,7 +159,8 @@ pub(crate) fn admit(distributor: u64, cpu_interface: u64, timer: u32)
                                                     security={} lines={} ctlr={control:#x} \
                                                     group={group:#x} enabled={enabled:#x} \
                                                     prio={priority:#x} target={target:#x} \
-                                                    gicc_ctlr={interface:#x} pmr={threshold:#x}\n",
+                                                    gicc_ctlr={interface:#x} \
+                                                    pmr={threshold:#x}\n",
                                                    timer,
                                                    u32::from(security),
                                                    (typer & TYPER_LINES) + 1));

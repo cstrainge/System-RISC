@@ -12,39 +12,44 @@ at the second one:
 
 ```
 ROM check no-disk: passed
-ROM check raw-hfs-b: failed after 3.6 s
+ROM check raw-hfs-b: failed after 60 s: the readiness marker did not arrive
 ```
 
-`raw-hfs-b` fails in System startup, after the System font catalog has been
-loaded and immediately before the Progress Bar CDEF is used for the first time:
+`raw-hfs-b` now boots the whole way to the desktop launch and stops in Finder:
 
 ```
-BOOT_AARCH64_EL1_READY
-BOOT_AARCH64_MMU_READY: 39-bit three-level translation active
-BOOT_AARCH64_PHYSMAP_READY
-BOOT_AARCH64_KERNELMAP_READY
-BOOT_AARCH64_MONITOR_READY
-BOOT_AARCH64_IMAGE_LOADED
-BOOT_AARCH64_HANDOFF
-BOOT_AARCH64_ENTERING: System at EL1
-CPU_TOPOLOGY / STACK_POLICY / PAGE_BANK
-MMU_READY
-SYSTEM_HEAP_READY
-SYSTEM_STACK_READY
-EMERGENCY_KIT_READY services=terminal ...
-TRAPS_READY: resident ecall dispatcher ABI=1
-SYSTEM_LEASE_PROBE: ok
-System: native service table ready
-BOOT_FINDER_DOMAIN app=4294967394
-FONTS_READY: families=23 resources loaded from System
-SYSTEM_STARTUP_FAILED: executable PTE 0x430fd000 changed: expected 0x0, observed 0x80000040928003; original mapping/backing retained
+INTERRUPTS_READY: controller=gic-v2 distributor=0x8000000 cpu_interface=0x8010000 timer=30 security=0 lines=9 ctlr=0x1 group=0x0 enabled=0x4000ffff prio=0xa00000 target=0x1010101 gicc_ctlr=0x1 pmr=0xf0
+SYSTEM_CPUS_READY primary=0 admitted_peers=0 dispatch=primary-only
+TIMER_ARMED: requested=0xea7c878 cval=0xea7c878 ctl=0x1 count=0xea7a69b freq=0x3b9aca0
+FONTS_PUBLISHED revision=1 families=23 volume=66113 directory=21
+DISPLAY_MODE_CHANGED 1280x800
+LAUNCH_DIRECTORY_READY owner=4294967394 volume=66113 node=20 policy=Documents
+SYSTEM_FINDER_LAUNCH entry=0x400000
+BOOT_PROGRESS completed=7 total=7
+PROCESS_REGISTERED app=4294967394 name=Finder
+CRASH_REPORT_READY app=4294967394 window=4294967486 bytes=1013 lines=40 page_lines=22 flags=0
+NATIVE_EXIT_RECOVERY_QUEUED app=4294967394 kind=abort code=255 thread=4294967479
+```
+
+Finder is launched, takes a data abort on its own stack and is recovered, and
+the replacement instance aborts the same way. `-d int` names the abort exactly:
+
+```
+Taking exception 4 [Data Abort] on CPU 0
+...from EL0 to EL1
+...with ESR 0x24/0x9200004f      <- data abort from lower EL, permission fault, level 3, on a write
+...with FAR 0xfa8fe0            <- the application stack, 0x20 below its top
+...with SPSR 0x200
+...with ELR 0x400000
 ```
 
 AArch64 has never reached `DESKTOP_READY` — or `FINDER_FOLDER_LAYOUT`, the
-marker the `raw-hfs-b` case actually requires — in this environment. Finder
-does not run.
+marker the `raw-hfs-b` case actually requires — in this environment. The reason
+is in *The next blocker* below: every application page is mapped EL1-only,
+because the AArch64 page encoder has `AP[1]` inverted.
 
 `qemu_riscv` passes 19/19 and is the gate that matters for landing.
+
 
 ## Defects found and fixed
 
@@ -661,8 +666,10 @@ was not a workaround target — the check stays.
 That refusal is now history. With `std` building for aarch64, `boot-check`
 regenerates the packages, Finder passes the fingerprint check, `FONTS_READY`
 prints, and the boot paints the Progress Bar, loads its drivers and reaches
-`SYSTEM_CPUS_READY`. It then stops there, waiting for an interrupt source that
-does not exist yet. See *What still blocks `qemu_arm64`*.
+`SYSTEM_CPUS_READY`. It then waited for an interrupt source that did not exist;
+that is fixed (see *What still blocks `qemu_arm64`*), and the boot now runs the
+scheduler to `SYSTEM_FINDER_LAUNCH`. It stops in Finder, for the reason in
+*The next blocker*.
 
 Nothing was done to make a marker appear. The fatal `start_services` path is
 unchanged: a missing framebuffer on a machine whose record declares one is still
@@ -932,37 +939,110 @@ It now takes the form `virtio-gpu` already used: `TARGET != HOST` for the guest
 contract and `target_os = "none"` for the lock. `MODULE_PUBLISHED name=VirtIO RNG`
 follows, and the provider refusal is gone.
 
-### Open: aarch64 has no interrupt source, so the scheduler never ticks
+### Fixed: aarch64 had no interrupt source, so the scheduler never ticked
 
-`raw-hfs-b` now stops silently after `SYSTEM_CPUS_READY`. The last thing the boot
-does is `system/src/machine/scheduler.rs:1190`: with the Finder startup flight
-pending it selects idle, arms the generic timer, and enters the idle frame. Every
-remaining boot step — `FONTS_PUBLISHED`, the launch directory,
+`raw-hfs-b` used to stop silently after `SYSTEM_CPUS_READY`. The last thing the
+boot did was `system/src/machine/scheduler.rs:1190`: with the Finder startup
+flight pending it selected idle, armed the generic timer, and entered the idle
+frame. Every remaining boot step — `FONTS_PUBLISHED`, the launch directory,
 `SYSTEM_FINDER_LAUNCH` — is reached only from `scheduler::schedule()`
 (`scheduler.rs:1650`), and `schedule()` is reached only from `Dispatch::Schedule`,
-i.e. from a trap. The idle loop is `loop { wfi }` (`scheduler.rs:1262`) and has no
-other body.
+i.e. from a trap. The idle loop is `loop { wfi }` (`scheduler.rs:1262`) and has
+no other body.
 
-Nothing on aarch64 raises that trap:
+Three defects had to be fixed, and the third was only visible after the first two
+were, because a delivered-but-misclassified interrupt and an undelivered one look
+identical from the scheduler.
 
-* `aarch64::cpu::clear_software_interrupt` and `enable_software_interrupt` are
-  documented no-ops that defer to a GIC the resident path does not program.
-* `set_timer_deadline` programs `CNTP_CVAL_EL0`/`CNTP_CTL_EL0`, but nothing
-  enables the distributor or the CPU interface, so the PPI is never delivered.
-  Neither the bootloader nor System writes `GICD_CTLR` or `GICC_CTLR` anywhere
-  in the tree; the bootloader only records the controller's address.
-* `dispatch_frame` could not classify an IRQ in any case: the sixteen vector
-  slots converge on one entry and the frame records only `ESR_EL1`, which an
-  interrupt never writes. A stale `ESR_EL1` still holding a call's exception
-  class would make an interrupt look like a call.
+**Classification.** The sixteen vector slots in
+`system/src/machine/aarch64/trap_entry.S` all branched to one entry that recorded
+only `ESR_EL1`. An IRQ writes no `ESR_EL1`, so the recorded word is whatever the
+last `svc` left there, and `ESR_EL1.EC = 0x15` would have made the interrupt look
+like a service call. Each slot now states its kind in `x3` — the slot number is
+the source times four plus the kind — the entry records it in a new `TrapFrame`
+field, and `machine/aarch64/trap_frame.rs` answers two questions from it:
+`interrupt(frame)` reads and completes the controller's acknowledgement, and
+`cause(frame)` translates `ESR_EL1.EC` to a call cause *only* for a synchronous
+trap, returning every other cause unchanged so a genuine fault still reports the
+value the hardware produced. The shared dispatcher no longer compares a cause word
+to a RISC-V bit pattern; it asks for an `Interrupt`, and `machine/riscv64` reports
+its own `scause` values through the same three-way answer.
 
-`qemu_riscv` progresses past this point because its timer interrupt arrives. This
-is the gate this record already names for the monitor route, and enabling
-delivery — distributor, CPU interface, PPI enable, `IAR`/`EOIR`, and a
-vector-slot record so an IRQ is never mistaken for a call — is the interrupt
-controller path, which the current work order excludes. It is reported rather
-than worked around: a polling idle or a synthetic tick would be a different
-scheduler, not this one.
+The frame grew from 600 bytes of fields to 608, which fits the padding the 16-byte
+alignment already required: `cpu_state` stayed 608 and no offset moved.
+
+**Delivery.** `system/src/machine/aarch64/gic.rs` is a GICv2 distributor and CPU
+interface, and `machine/aarch64/interrupts.rs::admit` resolves it from the
+machine's device tree and checks it against the platform record. Both register
+blocks and the timer's interrupt number come from the tree; the record declares
+only the window the kernel root maps, and a tree block outside that window is a
+refusal rather than a fault. The device tree states the non-secure physical timer
+as PPI 14, which is **INTID 30** — a distributor enable bit is indexed by the
+absolute number, and reading the specifier's number as that number enabled an
+interrupt nothing raises. `INTERRUPTS_READY` reports what the machine says after
+the writes, not what was written.
+
+**The group register.** With `GICD_CTLR`, `GICC_CTLR`, the priority, the target,
+the enable bit and the timer all reading back correct, and the timer armed 87 µs
+out, no interrupt was ever taken. The wrong statement was
+`GICD_IGROUPR0 = !0`: that is right on a controller with the security extensions,
+where a non-secure kernel can only be delivered group 1 and the enable bit it
+writes is the non-secure alias of `EnableGrp1`, and wrong on one without them,
+where there are no groups, every source is group 0 and `GICD_CTLR` bit 0 is
+`EnableGrp0`. Putting every source in a group nothing enables leaves the
+distributor forwarding nothing while every register reads back exactly what was
+written. `GICD_TYPER.SECURITYEXTN` decides it, and the read-back includes the
+group register so the same defect cannot be silent again.
+
+`clear_software_interrupt` and `enable_software_interrupt` are gone from the CPU
+adapter. RISC-V's clear moved into its own interrupt classification, which is
+where its pending bit is completed; a controller acknowledgement has no equivalent
+call, so keeping one would have been a name with no work behind it. Both
+architectures now admit the wake source through one operation,
+`cpu::admit_wake_source`, which is a CSR bit on RISC-V and the software-generated
+bank on AArch64.
+
+**What this establishes.** The tick arrives: 14342 IRQs were taken from EL0 in one
+30-second run, and the boot reaches `FONTS_PUBLISHED`, `DISPLAY_MODE_CHANGED`,
+`LAUNCH_DIRECTORY_READY`, `SYSTEM_FINDER_LAUNCH entry=0x400000` and
+`BOOT_PROGRESS completed=7 total=7`.
+
+## The next blocker: every application page is mapped EL1-only
+
+Finder is launched and takes a data abort on its own stack — permission fault,
+level 3, on a write, at `0xfa8fe0` with the stack at `0xfa9000` — and the
+recovered instance aborts the same way. `crates/mac-aarch64-pages/src/lib.rs`
+encoded `AP[1]` inverted:
+
+```
+let ap1 = if permissions.access == Access::Supervisor { 1 << 6 } else { 0 };
+```
+
+`AP[2:1]` is `0b00`/`0b10` for EL1-only and `0b01`/`0b11` for EL0-accessible, so
+bit 6 belongs to an **unprivileged** page. As written, every application page was
+EL1-only and every kernel page was EL0-accessible — read, write and execute. The
+decoder mirrors the inversion, so the crate's round-trip tests agree with the
+encoder and with nothing else.
+
+The second half is why this is one change and not two. The EL0 idle frame is
+entered with `INITIAL_STATUS`, which is a RISC-V `sstatus` word and names `EL0t`
+in `SPSR_EL1.M[3:0]`, while its `pc` is a kernel address. It executes because
+kernel pages are (wrongly) EL0-accessible; a monitor sample during the hang reads
+`PC=ffffffd0005032ac PSTATE=0000000000000300 ---- EL0t`. Fixing `AP[1]` alone
+therefore turns the first idle fetch into a privileged fault and the boot stops
+earlier than it does now.
+
+Both halves must land together: `AP[1]` set for `Access::User`, and the
+System-owned frames — the canonical idle and the module-worker frames that use
+the same word — entering at EL1. `USER_STATUS`, `INITIAL_STATUS` and `user_origin`
+are deliberately untouched here: `user_origin` reads `SPSR_EL1.A`, so moving the
+status words without moving that test reclassifies every application's service
+calls, and that is one change with one owner.
+
+The `AP[1]` fix was written, compiled and measured to be correct in isolation, then
+reverted rather than shipped on its own, because on its own it regresses the boot
+and the coupling's owner is this deferred status-word change.
+
 
 
 ## Not attempted, deliberately
