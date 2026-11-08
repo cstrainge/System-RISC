@@ -571,7 +571,8 @@ fn enter(startup: Startup, disks: &mut [Box<dyn WritableBlockDevice>], disk_inde
             fatal_shutdown();
         }
     }
-    serial!("BOOT: entering System at {:#x} privilege=supervisor", plan.entry());
+    serial!("{} at {:#x} privilege=supervisor", mac_bootloader::report::ENTERING_SYSTEM,
+            plan.entry());
     // Keep every opaque firmware owner in this suspended physical frame. The
     // admitted callee has no owning payload below the captured stack boundary.
     let _root = core::mem::ManuallyDrop::new(root);

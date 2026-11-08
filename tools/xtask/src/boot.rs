@@ -363,7 +363,7 @@ fn run_case(workspace: &Workspace, directory: &Path, name: &str, media: &[PathBu
     // `boots` is about the guest OS starting, which is a different fact from the
     // ROM reaching a terminal state: a machine with no disk is expected to say
     // so and stop, and that is a pass, not a boot.
-    let started = log.contains("BOOT: entering System");
+    let started = log.contains(mac_bootloader::report::ENTERING_SYSTEM);
     if expected.iter().any(|marker| !log.contains(marker)) || started != boots
     {
         return Err(error(format!("unexpected ROM result for {name}:\n{log}")));
