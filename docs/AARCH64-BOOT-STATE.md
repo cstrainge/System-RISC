@@ -16,17 +16,27 @@ the fifth argument register. See *Fixed: the exception return handed every
 resumed context the control block in `x4`* for the trace.
 
 Measured on `9f5fd6c9`+ the fix, artifact `dist-arm64-el0` built from
-`0995b36c`, six `cargo xtask boot-check --platform qemu_arm64` invocations:
+`0995b36c`, eleven `cargo xtask boot-check --platform qemu_arm64` invocations:
 
 | case | result |
 | --- | --- |
-| `no-disk` | passed, 6 of 6 |
-| `raw-hfs-b` | passed, 6 of 6 — `FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY:` in every serial log, no `CRASH_REPORT_READY` in any of them |
+| `no-disk` | passed, 11 of 11 |
+| `raw-hfs-b` | passed, 11 of 11 — `FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY:` in every serial log, no `CRASH_REPORT_READY` in any of them |
 | `fonts-probe` and later | **not constructed.** `boot-check` builds the probe fixtures while it assembles the case table, and those fixtures cannot be built for aarch64 — see *What the arm64 gate still cannot reach* |
 
 So the arm64 case count is 2 of 19: the two cases that do not need a probe
 fixture. The gate exits 1 on the fixture build, not on a guest failure, and the
 desktop case is no longer intermittent.
+
+The comparison is the record from `af8d78d7`: of seven arm64 runs, five printed
+`FINDER_FOLDER_LAYOUT` and four printed `DESKTOP_READY`, and a run that printed
+neither had taken the control-block read. Both markers now appear in every run,
+with no crash report to recover from.
+
+The same commit on `qemu_riscv` passes 19 of 19 cases, with `RAMFB 800x600`,
+`FINDER_FOLDER_LAYOUT window=` and `DESKTOP_READY:` in `raw-hfs-b` and no
+`CRASH_REPORT_READY` in that log. The fix is in the AArch64 entry only; the
+RISC-V entry already reloaded its scratch.
 
 ### How it stood when the physmap read was unexplained
 
@@ -1218,7 +1228,6 @@ Two captures, two runs, two different call sites, the same value:
 first line of `draw_items` is `mov x23, x4`, and `poll_watches` computes
 `add x23, x13, x19` from the `&mut Browser` it received in `x4`. The callers put
 the argument there immediately before the call:
-
 ```
 add x4, sp, #0x130        add x4, sp, #0x2b8
 bl  draw_items            bl  poll_watches
@@ -1229,6 +1238,12 @@ was overwritten by the exception return. The same shape reaches the third
 recorded site: `Startup::advance` takes its `browser` in `x4` and reads
 `browser + 0x1e64` at `advance+0x7b0`, which is the `Cell<bool>` at
 `browser.rs:487` named in the earlier crash report.
+
+`FaultSnapshot` prints the 30-slot frame under RISC-V register names, so the
+`t1` line of an aarch64 report is `x4`, `s9` is `x23`, and so on; `x30` is not
+in the slot file at all. The table above uses the AArch64 names the disassembly
+does. Relabelling that report per architecture is a separate defect, not fixed
+here.
 
 ### What this does not change
 
