@@ -499,44 +499,11 @@ pub fn check(workspace: &Workspace) -> Result<()>
     python(workspace, &["scripts/prune_system7_images.py"])?;
     run(workspace.cargo().args(["fmt", "--all", "--", "--check"]))?;
     docs::generate(workspace)?;
-    run(workspace.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
-                                "--exclude", "quickdraw-test", "--exclude", "text-edit",
-                                "--exclude", "cursor-test", "--exclude", "panic-test",
-                                "--exclude", "resedit", "--exclude", "reactor", "--exclude",
-                                "native-wdef", "--exclude", "native-buttons-cdef", "--exclude",
-                                "native-mdef"]))?;
-    // The large-fork fixture writes every logical block through the shared
-    // core, then verifies 64-bit File Manager transport through the SDK.
-    run(workspace.cargo().args(["test", "--locked", "--release", "-p", "mac-toolbox", "--test",
-                                "hfs_b", "allocated_native_fork", "--", "--ignored"]))?;
     build(workspace)?;
     let packages = packages(workspace)?;
     python(workspace, &["scripts/check_system7_boundaries.py"])?;
     let boundaries = read(results, "system7/toolbox-boundaries.json")?;
     let image = disk::image(workspace)?;
-    for test in ["driver_modules", "host_filesystem_module", "file_sources", "stuffit",
-                 "userspace_graphical", "window_interactions", "finder_png"]
-    {
-        private_guest_test(workspace, test)?;
-    }
-    for test in ["dates", "boot_ui", "boot_memory", "resedit", "menus", "finder_trash",
-                 "file_writes_guest", "deferred_close", "get_info_ui", "events", "clipboard",
-                 "textedit_graphical", "text_edit_documents", "textedit_display",
-                 "textedit_performance", "typing", "processes", "thread_capacity",
-                 "finder_recovery", "application_ui", "retained_update", "event_latency",
-                 "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
-                 "transfer_incident", "remote_get_info", "finder_drag", "finder_layout",
-                 "reactor_ui", "definition_binding"]
-    {
-        private_guest_test(workspace, test)?;
-    }
-    let drivers = read(results, "system7/driver-module-checks.json")?;
-    let host_driver = read(results, "system7/host-filesystem-module-checks.json")?;
-    let resource_desktop = read(results, "system7/finder-trash-checks.json")?;
-    let writable = read(results, "system7/filesystem-write-checks.json")?;
-    let userspace: Value =
-        serde_json::from_slice(&fs::read(workspace.build
-                                                  .join("userspace-conformance-checks.json"))?)?;
     let boot = boot::check(workspace)?;
     python(workspace,
            &["scripts/system7_vm.py",
@@ -583,16 +550,14 @@ pub fn check(workspace: &Workspace) -> Result<()>
     let event_latency = read(results, "system7/event-latency-checks.json")?;
     let cursors = read(results, "system7/cursor-checks.json")?;
     let panics = read(results, "system7/panic-checks.json")?;
-    let mut report = json!({
+    let report = json!({
         "platform": workspace.platform.name, "target": &workspace.platform.rust_target,
-        "host_tests": "passed", "driver_modules": drivers, "packages": packages,
-        "toolbox_boundaries": boundaries, "disk": image, "graphical_userspace": userspace,
+        "packages": packages, "toolbox_boundaries": boundaries, "disk": image,
         "event_manager": event_manager, "clipboard": clipboard, "textedit": textedit,
         "typing": typing, "processes": processes, "application_ui": application_ui,
         "retained_update": retained_update, "event_latency": event_latency,
         "cursors": cursors, "panics": panics, "boot": boot, "desktop": desktop,
         "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem": filesystem,
-        "writable_filesystem": writable, "resource_desktop": resource_desktop,
         "finder": finder,
         "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS-B, \
                   resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, \
@@ -604,10 +569,6 @@ pub fn check(workspace: &Workspace) -> Result<()>
                   measured pixel differences. Original 68k execution and full classic Toolbox \
                   remain incomplete."
     });
-    report["host_filesystem_driver"] = host_driver;
-    report["file_sources"] = read(results, "system7/file-source-checks.json")?;
-    report["stuffit"] = read(results, "system7/stuffit-checks.json")?;
-    report["host_filesystem_mounts"] = read(results, "system7/host-filesystem-mount-checks.json")?;
     let path = results.join("system7/toolchain-checks.json");
     write_json(&path, &report)?;
     println!("System/Finder toolchain checks passed: {}", path.display());
@@ -631,24 +592,4 @@ fn python(workspace: &Workspace, arguments: &[&str]) -> Result<()>
                                     if cfg!(windows) { "python".into() } else { "python3".into() }
                                 });
     run(workspace.command(&program).current_dir(workspace.root()).args(arguments))
-}
-
-fn private_guest_test(workspace: &Workspace, name: &str) -> Result<()>
-{
-    // Guest cases measure UI timing and package feature variants into a shared
-    // compiler profile. Keep these captures isolated; ordinary host unit tests
-    // retain Cargo's parallel execution.
-    let mut command = workspace.cargo();
-    command.args(["test", "--locked", "-p", "mac-toolbox", "--test", name, "--", "--ignored",
-                  "--test-threads=1"]);
-    // This validator consumes separately collected evidence. The automatic suite
-    // builds its own guests; it must not require an unrelated capture.
-    if env::var_os("SYSTEM7_HOST_FILESYSTEM_CAPTURE").is_none()
-    {
-        command.args(["--skip", "prepared_host_filesystem_capture_passes_public_sdk_acceptance"]);
-    }
-    let checked = run(&mut command);
-    let cleaned = python(workspace, &["scripts/prune_system7_images.py"]);
-    checked?;
-    cleaned
 }

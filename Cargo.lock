@@ -1644,28 +1644,8 @@ version = "0.1.0"
 name = "mac-toolbox"
 version = "0.1.0"
 dependencies = [
- "disc-v",
- "hfs-b",
  "mac-abi",
- "mac-block",
- "mac-build",
- "mac-code-resource",
- "mac-driver",
- "mac-driver-alloc",
- "mac-formats",
- "mac-hfs-b",
- "mac-host-clipboard",
- "mac-module",
- "mac-power-interface",
- "mac-scrap-extension-interface",
- "mac-system",
- "mac-text",
  "mac-traps",
- "mac-vdagent-protocol",
- "serde",
- "serde-json-core",
- "serde_json",
- "spinning_top",
  "toolbox-controls",
  "toolbox-crashes",
  "toolbox-dialogs",
@@ -1685,7 +1665,6 @@ dependencies = [
  "toolbox-standard-file",
  "toolbox-textedit",
  "toolbox-windows",
- "unicode-segmentation",
 ]
 
 [[package]]
