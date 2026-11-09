@@ -1260,7 +1260,49 @@ pub(super) fn standalone_application(workspace: &Workspace, manifest: &Path, bin
                            error(format!("{} is not inside a package directory",
                                          manifest.display()))
                        })?;
-    let target_dir = workspace.target().join("standalone").join(name);
+    // These artifacts belong to the SDK that compiled them: their metadata
+    // names the private `core` they were built against. The sysroot is keyed by
+    // every input, so the artifacts are keyed by the same value. A changed pin,
+    // patch or private crate then lands in a new directory instead of being
+    // reused beside a newer `core`; the old directory stays for whoever is
+    // still using the SDK that produced it. Only the key's first 16 characters
+    // name the directory, for the reason the private std target does the same:
+    // object paths here already run close to Windows' limit, and the host
+    // linker refuses the paths the whole 64-character key pushes past it. The
+    // marker records the whole key, so the shortened name is also checked
+    // rather than trusted.
+    let key = sdk.root.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
+                                                                      error("the private SDK root \
+                                                                             has no key to name \
+                                                                             its artifacts with")
+                                                                  })?;
+    let prefix = key.get(..16).ok_or_else(|| error("invalid private SDK key"))?;
+    let target_dir = workspace.target().join("standalone").join(prefix).join(name);
+    let marker = target_dir.join("sdk-key");
+
+    match fs::read_to_string(&marker)
+    {
+        Ok(existing) if existing == key => (),
+        Ok(_) =>
+        {
+            return Err(error(format!("{} names a different private SDK; remove it to build \
+                                      again",
+                                     target_dir.display())));
+        }
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound =>
+        {
+            if target_dir.is_dir() && fs::read_dir(&target_dir)?.next().is_some()
+            {
+                return Err(error(format!("{} holds artifacts that do not name their private \
+                                          SDK key; remove them to build again",
+                                         target_dir.display())));
+            }
+            fs::create_dir_all(&target_dir)?;
+            fs::write(&marker, key)?;
+        }
+        Err(cause) => return Err(cause.into())
+    }
+
     let mut command = Command::new("cargo");
 
     command.current_dir(workspace.root())
