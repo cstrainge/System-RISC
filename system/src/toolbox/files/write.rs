@@ -1,7 +1,7 @@
 //! Owned bounded data-file transactions. Payload is staged fallibly, then the
 //! block filesystem or an owned provider job publishes it. Existing resource
 //! forks are preserved; no direct resource fork writer is exposed.
-#![cfg_attr(not(any(systemrisc, feature = "test-support")), allow(dead_code))]
+#![cfg_attr(not(systemrisc), allow(dead_code))]
 use super::*;
 pub(crate) mod lifetime;
 impl super::objects::Payload for Pending
@@ -98,8 +98,6 @@ impl Manager
     {
         if call.operation == BEGIN_DATA_WRITE
         {
-            #[cfg(test)]
-            let authority = self.fixture_write_owner(owner);
             #[cfg(all(not(test), systemrisc))]
             let authority = if owner == 0
             {
@@ -111,7 +109,7 @@ impl Manager
             };
             #[cfg(all(not(test), not(systemrisc)))]
             return Err(ACCESS_DENIED);
-            #[cfg(any(test, systemrisc))]
+            #[cfg(systemrisc)]
             return self.write_request_for(owner, &authority, call, name, data);
         }
         self.write_request_inner(owner, None, call, name, data)
@@ -381,34 +379,3 @@ pub(super) unsafe fn checked(pointer: *mut (), size: usize,
     request(call, name, data) as i64
 }
 
-#[cfg(test)]
-impl Manager
-{
-    pub(super) fn fixture_write_owner(&mut self, label: u64) -> crate::toolbox::handles::OwnerRef
-    {
-        use mac_object_table::domain::{DomainKind, OwnerIndex};
-
-        use crate::toolbox::handles::{KindCode, OwnerRef};
-        let owner = self.handles.fixture_owner(label);
-        let registry = &mut self.handles.fixture.as_mut().unwrap().0;
-        let kinds = match (registry.get(KindCode(*b"FDWR")), registry.get(KindCode(*b"FDST")))
-        {
-            (Ok(payload), Ok(storage)) => (payload, storage),
-            _ =>
-            {
-                let registrar =
-                    OwnerRef::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap();
-                (registry.register(&registrar,
-                                   lifetime::specification(false),
-                                   lifetime::ReleaseWrites)
-                         .unwrap(),
-                 registry.register(&registrar,
-                                   lifetime::specification(true),
-                                   lifetime::ReleaseStorage)
-                         .unwrap())
-            }
-        };
-        self.prepare_writes(kinds).unwrap();
-        owner
-    }
-}

@@ -40,7 +40,6 @@ pub struct Checked
     pub key:       [u8; 16],
     pub address:   u64,
     pub bytes:     u64,
-    pub interrupt: Option<u32>,
     pub pool:      Option<u64>,
     pub flags:     u32
 }
@@ -107,16 +106,12 @@ pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Res
             return Err(error("platform MMIO device declares an empty pool: a block with no \
                               independently usable resource is not a pooled block"));
         }
-        let interrupt = match d.interrupt
+        if d.interrupt.is_none()
         {
-            Some(interrupt) => interrupt,
-            None =>
-            {
-                return Err(error("platform MMIO device must declare its interrupt: a number, \
-                                  or null for a block that raises none on the ARM side. The \
-                                  field being absent is not the same statement"));
-            }
-        };
+            return Err(error("platform MMIO device must declare its interrupt: a number, or null \
+                              for a block that raises none on the ARM side. The field being \
+                              absent is not the same statement"));
+        }
         if checked.iter().any(|other| {
                              other.id == d.id
                              || (address < other.address + other.bytes && other.address < end)
@@ -130,7 +125,6 @@ pub fn check(definitions: &[Definition], memory: &super::memory::Checked) -> Res
                                key,
                                address,
                                bytes: d.bytes,
-                               interrupt,
                                pool: d.pool,
                                flags: d.flags });
     }

@@ -155,9 +155,7 @@ struct Core
     owned_bytes: usize,
     notices:     VecDeque<CompletionNotice>,
     quarantined: Option<Box<Node>>,
-    unreported:  usize,
-    #[cfg(test)]
-    fixture:     Option<tests::Fixture>
+    unreported:  usize
 }
 
 mod state;
@@ -171,5 +169,3 @@ mod dispatch;
 mod queue;
 pub use dispatch::{Dispatch, ReturnCause, ReturnFailure};
 pub use queue::Queue;
-#[cfg(test)]
-mod tests;

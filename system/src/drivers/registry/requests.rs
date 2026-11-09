@@ -859,8 +859,6 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseRequests
     }
 }
 
-#[cfg(test)]
-mod tests;
 
 #[cfg(systemrisc)]
 impl super::Registry

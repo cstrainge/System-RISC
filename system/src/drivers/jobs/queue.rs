@@ -112,22 +112,6 @@ impl Queue
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn submit(&self, owner: Owner, work: Work) -> Result<u64, SubmissionError>
-    {
-        self.access(|core| {
-                let subject = match tests::subject(core, owner)
-                {
-                    Ok(subject) => subject,
-                    Err(status) =>
-                    {
-                        return Err(SubmissionError { status,
-                                                     work });
-                    }
-                };
-                core.submit(&subject, owner, work).map(mac_object_table::store::Publication::id)
-            })
-    }
 
     pub(crate) fn release(&self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
                           -> Result<(), crate::toolbox::handles::cleanup::Failure>
@@ -294,15 +278,5 @@ impl Queue
         self.access(|core| core.discard_owner(owner));
     }
 
-    #[cfg(test)]
-    pub(super) fn test_access<R>(&self, operation: impl FnOnce(&mut Core) -> R) -> R
-    {
-        self.access(operation)
-    }
 
-    #[cfg(test)]
-    pub(super) fn owned_bytes(&self) -> usize
-    {
-        self.access(|core| core.owned_bytes)
-    }
 }

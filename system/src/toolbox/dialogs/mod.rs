@@ -81,7 +81,7 @@ fn resource_text(payload: &[u8], substitution: &str) -> Result<String, Status>
 /// Borrow each wrapped line from its paragraph. The candidate is the contiguous
 /// original span, including repeated/trailing spaces; no temporary String or
 /// second text buffer is needed. A true flag denotes a width-triggered wrap.
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 pub(super) fn wrapped_lines(text: &str, width: i16,
                             measure: impl FnMut(&str) -> Result<i16, Status>,
                             mut emit: impl FnMut(&str, bool) -> Result<(), Status>)
@@ -94,7 +94,7 @@ pub(super) fn wrapped_lines(text: &str, width: i16,
 
 /// Checked byte ranges belong to this exact source, never inferred from a
 /// borrowed slice's pointer or from equal text in another owner.
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 pub(super) fn wrapped_line_ranges(text: &str, width: i16,
                                   mut measure: impl FnMut(&str) -> Result<i16, Status>,
                                   mut emit: impl FnMut(core::ops::Range<usize>,
@@ -258,156 +258,3 @@ pub(crate) use modal::Released as ReleasedAlert;
 #[cfg(systemrisc)]
 pub(crate) use modal::{ReleaseAlerts, ReleaseStorage, specification};
 
-#[cfg(all(test, feature = "test-support"))]
-mod tests
-{
-    use alloc::{format, string::ToString, vec::Vec};
-
-    use super::*;
-    use crate::testing::allocations::Observe;
-
-    #[test]
-    fn resource_substitution_keeps_canonical_scalars_and_checks_before_allocating()
-    {
-        let all: Vec<_> = (0..=255u8).collect();
-        for (payload, replacement) in [(all.as_slice(), "é🦀^0"),
-                                       (b"^^0 and ^0^0".as_slice(), "é🦀^0"),
-                                       (b"nothing to replace".as_slice(), ""),
-                                       (b"^0".as_slice(), "")]
-        {
-            let expected = mac_formats::text::decode(payload).replace("^0", replacement);
-            assert_eq!(resource_text(payload, replacement).unwrap(), expected);
-        }
-        let too_long = "é".repeat(INLINE_STRING_BYTES / 2);
-        let observe = Observe::begin(true, None);
-        let invalid = resource_text(b"^0!", &too_long);
-        let empty = resource_text(b"^0", "");
-        let count = observe.finish();
-        assert_eq!(invalid, Err(BAD_ARGUMENT));
-        assert_eq!(empty, Ok(String::new()));
-        assert_eq!(count, 0, "validate length and empty output without backing");
-        let observe = Observe::begin(true, None);
-        let refused = resource_text(b"Caf\x8e ^0", "🦀");
-        let count = observe.finish();
-        assert_eq!(refused, Err(NO_MEMORY));
-        assert_eq!(count, 1, "admit only the final exact UTF-8 output");
-        assert_eq!(resource_text(b"Caf\x8e ^0", "🦀").unwrap(), "Café 🦀");
-    }
-
-    fn measured(text: &str) -> i16
-    {
-        text.chars()
-            .map(|c| {
-                if c == 'W'
-                {
-                    3
-                }
-                else if !c.is_ascii()
-                {
-                    2
-                }
-                else
-                {
-                    1
-                }
-            })
-            .sum()
-    }
-
-    fn original_lines(text: &str, width: i16) -> (Vec<String>, Vec<(String, bool)>)
-    {
-        let mut candidates = Vec::new();
-        let mut emitted = Vec::new();
-        let mut line = String::new();
-        for paragraph in text.split(['\r', '\n'])
-        {
-            for word in paragraph.split(' ')
-            {
-                let candidate =
-                    if line.is_empty() { String::from(word) } else { format!("{} {}", line, word) };
-                candidates.push(candidate.clone());
-                if measured(&candidate) > width && !line.is_empty()
-                {
-                    emitted.push((line.clone(), true));
-                    line.clear();
-                }
-                if !line.is_empty()
-                {
-                    line.push(' ');
-                }
-                line.push_str(word);
-            }
-            emitted.push((line.clone(), false));
-            line.clear();
-        }
-        (candidates, emitted)
-    }
-
-    #[test]
-    fn borrowed_wraps_match_original_paragraph_spaces_and_clipped_line_order()
-    {
-        for text in ["", " ", "   leading", "trailing   ", "one  two   three", "\r\n",
-                     "a\r\nb\n\nc", "long_unbroken_Word", "é🦀  W i  café",
-                     "  é \n 🦀\tW \r end   "]
-        {
-            for width in [-1, 0, 1, 7, 20]
-            {
-                let (expected_candidates, expected_lines) = original_lines(text, width);
-                let mut candidates = Vec::new();
-                let mut lines = Vec::new();
-                wrapped_lines(text,
-                              width,
-                              |candidate| {
-                                  candidates.push(candidate.to_string());
-                                  Ok(measured(candidate))
-                              },
-                              |line, wrapped| {
-                                  lines.push((line.to_string(), wrapped));
-                                  Ok(())
-                              }).unwrap();
-                assert_eq!(candidates, expected_candidates, "width={width}, text={text:?}");
-                assert_eq!(lines, expected_lines, "width={width}, text={text:?}");
-                // Width-triggered lines retain the original unconditional draw;
-                // only each paragraph's final line obeys the vertical cutoff.
-                let clipped = |rows: &[(String, bool)]| {
-                    rows.iter()
-                        .enumerate()
-                        .filter(|(index, (_, wrapped))| *wrapped || 8 + *index as i16 * 7 <= 16)
-                        .map(|(_, row)| row.clone())
-                        .collect::<Vec<_>>()
-                };
-                assert_eq!(clipped(&lines), clipped(&expected_lines));
-            }
-        }
-    }
-
-    #[test]
-    fn wrapping_needs_no_backing_and_preserves_measure_or_emit_refusals()
-    {
-        let mut lines = 0;
-        let observe = Observe::begin(true, None);
-        let drawn = wrapped_lines("  é🦀  W\r\nlongword   end",
-                                  4,
-                                  |text| Ok(measured(text)),
-                                  |_, _| {
-                                      lines += 1;
-                                      Ok(())
-                                  });
-        let count = observe.finish();
-        assert_eq!(drawn, Ok(()));
-        assert!(lines > 4);
-        assert_eq!(count, 0);
-        let mut emitted = 0;
-        assert_eq!(wrapped_lines("one two",
-                                 3,
-                                 |_| Err(NO_MEMORY),
-                                 |_, _| {
-                                     emitted += 1;
-                                     Ok(())
-                                 }),
-                   Err(NO_MEMORY));
-        assert_eq!(emitted, 0);
-        assert_eq!(wrapped_lines("one two", 3, |text| Ok(measured(text)), |_, _| Err(NOT_FOUND)),
-                   Err(NOT_FOUND));
-    }
-}

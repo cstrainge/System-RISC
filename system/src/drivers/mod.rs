@@ -4,7 +4,7 @@ pub mod file_sources;
 pub mod jobs;
 pub mod leases;
 pub(crate) mod registry;
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 pub(crate) mod synchronous;
 pub use registry::*;
 #[cfg(systemrisc)]

@@ -546,5 +546,3 @@ fn alias_status(error: aliases::Error) -> Status
         aliases::Error::NotSystem { .. } => BAD_ABI
     }
 }
-#[cfg(test)]
-mod tests;

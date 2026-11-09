@@ -168,14 +168,6 @@ impl Manager
         Ok((provider, handle))
     }
 
-    #[cfg(test)]
-    pub(in crate::toolbox::files) fn reserve_provider_file(&mut self, owner: u64, volume: u32,
-                                                           node: u32, kind: u32)
-                                                           -> Result<(u64, u32), Status>
-    {
-        let authority = self.handles.fixture_owner(owner);
-        self.reserve_provider_file_for(owner, &authority, volume, node, kind)
-    }
 
     pub(in crate::toolbox::files) fn publish_provider_file(&mut self, id: u32, bytes: &[u8])
                                                            -> Result<u64, Status>

@@ -6,11 +6,11 @@ pub(crate) mod definitions;
 pub(crate) mod loader;
 
 pub mod manager;
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 pub(crate) mod file;
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 pub(crate) mod native;
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 pub(crate) mod inspect;

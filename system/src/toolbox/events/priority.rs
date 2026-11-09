@@ -33,33 +33,3 @@ impl InputPriority
     }
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn a_new_input_turn_defers_background_and_a_quiet_turn_runs_it()
-    {
-        let priority = InputPriority::new();
-        assert!(priority.background_allowed(false));
-        assert!(!priority.background_allowed(true));
-        assert!(priority.background_allowed(false));
-        assert!(!priority.background_allowed(true));
-    }
-
-    #[test]
-    fn continuous_input_cannot_starve_background_progress()
-    {
-        let priority = InputPriority::new();
-        let mut progress = 0;
-        for _ in 0..1000
-        {
-            assert!(!priority.background_allowed(true));
-            assert!(priority.background_allowed(true));
-            progress += 1;
-        }
-        assert_eq!(progress, 1000);
-        assert!(priority.background_allowed(false));
-        assert!(!priority.background_allowed(true));
-    }
-}

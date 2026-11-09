@@ -95,7 +95,7 @@ pub fn family(manager: Manager<'_>, scope: mac_abi::resources::Scope, id: i16)
     }).map_err(status)
 }
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 pub(crate) fn load_file(files: &mut crate::toolbox::files::Manager, manager: Manager<'_>,
                         call: &FileIconCall)
                         -> Result<(), Status>
@@ -217,7 +217,7 @@ impl Drawing
                   port: Port::default() })
     }
 
-    #[cfg(any(systemrisc, feature = "test-support"))]
+    #[cfg(systemrisc)]
     pub(crate) fn file(files: &mut crate::toolbox::files::Manager, manager: Manager<'_>,
                        call: &FileIconCall)
                        -> Result<Self, Status>

@@ -12,9 +12,7 @@ impl Core
                owned_bytes:          0,
                notices:              VecDeque::new(),
                quarantined:          None,
-               unreported:           0,
-               #[cfg(test)]
-               fixture:              None }
+               unreported:           0 }
     }
 
     pub fn submit(&mut self, subject: &super::subjects::Subject, owner: Owner, work: Work)

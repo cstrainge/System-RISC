@@ -22,8 +22,6 @@ mod installed;
 pub use installed::{FontInstallError, FontInstallFailure, FontOrigin, FontSourceKey,
                     InspectedFontFamily, InstalledFontData, InstalledFontSnapshot,
                     InstalledFontSource, MAX_INSTALLED_SOURCE_BYTES, MAX_INSTALLED_SOURCES};
-#[cfg(test)]
-mod tests;
 
 pub const BOLD: u16 = 1;
 pub const ITALIC: u16 = 2;

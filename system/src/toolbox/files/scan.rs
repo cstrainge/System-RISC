@@ -2,10 +2,10 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use mac_abi::{files::*, *};
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 use mac_filesystem::scan::{Cursor, ScanError, Step};
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 use super::{Manager, metadata};
 static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
 pub(super) fn next_revision() -> Result<u64, Status>
@@ -15,7 +15,7 @@ pub(super) fn next_revision() -> Result<u64, Status>
                  })
                  .map_err(|_| NO_MEMORY)
 }
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 impl Manager
 {
     pub(super) fn scan_request(&mut self, call: &mut FileScanCall) -> Result<(), Status>

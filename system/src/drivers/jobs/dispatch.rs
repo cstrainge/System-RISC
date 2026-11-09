@@ -137,11 +137,6 @@ impl Dispatch<'_>
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(super) fn ticket(&self) -> Option<u64>
-    {
-        self.node.as_ref()?.work.as_ref().map(|work| work.ticket)
-    }
 }
 impl Drop for Dispatch<'_>
 {

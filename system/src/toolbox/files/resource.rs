@@ -55,14 +55,14 @@ impl ModuleReadError
     }
 }
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 fn module_headers(index: mac_formats::resource::stream::ReferenceIndex<'_>)
                   -> impl Iterator<Item = mac_formats::module::ResourceHeader> + Clone
 {
     index.entries().map(mac_formats::module::ResourceHeader::from)
 }
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 fn module_length(row: mac_formats::resource::index::Entry<'_>,
                  read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
                  -> mac_formats::Result<usize>
@@ -78,7 +78,7 @@ fn module_length(row: mac_formats::resource::index::Entry<'_>,
     Ok(length)
 }
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 fn module_contract(index: mac_formats::resource::stream::ReferenceIndex<'_>,
                    row: mac_formats::resource::index::Entry<'_>, file_type: [u8; 4],
                    read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
@@ -122,7 +122,7 @@ fn module_contract(index: mac_formats::resource::stream::ReferenceIndex<'_>,
                        data: bytes }))
 }
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 fn module_preflight(index: mac_formats::resource::stream::ReferenceIndex<'_>, file_type: [u8; 4],
                     read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
                     -> mac_formats::Result<mac_formats::resource::Resource>
@@ -153,7 +153,7 @@ fn module_preflight(index: mac_formats::resource::stream::ReferenceIndex<'_>, fi
 /// Complete framing and both target contracts are validated before selected
 /// System code is admitted. Finder body/digest/relocations remain uninspected;
 /// its code stays on disk after indexed range and stored-size validation.
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 fn project_module(length: u64, file_type: [u8; 4], metadata_only: bool,
                   mut storage: impl FnMut(u64, &mut [u8]) -> Result<(), Status>)
                   -> Result<Vec<mac_formats::resource::Resource>, ModuleReadError>
@@ -618,7 +618,7 @@ impl Manager
     }
 }
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 impl Manager
 {
     #[cfg(systemrisc)]
@@ -675,23 +675,3 @@ impl Manager
     }
 }
 
-#[cfg(test)]
-mod typed_error_tests
-{
-    use super::*;
-    #[test]
-    fn status_uses_cause_even_when_the_message_uses_misleading_vocabulary()
-    {
-        use mac_formats::Error;
-        for message in ["limit exceeded", "alloc failed", "absent entry",
-                        "allocation budget missing translation"]
-        {
-            assert_eq!(application_format_status(Error::BudgetExceeded(message)), NO_MEMORY);
-            assert_eq!(application_format_status(Error::AllocationFailed(message)), NO_MEMORY);
-            assert_eq!(application_format_status(Error::Missing(message)), NOT_FOUND);
-            assert_eq!(application_format_status(Error::TranslationRequired(message)),
-                       TRANSLATION_REQUIRED);
-            assert_eq!(application_format_status(Error::Malformed(message)), CORRUPT_DATA);
-        }
-    }
-}

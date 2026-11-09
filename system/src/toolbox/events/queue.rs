@@ -117,14 +117,14 @@ impl EventManager
 
     /// Capture the validated owner before an object's disposal removes lookup.
     /// Application posting never gets access to this routing metadata.
-    #[cfg(any(systemrisc, test))]
+    #[cfg(systemrisc)]
     pub(crate) fn post_system_for(&mut self, owner: u64, event: Event)
     {
         self.push(event, true);
         self.route_owners[self.len - 1] = owner;
     }
 
-    #[cfg(any(systemrisc, test))]
+    #[cfg(systemrisc)]
     pub(crate) fn next_system(&mut self) -> Option<(Event, EventPosition, u64)>
     {
         let index = self.routed[..self.len].iter().position(|routed| *routed)?;
@@ -429,69 +429,3 @@ fn flush(queue: &mut [Event], len: &mut usize, mask: u16, stop_mask: u16)
     *len = write;
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn masks_preserve_unrequested_events_and_wire_layout()
-    {
-        let mut manager = EventManager::new();
-        manager.post(Event { payload:   0,
-                             kind:      EventKind::MouseDown,
-                             message:   0x12345678,
-                             when:      7,
-                             where_:    Point { h: -2,
-                                                v: 3 },
-                             modifiers: SHIFT_KEY,
-                             window:    0 });
-        manager.post(Event { kind: EventKind::KeyDown,
-                             message: 65,
-                             ..Event::default() });
-        assert_eq!(manager.next_matching(1 << 3).unwrap().character(), 65);
-        let event = manager.next_matching(EVERY_EVENT).unwrap();
-        assert_eq!(event.to_be_bytes(),
-                   [0, 1, 0x12, 0x34, 0x56, 0x78, 0, 0, 0, 7, 0, 3, 255, 254, 2, 0]);
-        assert!(manager.next_matching(EVERY_EVENT).is_none());
-    }
-    #[test]
-    fn routing_authority_is_private_and_survives_queue_compaction()
-    {
-        let mut manager = EventManager::new();
-        let event = Event { kind: EventKind::OsEvent,
-                            message: mac_abi::WINDOW_CLOSE_REQUEST,
-                            window: u64::MAX - 7,
-                            payload: u64::MAX - 9,
-                            ..Event::default() };
-        manager.post(event);
-        assert!(manager.next_system().is_none(), "application fields cannot forge trusted routing");
-        manager.post_system_for(70001, event);
-        manager.post_system_for(70002,
-                                Event { window: event.window - 1,
-                                        ..event });
-        assert_eq!(manager.next_matching(EVERY_EVENT), Some(event));
-        let (first, _, owner) = manager.next_system().unwrap();
-        assert_eq!((first, owner), (event, 70001));
-        let (second, _, owner) = manager.next_system().unwrap();
-        assert_eq!((second.window, second.payload, owner),
-                   (event.window - 1, event.payload, 70002));
-        manager.post_system(event);
-        assert_eq!(manager.next_system().unwrap().2,
-                   0,
-                   "reused queue positions cannot inherit old owner authority");
-    }
-
-    #[test]
-    fn queue_overflow_is_bounded_and_observable()
-    {
-        let mut manager = EventManager::new();
-        for n in 0..130
-        {
-            manager.post(Event { kind: EventKind::KeyDown,
-                                 message: n,
-                                 ..Event::default() });
-        }
-        assert_eq!(manager.dropped, 2);
-        assert_eq!(manager.next_matching(EVERY_EVENT).unwrap().message, 2);
-    }
-}

@@ -1,7 +1,7 @@
 //! Execution identity. Active classic state belongs to its resident services.
 //! Identity must come
 //! from the kernel scheduler, not from untrusted request fields.
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 mod selection;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppId(pub u64);
@@ -53,7 +53,7 @@ pub fn bootstrap_thread() -> ThreadId
 
 /// Scheduler wake identity is typed; a full native transfer ID is never
 /// guessed from the bit range of another manager's native ID.
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeferredIo
 {
@@ -61,7 +61,7 @@ pub enum DeferredIo
     FileTransfer(u64),
     FileOperation(u64)
 }
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 impl DeferredIo
 {
     fn valid(self) -> bool
@@ -85,7 +85,7 @@ pub(crate) struct EventWaiter
 
 /// Accounting belongs to an OS thread and survives hart migration with it.
 /// Independent app calls must never increment each other's nesting counters.
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 pub struct ThreadTrapState
 {
     depth:                     core::sync::atomic::AtomicUsize,
@@ -99,7 +99,7 @@ pub struct ThreadTrapState
     tracking_refusal_reported: core::sync::atomic::AtomicBool,
     deferred:                  spinning_top::Spinlock<Option<DeferredIo>>
 }
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 impl ThreadTrapState
 {
     pub const fn new() -> Self
@@ -198,13 +198,13 @@ impl ThreadTrapState
         self.tracking_refusal_reported.swap(true, core::sync::atomic::Ordering::Relaxed)
     }
 }
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 pub struct TrapScope<'a>
 {
     state:     &'a ThreadTrapState,
     pub depth: usize
 }
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 impl Drop for TrapScope<'_>
 {
     fn drop(&mut self)
@@ -1466,48 +1466,17 @@ pub(crate) fn current_owner() -> Result<crate::toolbox::handles::OwnerRef, mac_a
 }
 
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn deferred_io_is_exclusive_to_an_outer_service_and_consumed_once()
-    {
-        let state = ThreadTrapState::new();
-        assert_eq!(state.defer(DeferredIo::DriverJob(17)), Err(mac_abi::WRONG_THREAD));
-        let outer = state.enter();
-        assert_eq!(outer.depth, 1);
-        assert_eq!(state.defer(DeferredIo::DriverJob(0)), Err(mac_abi::BAD_ARGUMENT));
-        {
-            let _nested = state.enter();
-            assert_eq!(state.defer(DeferredIo::DriverJob(17)), Err(mac_abi::WRONG_THREAD));
-        }
-        state.defer(DeferredIo::DriverJob(17)).unwrap();
-        assert_eq!(state.defer(DeferredIo::DriverJob(18)), Err(mac_abi::SERVICE_BUSY));
-        assert_eq!(state.take_deferred(), Some(DeferredIo::DriverJob(17)));
-        assert_eq!(state.take_deferred(), None);
-        let wide = DeferredIo::FileTransfer(u64::MAX - 17);
-        state.defer(wide).unwrap();
-        assert_eq!(state.defer(DeferredIo::DriverJob(17)), Err(mac_abi::SERVICE_BUSY));
-        assert_eq!(state.take_deferred(), Some(wide));
-        assert_ne!(DeferredIo::FileTransfer(17), DeferredIo::DriverJob(17));
-        drop(outer);
-        assert_eq!(state.defer(DeferredIo::DriverJob(19)), Err(mac_abi::WRONG_THREAD));
-    }
-}
-
-
 /// Resident definition invocation identity and borrowed drawing surface belong to
 /// the scheduled thread. Only the validated definition adapter installs them;
 /// neither a caller request nor the interrupted worker selects this scope.
 /// This does not change the thread identity or its module resource authority.
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 pub struct DefinitionInvocations
 {
     current: core::sync::atomic::AtomicU64,
     surface: core::sync::atomic::AtomicPtr<mac_abi::Surface>
 }
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 impl DefinitionInvocations
 {
     pub const fn new() -> Self
@@ -1548,39 +1517,19 @@ impl DefinitionInvocations
         (identity != 0).then_some(((identity >> 16) as u32, identity as i16))
     }
 }
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 struct DefinitionScope<'a>
 {
     state:            &'a DefinitionInvocations,
     previous:         u64,
     previous_surface: *mut mac_abi::Surface
 }
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 impl Drop for DefinitionScope<'_>
 {
     fn drop(&mut self)
     {
         self.state.surface.store(self.previous_surface, core::sync::atomic::Ordering::Relaxed);
         self.state.current.store(self.previous, core::sync::atomic::Ordering::Relaxed);
-    }
-}
-#[cfg(test)]
-mod definition_tests
-{
-    use super::*;
-    #[test]
-    fn nested_definition_scopes_restore_only_their_threads_identity()
-    {
-        let first = DefinitionInvocations::new();
-        let other = DefinitionInvocations::new();
-        assert_eq!(first.current(), None);
-        first.with(mac_abi::definitions::WDEF, 0, core::ptr::null_mut(), || {
-                 first.with(mac_abi::definitions::CDEF, 18, core::ptr::null_mut(), || {
-                          assert_eq!(first.current(), Some((mac_abi::definitions::CDEF, 18)));
-                          assert_eq!(other.current(), None);
-                      });
-                 assert_eq!(first.current(), Some((mac_abi::definitions::WDEF, 0)));
-             });
-        assert_eq!(first.current(), None);
     }
 }

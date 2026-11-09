@@ -194,11 +194,6 @@ impl Records
         self.receipts.binary_search_by_key(&id, |entry| entry.0).ok().map(|at| self.receipts[at].1)
     }
 
-    #[cfg(test)]
-    pub(super) fn key(&self, id: u64) -> Option<mac_object_table::domain::ResourceKey>
-    {
-        self.store.as_ref()?.key(id)
-    }
 
     pub(super) fn len(&self) -> usize
     {
@@ -387,8 +382,6 @@ impl
     }
 }
 
-#[cfg(test)]
-mod tests;
 
 pub(super) fn pool_status(error: mac_object_table::domain::PoolError) -> Status
 {

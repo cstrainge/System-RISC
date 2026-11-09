@@ -214,43 +214,7 @@ impl Watch
 }
 impl Manager
 {
-    #[cfg(all(feature = "test-support", not(systemrisc)))]
-    pub(crate) fn begin_fixture_probe(&mut self, owner: &OwnerRef, id: u32)
-                                      -> Result<ProbeLease, Status>
-    {
-        if self.watches.owner(id).ok_or(NOT_FOUND)? != owner.owner().incarnation()
-        {
-            return Err(ACCESS_DENIED);
-        }
-        let watch = self.watches.get_mut(id).ok_or(NOT_FOUND)?;
-        if watch.pending()
-        {
-            return Err(SERVICE_BUSY);
-        }
-        if watch.probe.is_none()
-        {
-            watch.probe =
-                Some(Arc::try_new(ProbeState { owner:  owner.clone(),
-                                               active: AtomicBool::new(false),
-                                               allocation: crate::allocation::capture_target()? }).map_err(|_| {
-                                                                                    NO_MEMORY
-                                                                                })?);
-        }
-        let state = watch.probe.as_ref().unwrap().clone();
-        state.active.store(true, Ordering::Release);
-        Ok(ProbeLease { watch: id,
-                        volume: watch.volume,
-                        directory: watch.directory,
-                        state })
-    }
 
-    #[cfg(all(feature = "test-support", not(systemrisc)))]
-    pub(crate) fn finish_fixture_probe(&mut self, lease: &ProbeLease) -> Result<(), Status>
-    {
-        let _ = self.watches.validate_lease(lease)?;
-        self.watches.acknowledge(lease);
-        Ok(())
-    }
 
     pub(crate) fn prepare_watches(&mut self, kinds: (KindLease, KindLease)) -> Result<(), Status>
     {
@@ -400,7 +364,7 @@ impl Manager
 
     pub(super) fn notify_directory_at(&mut self, volume: u32, directory: u32, revision: u64)
     {
-        #[cfg(any(systemrisc, feature = "test-support"))]
+        #[cfg(systemrisc)]
         self.file_icons.invalidate(volume, directory);
         let held = self.transfer_holds_notices(volume);
         for watch in self.watches.values_mut()
@@ -431,7 +395,7 @@ impl Manager
         {
             return;
         };
-        #[cfg(any(systemrisc, feature = "test-support"))]
+        #[cfg(systemrisc)]
         for &parent in &mark.parents
         {
             self.file_icons.invalidate(volume, parent);

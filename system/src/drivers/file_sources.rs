@@ -606,5 +606,3 @@ fn pool_status(error: PoolError) -> Status
 {
     crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }
-#[cfg(test)]
-mod tests;

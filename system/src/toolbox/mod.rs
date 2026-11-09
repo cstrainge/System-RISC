@@ -31,13 +31,6 @@ pub(crate) mod pipes;
 pub(crate) mod timers;
 pub mod standard_file;
 
-#[cfg(all(test, feature = "test-support", not(systemrisc)))]
-#[path = "processes/menu.rs"]
-pub(crate) mod test_application_menu;
-
-#[cfg(all(test, feature = "test-support", not(systemrisc)))]
-#[path = "processes/presentation.rs"]
-pub(crate) mod test_process_presentation;
 
 #[cfg(systemrisc)]
 pub(crate) mod application_heap;

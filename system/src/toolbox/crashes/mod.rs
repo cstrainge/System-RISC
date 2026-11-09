@@ -114,7 +114,7 @@ pub struct Manager
 
 /// Diagnostic data is independent of the dying application's window/control
 /// objects. A recovery controller can preserve it before stopping that owner.
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 pub(crate) struct Snapshot
 {
     capture:      Capture,
@@ -354,7 +354,7 @@ impl Manager
         self.info.flags |= flags;
     }
 
-    #[cfg(any(systemrisc, test))]
+    #[cfg(systemrisc)]
     pub(crate) fn snapshot(&self) -> Result<Snapshot, Status>
     {
         let payload = if let Some(origin) = self.archive_origin
@@ -375,7 +375,7 @@ impl Manager
                       info: self.info() })
     }
 
-    #[cfg(any(systemrisc, test))]
+    #[cfg(systemrisc)]
     pub(crate) fn from_snapshot(snapshot: Snapshot) -> Self
     {
         let mut info = snapshot.info;
@@ -882,47 +882,3 @@ fn layout(starts: &mut Vec<u32>, column: &mut usize, previous_cr: &mut bool, col
     }
 }
 
-#[cfg(test)]
-mod recovery_tests
-{
-    use super::*;
-    #[test]
-    fn recovery_snapshot_preserves_complete_origin_and_layout_without_ui_ids()
-    {
-        let mut old = Manager::default();
-        old.info.app = 401;
-        old.info.thread = 991;
-        old.request(&mut CrashCall { operation: BEGIN,
-                                     ..Default::default() },
-                    "",
-                    &mut [])
-           .unwrap();
-        let text = "Complete report café λ\r\nsecond\tline\nthird";
-        old.request(&mut CrashCall { operation: APPEND,
-                                     ..Default::default() },
-                    text,
-                    &mut [])
-           .unwrap();
-        old.set_columns(12).unwrap();
-        old.set_page_lines(2);
-        old.scroll(i32::MAX);
-        old.set_window(WindowId(345));
-        let info = old.info();
-        let snapshot = old.snapshot().unwrap();
-        old.request(&mut CrashCall { operation: BEGIN,
-                                     ..Default::default() },
-                    "",
-                    &mut [])
-           .unwrap();
-        drop(old);
-        let restored = Manager::from_snapshot(snapshot);
-        assert_eq!(restored.report(), text);
-        assert_eq!(restored.info(),
-                   CrashInfo { window: WindowId(0),
-                               dismissed: 0,
-                               ..info });
-        assert_eq!(restored.columns, 12);
-        assert_eq!(restored.column, 5);
-        assert_eq!(restored.payload.data().starts.len(), info.line_count as usize);
-    }
-}

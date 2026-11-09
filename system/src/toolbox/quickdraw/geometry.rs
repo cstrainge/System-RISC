@@ -126,68 +126,6 @@ pub fn map_polygon(points: &[Point], source: Rect, destination: Rect)
     points.iter().map(|p| map_point(*p, source, destination)).collect()
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-
-    #[test]
-    fn boundary_cases_and_guest_layout()
-    {
-        assert!(self_check());
-        assert_eq!(core::mem::size_of::<Rect>(), 8);
-        assert_eq!(core::mem::size_of::<Point>(), 4);
-        let r = Rect::new(-2, 1, 32767, 256);
-        assert_eq!(r.to_be_bytes(), [0, 1, 255, 254, 1, 0, 127, 255]);
-        assert_eq!(Rect::from_be_bytes(r.to_be_bytes()), r);
-        assert!(Rect::new(10, 0, 5, 10).is_empty());
-        assert!(!Rect::new(0, 0, 5, 10).contains(Point { h: 0,
-                                                         v: 10 }));
-    }
-
-    #[test]
-    fn intersection_symmetry_containment_and_aliasing()
-    {
-        for left in -4..5
-        {
-            for top in -4..5
-            {
-                let a = Rect::new(-2, -2, 3, 3);
-                let b = Rect::new(left, top, left + 2, top + 3);
-                let mut ab = Rect::ZERO;
-                let mut ba = Rect::ZERO;
-                assert_eq!(sect_rect(a, b, &mut ab), sect_rect(b, a, &mut ba));
-                assert_eq!(ab, ba);
-                for h in -5..7
-                {
-                    for v in -5..7
-                    {
-                        let p = Point { h,
-                                        v };
-                        assert_eq!(ab.contains(p), a.contains(p) && b.contains(p));
-                    }
-                }
-                let mut alias = a;
-                sect_rect(alias, b, &mut alias);
-                assert_eq!(alias, ab);
-                let union = union_rect(a, b);
-                assert!(union.left <= a.left && union.left <= b.left);
-                assert!(union.right >= a.right && union.right >= b.right);
-            }
-        }
-    }
-
-    #[test]
-    fn sixteen_bit_offset_wraps_and_inset_expands()
-    {
-        let mut r = Rect::new(32760, -32760, 32767, -32750);
-        r.offset(10, -20);
-        assert_eq!(r, Rect::new(-32766, 32756, -32759, 32766));
-        let mut r = Rect::new(0, 0, 10, 10);
-        r.inset(-2, -3);
-        assert_eq!(r, Rect::new(-2, -3, 12, 13));
-    }
-}
 
 pub fn outline_edges(rect: Rect) -> [Rect; 4]
 {

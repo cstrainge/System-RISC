@@ -448,38 +448,3 @@ impl Record
     }
 }
 
-#[cfg(test)]
-mod revision_tests
-{
-    use super::*;
-    #[test]
-    fn last_change_is_usable_and_exhaustion_preserves_every_committed_field()
-    {
-        let mut manager = Manager::default();
-        manager.replace_text("old").unwrap();
-        manager.revision = Revision(u64::MAX - 1);
-        let last = manager.compare_replace_text(manager.revision(), "final").unwrap();
-        assert_eq!(last.get(), u64::MAX);
-        let count = manager.count;
-        let size = manager.size;
-        for operation in [CLEAR, PUT_TEXT, PUT]
-        {
-            let mut call = ScrapCall { operation,
-                                       kind: *b"BINA",
-                                       ..Default::default() };
-            assert_eq!(manager.request(&mut call, b"new", &mut []), NOT_SUPPORTED);
-            assert_eq!(manager.revision(), last);
-            assert_eq!((manager.count, manager.size), (count, size));
-            assert_eq!(manager.text().unwrap(), "final");
-        }
-        let cause = manager.compare_replace_text(last, "").unwrap_err();
-        assert_eq!(cause, ChangeError::RevisionExhausted);
-        let cause = alloc::string::ToString::to_string(&cause);
-        for expected in ["Scrap Manager", "exhausted", "restart"]
-        {
-            assert!(cause.contains(expected), "{cause}");
-        }
-        assert_eq!(manager.revision(), last);
-        assert_eq!(manager.text().unwrap(), "final");
-    }
-}

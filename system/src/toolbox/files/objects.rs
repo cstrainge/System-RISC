@@ -81,9 +81,7 @@ pub(super) struct Objects<T: Payload>
 {
     objects:            Option<T::Storage>,
     retiring:           Vec<Retiring<T>>,
-    completions:        Vec<(Id<T>, Key<T>)>,
-    #[cfg(test)]
-    pub(super) fixture: Option<(crate::toolbox::handles::Registry<Manager>, Vec<(u64, OwnerRef)>)>
+    completions:        Vec<(Id<T>, Key<T>)>
 }
 impl<T: Payload> Objects<T>
 {
@@ -91,9 +89,7 @@ impl<T: Payload> Objects<T>
     {
         Self { objects:              None,
                retiring:             Vec::new(),
-               completions:          Vec::new(),
-               #[cfg(test)]
-               fixture:              None }
+               completions:          Vec::new() }
     }
 
     pub(crate) fn prepare(&mut self, kinds: (KindLease, KindLease)) -> Result<(), Status>

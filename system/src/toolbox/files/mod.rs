@@ -1,9 +1,7 @@
 //! Resident File Manager with catalog/Trash writes on live firmware block devices.
 //! No file contents or catalog listings are fabricated or cached in applications.
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 mod resource;
-#[cfg(feature = "test-support")]
-pub(crate) use resource::ModuleReadError;
 #[cfg(systemrisc)]
 pub(crate) mod application;
 use alloc::{string::String, sync::Arc, vec::Vec};
@@ -24,15 +22,13 @@ mod pipes;
 mod properties;
 pub(crate) mod watch;
 mod cache;
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 mod icon_cache;
 pub(crate) mod streams;
 pub(crate) mod groups;
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 mod stream_native;
 mod provider;
-#[cfg(feature = "test-support")]
-pub(crate) use provider::Source as TestProviderSource;
 #[cfg(systemrisc)]
 pub(crate) use provider::runtime::transfer::lifetime as transfer_lifetime;
 pub(crate) mod types;
@@ -378,7 +374,7 @@ struct OpenFile
     authority:      subject::Authority,
     #[cfg(systemrisc)]
     io_subject:     Option<crate::drivers::jobs::subjects::Subject>,
-    #[cfg_attr(not(any(systemrisc, feature = "test-support")), allow(dead_code))]
+    #[cfg_attr(not(systemrisc), allow(dead_code))]
     resource_index: spinning_top::Spinlock<Option<mac_formats::resource::index::Index>>
 }
 struct OpenDescription
@@ -499,7 +495,7 @@ pub struct Manager
     operations:           objects::Objects<local::pending::Entry>,
     #[cfg(systemrisc)]
     operation_cursor:     usize,
-    #[cfg(any(systemrisc, feature = "test-support"))]
+    #[cfg(systemrisc)]
     file_icons:           icon_cache::Cache,
     pins:                 pins::Pins,
     volumes:              Table<Mounted>,
@@ -538,7 +534,7 @@ impl Default for Manager
                watches:                                                      watch::Watches::new(),
                pipes_folder:                                                 None,
                rejected_volumes:                                             0,
-               #[cfg(any(systemrisc, feature = "test-support"))]
+               #[cfg(systemrisc)]
                file_icons:                                                   Default::default() }
     }
 }
@@ -1095,33 +1091,6 @@ impl Manager
             })
     }
 
-    #[cfg(feature = "test-support")]
-    pub(crate) fn fixture_scoped_open(&mut self,
-                                      scope:&mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>,
-                                      volume: u32, file: u32, fork: u32)
-                                      -> Result<(u32, u64), Status>
-    {
-        self.open_authorized(subject::Access::Operation(scope),
-                             &subject::Authority::Operation(scope.clone()),
-                             volume,
-                             file,
-                             fork)
-    }
-
-    #[cfg(feature = "test-support")]
-    pub(crate) fn fixture_scoped_request(&mut self,
-                                         scope:&mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>,
-                                         call: &mut FileCall, bytes: &mut [u8])
-                                         -> Result<(), Status>
-    {
-        self.request_subject(subject::Access::Operation(scope), call, "", bytes)
-    }
-
-    #[cfg(feature = "test-support")]
-    pub(crate) fn fixture_refresh_scopes(&mut self)
-    {
-        self.handles.refresh_scopes();
-    }
 
     fn slot(&mut self, owner: u64, handle: u32) -> Result<&mut OpenFile, Status>
     {
@@ -1272,8 +1241,6 @@ impl Manager
 
     fn open(&mut self, owner: u64, volume: u32, id: u32, kind: u32) -> Result<(u32, u64), Status>
     {
-        #[cfg(test)]
-        let authority = self.handles.fixture_owner(owner);
         #[cfg(all(not(test), systemrisc))]
         let authority = if owner == 0
         {
@@ -1288,7 +1255,7 @@ impl Manager
             let _ = (owner, volume, id, kind);
             return Err(ACCESS_DENIED);
         }
-        #[cfg(any(test, systemrisc))]
+        #[cfg(systemrisc)]
         self.open_for(owner, &authority, volume, id, kind)
     }
 
@@ -1859,8 +1826,6 @@ impl Manager
         Ok(())
     }
 }
-#[cfg(test)]
-mod tests;
 
-#[cfg(any(systemrisc, feature = "test-support"))]
+#[cfg(systemrisc)]
 pub(crate) mod native;

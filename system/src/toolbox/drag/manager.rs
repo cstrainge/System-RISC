@@ -165,8 +165,6 @@ pub struct Manager
     active:                Option<u32>,
     pointer:               Option<PointerPress>,
     notices:               VecDeque<Notice>,
-    #[cfg(all(feature = "test-support", not(systemrisc)))]
-    refuse_effect_storage: bool,
     highlight:             Option<(u64, Rect)>,
     highlight_changed:     bool
 }
@@ -185,8 +183,6 @@ impl Manager
                   active: None,
                   pointer: None,
                   notices,
-                  #[cfg(all(feature = "test-support", not(systemrisc)))]
-                  refuse_effect_storage: false,
                   highlight: None,
                   highlight_changed: false })
     }
@@ -263,11 +259,6 @@ impl Manager
     /// through enqueue; no effect or cleanup capability is silently discarded.
     fn reserve_effects_for(&mut self, slots: usize) -> Result<(), Status>
     {
-        #[cfg(all(feature = "test-support", not(systemrisc)))]
-        if self.refuse_effect_storage
-        {
-            return Err(NO_MEMORY);
-        }
         self.notices.try_reserve(slots).map_err(|_| NO_MEMORY)
     }
 
@@ -321,11 +312,6 @@ impl Manager
         self.notices.push_back(notice);
     }
 
-    #[cfg(all(feature = "test-support", not(systemrisc)))]
-    pub(crate) fn refuse_effect_storage(&mut self, refuse: bool)
-    {
-        self.refuse_effect_storage = refuse;
-    }
 
     #[cfg(systemrisc)]
     pub(crate) fn prepare_window_close(&mut self, window: u64) -> Result<(), Status>

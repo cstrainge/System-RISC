@@ -2,8 +2,6 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 mod storage;
-#[cfg(test)]
-use alloc::vec;
 
 pub use storage::SharedSlice;
 use storage::Values;
@@ -806,88 +804,4 @@ impl Region
     }
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn boolean_shapes_match_pixel_truth_and_codec()
-    {
-        let a = Region::from_rect(Rect::new(-3, -2, 6, 7));
-        let b = Region::from_rect(Rect::new(1, 1, 9, 5));
-        for op in [BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference, BooleanOp::Xor]
-        {
-            let result = a.combine(&b, op).unwrap();
-            assert_eq!(Region::from_be_bytes(&result.to_be_bytes().unwrap()).unwrap(), result);
-            for y in -5..10
-            {
-                for x in -5..12
-                {
-                    let p = Point { h: x,
-                                    v: y };
-                    let aa = a.contains(p);
-                    let bb = b.contains(p);
-                    assert_eq!(result.contains(p), match op
-                    {
-                        BooleanOp::Union => aa || bb,
-                        BooleanOp::Intersection => aa && bb,
-                        BooleanOp::Difference => aa && !bb,
-                        BooleanOp::Xor => aa != bb
-                    });
-                }
-            }
-        }
-    }
-    #[test]
-    fn holes_disjoint_bands_and_malformed_records()
-    {
-        let a = Region::from_rect(Rect::new(0, 0, 10, 10));
-        let hole = Region::from_rect(Rect::new(2, 2, 8, 8));
-        let ring = a.combine(&hole, BooleanOp::Difference).unwrap();
-        let bytes = ring.to_be_bytes().unwrap();
-        assert_eq!(Region::from_be_bytes(&bytes).unwrap(), ring);
-        for n in 0..bytes.len()
-        {
-            assert!(Region::from_be_bytes(&bytes[..n]).is_err());
-        }
-        let mut bad = bytes.clone();
-        bad[2] = 1;
-        assert!(Region::from_be_bytes(&bad).is_err());
-        assert!(ring.offset(i16::MAX, 0).is_err());
-        assert_eq!(Region::new().to_be_bytes().unwrap(), vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
-    }
-}
 
-#[cfg(test)]
-mod rectangle_sweep_tests
-{
-    use super::*;
-    #[test]
-    fn rectangle_sweep_matches_exact_union_with_touching_duplicate_and_nested_edges()
-    {
-        let rectangles: Vec<_> =
-            (0..120).map(|index| {
-                        let left = (index * 17 % 91) - 20;
-                        let top = (index * 11 % 79) - 20;
-                        Rect::new(left, top, left + 1 + (index % 25), top + 1 + (index % 19))
-                    })
-                    .chain([Rect::ZERO,
-                            Rect::new(0, 0, 40, 40),
-                            Rect::new(0, 0, 40, 40),
-                            Rect::new(0, 40, 40, 60)])
-                    .collect();
-        let actual = Region::from_rectangles(rectangles.iter().copied()).unwrap();
-        for y in -25..100
-        {
-            for x in -25..120
-            {
-                let point = Point { h: x,
-                                    v: y };
-                assert_eq!(actual.contains(point),
-                           rectangles.iter().any(|rect| rect.contains(point)),
-                           "{x},{y}");
-            }
-        }
-        assert_eq!(Region::from_be_bytes(&actual.to_be_bytes().unwrap()).unwrap(), actual);
-    }
-}

@@ -146,8 +146,6 @@ impl Manager
     {
         if call.operation == BEGIN_FORK_WRITE
         {
-            #[cfg(test)]
-            let authority = self.fixture_stream_owner(owner);
             #[cfg(all(not(test), systemrisc))]
             let authority = if owner == 0
             {
@@ -159,7 +157,7 @@ impl Manager
             };
             #[cfg(all(not(test), not(systemrisc)))]
             return Err(ACCESS_DENIED);
-            #[cfg(any(test, systemrisc))]
+            #[cfg(systemrisc)]
             return self.stream_request_for(owner, &authority, call, name, comment, data, output);
         }
         self.stream_request_inner(super::subject::Access::Client(owner),
@@ -453,34 +451,3 @@ impl Manager
     }
 }
 
-#[cfg(test)]
-impl Manager
-{
-    pub(super) fn fixture_stream_owner(&mut self, label: u64) -> crate::toolbox::handles::OwnerRef
-    {
-        use mac_object_table::domain::{DomainKind, OwnerIndex};
-
-        use crate::toolbox::handles::{KindCode, OwnerRef};
-        let owner = self.handles.fixture_owner(label);
-        let registry = &mut self.handles.fixture.as_mut().unwrap().0;
-        let kinds = match (registry.get(KindCode(*b"FSWR")), registry.get(KindCode(*b"FSST")))
-        {
-            (Ok(payload), Ok(storage)) => (payload, storage),
-            _ =>
-            {
-                let registrar =
-                    OwnerRef::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap();
-                (registry.register(&registrar,
-                                   lifetime::specification(false),
-                                   lifetime::ReleaseStreams)
-                         .unwrap(),
-                 registry.register(&registrar,
-                                   lifetime::specification(true),
-                                   lifetime::ReleaseStorage)
-                         .unwrap())
-            }
-        };
-        self.prepare_streams(kinds).unwrap();
-        owner
-    }
-}

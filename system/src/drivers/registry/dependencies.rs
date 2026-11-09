@@ -268,13 +268,6 @@ impl Registry
     pub(super) fn drain_module(&mut self, module: u64) -> Result<()>
     {
         let owner = self.module_ledger(module)?;
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(catalog) = self.fixture_catalog.clone()
-        {
-            return self.drain_module_with(module, &owner, move |_, key| {
-                           catalog.dispatch(key.kind())
-                       });
-        }
         #[cfg(systemrisc)]
         {
             self.drain_module_with(module, &owner, |_, key| {

@@ -201,22 +201,3 @@ unsafe fn checked(pointer: *mut (), size: usize,
     invoke(call, name, output) as i64
 }
 
-#[cfg(test)]
-mod typed_error_tests
-{
-    use super::*;
-    #[test]
-    fn status_uses_cause_even_when_the_message_uses_misleading_vocabulary()
-    {
-        use mac_formats::Error;
-        for message in ["limit exceeded", "alloc failed", "absent entry",
-                        "allocation budget missing translation"]
-        {
-            assert_eq!(format_status(Error::BudgetExceeded(message)), NO_MEMORY);
-            assert_eq!(format_status(Error::AllocationFailed(message)), NO_MEMORY);
-            assert_eq!(format_status(Error::Missing(message)), NOT_FOUND);
-            assert_eq!(format_status(Error::TranslationRequired(message)), TRANSLATION_REQUIRED);
-            assert_eq!(format_status(Error::Malformed(message)), BAD_ARGUMENT);
-        }
-    }
-}

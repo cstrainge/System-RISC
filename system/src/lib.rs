@@ -29,19 +29,5 @@ use machine::{display as platform, input as virtio_input};
 #[cfg(systemrisc)]
 use toolbox::resources::loader;
 
-#[cfg(test)]
-#[path = "../../definitions/wdef/src/main.rs"]
-pub(crate) mod test_wdef;
-
-
-#[cfg(all(feature = "test-support", not(systemrisc)))]
-#[path = "../../definitions/mdef/src/main.rs"]
-pub(crate) mod test_mdef;
-
-#[cfg(all(feature = "test-support", not(systemrisc)))]
-extern crate std;
-#[cfg(all(feature = "test-support", not(systemrisc)))]
-pub mod testing;
-
 #[cfg(systemrisc)]
 mod boot_screen;

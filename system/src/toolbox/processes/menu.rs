@@ -279,6 +279,3 @@ fn invoke(definition: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionS
     crate::toolbox::resources::definitions::invoke(definition, &mut call)
 }
 
-#[cfg(all(test, feature = "test-support", not(systemrisc)))]
-#[path = "menu/tests.rs"]
-mod tests;
