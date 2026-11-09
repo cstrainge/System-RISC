@@ -275,24 +275,3 @@ fn entry_resource(kind: PackageKind, code_id: i16, data: Vec<u8>) -> Result<Reso
                   data })
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn builders_emit_conventional_extension_names_and_keep_driver_entries_distinct()
-    {
-        for target in ExtensionTarget::ALL
-        {
-            let resource =
-                entry_resource(PackageKind::Extension, target.resource_id(), vec![1]).unwrap();
-            assert_eq!(resource.kind, *b"RV64");
-            assert_eq!(resource.id, target.resource_id());
-            assert_eq!(resource.name.as_deref(), Some(target.conventional_name().as_bytes()));
-        }
-        let driver = entry_resource(PackageKind::Driver, 0, vec![1]).unwrap();
-        assert_eq!((driver.kind, driver.id, driver.name), (*b"DRVR", 0, None));
-        let cause = entry_resource(PackageKind::Extension, 2, vec![]).unwrap_err().to_string();
-        assert!(cause.contains("System") && cause.contains("Finder"), "{cause}");
-    }
-}

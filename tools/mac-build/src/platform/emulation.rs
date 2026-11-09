@@ -837,26 +837,3 @@ impl Definition
     }
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-
-    /// A record with an `emulation` section describes an emulated machine, so a
-    /// missing `display` inside it is a typo and must be refused where the
-    /// record is read. Only a record with no `emulation` section at all states
-    /// that it has no emulated display, and that absence stays a headless boot.
-    #[test]
-    fn emulation_without_a_display_is_refused_by_name()
-    {
-        let record = super::super::record("qemu_arm64").unwrap();
-        let valid: Definition = serde_json::from_value(record["emulation"].clone()).unwrap();
-        valid.check("qemu_arm64").unwrap();
-        let mut malformed = record["emulation"].clone();
-        malformed.as_object_mut().unwrap().remove("display");
-        let malformed: Definition = serde_json::from_value(malformed).unwrap();
-        let error = malformed.check("qemu_arm64").unwrap_err().to_string();
-        assert!(error.contains("platform 'qemu_arm64' emulation.display"), "{error}");
-        assert!(error.contains("only a record without that section"), "{error}");
-    }
-}

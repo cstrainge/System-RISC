@@ -1534,7 +1534,6 @@ dependencies = [
 name = "mac-riscv-pages"
 version = "0.1.0"
 dependencies = [
- "mac-abi",
  "mac-kernel-model",
 ]
 
@@ -1590,7 +1589,6 @@ dependencies = [
  "mac-definition",
  "mac-device-interface",
  "mac-devicetree",
- "mac-driver",
  "mac-entropy-interface",
  "mac-file-source-interface",
  "mac-file-types",
@@ -1606,8 +1604,6 @@ dependencies = [
  "mac-riscv-pages",
  "mac-scheduler-interface",
  "mac-scrap-extension-interface",
- "mac-toolbox",
- "mac-traps",
  "mac-video-interface",
  "minipng",
  "miniz_oxide 0.9.1",
@@ -1617,12 +1613,7 @@ dependencies = [
  "spin",
  "spinning_top",
  "sr-control-reflow-handling",
- "toolbox-controls",
- "toolbox-files",
- "toolbox-quickdraw",
- "toolbox-resources",
  "ttf-parser",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -2822,7 +2813,6 @@ dependencies = [
  "mac-driver-alloc",
  "mac-filesystem-interface",
  "mac-hfs-b",
- "mac-object-table",
  "mac-sit",
  "mac-text",
  "spinning_top",
@@ -3348,9 +3338,6 @@ dependencies = [
  "mac-fork-file",
  "mac-hfs-b",
  "mac-host-protocol",
- "mac-object-table",
- "risc-forks",
- "risc-host",
  "spinning_top",
 ]
 

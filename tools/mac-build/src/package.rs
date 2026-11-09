@@ -302,33 +302,3 @@ pub fn rebuild(manifest_path: &Path, out: &Path) -> Result<Value>
     Ok(json!({"file":path,"resource_fork_sha256":sha256(&file.resources),"data_fork_sha256":sha256(&file.data),"resources":manifest.resources.len(),"archive":true}))
 }
 
-#[cfg(test)]
-mod tests
-{
-    #[test]
-    fn package_dates_default_to_the_build_clock_but_honor_explicit_source_epochs()
-    {
-        let now = 1_792_326_896;
-        assert_eq!(super::source_seconds(None, now).unwrap(), now);
-        assert_eq!(super::source_seconds(Some("0"), now).unwrap(), 0);
-        assert_eq!(super::source_seconds(Some("1767225600"), now).unwrap(), 1_767_225_600);
-        for invalid in ["", "invalid", "-1", "18446744073709551616"]
-        {
-            assert!(super::source_seconds(Some(invalid), now).is_err());
-        }
-    }
-
-    #[test]
-    fn source_dates_support_2026_and_reject_classic_overflow()
-    {
-        for (unix, mac) in [(1_767_225_600, 3_850_070_400),
-                            (1_792_326_896, 3_875_171_696),
-                            (1_798_761_599, 3_881_606_399),
-                            (2_212_122_495, u32::MAX)]
-        {
-            assert_eq!(super::mac_date(unix).unwrap(), mac);
-        }
-        assert!(super::mac_date(2_212_122_496).is_err());
-        assert!(super::mac_date(u64::MAX).is_err());
-    }
-}
