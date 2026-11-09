@@ -288,6 +288,25 @@ impl<'a> Files<'a>
             .try_into()
     }
 
+    /// The volume the machine booted System from.
+    ///
+    /// A caller that needs the startup volume asks for it rather than inferring
+    /// it from something on it. Inferring it from a per-volume special folder is
+    /// wrong: a volume is not required to carry a Desktop folder, and one that
+    /// does not would make the startup volume impossible to find.
+    pub fn startup_volume(self) -> Result<VolumeInfo>
+    {
+        for index in 0..self.volume_count()?
+        {
+            let volume = self.volume_at(index)?;
+            if volume.startup
+            {
+                return Ok(volume);
+            }
+        }
+        Err(Error::NotFound)
+    }
+
     /// The filesystem provider validates the container before publication.
     /// Source identity is volume/CNID; repeating a live mount reuses its volume.
     pub fn mount_file(self, volume: VolumeId, file: Cnid) -> Result<VolumeInfo>

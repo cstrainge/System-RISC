@@ -331,9 +331,8 @@ fn launch_defaults(system: &System<'_>) -> Result<&'static LaunchDefaults, Error
         return Ok(defaults);
     }
     let files = system.files();
-    let volume = files.find_folder(VolumeId(0), TypeCode::new(*b"desk"), false)?.volume;
-    let boot = files.volume(volume)?;
-    let _ = DEFAULTS.set(LaunchDefaults { volume,
+    let boot = files.startup_volume()?;
+    let _ = DEFAULTS.set(LaunchDefaults { volume: boot.id,
                                           path: format!("/Volumes/{}{CLI_FOLDER}", boot.name()) });
     DEFAULTS.get().ok_or(Error::BadAbi)
 }
@@ -423,8 +422,11 @@ impl Launcher
                 let defaults = launch_defaults(&system)?;
                 let entry = match target
                 {
-                    LaunchTarget::Shell => system.files().lookup(
-                        defaults.volume, mac_toolbox::Cnid(0), "/Applications/Utility/Cli/Shelly")?,
+                    LaunchTarget::Shell =>
+                    {
+                        system.files().lookup(defaults.volume, mac_toolbox::Cnid(0),
+                                              "/Applications/Utility/Cli/Shelly")?
+                    }
                     LaunchTarget::File(entry) => entry
                 };
                 Command::start(&system, window, entry, &defaults.path)
