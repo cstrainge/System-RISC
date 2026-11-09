@@ -11,7 +11,6 @@ event-trace = []
 display-event-debug = []
 emergency-qualification = []
 emergency-qualification-oom = ["emergency-qualification"]
-test-support = ["dep:mac-driver", "dep:mac-traps", "dep:toolbox-quickdraw"]
 
 [[bin]]
 name = "System"
@@ -58,19 +57,9 @@ skrifa = { version = "0.48.0", default-features = false, features = ["libm"] }
 [build-dependencies]
 mac-build.workspace = true
 
-[dev-dependencies]
-unicode-segmentation = "=1.13.3"
-mac-build.workspace = true
-mac-toolbox.workspace = true
-toolbox-controls = { path = "../toolbox/controls" }
-toolbox-files = { path = "../toolbox/files" }
-toolbox-resources = { path = "../toolbox/resources" }
-toolbox-quickdraw = { path = "../toolbox/quickdraw" }
-mac-traps.workspace = true
-
 # Bare metal on any architecture: both guest targets report target_os = "none",
 # while the host does not. Cargo cannot see the custom `systemrisc` cfg, so this
-# is the built-in that distinguishes a guest build from the host test build.
+# is the built-in that distinguishes one guest build from another.
 # Exactly one descriptor encoder per target. Declaring both would make the
 # aarch64 build compile and link the RISC-V crate, so a change there could break
 # a target that never uses it.
@@ -84,8 +73,3 @@ mac-aarch64-pages.workspace = true
 hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 spin = { version = "=0.12.3", default-features = false, features = ["once"] }
 linked_list_allocator = "0.10"
-
-[target.'cfg(not(target_os = "none"))'.dependencies]
-mac-driver = { path = "../crates/mac-driver", optional = true }
-mac-traps = { workspace = true, optional = true }
-toolbox-quickdraw = { path = "../toolbox/quickdraw", optional = true }
