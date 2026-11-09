@@ -379,8 +379,7 @@ pub struct Manager
     entries:                  Directory<Process>,
     documents:                documents::storage::Batches,
     document_sequence:        u64,
-    stamp:                    u64,
-    pub(crate) terminal_host: Option<mac_abi::files::CatalogInfo>
+    stamp:                    u64
 }
 impl Manager
 {
@@ -394,8 +393,7 @@ impl Manager
         Self { entries:           Directory::new(),
                documents:         documents::storage::Batches::new(),
                document_sequence: 0,
-               stamp:             0,
-               terminal_host:     None }
+               stamp:             0 }
     }
 
     pub(crate) fn ledger(&self, id: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>

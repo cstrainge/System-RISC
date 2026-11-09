@@ -118,18 +118,6 @@ pub(crate) fn read_selected(owner: u64, volume: u32, cnid: u32, selection: Selec
     }
 }
 
-pub(crate) fn installed_terminal(volume: u32) -> Result<CatalogInfo, Status>
-{
-    crate::kernel::with_files(|files| {
-        let entry = files.lookup(volume, 0, "/Applications/Utility/Terminal")?;
-        if entry.directory || entry.finder_info[..8] != *b"APPLTRML"
-        {
-            return Err(ACCESS_DENIED);
-        }
-        Ok(metadata(volume, &entry))
-    }).map_err(|error| error.status())?
-}
-
 pub(crate) fn catalog(owner: u64, volume: u32, cnid: u32) -> Result<CatalogInfo, Status>
 {
     let mut call = FileCall { operation: CATALOG,

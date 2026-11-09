@@ -1406,15 +1406,19 @@ impl Toolbox
         }
     }
 
+    /// Admit a console child into the session of the window it was launched into.
+    ///
+    /// The console host is the application that owns the window, not a
+    /// particular installed program: a command-line executable runs in the
+    /// session of whoever asked to run it, and the caller's own declarations
+    /// decide whether that executable opens a console. Naming an application
+    /// here -- recognising it by an install path and a four-character creator --
+    /// made a fixed program the only possible host, and made moving or renaming
+    /// it silently disable every console launch.
     pub(crate) fn console_session(&self, caller: u64, window: u64) -> Result<(u64, u64), Status>
     {
         let session = self.processes.get(caller)?.console_session.unwrap_or((caller, window));
-        let installed = self.processes.terminal_host.ok_or(ACCESS_DENIED)?;
-        let host = self.processes.original_catalog(session.0)?;
-        if host.volume != installed.volume
-           || host.id != installed.id
-           || host.created != installed.created
-           || window == 0
+        if window == 0
            || session.1 != window
            || !self.processes.ledger(session.0)?.accepting()
            || self.windows.window_for_owner(WindowId(window), session.0).is_none()

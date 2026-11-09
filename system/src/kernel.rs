@@ -981,12 +981,6 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
     let finder = crate::loader::read_startup_application("Finder")?;
     let original_catalog = finder.catalog;
     let mut processes = crate::toolbox::processes::Manager::new();
-    match crate::toolbox::files::application::installed_terminal(original_catalog.volume)
-    {
-        Ok(terminal) => processes.terminal_host = Some(terminal),
-        Err(NOT_FOUND) => (),
-        Err(status) => serial!("TERMINAL_HOST_UNAVAILABLE status={status}")
-    }
     let finder_id = processes.provision("Finder", original_catalog.volume, original_catalog.id)
                              .map_err(|status| {
                                  serial!("FINDER_DOMAIN_REFUSED status={status}");
