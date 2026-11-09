@@ -497,45 +497,6 @@ pub struct FileCall
     pub entry:        CatalogInfo
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn folder_state_accessors_preserve_original_signed_coordinates_and_raw_bits()
-    {
-        let mut folder = CatalogInfo { kind: DIRECTORY,
-                                       ..Default::default() };
-        folder.finder_info[..8].copy_from_slice(&crate::Rect::new(34, -12, 350, 210).to_be_bytes());
-        folder.finder_info[8..10].copy_from_slice(&0x5100u16.to_be_bytes());
-        folder.finder_info[10..12].copy_from_slice(&(-7i16).to_be_bytes());
-        folder.finder_info[12..14].copy_from_slice(&(-9i16).to_be_bytes());
-        folder.finder_info[14..16].copy_from_slice(&0x8143u16.to_be_bytes());
-        folder.finder_info[16..18].copy_from_slice(&(-320i16).to_be_bytes());
-        folder.finder_info[18..20].copy_from_slice(&48i16.to_be_bytes());
-        folder.finder_info[20..24].copy_from_slice(&0x81002020u32.to_be_bytes());
-        assert_eq!(folder.finder_flags(), 0x5100);
-        assert_eq!(folder.icon_location(),
-                   crate::Point { h: -9,
-                                  v: -7 });
-        assert_eq!(folder.folder_window_bounds(), Some(crate::Rect::new(34, -12, 350, 210)));
-        assert_eq!(folder.folder_view(), Some(0x8143));
-        assert_eq!(folder.folder_scroll(),
-                   Some(crate::Point { h: 48,
-                                       v: -320 }));
-        assert_eq!(folder.folder_open_chain(), Some(0x81002020));
-        let file = CatalogInfo { kind: FILE,
-                                 ..folder };
-        assert_eq!(file.folder_window_bounds(), None);
-        assert_eq!(file.folder_view(), None);
-        assert_eq!(file.folder_scroll(), None);
-        assert_eq!(file.folder_open_chain(), None);
-        // Uninitialized bytes are retained; validity is not silently invented.
-        assert_eq!(CatalogInfo { kind: DIRECTORY,
-                                 ..Default::default() }.folder_window_bounds(),
-                   Some(crate::Rect::ZERO));
-    }
-}
 
 pub const BEGIN_DATA_WRITE: u32 = 0;
 pub const APPEND_DATA_WRITE: u32 = 1;

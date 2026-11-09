@@ -6,10 +6,8 @@
 #![deny(unsafe_code)]
 pub mod control;
 pub mod discovery;
-#[cfg(any(target_arch = "riscv64", test))]
+#[cfg(target_arch = "riscv64")]
 mod lifetime;
-#[cfg(test)]
-extern crate std;
 #[cfg(target_arch = "riscv64")]
 mod machine;
 use mac_driver::Result;

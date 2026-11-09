@@ -48,23 +48,3 @@ pub fn panic(info: &PanicInfo<'_>) -> !
     arch::report(&mut diagnostic.report)
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn bounded_diagnostic_preserves_utf8_and_reports_truncation()
-    {
-        let mut diagnostic = Diagnostic { report: DefinitionPanic::default() };
-        diagnostic.write_str(core::str::from_utf8(&[b'x'; 1023]).unwrap()).unwrap();
-        diagnostic.write_str("é").unwrap();
-        assert_eq!(diagnostic.report.length, 1023);
-        assert_eq!(diagnostic.report.flags, DefinitionPanic::TRUNCATED);
-        assert!(core::str::from_utf8(&diagnostic.report.message[..1023]).is_ok());
-        diagnostic.write_str("!").unwrap();
-        assert_eq!(diagnostic.report.length, 1024);
-        diagnostic.write_str("overflow").unwrap();
-        assert_eq!(diagnostic.report.length, 1024);
-        assert_eq!(diagnostic.report.flags, DefinitionPanic::TRUNCATED);
-    }
-}

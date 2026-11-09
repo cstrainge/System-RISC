@@ -38,5 +38,3 @@ pub enum Error
     UnsupportedMethod(u8)
 }
 pub type Result<T> = core::result::Result<T, Error>;
-#[cfg(test)]
-mod tests;

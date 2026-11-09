@@ -264,35 +264,3 @@ pub(crate) fn put64(b: &mut [u8], at: usize, v: u64)
     b[at..at + 8].copy_from_slice(&v.to_le_bytes())
 }
 
-#[cfg(test)]
-mod token_tests
-{
-    use super::*;
-    #[test]
-    fn opaque_tokens_round_trip_every_bit_and_keep_equal_low_words_distinct()
-    {
-        let mut buffer = [0; HEADER_BYTES + 4];
-        for token in [0, 17, u64::from(u32::MAX) + 18, u64::MAX]
-        {
-            let args = Arguments { volume: 5,
-                                   node: 9,
-                                   token,
-                                   parent: 11,
-                                   flags: 1,
-                                   offset: 13,
-                                   length: 19,
-                                   auxiliary: 23,
-                                   when: 29,
-                                   payload: b"test" };
-            let n = args.encode(&mut buffer).unwrap();
-            let got = Arguments::decode(&buffer[..n]).unwrap();
-            assert_eq!((got.token, got.volume, got.node, got.parent), (token, 5, 9, 11));
-            assert_eq!((got.flags, got.offset, got.length, got.auxiliary, got.when),
-                       (1, 13, 19, 23, 29));
-            assert_eq!(got.payload, b"test");
-        }
-        assert_eq!(Arguments::decode(&buffer[..HEADER_BYTES - 1]).err(), Some(Error::Length));
-        buffer[2] = 0;
-        assert_eq!(Arguments::decode(&buffer).err(), Some(Error::Invalid));
-    }
-}

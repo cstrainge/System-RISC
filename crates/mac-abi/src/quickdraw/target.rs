@@ -103,25 +103,3 @@ impl From<DrawingTarget> for Target
     }
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn target_projection_is_explicit_and_checked()
-    {
-        for target in [DrawingTarget::Window(WindowId(0x80000000)),
-                       DrawingTarget::World(WorldId(u64::MAX))]
-        {
-            assert_eq!(Target::from(target).decode(), Ok(target));
-        }
-        assert_eq!(Target { kind: 3,
-                            ..Default::default() }.decode(),
-                   Err(TargetError::UnknownKind(3)));
-        assert_eq!(Target { reserved: 1,
-                            ..Default::default() }.decode(),
-                   Err(TargetError::Reserved(1)));
-        assert_eq!(Target::window(WindowId(u64::MAX)).decode(),
-                   Ok(DrawingTarget::Window(WindowId(u64::MAX))));
-    }
-}

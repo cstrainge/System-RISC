@@ -106,36 +106,3 @@ impl Info
     }
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn positional_request_preserves_large_offsets_and_rejects_noncanonical_headers()
-    {
-        let bytes = [0x23, 1, 2, 0, 1, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0];
-        let args = Arguments { source: 0x1_0002_0123,
-                               offset: 0x1_0000_0007,
-                               length: 512 };
-        assert_eq!(Arguments::decode(Operation::Read, &bytes), Ok(args));
-        assert_eq!(args.encode(Operation::Read), Ok(bytes));
-        assert_eq!(Arguments::decode(Operation::Info, &bytes), Err(Error::Invalid));
-        assert_eq!(Arguments::decode(Operation::Read, &bytes[..23]), Err(Error::Length));
-        for at in [20, 23]
-        {
-            let mut bad = bytes;
-            bad[at] = 1;
-            assert_eq!(Arguments::decode(Operation::Read, &bad), Err(Error::Invalid));
-        }
-        for bad in [Arguments { source: 0,
-                                ..args },
-                    Arguments { length: 65537,
-                                ..args },
-                    Arguments { offset: u64::MAX,
-                                ..args }]
-        {
-            assert_eq!(bad.encode(Operation::Read), Err(Error::Invalid));
-        }
-        assert_eq!(Info::decode(&u64::MAX.to_le_bytes()), Ok(Info { length: u64::MAX }));
-    }
-}

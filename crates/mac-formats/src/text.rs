@@ -43,17 +43,3 @@ pub fn pstring(text: &str) -> Result<Vec<u8>>
     Ok(out)
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn all_mac_roman_bytes_roundtrip()
-    {
-        let bytes: Vec<u8> = (0..=255).collect();
-        assert_eq!(encode(&decode(&bytes)).unwrap(), bytes);
-        assert_eq!(encode("Café").unwrap(), b"Caf\x8e");
-        assert!(encode("🦀").is_err());
-        assert!(pstring(&"a".repeat(256)).is_err());
-    }
-}

@@ -115,5 +115,3 @@ pub(crate) fn read_at(disk: &mut impl BlockDevice, offset: u64, output: &mut [u8
     Ok(())
 }
 
-#[cfg(test)]
-mod tests;

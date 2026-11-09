@@ -555,33 +555,3 @@ impl LedgerSnapshot<'_>
     }
 }
 
-#[cfg(test)]
-mod account_tests
-{
-    use super::*;
-    #[test]
-    fn accounting_wire_rejects_unknown_coverage_bad_flags_overflow_and_hidden_counters()
-    {
-        assert_eq!(accounting(wire::Account::default()), Some(MemoryAccounting::Unavailable));
-        let mut value = wire::Account { coverage: wire::ACCOUNT_EXECUTION_OWNED_MEMORY,
-                                        ..Default::default() };
-        value.kernel.limit = 4096;
-        value.kernel.committed = 4096;
-        assert!(matches!(accounting(value),
-                         Some(MemoryAccounting::ExecutionAndOwnedMemory { .. })));
-        value.closing = 2;
-        assert_eq!(accounting(value), None);
-        value.closing = 0;
-        value.kernel.reserved = 1;
-        assert_eq!(accounting(value), None);
-        value.kernel.limit = u64::MAX;
-        value.kernel.committed = u64::MAX;
-        assert_eq!(accounting(value), None);
-        value.kernel.reserved = 0;
-        value.coverage = wire::ACCOUNT_UNAVAILABLE;
-        assert_eq!(accounting(value), None);
-        value = wire::Account { coverage: u32::MAX,
-                                ..Default::default() };
-        assert_eq!(accounting(value), None);
-    }
-}

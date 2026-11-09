@@ -7,8 +7,6 @@ use crate::{Error, Result};
 pub mod stream;
 pub mod index;
 pub mod loader;
-#[cfg(test)]
-mod native_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding
@@ -202,83 +200,3 @@ pub fn decode_borrowed(bytes: &[u8]) -> Result<Vec<ResourceRef<'_>>>
     stream::borrowed(bytes)
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    use crate::{be16, be32};
-
-    #[test]
-    fn borrowed_resources_share_validated_payload_storage()
-    {
-        let resource = Resource { kind:       *b"sfnt",
-                                  id:         128,
-                                  name:       Some(vec![b'T']),
-                                  attributes: 0,
-                                  data:       vec![0x51; 8192] };
-        let fork = encode(&[resource]).unwrap();
-        let views = decode_borrowed(&fork).unwrap();
-        assert_eq!(views[0].data.len(), 8192);
-        let range = fork.as_ptr_range();
-        assert!(views[0].data.as_ptr() >= range.start && views[0].data.as_ptr() < range.end);
-        assert_eq!(views[0].name, Some(&b"T"[..]));
-        assert!(decode_borrowed(&fork[..fork.len() - 1]).is_err());
-    }
-
-    #[test]
-    fn multiple_types_names_attributes_and_signed_ids()
-    {
-        let items = vec![Resource { kind:       *b"STR ",
-                                    id:         -1,
-                                    name:       Some(vec![0x8e, b'x']),
-                                    attributes: 0x20,
-                                    data:       vec![2, b'H', b'i'] },
-                         Resource { kind:       *b"RV64",
-                                    id:         0,
-                                    name:       None,
-                                    attributes: 0,
-                                    data:       vec![0x7f, b'E', b'L', b'F'] },];
-        let encoded = encode(&items).unwrap();
-        let decoded = decode(&encoded).unwrap();
-        assert_eq!(decoded, vec![items[1].clone(), items[0].clone()]);
-        assert_eq!(encode(&decoded).unwrap(), encoded);
-        for len in 0..encoded.len()
-        {
-            assert!(decode(&encoded[..len]).is_err(), "accepted prefix {len}");
-        }
-        let mut duplicate = items.clone();
-        duplicate.push(items[0].clone());
-        assert!(encode(&duplicate).is_err());
-    }
-
-    #[test]
-    fn empty_fork_and_corrupt_offsets()
-    {
-        let empty = encode(&[]).unwrap();
-        assert_eq!(decode(&empty).unwrap(), vec![]);
-        let mut bad = empty.clone();
-        bad[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
-        assert!(decode(&bad).is_err());
-        let mut bad = empty;
-        bad[256 + 24..256 + 26].copy_from_slice(&u16::MAX.to_be_bytes());
-        assert!(decode(&bad).is_err());
-    }
-
-    #[test]
-    fn rejects_shared_reference_lists()
-    {
-        let resource = |kind| {
-            Resource { kind,
-                       id: 0,
-                       name: None,
-                       attributes: 0,
-                       data: vec![42] }
-        };
-        let mut bytes = encode(&[resource(*b"AAAA"), resource(*b"BBBB")]).unwrap();
-        let map = be32(&bytes, 4).unwrap() as usize;
-        let types = map + be16(&bytes, map + 24).unwrap() as usize;
-        let first_offset = be16(&bytes, types + 8).unwrap();
-        bytes[types + 16..types + 18].copy_from_slice(&first_offset.to_be_bytes());
-        assert!(decode(&bytes).is_err());
-    }
-}

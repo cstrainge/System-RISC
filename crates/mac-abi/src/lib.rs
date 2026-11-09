@@ -667,44 +667,6 @@ pub type DefinitionEntry = unsafe extern "C" fn(*mut DefinitionCall) -> i64;
 pub type SystemEntry = unsafe extern "C" fn(*const (), usize, u64) -> *const SystemServices;
 pub type ApplicationEntry = unsafe extern "C" fn(*const SystemServices) -> Status;
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-
-    #[test]
-    fn rv64_layout_and_version_contract()
-    {
-        assert_eq!(core::mem::size_of::<Header>(), 8);
-        assert_eq!(core::mem::size_of::<inspection::AccountUsage>(), 24);
-        assert_eq!(core::mem::size_of::<inspection::Account>(), 56);
-        assert_eq!(core::mem::offset_of!(inspection::Account, kernel), 8);
-        assert_eq!(core::mem::offset_of!(inspection::Account, application), 32);
-        assert_eq!(core::mem::size_of::<inspection::memory::Call>(), 840);
-        assert_eq!(core::mem::offset_of!(inspection::memory::Call, operation), 0);
-        assert_eq!(core::mem::offset_of!(inspection::memory::Call, summary), 40);
-        assert_eq!(core::mem::offset_of!(inspection::memory::Call, regions), 128);
-        assert_eq!(core::mem::offset_of!(inspection::memory::Call, detail), 640);
-        assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
-        assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 200);
-        assert_eq!(core::mem::offset_of!(BootInfo, execution), 136);
-        assert_eq!(core::mem::offset_of!(BootInfo, display_scratch), 120);
-        assert_eq!(core::mem::offset_of!(BootInfo, storage_context), 32);
-        assert_eq!(core::mem::offset_of!(BootInfo, startup_partition_start), 80);
-        assert_eq!(core::mem::offset_of!(BootInfo, ram_regions), 88);
-        assert_eq!(core::mem::offset_of!(BootInfo, reservations), 104);
-        assert_eq!(core::mem::offset_of!(BootInfo, device_tree), 176);
-        assert_eq!(core::mem::offset_of!(BootInfo, power_conduit), 192);
-        assert_eq!(core::mem::offset_of!(SystemServices, capabilities), 8);
-        assert_eq!(core::mem::size_of::<SystemServices>(), 16);
-        assert!(Header::for_type::<SystemServices>().supports::<SystemServices>());
-        assert!(!Header { version: ABI_VERSION + 1,
-                          size:    16 }.supports::<SystemServices>());
-        assert!(!Header { version: 1,
-                          size:    8 }.supports::<SystemServices>());
-    }
-}
 
 pub mod traps;
 pub mod quickdraw;

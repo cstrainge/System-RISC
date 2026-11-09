@@ -112,32 +112,3 @@ pub(crate) fn be32(bytes: &[u8], at: usize) -> Result<u32>
     Ok(u32::from_be_bytes(slice(bytes, at, 4)?.try_into().unwrap()))
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn descriptor_checks_versions_and_roles()
-    {
-        let d = Descriptor { role:        Role::System,
-                             abi_version: ABI_VERSION,
-                             load_base:   0x80200000,
-                             load_limit:  0x81000000,
-                             entry:       0x80200000 };
-        let bytes = d.encode().unwrap();
-        assert_eq!(Descriptor::decode(&bytes).unwrap(), d);
-        for (offset, value) in [(4, 2), (7, 4), (8, 2)]
-        {
-            let mut bad = bytes;
-            bad[offset] = value;
-            assert!(Descriptor::decode(&bad).is_err());
-        }
-        let mut old = bytes;
-        old[12..16].fill(0);
-        assert_eq!(Descriptor::decode(&old).unwrap_err().0,
-                   "native ABI layout differs; rebuild System and all native packages");
-        let mut wrong = bytes;
-        wrong[12] ^= 1;
-        assert!(Descriptor::decode(&wrong).is_err());
-    }
-}

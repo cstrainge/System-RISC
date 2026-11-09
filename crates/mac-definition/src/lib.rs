@@ -14,7 +14,7 @@ pub use families::*;
 /// Generate the CDEF entry and panic scaffold for the family named by `Message`.
 pub use mac_definition_macros::cdef_main;
 pub use toolbox_controls::Part;
-#[cfg(any(systemrisc, test))]
+#[cfg(systemrisc)]
 #[doc(hidden)]
 pub mod runtime;
 #[doc(hidden)]

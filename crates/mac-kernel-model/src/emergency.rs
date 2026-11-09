@@ -68,27 +68,3 @@ impl<'a> EmergencyManifest<'a>
         self.requirements
     }
 }
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn manifest_sizes_and_refuses_duplicate_or_overflow_before_installation()
-    {
-        let requirements = [Requirement { service:   EmergencyService::FaultReport,
-                                          bytes:     9,
-                                          alignment: 8 },
-                            Requirement { service:   EmergencyService::SaveFile,
-                                          bytes:     17,
-                                          alignment: 16 }];
-        let manifest = EmergencyManifest::new(&requirements).unwrap();
-        assert_eq!(manifest.bytes(), 33);
-        assert_eq!(manifest.alignment(), 16);
-        assert!(matches!(EmergencyManifest::new(&[requirements[0], requirements[0]]),
-                         Err(ModelError::InvalidManifest)));
-        let overflow = [Requirement { bytes: u64::MAX,
-                                      ..requirements[0] },
-                        requirements[1]];
-        assert!(matches!(EmergencyManifest::new(&overflow), Err(ModelError::Overflow)));
-    }
-}

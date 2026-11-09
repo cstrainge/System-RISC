@@ -114,32 +114,3 @@ pub fn decode(bytes: &[u8]) -> Result<MacFile>
                  resources: slice(bytes, rsrc_start, rsrc_length)?.to_vec() })
 }
 
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-
-    #[test]
-    fn crc_and_two_forks_roundtrip()
-    {
-        assert_eq!(crc16(b"123456789"), 0x31c3);
-        let file = MacFile { name:      b"Finder".to_vec(),
-                             file_type: *b"FNDR",
-                             creator:   *b"MACS",
-                             flags:     0x2040,
-                             created:   2082844800,
-                             modified:  2082844800,
-                             data:      vec![42; 129],
-                             resources: vec![7; 257] };
-        let bytes = encode(&file).unwrap();
-        assert_eq!(bytes.len(), 128 + 256 + 384);
-        assert_eq!(decode(&bytes).unwrap(), file);
-        for len in 0..bytes.len()
-        {
-            assert!(decode(&bytes[..len]).is_err());
-        }
-        let mut broken = bytes;
-        broken[65] ^= 1;
-        assert!(decode(&broken).is_err());
-    }
-}

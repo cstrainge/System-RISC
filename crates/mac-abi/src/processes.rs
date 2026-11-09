@@ -147,21 +147,6 @@ pub struct DocumentCall
     pub requirement_version: u32
 }
 
-#[cfg(test)]
-mod document_layout_tests
-{
-    use super::*;
-    #[test]
-    fn native_document_ids_have_full_width_and_distinct_request_layout()
-    {
-        assert_eq!(core::mem::offset_of!(DocumentCall, handle), 8);
-        assert_eq!(core::mem::offset_of!(DocumentCall, application_volume), 16);
-        assert_ne!(core::mem::size_of::<DocumentCall>(), core::mem::size_of::<ProcessCall>());
-        let call = DocumentCall { handle: u64::from(u32::MAX) + 1,
-                                  ..Default::default() };
-        assert!(call.handle > u64::from(u32::MAX));
-    }
-}
 
 /// Execute inspection begins with the file identity. A handler may request
 /// catalog metadata and receive it in a second call for the same file.

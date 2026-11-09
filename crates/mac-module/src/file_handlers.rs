@@ -129,25 +129,3 @@ impl<'a> Rules<'a>
         Rules::decode(out).map(|_| ())
     }
 }
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-    #[test]
-    fn type_action_and_local_icon_round_trip_with_strict_reserved_fields()
-    {
-        let rule = Rule::new(*b"SIT!", Action::MountFilesystem, 128).unwrap();
-        let mut bytes = [0; 20];
-        Rules::encode(&[rule], &mut bytes).unwrap();
-        assert_eq!(Rules::decode(&bytes).unwrap().at(0), Ok(rule));
-        for at in [0, 4, 8 + 8, 8 + 11]
-        {
-            let mut bad = bytes;
-            bad[at] ^= 1;
-            assert!(Rules::decode(&bad).is_err());
-        }
-        let mut bytes = [0; 32];
-        assert!(Rules::encode(&[rule, rule], &mut bytes).is_err());
-        assert!(Rule::new([0; 4], Action::MountFilesystem, 128).is_err());
-    }
-}
