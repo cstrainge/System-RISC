@@ -488,6 +488,12 @@ impl<'a> Session<'a>
         }
         let bounds = system.window(window)?.bounds;
         let (width, height) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
+        let clip = Some(grow_clip(width, height));
+        if let Err(error) = system.windows().set_grow_icon_clip(window, clip)
+        {
+            let _ = system.close_window(window);
+            return Err(error);
+        }
         let state = bar(width, height, 0, 0);
         let scrollbar = match system.controls().create_scrollbar(window,
                                                                  state,
@@ -720,7 +726,12 @@ impl<'a> Session<'a>
     fn paint_update(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         let bounds = system.window(self.window)?.bounds;
-        self.output.resize(bounds.right - bounds.left, bounds.bottom - bounds.top);
+        let (width, height) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
+        if (self.bar_state.0, self.bar_state.1) != (width, height)
+        {
+            system.windows().set_grow_icon_clip(self.window, Some(grow_clip(width, height)))?;
+        }
+        self.output.resize(width, height);
         let damage = system.begin_update(self.window)?;
         let result = self.output
                          .paint(system.quickdraw().graphics(self.window), damage)
@@ -761,6 +772,13 @@ fn bar_bounds(width: i16, height: i16) -> Rect
 {
     // Align with the window frame and leave the bottom-right grow box clear.
     Rect::new(width - BAR_WIDTH, -1, width + 1, height - 14)
+}
+
+fn grow_clip(width: i16, height: i16) -> Rect
+{
+    // Terminal has no horizontal scrollbar. Expose only the size box so the
+    // WDEF's bottom separator does not cross the last row of text.
+    Rect::new(width - BAR_WIDTH, height - BAR_WIDTH, width, height)
 }
 
 fn bar(width: i16, height: i16, value: i16, maximum: i16) -> ScrollbarState
