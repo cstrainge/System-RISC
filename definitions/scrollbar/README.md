@@ -25,11 +25,12 @@ System7.6.1 `NewControl` proc16 probe:7,696 pixels total, with source/crop hashe
 in `provenance/system7-scrollbar-assets.json`. It contains no full-window raster.
 `scripts/extract_scrollbar_assets.py` reproduces the inline indexed glyphs.
 
-Control appearance and hit assertions live in
+Control appearance and hit assertions lived in
 `crates/mac-toolbox/tests/conformance/controls.rs`, executed through the
-runtime-loaded resource in the disk-booted RV64 conformance fixture. The
-independent corpus contains 32 controls and 114,080 pixels, plus original hit
-observations. Host-linked rendering, replay tests and their capture script
-are retired. These samples do not establish exhaustive hit parity at every
+runtime-loaded resource in the disk-booted RV64 conformance fixture. That suite
+was removed with the host test suite ([testing policy](../../docs/TESTING-POLICY.md)),
+so the 32-control, 114,080-pixel corpus and the original hit observations retained
+under `tests/data/` no longer have a running assertion. These samples never
+established exhaustive hit parity at every
 value or dimension; the exact midpoint split on a thumb's outer border remains
 inferred.

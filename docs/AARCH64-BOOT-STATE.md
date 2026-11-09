@@ -994,11 +994,12 @@ own tree that no transport node reaches the peripheral view. Transports stay
 covered for pool exclusion and mapping by the record's declared bootstrap
 aperture, which the paragraph above now states correctly.
 
-The regression test is `crates/mac-device-interface/tests/virtio.rs`: it probes a
-transport set with an occupied and an unoccupied entry, asserts the empty entry
-is reported absent, and asserts only the set's windows are read. Removing the
-identity and absence checks makes all three tests fail — it can fail, which is
-the requirement for it to count.
+The regression test was `crates/mac-device-interface/tests/virtio.rs`: it probed a
+transport set with an occupied and an unoccupied entry, asserted the empty entry
+was reported absent, and asserted only the set's windows were read. It was removed
+with the host test suite ([testing policy](TESTING-POLICY.md)), so the
+identity/absence checks and the window-read bound are **unverified** on the target
+until a `cargo xtask boot-check` case covers them.
 
 **Still latent:** `bootrom-riscv` performs the same arithmetic probe. It is
 hidden only because the riscv aperture is fully mapped, exactly as the arm64 one

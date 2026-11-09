@@ -81,12 +81,9 @@ The resident interface is native trap `SCROLL_BOX` (`0x10021`), with a companion
 only UTF8. This adds no classic 68k adapter or claim of complete TrackControl
 compatibility.
 
-Canonical public-SDK lifecycle assertions live in the disk-booted
-`crates/mac-toolbox/tests/conformance/ownership.rs` suite. Host control and
-scroll-box tests are retired; their prior results are not guest acceptance.
-The native retained-update scenario checks that a shared-row change stays
-invisible until EndUpdate and leaves other rows intact. ResEdit's real-app
-scenario covers independent navigation panes, Monaco pixels, native JSON saving
-and one-row rendering timings. Python supplies input and captures; Rust owns
-acceptance. Original CDEF pixel and hit comparisons run in the native userspace
-conformance fixture, using the same runtime loading path as applications.
+Canonical public-SDK lifecycle assertions were the disk-booted
+`conformance/ownership.rs` suite, which was removed with the host test suite
+([testing policy](TESTING-POLICY.md)). The retained-update, ResEdit and original
+CDEF pixel and hit scenarios it described — including the native userspace
+conformance fixture's runtime resource loading — are **unverified** on the
+target until a `cargo xtask boot-check` case covers them.

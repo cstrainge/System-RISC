@@ -31,11 +31,13 @@ A higher-level cancellable batch transfer must handle rollback of its outputs.
 New directories publish their native metadata record atomically with the directory;
 they may be created inside either native or ordinary host folders.
 
-`tests/reader.rs` runs against real host directories and the production host
-companion session, with split future polls, both forks, Unicode/case collisions,
-external changes, stale/foreign tokens, flush/close failures, cancellation and
-ID reservation. These are component tests; native public-SDK guest coverage is
-documented in `docs/FILESYSTEM-INTERFACE.md`. The normal launcher exposes a default
+`tests/reader.rs` ran against real host directories and the production host
+companion session, covering split future polls, both forks, Unicode/case
+collisions, external changes, stale/foreign tokens, flush/close failures,
+cancellation and ID reservation. That suite was removed with the host test
+suite ([testing policy](TESTING-POLICY.md)), so those behaviours are
+**unverified** on the target until a boot-check case covers them.
+The normal launcher exposes a default
 Transfer volume plus explicitly selected exports. System mounts them before
 launching Finder. The implementation includes application/resource reads,
 two-fork writes, namespace operations, selective metadata, directory watches and

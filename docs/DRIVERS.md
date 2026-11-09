@@ -201,12 +201,14 @@ resolution and request state; callbacks execute outside registry/File Manager
 guards. The current machine adapter reserves a module arena disjoint from the
 ROM's still-live storage heap and all application/definition images.
 
-The `mac-toolbox/tests/driver_modules.rs` private-guest gate loads a test provider
-and dependent client linked elsewhere. Their module SDK call verifies returned
-bytes before the client can publish. Eight rejection boots cover missing and
-duplicate metadata, wrong installation directory, ABI, target and layout,
-code-digest mismatch, and malformed relocations with an updated digest. Rust
-requires rejection before any module entry and a working desktop in every case.
+The `mac-toolbox/tests/driver_modules.rs` private-guest gate loaded a test provider
+and dependent client linked elsewhere. Their module SDK call verified returned
+bytes before the client could publish, and eight rejection boots covered missing
+and duplicate metadata, wrong installation directory, ABI, target and layout,
+code-digest mismatch, and malformed relocations with an updated digest. That gate
+was removed with the host test suite ([testing policy](TESTING-POLICY.md)), so
+module admission is **unverified** on the target until `cargo xtask boot-check`
+cases cover it.
 Both provider/dependent catalog orders are exercised. Further boots cover absent
 device IDs, an unavailable bus, dependent skips, a usable wildcard alternative and the actual Host
 Transport/Host Filesystem pair with no VM host channel; matching-device boots

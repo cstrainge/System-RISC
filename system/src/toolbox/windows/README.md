@@ -91,14 +91,15 @@ These contracts follow Apple's [DragWindow](https://dev.os9.ca/techpubs/mac/Tool
 [TrackBox](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-253.html) documentation.
 The initial native desktop chooses its own bounds and grow limits; arbitrary
 classic limit/slop rectangles, axis constraints, DragHook callbacks, modal policy
-and multi-monitor tracking are not exposed yet. Tracking-state unit tests and
-isolated real-input guest checks complement the static WDEF render corpus.
-Canonical interaction acceptance now lives in
-`crates/mac-toolbox/tests/window_interactions.rs`. Rust launches independent
-read-only guests and asserts returned state and raw P6 framebuffers. One test
-uses Finder's public SDK path; another replaces Finder only on a private clone
-with a minimal application that depends only on `mac-toolbox`. There are no
-resident renderer calls in the acceptance bodies or application.
+and multi-monitor tracking are not exposed yet. Tracking-state unit tests and isolated real-input guest checks complemented the
+static WDEF render corpus. Canonical interaction acceptance lived in
+`crates/mac-toolbox/tests/window_interactions.rs`, where Rust launched independent
+read-only guests and asserted returned state and raw P6 framebuffers: one case
+used Finder's public SDK path, another replaced Finder only on a private clone
+with a minimal application that depends only on `mac-toolbox`. That suite was
+removed with the host test suite ([testing policy](../../../docs/TESTING-POLICY.md));
+interaction acceptance is **unverified** on the target until a `cargo xtask
+boot-check` case covers it.
 
 The original drag and grow changed-pixel masks match exactly across **614,400
 pixel positions** (762 drag pixels and 1,480 grow pixels). The minimal probe has

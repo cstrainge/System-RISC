@@ -125,14 +125,14 @@ a falsely released controller.
 
 ## Verification
 
-Canonical public SDK tests live in `crates/mac-toolbox/tests/power.rs`. They cover
-capability/version selection, missing drivers, informative typed refusals,
-unfinished writes, running applications, real flush failures and successful
-retry. Private physical-input cases exercise Finder commands, restart back
-through the ROM, shutdown through QEMU, app-refusal dialog recovery and boot
-without the external package. Capture scripts transport evidence; Rust owns
-acceptance assertions. These checks do not claim the deferred Quit/Cancel
-negotiation or arbitrary privileged-fault recovery gates.
+The host-linked `crates/mac-toolbox/tests/power.rs` suite and the private
+physical-input cases it drove were removed with the host test suite
+([testing policy](TESTING-POLICY.md)). Capability/version selection, missing
+drivers, informative typed refusals, unfinished writes, running applications,
+flush failures, the Finder command and restart/shutdown boot covers are
+therefore **unverified** on the target until a `cargo xtask boot-check` case
+covers them. These checks never claimed the deferred Quit/Cancel negotiation or
+arbitrary privileged-fault recovery gates.
 
 ### What has actually been observed
 

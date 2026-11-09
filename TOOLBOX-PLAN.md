@@ -293,16 +293,17 @@ separate contracts before being advertised.
 [GrowWindow](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-250.html), and
 [TrackBox](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-253.html) describe these
 tracking obligations. Current private manager regressions and the isolated QMP
-input runner are auxiliary until equivalent contracts run through the aggregate
-SDK test fixture; they do not waive the M0 migration requirement.
+input runner are auxiliary until equivalent contracts run through a target-runtime
+case; they do not waive the M0 migration requirement.
 
-The first migrated window interaction slice is now implemented by
-`crates/mac-toolbox/tests/window_interactions.rs`: a public SDK-only application
-on a private native guest matches the original drag/grow masks, and real Finder
-checks validate held/release/cancel/reentry behavior and whole-frame restoration.
-This establishes those captured states only; it does not close M5's other
-window definitions, all control families, arbitrary callback/bounds contracts or
-exhaustive temporal animation sampling.
+The first migrated window interaction slice was implemented by
+`crates/mac-toolbox/tests/window_interactions.rs`, a public SDK-only application
+on a private native guest. That suite was removed with the host test suite
+([testing policy](docs/TESTING-POLICY.md)); the drag/grow masks, held/release/
+cancel/reentry behavior and whole-frame restoration it matched are **unverified**
+on the target until a `cargo xtask boot-check` case covers them. Removing them
+did not close M5's other window definitions, all control families, arbitrary
+callback/bounds contracts or exhaustive temporal animation sampling.
 
 ### First Memory Manager probe/test inventory
 

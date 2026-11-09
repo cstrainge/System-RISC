@@ -9,8 +9,11 @@ The first compatibility profile is plain, left-aligned Chicago 12 with its
 original sixteen-pixel line height and twelve-pixel ascent. Original System
 7.6.1 probes freeze line starts, points, mouse offsets, carriage returns,
 wrapping spaces, tab/LF glyph advances, insertion, deletion and cursor keys.
-Canonical assertions and their captured oracle live in
-`crates/mac-toolbox/tests/conformance/textedit.rs` and `tests/textedit.rs`.
+Canonical assertions and their captured oracle lived in
+`crates/mac-toolbox/tests/conformance/textedit.rs` and `tests/textedit.rs`; both
+were removed with the host test suite ([testing policy](../../../docs/TESTING-POLICY.md)),
+so the profile below is **unverified** on the target until a `cargo xtask
+boot-check` case covers it.
 
 Original details preserved include:
 
@@ -89,5 +92,7 @@ records (rewrapped bytes, snapshots, emitted commands and XOR bounds).
 
 Canonical coverage: `tests/textedit.rs`, `textedit_display.rs`,
 `text_edit_documents.rs`, `textedit_graphical.rs`, `typing.rs` and
-`textedit_performance.rs`. Performance/graphical cases use private optimized
-QEMU images; Rust owns assertions, capture scripts only transport evidence.
+`textedit_performance.rs` — all removed with the host test suite
+([testing policy](../../../docs/TESTING-POLICY.md)), so display, document, typing
+and performance behaviour is **unverified** on the target until `cargo xtask
+boot-check` cases cover it.

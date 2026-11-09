@@ -118,20 +118,15 @@ original reference, and runs host/RV64 Clippy. It writes exact commands, logs,
 source hashes and results to `results/system7/filesystem-checks.json`. Use
 `--skip-clippy` when a surrounding build already runs those checks.
 
-Fixture tests cover multiple disks and APM partitions, full metadata, Unicode
-names, parent/path traversal, both forks, independent marks, cross-sector partial
-reads, EOF, rejected seeks, stale handles, capacity, and the safe public
-`Files -> Client::file -> FileCall -> Manager` path. The transport test also proves
-that caller-supplied raw pointer fields are replaced and cleared on success and
-error. HFS tests retain the fragmented overflow-fork and malformed-tree fixtures.
-Canonical `mac-toolbox/tests/file_ownership.rs` additionally exercises trusted
-application context selection through the real public gate: foreign-handle
-denial, independent marks, paired legacy-gate enforcement, owner-specific exit
-cleanup and rejection of old handles after slot reuse.
-
-```sh
-cargo test --manifest-path System7/Cargo.toml -p mac-hfs
-cargo test --manifest-path System7/Cargo.toml -p mac-system --lib toolbox::files
+The host-linked fixture, transport and `mac-toolbox/tests/file_ownership.rs`
+suites covered multiple disks and APM partitions, full metadata, Unicode names,
+parent/path traversal, both forks, independent marks, cross-sector partial reads,
+EOF, rejected seeks, stale handles, capacity, pointer-field scrubbing, trusted
+application context selection through the real public gate, owner-specific exit
+cleanup and rejection of old handles after slot reuse. They were removed with the
+host test suite ([testing policy](../../../docs/TESTING-POLICY.md)); the behaviour
+they described is **unverified** on the target until a `cargo xtask boot-check`
+case covers it.
 cargo clippy --manifest-path System7/Cargo.toml -p mac-hfs -p toolbox-files -p mac-system --lib --tests -- -D warnings
 ```
 

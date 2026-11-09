@@ -33,9 +33,12 @@ Finder's Clipboard viewer uses this form; Panic Test, QuickDraw Test, ResEdit an
 other Finder controls use shared SDK tracking. TextEdit selections and Finder icon dragging
 are content interactions rather than standard controls.
 
-Canonical tracking/ownership assertions live in
-`crates/mac-toolbox/tests/conformance/managed_controls.rs`, executed through disk-booted RV64 ECALL tests. Host-linked control validation
-is retired. Original CDEF pixel/hit fixtures remain the appearance
+Canonical tracking/ownership assertions lived in
+`crates/mac-toolbox/tests/conformance/managed_controls.rs`, executed through
+disk-booted RV64 ECALL tests. That suite was removed with the host test suite
+([testing policy](../../../docs/TESTING-POLICY.md)), so tracking and ownership
+assertions are **unverified** on the target until a `cargo xtask boot-check` case
+covers them. Original CDEF pixel/hit fixtures remain the appearance
 oracle. Custom controls, focus traversal and arbitrary action callbacks remain
 separate work; this is not full classic Control Manager parity.
 

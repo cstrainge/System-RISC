@@ -134,7 +134,7 @@ unidentified; the failed and successful logs are retained outside the repo.
 Styled text, other font/alignment profiles, hooks, double-click/autoscroll,
 original TEHandle/A-line/private-scrap adapters and editable Dialog Manager
 items remain open. See the [resident profile](../system/src/toolbox/textedit/README.md)
-and [aggregate tests](../crates/mac-toolbox/tests/README.md).
+and the [testing policy](TESTING-POLICY.md).
 
 ## Events, Scrap and Finder Clipboard — ABI5 service extension
 

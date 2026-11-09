@@ -603,7 +603,7 @@ Source anchors:
 - Events / clocks: [EVENTS.md](../EVENTS.md).
 - Windows / WDEF: [system/src/toolbox/windows/README.md](../system/src/toolbox/windows/README.md).
 - Controls / CDEF: [toolbox/controls/src/lib.rs](../toolbox/controls/src/lib.rs).
-- Menus / MDEF: [crates/mac-toolbox/tests/README.md](../crates/mac-toolbox/tests/README.md).
+- Menus / MDEF: [docs/MENUS-TRASH.md](MENUS-TRASH.md).
 - List Manager / LDEF: [TOOLBOX-PLAN.md](../TOOLBOX-PLAN.md).
 - TextEdit: [system/src/toolbox/textedit/README.md](../system/src/toolbox/textedit/README.md).
 - Scrap: [system/src/toolbox/scrap/README.md](../system/src/toolbox/scrap/README.md).

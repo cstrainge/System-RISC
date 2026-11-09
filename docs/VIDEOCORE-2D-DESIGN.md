@@ -641,8 +641,9 @@ than judged by feel:
   `trace::FRAME_COPY`, `trace::WINDOW`) from `system/src/trace.rs`;
 * application-level markers such as `FINDER_CLICK_HANDLED` and
   `FINDER_DRAG_ENDED moved|copied|rejected|cancelled` (`apps/finder/src/main.rs`,
-  `apps/finder/src/dragging.rs`), which the existing Finder gates already count
-  in serial output (`crates/mac-toolbox/tests/finder_drag.rs`).
+  `apps/finder/src/dragging.rs`), which the former Finder gates counted in
+  serial output (`crates/mac-toolbox/tests/finder_drag.rs`, since removed with the
+  host test suite — [testing policy](TESTING-POLICY.md)).
 
 The acceptance artefact for the cursor plane is therefore a trace in which a
 pointer move produces an input record and a plane-origin update, and **no**
@@ -1257,9 +1258,10 @@ Each of these is specific, and each names what would resolve it.
 * `crates/mac-boot-screen/` — the software framebuffer path this platform
   currently lacks a device for.
 * `docs/CURSORS.md`, `docs/DRIVERS.md`, `docs/DEVICE-TREE.md`,
-  `apps/finder/src/dragging.rs`, `crates/mac-toolbox/tests/finder_drag.rs` — the
+  `apps/finder/src/dragging.rs` — the
   cursor service, the driver model, the device-tree contract (including the
   window-versus-inventory-page rule of section 2) and the observable markers
-  used in section 6.4.
+  used in section 6.4. The `crates/mac-toolbox/tests/finder_drag.rs` case that
+  once asserted them was removed with the host test suite.
 * `tools/mac-build/src/platform.rs` — the build-time check that a declared
   peripheral window sits inside the MMIO range that claims it.

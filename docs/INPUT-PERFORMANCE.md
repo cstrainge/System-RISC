@@ -108,27 +108,26 @@ captured TEKey semantics. Finder supports:
 
 Vertical navigation retains the desired horizontal position across short lines.
 UTF8 boundaries, wrapped-line affinity, an empty final CR line and direction
-reversal have shared public SDK tests. Ctrl is the current host mapping for the
+reversal had shared public SDK tests, which were removed with the host test suite
+([testing policy](TESTING-POLICY.md)). Ctrl is the current host mapping for the
 Mac Command modifier.
 
 Reproduce from the workspace with:
 
 ```sh
-cargo xtask image
-cargo test --locked -p mac-toolbox --test typing -- --ignored
+cargo xtask boot-check --platform qemu_riscv
 ```
 
-Rust owns acceptance in `crates/mac-toolbox/tests/typing.rs`; Python only packages
-private disks, injects keys and collects complete acknowledgements. The result
-is `../results/system7/typing-checks.json`. The private profiling guest forwards
-real resident requests through the supplied gate and includes the actual
-Text Edit editor/menu/batch sources. Tests do not inject input into the user's visible VM.
+Rust owned acceptance in `crates/mac-toolbox/tests/typing.rs`; Python only
+packaged private disks, injected keys and collected complete acknowledgements.
+That suite was removed with the host test suite ([testing policy](TESTING-POLICY.md)),
+so the timing result in `../results/system7/typing-checks.json` is no longer
+produced and the input-latency claims are **unverified** on the target. Tests
+never inject input into the user's visible VM.
 
-To run the same canonical assertions using the installed Windows QEMU binary:
-
-```sh
-SYSTEM7_TYPING_WINDOWS=1 cargo test --locked -p mac-toolbox --test typing -- --ignored
-```
+The `SYSTEM7_TYPING_WINDOWS=1 cargo test --locked -p mac-toolbox --test typing`
+invocation that re-ran the suite on the installed Windows QEMU binary no longer
+exists either.
 
 This uses headless Windows guests on their own monitor port4457; the visible
 native desktop continues on4447. Its report is `typing-windows-checks.json`.

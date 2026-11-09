@@ -71,24 +71,27 @@ is running, then verifies the source returns to normal after exit.
 
 ## Validation
 
-- `mac-toolbox/tests/file_icons.rs` exercises actual HFS reads through the SDK:
+- `mac-toolbox/tests/file_icons.rs` exercised actual HFS reads through the SDK:
   non-128 IDs, overlapping IDs in different apps, large/small families, color
   precedence, transparency, malformed/missing resources, unchanged search chain,
-  read-only media and bounded reads alongside a1MiB executable resource. It also
-  holds the native-reservation allowlist that admits only the System's own
-  families in `-30031..-30000`.
+  read-only media and bounded reads alongside a1MiB executable resource, plus the
+  native-reservation allowlist that admits only the System's own families in
+  `-30031..-30000`. It was removed with the host test suite
+  ([testing policy](TESTING-POLICY.md)), so icon resolution against real HFS is
+  **unverified** on the target until a `cargo xtask boot-check` case covers it.
 - The pipes probe, which runs in the guest as a boot-check case, resolves the
   `Pipes` folder's icon through the shared blessed-folder table and a named
   pipe's through the `PIPE`/`PIPE` type bundle, plots both into offscreen worlds
   and compares the pixels with the generic folder and document. It reports the
   resolved ids and how many pixels each glyph drew, so a family that resolved but
   drew nothing fails the case.
-- `mac-toolbox/tests/application_ui.rs` checks6,656 icon pixels across unlaunched
-  Finder entries, application-menu rows and foreground titles. A private copy
-  moves QuickDraw's icon to9433 without changing its executable. Both Linux and
-  Windows native QEMU pass, including existing launch/switch/hide/restore tests.
-- Host workspace tests, host/RV64 Clippy, SDK boundary checks and the real Get Info
-  cold-boot regression pass. The source System/Finder resource payloads remain
+- `mac-toolbox/tests/application_ui.rs` checked6,656 icon pixels across
+  unlaunched Finder entries, application-menu rows and foreground titles, and a
+  private copy that moves QuickDraw's icon to9433 without changing its executable.
+  That suite was removed with the host test suite ([testing policy](TESTING-POLICY.md))
+  and its pixel comparison is **unverified** on the target.
+- The real Get Info cold boot and the SDK boundary checks that ran with the former
+  suite are unverified too. The source System/Finder resource payloads remain
   unchanged. Disposable captures delete their disks while retaining frames/logs.
 
 Reports live outside the repository in `../results/system7/application-ui-checks.json`

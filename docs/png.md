@@ -71,15 +71,15 @@ heap availability.
 
 ## Tests and evidence
 
-`crates/mac-toolbox/tests/conformance/png.rs` owns shared no-std acceptance:
+`crates/mac-toolbox/tests/conformance/png.rs` owned shared no-std acceptance:
 23 independent valid sample cases covering all 15 color/depth combinations,
 filter types, alpha/tRNS, split IDAT and ignored compressed metadata; exact
 scaled/clipped alpha pixels; and eight malformed/unsupported atomicity cases.
-`conformance::run_all` invokes it on both host and the real graphical ECALL
-fixture. Host-only `png_images.rs` additionally checks JSON/compiled oracle
+It was removed with the host test suite ([testing policy](TESTING-POLICY.md)), so
+PNG decoding is **unverified** on the target until a `cargo xtask boot-check`
+case covers it. The host-only `png_images.rs` checks (JSON/compiled oracle
 identity, all truncated prefixes, limits, ordering and deterministic repaired-CRC
-compressed-payload mutations. All calls use the public aggregate SDK and actual
-resident service.
+handling) went with it.
 
 Fixtures come from `scripts/generate_png_fixtures.py`, an independent Python
 `struct`/`zlib` encoder with explicit source sample values. It also regenerates

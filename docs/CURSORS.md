@@ -47,14 +47,15 @@ these services. Original resource-handle GetCursor/GetCCursor lifetimes and the
 complete classic Color QuickDraw trap adapter family remain part of legacy ABI
 work; the native resource API does not claim those adapters are implemented.
 
-Canonical acceptance lives in `crates/mac-toolbox/tests/cursors.rs`,
-`textedit_cursors.rs`, and `cursor_graphical.rs`. The graphical test launches
-the installed Cursor Test via Finder in a private guest and compares exact
-original sprite pixels, timed watch frames, automatic text hover, read-only
-fields, obscuring, out-and-back movement, title-bar and menu behavior. The
-transport preserves base disk hashes and never sends input to the visible VM.
-`retained_update.rs` additionally checks hover-region publication while two
-actual application threads are running.
+Canonical acceptance lived in `crates/mac-toolbox/tests/cursors.rs`,
+`textedit_cursors.rs`, and `cursor_graphical.rs`. Those suites and the private
+guest runs they drove — exact original sprite pixels, timed watch frames,
+automatic text hover, read-only fields, obscuring, out-and-back movement and
+title-bar and menu behavior — were removed with the host test suite
+([testing policy](TESTING-POLICY.md)) and are **unverified** on the target until a
+`cargo xtask boot-check` case covers them. `retained_update.rs`, which additionally
+checked hover-region publication while two actual application threads run, went
+with them.
 
 The cursor is composited into the frontbuffer during damaged-rectangle
 presentation. The scene is borrowed read-only; cursor pixels never enter the

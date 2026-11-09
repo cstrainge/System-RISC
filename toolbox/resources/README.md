@@ -37,7 +37,8 @@ the shared icon palette fallback.
 
 This slice supports bundled icons, PICTs and fonts. Opening arbitrary resource
 files, editing/writing resources, mutable/purgeable handles and original 68k
-Resource Manager trap marshaling remain unimplemented. See
-`system/tests/resource_manager_api.rs` for SDK/ABI tests and
-`scripts/check_system7_resources.py` at the repository root for packaged-payload
-and FOND-reference verification.
+Resource Manager trap marshaling remain unimplemented. The SDK/ABI tests that
+lived in `system/tests/resource_manager_api.rs` were removed with the host test
+suite ([testing policy](../../docs/TESTING-POLICY.md)); `scripts/check_system7_resources.py`
+at the repository root remains for packaged-payload and FOND-reference
+verification.

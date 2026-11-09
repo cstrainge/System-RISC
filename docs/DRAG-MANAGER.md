@@ -35,10 +35,13 @@ It cannot be misclassified as normal expiry or leave mouse-up waiting forever.
 
 ## Current verified slice
 
-`mac-toolbox/tests/drag.rs` exercises real resident services through the SDK and
+`mac-toolbox/tests/drag.rs` exercised real resident services through the SDK and
 the original Pascal A-line gate: lazy same-app producers, take-once, duplicate
 pending takes, cancellation wakes, source ownership, WrongThread, stale-reference
 slot reuse, one-based original enumeration and partial repeatable flavor reads.
+That suite was removed with the host test suite ([testing policy](TESTING-POLICY.md)),
+so those behaviours are **unverified** on the target until a `cargo xtask
+boot-check` case covers them.
 The decoded event and its tracking/drop capabilities are intentionally neither
 `Copy` nor `Clone`. Ignoring a tracking response rejects that position; ignoring
 a drop or abandoning its receive future rejects the drop, including before its
@@ -77,11 +80,12 @@ conversion is counted bytes, without a Pascal-string length limit. Unrepresentab
 native text fails classic access without returning UTF-8 as MacRoman. A rejected
 producer payload completes the promise with an error instead of stranding a take.
 
-`mac-toolbox/tests/finder_drag.rs` drives real QEMU pointer input against Finder.
-It covers single/group same-folder repositioning, relative offsets, Escape,
-cold boot and persistent catalog placement. Rust reads the resulting disk through
-the public Files SDK. During the tracked pointer-motion interval it requires zero
-file/font calls and unchanged scene composition, menu painting and update counts.
+`mac-toolbox/tests/finder_drag.rs` drove real QEMU pointer input against Finder,
+covering single/group same-folder repositioning, relative offsets, Escape, cold
+boot and persistent catalog placement, with Rust reading the resulting disk
+through the public Files SDK. It was removed with the host test suite
+([testing policy](TESTING-POLICY.md)), so those behaviours are **unverified** on
+the target until a `cargo xtask boot-check` case covers them.
 Feedback uses resident outline/highlight save-under overlays beneath the cursor.
 
 The memory-model stage-6 gate carries the earlier Res Edit exhaustion finding:

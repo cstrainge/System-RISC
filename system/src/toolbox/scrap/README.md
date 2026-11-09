@@ -11,10 +11,11 @@ not establish an RV64 scheduler or protected process address spaces.
 
 The pinned English/Roman System7.6.1 probe and hashes are retained under
 `crates/mac-toolbox/tests/data/scrap/`. Canonical assertions in
-`crates/mac-toolbox/tests/conformance/scrap.rs` use only the public SDK and run
-unchanged on the host and native RV64 fixture. The capture includes19 ordered
-observations;18 operations after the initial reference-only startup snapshot are
-mapped into the native test.
+`crates/mac-toolbox/tests/conformance/scrap.rs` used only the public SDK, and were
+removed with the host test suite ([testing policy](../../../../docs/TESTING-POLICY.md)).
+The capture's19 ordered observations, 18 of them after the initial
+reference-only startup snapshot, are therefore captured but **unverified** on the
+target until a `cargo xtask boot-check` case covers them.
 
 - Clear removes all records and changes the clipboard generation.
 - Put appends a record, including duplicate kinds and zero-length payloads.

@@ -17,8 +17,9 @@ errors retain the exact unsupported feature. The driver is not complete while
 remaining methods and workflow gates are missing.
 The original 1.5 documentation survives in the independent
 [sit writer's sit.h](https://github.com/thecloudexpanse/sit/blob/821ae5ea6d0c76ab83ac0942e12f398aa5944250/sit.h).
-Committed fixtures and reproduction details live in
-[mac-sit/tests/fixtures](../crates/mac-sit/tests/fixtures/README.md).
+Committed fixtures and reproduction details lived in `crates/mac-sit/tests/`,
+which was removed with the host test suite ([testing policy](TESTING-POLICY.md));
+the archive samples it carried are no longer in the tree.
 
 Corrections established against that documentation and writer output:
 

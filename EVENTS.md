@@ -9,9 +9,11 @@ event queue in the SDK and no SDK hardware decoder.
 The accepted original profile is English/Roman System 7.6.1 on the pinned q800
 reference. Original queue and physical-input captures, source/build/ROM/System
 hashes, launch commands and isolation checks are retained under
-`crates/mac-toolbox/tests/data/events/`. The canonical assertions are
-`tests/conformance/events.rs` and `tests/events.rs`; the same queue function runs
-against the host resident service and real disk-booted RV64 ECALL service.
+`crates/mac-toolbox/tests/data/events/`. The canonical assertion suites
+`tests/conformance/events.rs` and `tests/events.rs` were removed with the host
+test suite ([testing policy](docs/TESTING-POLICY.md)); the queue contract below
+is therefore **unverified** on the target until a `cargo xtask boot-check` case
+covers it.
 
 | Contract | Public Rust interface | Captured scope |
 | --- | --- | --- |

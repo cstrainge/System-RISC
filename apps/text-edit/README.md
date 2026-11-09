@@ -17,6 +17,8 @@ an extensionless `JSON`/`TEDT` document.
 The current document limit is 32,767 bytes and eight open windows. This is a
 plain-text editor; font choices affect the view and do not add rich-text data.
 
-Public-SDK coverage lives in `crates/mac-toolbox/tests/text_edit_documents.rs`.
-Its QEMU case exercises Finder association, the System save dialog, JSON type
-preservation and font preference persistence on a private disk.
+Public-SDK coverage lived in `crates/mac-toolbox/tests/text_edit_documents.rs`,
+which was removed with the host test suite ([testing policy](../../docs/TESTING-POLICY.md)).
+The Finder association, System save dialog, JSON type preservation and font
+preference persistence it exercised on a private disk are **unverified** on the
+target until a `cargo xtask boot-check` case covers them.

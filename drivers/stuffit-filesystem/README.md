@@ -53,10 +53,12 @@ Volumes advertise read-only and reject every mutation. Refresh/watch targets
 remain valid for immutable volumes. Catalogs can show encrypted/unsupported
 entries; opening them returns an informative typed archive failure, never empty data.
 
-Host module tests exercise fresh callback buffers, deliberately short deferred
-reads, seek/EOF, both forks, corruption, read-only mutations, cancellation and
-invalid-ticket handling. Native public-SDK acceptance lives in
-`crates/mac-toolbox/tests/stuffit.rs`; its capture transport uses private media.
+Host module tests and the native public-SDK acceptance suite
+(`crates/mac-toolbox/tests/stuffit.rs`) were removed with the host test suite
+([testing policy](../../docs/TESTING-POLICY.md)). Callback buffering, deliberately
+short deferred reads, seek/EOF, fork handling, corruption, read-only mutations,
+cancellation and invalid-ticket handling are therefore **unverified** on the
+target until a boot-check case covers them.
 
 
 Host Arsenic tests, seven private optimized guest SDK/Finder gates and the
