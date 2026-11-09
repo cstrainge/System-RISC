@@ -22,7 +22,3 @@ mac-host-protocol = { path = "../../crates/mac-host-protocol" }
 mac-hfs-b.workspace = true
 [build-dependencies]
 mac-build.workspace = true
-[dev-dependencies]
-risc-host = { path = "../../tools/risc-host" }
-risc-forks = { path = "../../tools/risc-forks" }
-mac-object-table.workspace = true

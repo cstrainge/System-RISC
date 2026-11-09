@@ -22,5 +22,3 @@ mac-hfs-b.workspace = true
 spinning_top = "=0.2.5"
 [build-dependencies]
 mac-build.workspace = true
-[dev-dependencies]
-mac-object-table.workspace = true
