@@ -178,9 +178,12 @@ The existing no_std memory diagnostic rebuilt against the integrated SDK and
 observed its finite native account, allocation/refusal and service-stack cases.
 Its first build correctly refused a stale fixture lockfile before guest execution;
 the offline workspace-only correction added the new entropy path dependency,
-without changing registry versions or runtime media. Its subsequent outcome was
-observed before final diagnostic-process closure; it does not qualify complete
-cleanup or the new ordinary-System physical counter.
+without changing registry versions or runtime media. That refusal is no longer
+the harness's behavior: a probe's own lock pins nothing that ships, so
+`sdk::standalone_application` lets Cargo resolve it instead of asserting it, and
+the correction recorded here would now happen inside the build. Its subsequent
+outcome was observed before final diagnostic-process closure; it does not
+qualify complete cleanup or the new ordinary-System physical counter.
 
 Every owned guest/helper was reaped and cloned media removed, including the
 pre-guest failure. The earlier broader conformance refusal remains unqualified.

@@ -1247,6 +1247,19 @@ pub(super) fn applications(workspace: &Workspace, apps: &[App]) -> Result<Vec<Va
 /// code-generation flags. A probe built any other way would be evidence about a
 /// different image than the one the platform installs.
 ///
+/// This build is deliberately not `--locked`, unlike the shipped image, whose
+/// dependency versions are part of the artifact. A probe is not shipped: its
+/// job is to run the toolbox on this machine, so the only part of its graph it
+/// does not inherit from the workspace is registry versions, which it cannot
+/// influence. Asserting the fixture's own lock therefore protected nothing —
+/// nothing compares that copy of the graph with the workspace — while making
+/// every change to the workspace graph, such as adding `mac-control-model` and
+/// `mac-control-state` to `mac-toolbox`, stop the boot check at its third case
+/// with a resolution error about the wrong file. Cargo resolves the fixture
+/// against the workspace it points at and rewrites the lock for what actually
+/// changed; while the lock matches, nothing is written and the probe is
+/// compiled from exactly the versions it names.
+///
 /// The returned path is the executable cargo produced for `binary`.
 pub(super) fn standalone_application(workspace: &Workspace, manifest: &Path, binary: &str)
                                      -> Result<PathBuf>
@@ -1317,7 +1330,7 @@ pub(super) fn standalone_application(workspace: &Workspace, manifest: &Path, bin
     let mut command = Command::new("cargo");
 
     command.current_dir(workspace.root())
-           .args(["build", "--release", "--locked", "--target", &target, "-Zjson-target-spec",
+           .args(["build", "--release", "--target", &target, "-Zjson-target-spec",
                   "-Zunstable-options"])
            .arg("--target-dir")
            .arg(&target_dir)
