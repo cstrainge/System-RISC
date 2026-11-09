@@ -14,14 +14,17 @@ use crate::{context::ThreadId,
 
 pub(super) struct Prepared
 {
-    pub admission:       LaunchAdmission,
-    pub heap:            application_heap::RootBinding,
-    pub tls:             native_threads::RootBinding,
-    pub loaded:          Option<super::super::files::application::Loaded>,
-    pub ready:           Option<OwnedJob>,
-    pub argv:            Option<super::Arguments>,
-    pub directory:       Option<crate::toolbox::files::local::directory::LaunchDirectory>,
-    pub directory_bound: bool
+    pub admission:        LaunchAdmission,
+    pub heap:             application_heap::RootBinding,
+    pub tls:              native_threads::RootBinding,
+    pub loaded:           Option<super::super::files::application::Loaded>,
+    pub ready:            Option<OwnedJob>,
+    pub argv:             Option<super::Arguments>,
+    /// Launcher whose live working directory a console child starts in. Only a
+    /// console launch has one; a GUI launch keeps the Documents default.
+    pub caller_directory: Option<crate::toolbox::handles::OwnerRef>,
+    pub directory:        Option<crate::toolbox::files::local::directory::LaunchDirectory>,
+    pub directory_bound:  bool
 }
 impl Drop for Prepared
 {
@@ -341,8 +344,19 @@ fn drive(call: &mut ProcessCall, loaded: Option<super::super::files::application
     {
         if prepared.directory.is_none()
         {
-            let directory = crate::toolbox::files::local::directory::LaunchDirectory::prepare(
-                prepared.admission.owner(), prepared.admission.allocation())?;
+            let directory = match prepared.caller_directory.as_ref()
+            {
+                // A console child starts in the directory its launcher is in.
+                Some(caller) => crate::toolbox::files::local::directory::LaunchDirectory::inherit(
+                    caller,
+                    prepared.admission.owner(),
+                    prepared.admission.allocation()
+                )?,
+                None => crate::toolbox::files::local::directory::LaunchDirectory::prepare(
+                    prepared.admission.owner(),
+                    prepared.admission.allocation()
+                )?
+            };
             prepared.directory = Some(directory);
         }
         let completed = crate::toolbox::files::local::directory::LaunchDirectory::advance(

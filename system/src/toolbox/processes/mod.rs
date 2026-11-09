@@ -1220,6 +1220,10 @@ fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::applica
     {
         return Ok(None);
     };
+    // A console child inherits its launcher's working directory; a GUI launch
+    // keeps the Documents default. reserve_application already enforced that a
+    // console session and a CLAP image imply each other.
+    let console = loaded.catalog.file_type == *b"CLAP";
     let roots = (|| {
         let prepared = crate::toolbox::application_heap::prepare_root(
                 admission.owner().clone(), admission.allocation()).map_err(|error| {
@@ -1285,11 +1289,12 @@ fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::applica
         {
             None
         };
-        Ok::<_, Status>((heap, tls, ready, argv))
+        let caller_directory = if console { Some(crate::context::current_owner()?) } else { None };
+        Ok::<_, Status>((heap, tls, ready, argv, caller_directory))
     })();
     match roots
     {
-        Ok((heap, tls, ready, argv)) =>
+        Ok((heap, tls, ready, argv, caller_directory)) =>
         {
             Ok(Some(launch::Prepared { admission,
                                        heap,
@@ -1297,6 +1302,7 @@ fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::applica
                                        loaded: Some(loaded),
                                        ready,
                                        argv,
+                                       caller_directory,
                                        directory: None,
                                        directory_bound: false }))
         }

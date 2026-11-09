@@ -1,6 +1,8 @@
-//! GUI Documents-directory admission. The prospective process owns a real
-//! catalog alias before any provider callback; cancellation retains that pin
-//! through the actual I/O Subject lifetime, never through a fabricated ID lease.
+//! Prospective-process directory admission. A GUI launch owns the startup
+//! volume's Documents alias; a console child instead takes its launcher's live
+//! working directory. Either way the process owns a real catalog alias before
+//! any provider callback, and cancellation retains that pin through the actual
+//! I/O Subject lifetime, never through a fabricated ID lease.
 #![forbid(unsafe_code)]
 use mac_filesystem_interface::{Arguments, Operation as SourceOperation};
 use mac_kernel_model::policy::MemoryClass;
@@ -113,6 +115,61 @@ impl LaunchDirectory
         })
     }
 
+    /// Admit a console child into its launcher's own working directory.
+    ///
+    /// A shell's child starts where the shell is, so the caller's live
+    /// directory alias is bound to the prospective process under the same
+    /// catalog target. This is the resident directory concept the process asks
+    /// CURRENT_DIRECTORY for, not a second one beside it: no provider read and
+    /// no startup-volume search happens here. A caller with no bound directory
+    /// is a real error rather than an invitation to silently fall back to GUI
+    /// Documents, which is only correct for a launch with no console.
+    pub(crate) fn inherit(caller: &OwnerRef, owner: &OwnerRef, allocation: AllocationAuthority)
+                          -> Result<Self, Status>
+    {
+        if !owner.accepting() || !caller.accepting() || allocation.owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let subject=crate::drivers::jobs::subjects::resident()?.admit(&subject::Authority::Client(owner.clone()),Target::Owner {account:allocation,class:MemoryClass::Kernel})?;
+        crate::context::with_allocation(subject.allocation().clone(), || {
+            let state = Arc::try_new(pins::DirectoryState::new()).map_err(|_| NO_MEMORY)?;
+            let kinds = crate::toolbox::handles::file_pin_kinds()?;
+            let system = crate::toolbox::handles::system_owner()?;
+            let (volume, node) =
+                files(|manager| {
+                    manager.validate_file_authority(owner.owner().incarnation(), owner)?;
+                    manager.prepare_executable_pins(system, kinds)?;
+                    let directory = manager.pins.directory(caller)?;
+                    manager.validate_transfer_read(owner.owner().incarnation(),
+                                                   directory.volume,
+                                                   directory.id)?;
+                    manager.pins.replace_directory(owner,
+                                                    directory,
+                                                    subject.scope().clone(),
+                                                    state.clone())?;
+                    Ok((directory.volume, directory.id))
+                }).map_err(|status| {
+                      serial!("LAUNCH_DIRECTORY_INHERIT_REFUSED caller={} app={} status={status}",
+                              caller.owner().incarnation(),
+                              owner.owner().incarnation());
+                      status
+                  })?;
+            serial!("LAUNCH_DIRECTORY_READY owner={} volume={} node={} policy=caller",
+                    owner.owner().incarnation(),
+                    volume,
+                    node);
+            Ok(Self { job: None,
+                      subject,
+                      owner: owner.clone(),
+                      volume,
+                      parent: node,
+                      provider: None,
+                      state,
+                      complete: true })
+        })
+    }
+
     /// Real provider notification only; the number is not operation authority.
     pub(crate) fn notification_id(&self) -> Option<u64>
     {
@@ -143,6 +200,11 @@ impl LaunchDirectory
 
     fn turn(&mut self) -> Result<bool, Status>
     {
+        // An inherited directory is already bound; there is no provider step.
+        if self.complete
+        {
+            return Ok(true);
+        }
         if !self.owner.accepting()
         {
             return Err(OPERATION_CANCELLED);
