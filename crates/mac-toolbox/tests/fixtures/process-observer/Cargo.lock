@@ -95,6 +95,9 @@ dependencies = [
 [[package]]
 name = "mac-abi"
 version = "0.1.0"
+dependencies = [
+ "mac-control-model",
+]
 
 [[package]]
 name = "mac-build"
@@ -116,6 +119,17 @@ name = "mac-code-resource"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+]
+
+[[package]]
+name = "mac-control-model"
+version = "0.1.0"
+
+[[package]]
+name = "mac-control-state"
+version = "0.1.0"
+dependencies = [
+ "mac-control-model",
 ]
 
 [[package]]
@@ -184,6 +198,7 @@ dependencies = [
  "toolbox-inspection",
  "toolbox-memory",
  "toolbox-menus",
+ "toolbox-pipes",
  "toolbox-power",
  "toolbox-processes",
  "toolbox-quickdraw",
@@ -295,6 +310,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sr-control-reflow-handling"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+]
+
+[[package]]
 name = "syn"
 version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -310,7 +332,10 @@ name = "toolbox-controls"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+ "mac-control-model",
+ "mac-control-state",
  "mac-traps",
+ "sr-control-reflow-handling",
  "toolbox-quickdraw",
 ]
 
@@ -354,6 +379,7 @@ dependencies = [
  "mac-abi",
  "mac-text",
  "mac-traps",
+ "toolbox-controls",
  "toolbox-drag",
 ]
 
@@ -391,6 +417,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "toolbox-pipes"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+]
+
+[[package]]
 name = "toolbox-power"
 version = "0.1.0"
 dependencies = [
@@ -424,6 +458,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "toolbox-files",
 ]
 
 [[package]]
