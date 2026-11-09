@@ -6,6 +6,44 @@ as the list of things fixed.
 
 ## Position
 
+### Position after the boot-outcome vocabulary was unified (2026-11-08)
+
+`cargo xtask boot-check --platform qemu_arm64` at `00bd56b9` passes the first ten
+cases it constructs: `no-disk`, `raw-hfs-b`, `fonts-probe`, `pipes-probe`,
+`qcow2-hfs-b`, `system-resource-fork-over-4mib`,
+`classic-hfs-is-not-native-startup`, `renamed-blessed-folder`, `unblessed` and
+`missing-system`. `raw-hfs-b` still reaches `DESKTOP_READY: Finder and native
+Window Manager` with `FINDER_POWER_CAPABILITIES shutdown=true restart=true`, and
+`classic-hfs-is-not-native-startup` states `native boot requires HFS-B; recreate
+System disk` before the terminal `BOOT_NO_SYSTEM:`, so a case passes on the
+reason the volume was refused, not on the bootstrap going quiet.
+
+The run stops in `missing-finder`. That is not a reporting defect: the AArch64
+bootstrap loads and enters System without validating the startup Finder, which
+the RISC-V bootstrap does before the handoff, and System then refuses the boot
+with `SYSTEM_STARTUP_FAILED: startup file or resource is missing`. The case
+asserts a ROM-level refusal (`startup file is missing` and `BOOT_NO_SYSTEM:`, with
+no boot), so the count is 10 of 19 and the remaining cases — `bad-code`,
+`bad-elf-resource`, `bad-obsolete-nabi`, `bad-role`, `bad-address`,
+`apple-partition-map`, `disk-fallback`, `invalid-system-fallback` — are
+unexercised, because the check stops at the first failure. `apple-partition-map`
+is expected to fail independently when it is reached: the AArch64 walk reads an
+MBR (`mac_block::mbr_partitions`) where the RISC-V one uses the shared
+`mac_filesystem::partitions`, so an Apple partition map is never enumerated.
+
+Both bootstraps now state a refused candidate once, with the cause the shared
+stack produced: `mac_bootloader::report::REFUSED_PREFIX` and `refused(cause)`
+replace the AArch64 bootstrap's own `BOOT_AARCH64_SYSTEM_REFUSED` and
+`BOOT_AARCH64_HANDOFF_REFUSED` and the RISC-V one's `BOOT REJECTED`, the disk
+walk ends in `no_system(disks)` on both machines, and the wording for an absent
+ABI or code resource and for an incompatible System is a shared constant rather
+than a per-bootstrap sentence. `qemu_arm64` therefore no longer lists the removed
+per-candidate markers as boot failures; a refusal that ends in `BOOT_NO_SYSTEM:`
+is the terminal outcome, not a crash. The stage markers that describe the
+machine — `BOOT_AARCH64_EL1_READY`, `MMU_READY`, `PHYSMAP_READY`,
+`KERNELMAP_READY`, the device-tree, counter, CPU, RAM, monitor, PSCI and
+virtio-blk lines — stay as they are.
+
 ### Position after the arm64 power capability (2026-11-08)
 
 `cargo xtask boot-check --platform qemu_arm64` on the tree that installs the PSCI
