@@ -1250,6 +1250,9 @@ dependencies = [
 [[package]]
 name = "mac-abi"
 version = "0.1.0"
+dependencies = [
+ "mac-control-model",
+]
 
 [[package]]
 name = "mac-block"
@@ -1306,6 +1309,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-control-model"
+version = "0.1.0"
+
+[[package]]
+name = "mac-control-state"
+version = "0.1.0"
+dependencies = [
+ "mac-control-model",
+]
+
+[[package]]
 name = "mac-definition"
 version = "0.1.0"
 dependencies = [
@@ -1321,6 +1335,7 @@ dependencies = [
 name = "mac-definition-macros"
 version = "0.1.0"
 dependencies = [
+ "mac-control-model",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -1570,6 +1585,8 @@ dependencies = [
  "mac-abi",
  "mac-boot-screen",
  "mac-build",
+ "mac-control-model",
+ "mac-control-state",
  "mac-definition",
  "mac-device-interface",
  "mac-devicetree",
@@ -1781,6 +1798,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-activity-indicator-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-breadcrumb-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
 name = "native-buttons-cdef"
 version = "0.1.0"
 dependencies = [
@@ -1792,6 +1825,78 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-color-well-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-date-time-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-disclosure-triangle-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-drop-menu-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-graph-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-group-box-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-icon-view-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-list-box-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-list-edit-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
 name = "native-mdef"
 version = "0.1.0"
 dependencies = [
@@ -1800,6 +1905,30 @@ dependencies = [
  "mac-definition",
  "mac-traps",
  "toolbox-quickdraw",
+]
+
+[[package]]
+name = "native-meter-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-overflow-arrows-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-picture-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
 ]
 
 [[package]]
@@ -1825,7 +1954,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-search-field-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-segmented-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
 name = "native-separator-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-slider-cdef"
 version = "0.1.0"
 dependencies = [
  "mac-build",
@@ -1850,7 +2003,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-stepper-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-tab-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
 name = "native-table-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-text-edit-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-tooltip-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
+name = "native-tree-cdef"
 version = "0.1.0"
 dependencies = [
  "mac-build",
@@ -1988,6 +2181,17 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qemu-power-device"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-power-interface",
+ "spinning_top",
+]
 
 [[package]]
 name = "quickdraw-test"
@@ -2853,6 +3057,8 @@ name = "toolbox-controls"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+ "mac-control-model",
+ "mac-control-state",
  "mac-traps",
  "sr-control-reflow-handling",
  "toolbox-quickdraw",
@@ -2898,6 +3104,7 @@ dependencies = [
  "mac-abi",
  "mac-text",
  "mac-traps",
+ "toolbox-controls",
  "toolbox-drag",
 ]
 

@@ -29,8 +29,33 @@ pub enum StandardKind
     /// Grid container; prefer the typed Table owner for child placement.
     Table              = mac_abi::controls::TABLE_PROCEDURE,
     Splitter           = mac_abi::controls::SPLITTER_PROCEDURE,
-    /// Passive horizontal/vertical rule; labels are not yet supported.
-    Separator          = mac_abi::controls::SEPARATOR_PROCEDURE
+    /// V2 suite stub with stored typed properties.
+    Separator          = mac_abi::controls::SEPARATOR_PROCEDURE,
+    GroupBox           = mac_abi::controls::GROUP_BOX_PROCEDURE,
+    Picture            = mac_abi::controls::PICTURE_PROCEDURE,
+    ActivityIndicator  = mac_abi::controls::ACTIVITY_INDICATOR_PROCEDURE,
+    DropMenu           = mac_abi::controls::DROP_MENU_PROCEDURE,
+    DropMenuFixed      = mac_abi::controls::DROP_MENU_FIXED_PROCEDURE,
+    ListBox            = mac_abi::controls::LIST_BOX_PROCEDURE,
+    SearchField        = mac_abi::controls::SEARCH_FIELD_PROCEDURE,
+    OverflowArrows     = mac_abi::controls::OVERFLOW_ARROWS_PROCEDURE,
+    Slider             = mac_abi::controls::SLIDER_PROCEDURE,
+    Stepper            = mac_abi::controls::STEPPER_PROCEDURE,
+    DisclosureTriangle = mac_abi::controls::DISCLOSURE_TRIANGLE_PROCEDURE,
+    Meter              = mac_abi::controls::METER_PROCEDURE,
+    Segmented          = mac_abi::controls::SEGMENTED_PROCEDURE,
+    DateTime           = mac_abi::controls::DATE_TIME_PROCEDURE,
+    ListEdit           = mac_abi::controls::LIST_EDIT_PROCEDURE,
+    Tab                = mac_abi::controls::TAB_PROCEDURE,
+    Breadcrumb         = mac_abi::controls::BREADCRUMB_PROCEDURE,
+    ColorWell          = mac_abi::controls::COLOR_WELL_PROCEDURE,
+    Tree               = mac_abi::controls::TREE_PROCEDURE,
+    IconView           = mac_abi::controls::ICON_VIEW_PROCEDURE,
+    Graph              = mac_abi::controls::GRAPH_PROCEDURE,
+    Tooltip            = mac_abi::controls::TOOLTIP_PROCEDURE,
+    TextEdit           = mac_abi::controls::TEXT_EDIT_PROCEDURE,
+    TextEditView       = mac_abi::controls::TEXT_EDIT_VIEW_PROCEDURE,
+    TextEditPassword   = mac_abi::controls::TEXT_EDIT_PASSWORD_PROCEDURE
 }
 impl TryFrom<i16> for StandardKind
 {
@@ -51,6 +76,31 @@ impl TryFrom<i16> for StandardKind
             mac_abi::controls::TABLE_PROCEDURE => Ok(Self::Table),
             mac_abi::controls::SPLITTER_PROCEDURE => Ok(Self::Splitter),
             mac_abi::controls::SEPARATOR_PROCEDURE => Ok(Self::Separator),
+            mac_abi::controls::GROUP_BOX_PROCEDURE => Ok(Self::GroupBox),
+            mac_abi::controls::PICTURE_PROCEDURE => Ok(Self::Picture),
+            mac_abi::controls::ACTIVITY_INDICATOR_PROCEDURE => Ok(Self::ActivityIndicator),
+            mac_abi::controls::DROP_MENU_PROCEDURE => Ok(Self::DropMenu),
+            mac_abi::controls::DROP_MENU_FIXED_PROCEDURE => Ok(Self::DropMenuFixed),
+            mac_abi::controls::LIST_BOX_PROCEDURE => Ok(Self::ListBox),
+            mac_abi::controls::SEARCH_FIELD_PROCEDURE => Ok(Self::SearchField),
+            mac_abi::controls::OVERFLOW_ARROWS_PROCEDURE => Ok(Self::OverflowArrows),
+            mac_abi::controls::SLIDER_PROCEDURE => Ok(Self::Slider),
+            mac_abi::controls::STEPPER_PROCEDURE => Ok(Self::Stepper),
+            mac_abi::controls::DISCLOSURE_TRIANGLE_PROCEDURE => Ok(Self::DisclosureTriangle),
+            mac_abi::controls::METER_PROCEDURE => Ok(Self::Meter),
+            mac_abi::controls::SEGMENTED_PROCEDURE => Ok(Self::Segmented),
+            mac_abi::controls::DATE_TIME_PROCEDURE => Ok(Self::DateTime),
+            mac_abi::controls::LIST_EDIT_PROCEDURE => Ok(Self::ListEdit),
+            mac_abi::controls::TAB_PROCEDURE => Ok(Self::Tab),
+            mac_abi::controls::BREADCRUMB_PROCEDURE => Ok(Self::Breadcrumb),
+            mac_abi::controls::COLOR_WELL_PROCEDURE => Ok(Self::ColorWell),
+            mac_abi::controls::TREE_PROCEDURE => Ok(Self::Tree),
+            mac_abi::controls::ICON_VIEW_PROCEDURE => Ok(Self::IconView),
+            mac_abi::controls::GRAPH_PROCEDURE => Ok(Self::Graph),
+            mac_abi::controls::TOOLTIP_PROCEDURE => Ok(Self::Tooltip),
+            mac_abi::controls::TEXT_EDIT_PROCEDURE => Ok(Self::TextEdit),
+            mac_abi::controls::TEXT_EDIT_VIEW_PROCEDURE => Ok(Self::TextEditView),
+            mac_abi::controls::TEXT_EDIT_PASSWORD_PROCEDURE => Ok(Self::TextEditPassword),
             _ => Err(mac_traps::Error::NotSupported)
         }
     }
@@ -90,8 +140,7 @@ impl Part
         }
     }
 }
-pub use mac_abi::controls::{SCROLL_DOWN, SCROLL_PAGE_DOWN, SCROLL_PAGE_UP, SCROLL_THUMB,
-                            SCROLL_UP, SEPARATOR_VERTICAL};
+pub use mac_abi::controls::{SCROLL_DOWN, SCROLL_PAGE_DOWN, SCROLL_PAGE_UP, SCROLL_THUMB, SCROLL_UP};
 pub use mac_traps::{Client, Error, Result};
 pub struct Controls<'a>
 {
@@ -222,3 +271,10 @@ pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, StaticTextRe
 mod table;
 pub use table::{AdoptionError, Cell, Child, ChildHit, Children, ContentRect, GridLines,
                 ScrollInfo, ScrollPosition, Scrolling, Table, TableRef};
+
+#[cfg(feature = "suite")]
+extern crate alloc;
+#[cfg(feature = "suite")]
+pub mod suite;
+#[cfg(feature = "suite")]
+pub mod highlight;

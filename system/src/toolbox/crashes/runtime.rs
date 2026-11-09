@@ -272,7 +272,10 @@ impl super::Toolbox
         }
         if let Some(fault) = record.fault
         {
-            let name = self.processes.get(binding.owner()).map(|process| process.info.name()).unwrap_or("");
+            let name = self.processes
+                           .get(binding.owner())
+                           .map(|process| process.info.name())
+                           .unwrap_or("");
             self.crash.append_native_fault(fault, label(32)?.text()?, name)?;
         }
         let retention = self.crash.seal_failure_capture();
@@ -505,7 +508,9 @@ impl super::Toolbox
         let entry = crate::loader::cached_definition(*b"WDEF", id).map_err(crate::loader::status)?
                                                                   .ok_or(NOT_FOUND)?;
         let mut state = definitions::WindowDefinitionState::new(request.bounds, title);
-        let mut call = DefinitionCall { reflow: 0,
+        let mut call = DefinitionCall { properties: core::ptr::null(),
+                                        properties_length: 0,
+                                        reflow: 0,
                                         header: Header::for_type::<DefinitionCall>(),
                                         kind: definitions::WDEF,
                                         id,
@@ -908,7 +913,8 @@ impl super::Toolbox
                 }
                 else
                 {
-                    let description = label(self.crash.description_label(self.is_current_finder_report()))?;
+                    let description =
+                        label(self.crash.description_label(self.is_current_finder_report()))?;
                     self.crash_text(window, &port, MONACO, 14, 72, description.text()?)?;
                     paint.clear();
                     for (enabled, index) in [(info.flags & TRUNCATED != 0, 5),

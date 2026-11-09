@@ -2394,7 +2394,7 @@ impl Browser
                 let pending = &mut self.windows[slot].as_mut().unwrap().pending_clicks;
                 let next =
                     pending.iter_mut().find(|click| click.is_none()).ok_or(Error::NoMemory)?;
-                *next = Some((event.as_record(), position));
+                *next = Some((event.as_record()?, position));
                 return Ok(ClickOutcome::Deferred);
             }
             let mut hit = None;
@@ -2640,7 +2640,7 @@ impl Browser
                                  .iter_mut()
                                  .find(|event| event.is_none())
                                  .ok_or(Error::NoMemory)?;
-                *next = Some((event.as_record(), position));
+                *next = Some((event.as_record()?, position));
                 return Ok(());
             }
             if matches!(event, Event::KeyDown { .. })

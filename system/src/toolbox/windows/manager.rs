@@ -479,7 +479,9 @@ impl Window
             disposal: Option<DefinitionDisposal<'_>>)
             -> i64
     {
-        let mut call = DefinitionCall { reflow: 0,
+        let mut call = DefinitionCall { properties: core::ptr::null(),
+                                        properties_length: 0,
+                                        reflow: 0,
                                         header: Header::for_type::<DefinitionCall>(),
                                         kind: definition::WDEF,
                                         id: self.procedure >> 4,
@@ -1356,14 +1358,12 @@ impl WindowManager
         {
             return self.defer_trusted_release(ticket);
         }
-        self.release_trusted_now(ticket,
-                                 #[cfg(systemrisc)]
+        self.release_trusted_now(ticket, #[cfg(systemrisc)]
                                  None)
     }
 
     fn release_trusted_now(&mut self, ticket: mac_object_table::domain::ReleasedResource,
-                           #[cfg(systemrisc)]
-                           trusted: Option<trusted::TrustedCloseHandle>)
+                           #[cfg(systemrisc)] trusted: Option<trusted::TrustedCloseHandle>)
                            -> Result<WindowId, Failure>
     {
         use mac_object_table::registry::CleanupFailure;
@@ -1784,11 +1784,9 @@ impl WindowManager
     #[allow(clippy::too_many_arguments)]
     fn initialize_window(&mut self, id: WindowId, procedure: i16, events: &mut EventManager,
                          when: u32, activate: bool,
-                         #[cfg(systemrisc)]
-                         recovery: Option<crate::recovery::Activity>,
+                         #[cfg(systemrisc)] recovery: Option<crate::recovery::Activity>,
                          #[cfg(systemrisc)] recovery_slot: Option<usize>,
-                         #[cfg(systemrisc)]
-                         trusted_binding: Option<trusted::TrustedBinding>)
+                         #[cfg(systemrisc)] trusted_binding: Option<trusted::TrustedBinding>)
                          -> Result<WindowId, CreationError>
     {
         // The canonical slot exists, but public lookup deliberately hides it

@@ -12,17 +12,22 @@ pub(super) fn begin(call: &UserCall, arguments: DirectArguments) -> Result<Pendi
     {
         return Err(BAD_ARGUMENT);
     }
-    let request = Request { kind:      call.kind,
-                            id:        call.id,
-                            variation: call.variation,
-                            message:   call.message,
-                            reflow:    call.reflow,
-                            object:    Object::Opaque { owner:    arguments.owner,
-                                                        image_id: arguments.image_id,
-                                                        object:   arguments.object,
-                                                        surface:  arguments.surface },
-                            arguments: Arguments::Scalar(arguments.param),
-                            surface:   None };
+    if call.kind == CDEF && call.message == controls::MESSAGE_DEFINITION
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let request = Request { properties: None,
+                            kind:       call.kind,
+                            id:         call.id,
+                            variation:  call.variation,
+                            message:    call.message,
+                            reflow:     call.reflow,
+                            object:     Object::Opaque { owner:    arguments.owner,
+                                                         image_id: arguments.image_id,
+                                                         object:   arguments.object,
+                                                         surface:  arguments.surface },
+                            arguments:  Arguments::Scalar(arguments.param),
+                            surface:    None };
     super::enqueue(arguments.reference,
                    request,
                    crate::context::current_thread_context().identity().thread)
@@ -55,6 +60,10 @@ pub(crate) unsafe fn dispatch_supervisor(call: &mut UserCall) -> i64
     {
         return BAD_ABI as i64;
     }
+    if call.kind == CDEF && call.message == controls::MESSAGE_DEFINITION
+    {
+        return BAD_ARGUMENT as i64;
+    }
     let entry = match crate::loader::prepare_definition(call.kind.to_be_bytes(), call.id)
     {
         Ok(entry) => entry,
@@ -72,23 +81,29 @@ pub(crate) unsafe fn dispatch_supervisor(call: &mut UserCall) -> i64
 
 unsafe fn invoke(entry: super::super::DefinitionRef, call: &UserCall) -> i64
 {
-    let mut definition = DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
-                                          kind:      call.kind,
-                                          id:        call.id,
-                                          variation: call.variation,
-                                          message:   call.message,
-                                          reserved:  0,
-                                          param:     call.param,
-                                          object:    call.object as *mut (),
-                                          surface:   call.surface as *mut Surface,
-                                          gate:      crate::machine::traps::gateway,
-                                          reflow:    call.reflow };
+    let mut definition = DefinitionCall { properties:        core::ptr::null(),
+                                          properties_length: 0,
+                                          header:            Header::for_type::<DefinitionCall>(),
+                                          kind:              call.kind,
+                                          id:                call.id,
+                                          variation:         call.variation,
+                                          message:           call.message,
+                                          reserved:          0,
+                                          param:             call.param,
+                                          object:            call.object as *mut (),
+                                          surface:           call.surface as *mut Surface,
+                                          gate:              crate::machine::traps::gateway,
+                                          reflow:            call.reflow };
     super::super::invoke(entry, &mut definition)
 }
 
 unsafe fn validate_input(call: &UserCall) -> Result<(), Status>
 {
     if !call.header.supports::<UserCall>() || call.reserved != 0 || call.object == 0
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    if call.kind == CDEF && call.message == controls::MESSAGE_DEFINITION
     {
         return Err(BAD_ARGUMENT);
     }

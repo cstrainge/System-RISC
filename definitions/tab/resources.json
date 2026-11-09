@@ -1,0 +1,9 @@
+{
+  "name": "CDEF_TAB",
+  "file_type": "rsrc",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 1,
+  "description": "Tab control definition",
+  "resources": []
+}

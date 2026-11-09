@@ -55,7 +55,8 @@ impl PreparedWindowCallback
                                                              super::super::BindingReleased };
         let allocation = definition.source.allocation_target();
         let job = crate::allocator::with_target(allocation, || {
-            let mut packet = Request { kind: WDEF,
+            let mut packet = Request { properties: None,
+                                       kind: WDEF,
                                        id,
                                        variation,
                                        message,
@@ -196,7 +197,8 @@ impl PreparedControlDisposal
             Object::Scrollbar(state) => Object::Scrollbar(*state),
             _ => return Err(BAD_ARGUMENT)
         };
-        let request = Request { kind: request.kind,
+        let request = Request { properties: None,
+                                kind: request.kind,
                                 id: request.id,
                                 variation: request.variation,
                                 message: request.message,

@@ -80,6 +80,10 @@ pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
                  definitions::CALLBACK_BYTES as usize,
                  definitions::CALLBACK_GRID_AXIS as usize,
                  definitions::CALLBACK_GRID_PAINT as usize,
+                 definitions::CALLBACK_CONTROL_MESSAGE as usize,
+                 controls::SEND_MESSAGE as usize,
+                 controls::MESSAGE_DEFINITION as usize,
+                 size_of::<controls::MessageData>(),
                  definitions::CALLBACK_SURFACE as usize,
                  controls::CDEF_PROGRESS_BAR as usize,
                  controls::CDEF_STATIC_TEXT as usize,
@@ -91,7 +95,15 @@ pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
                  controls::TABLE_PROCEDURE as usize,
                  controls::SPLITTER_PROCEDURE as usize,
                  controls::SEPARATOR_PROCEDURE as usize,
-                 controls::SEPARATOR_VERTICAL as usize,
+                 controls::DROP_MENU_FIXED_PROCEDURE as usize,
+                 controls::suite::SCHEMA_FINGERPRINT as usize,
+                 core::mem::size_of::<controls::PropertiesCall>(),
+                 core::mem::align_of::<controls::PropertiesCall>(),
+                 core::mem::offset_of!(definitions::CallbackPacket, properties),
+                 core::mem::offset_of!(DefinitionCall, properties),
+                 core::mem::offset_of!(DefinitionCall, properties_length),
+                 controls::GET_PROPERTIES as usize,
+                 controls::SET_PROPERTIES as usize,
                  controls::PROGRESS_MONOCHROME as usize,
                  core::mem::size_of::<entropy::Call>(),
                  core::mem::align_of::<entropy::Call>(),
@@ -631,19 +643,22 @@ pub struct Surface
 #[repr(C)]
 pub struct DefinitionCall
 {
-    pub header:    Header,
-    pub kind:      u32,
-    pub id:        i16,
-    pub variation: i16,
-    pub message:   i16,
-    pub reserved:  u16,
-    pub param:     i64,
-    pub object:    *mut (),
-    pub surface:   *mut Surface,
-    pub gate:      TrapGate,
+    /// Immutable typed instance bytes, retained by the genuine CTRL snapshot.
+    pub properties:        *const u8,
+    pub properties_length: usize,
+    pub header:            Header,
+    pub kind:              u32,
+    pub id:                i16,
+    pub variation:         i16,
+    pub message:           i16,
+    pub reserved:          u16,
+    pub param:             i64,
+    pub object:            *mut (),
+    pub surface:           *mut Surface,
+    pub gate:              TrapGate,
     /// Native control-instance metadata; zero for other definition families.
     /// Independent of the original resource ID and variation encoding.
-    pub reflow:    u32
+    pub reflow:            u32
 }
 pub type DefinitionEntry = unsafe extern "C" fn(*mut DefinitionCall) -> i64;
 

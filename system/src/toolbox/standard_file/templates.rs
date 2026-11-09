@@ -248,5 +248,5 @@ pub(in crate::toolbox) fn required_control_count() -> Result<usize, Status>
                               })
                               .max()
                               .ok_or(BAD_ABI)?;
-    main.checked_add(auxiliary).ok_or(BAD_ABI)
+    main.checked_add(auxiliary).and_then(|count| count.checked_add(1)).ok_or(BAD_ABI)
 }

@@ -291,6 +291,7 @@ fn main<'a>(message: Message<'a, Scrollbar>, services: Services<'a>) -> Result<R
             }
         }
         Message::Initialize(_) | Message::Dispose(_) => (),
+        Message::Control { .. } => return Err(mac_definition::Error::NotSupported),
         Message::CalculateRegions(_) | Message::ChangeBounds { .. } =>
         {
             return Err(Error::NotSupported);

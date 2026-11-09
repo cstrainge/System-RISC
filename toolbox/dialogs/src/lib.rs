@@ -39,7 +39,7 @@ impl<'a> Dialogs<'a>
     {
         let mut call = DialogCall { operation: HANDLE_EVENT,
                                     window: window.0,
-                                    event: event.as_record(),
+                                    event: event.as_record()?,
                                     ..Default::default() };
         self.client.dialog(&mut call)?;
         Ok((call.item != 0).then_some(call.item))

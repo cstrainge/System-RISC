@@ -8,6 +8,7 @@ publish.workspace = true
 proc-macro = true
 
 [dependencies]
+mac-control-model = { path = "../mac-control-model" }
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }

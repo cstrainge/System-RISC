@@ -452,17 +452,20 @@ impl super::Toolbox
                 crate::loader::cached_definition(*b"WDEF", 0).map_err(crate::loader::status)?
                                                              .ok_or(NOT_FOUND)?;
             let mut state = definitions::WindowDefinitionState::new(alert.bounds, "");
-            let mut definition = DefinitionCall { reflow:    0,
-                                                  header:    Header::for_type::<DefinitionCall>(),
-                                                  kind:      definitions::WDEF,
-                                                  id:        0,
-                                                  variation: 1,
-                                                  message:   definitions::CALCULATE,
-                                                  reserved:  0,
-                                                  param:     0,
-                                                  object:    core::ptr::from_mut(&mut state).cast(),
-                                                  surface:   core::ptr::null_mut(),
-                                                  gate:      crate::machine::traps::gateway };
+            let mut definition =
+                DefinitionCall { properties:        core::ptr::null(),
+                                 properties_length: 0,
+                                 reflow:            0,
+                                 header:            Header::for_type::<DefinitionCall>(),
+                                 kind:              definitions::WDEF,
+                                 id:                0,
+                                 variation:         1,
+                                 message:           definitions::CALCULATE,
+                                 reserved:          0,
+                                 param:             0,
+                                 object:            core::ptr::from_mut(&mut state).cast(),
+                                 surface:           core::ptr::null_mut(),
+                                 gate:              crate::machine::traps::gateway };
             let status = crate::toolbox::resources::definitions::invoke(entry, &mut definition);
             if status < 0
             {

@@ -1,0 +1,9 @@
+{
+  "name": "CDEF_METER",
+  "file_type": "rsrc",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 1,
+  "description": "Meter control definition",
+  "resources": []
+}

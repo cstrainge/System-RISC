@@ -99,6 +99,7 @@ fn main<'a>(message: Message<'a, Progress>, services: Services<'a>) -> Result<Re
                 draw(&mut port, &state, services.theme()?)?;
             }
         }
+        Message::Control { .. } => return Err(mac_definition::Error::NotSupported),
         Message::ChangeBounds { before,
                                 after,
                                 damage } =>

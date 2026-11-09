@@ -96,6 +96,9 @@ pub(crate) use window_runtime::{BirthProgress as UserWindowProgress, UserBirth a
                                 native_window};
 #[path = "controls/runtime.rs"]
 mod control_runtime;
+#[path = "controls/properties.rs"]
+mod control_properties;
+pub(crate) use control_properties::{begin_message, native_properties};
 pub(crate) use control_runtime::{admit_offscreen, offscreen_toolbox};
 #[path = "controls/scrollbox/runtime.rs"]
 mod scroll_box_runtime;
@@ -325,6 +328,9 @@ impl Toolbox
                     })?;
                     crate::loader::prepare_system_definition(source, *b"CDEF", id)?;
                 }
+                crate::loader::prepare_system_definition(source,
+                                                         *b"CDEF",
+                                                         mac_abi::controls::CDEF_DROP_MENU)?;
                 self.windows.prepare_recovery(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Window Manager status={status}"); status })?;
                 self.controls.prepare_recovery(&storage, controls).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Control Manager status={status}"); status })?;
                 self.prepare_system_report_slot(&storage)?;
@@ -1153,7 +1159,8 @@ impl Toolbox
                 self.content_changed(id.0);
             }
         }
-        else if !matches!(operation, BEGIN_UPDATE | INVALIDATE_WINDOW | SET_CLOSE_DEFERRED | SELECT_WINDOW)
+        else if !matches!(operation,
+                            BEGIN_UPDATE | INVALIDATE_WINDOW | SET_CLOSE_DEFERRED | SELECT_WINDOW)
         {
             self.presentation.redraw = true;
         }
@@ -2864,7 +2871,7 @@ impl Toolbox
                             if let Some(command) = button
                             {
                                 let mut state = control(command);
-                                let mut call = DefinitionCall { reflow: 0, header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 1, reserved: 0, param: (((local.v as u16 as u32) << 16) | local.h as u16 as u32) as i64, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: core::ptr::null_mut() };
+                                let mut call = DefinitionCall { properties: core::ptr::null(), properties_length: 0, reflow: 0, header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 1, reserved: 0, param: (((local.v as u16 as u32) << 16) | local.h as u16 as u32) as i64, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: core::ptr::null_mut() };
                                 if super::resources::definitions::invoke(self.cdef, &mut call) > 0
                                 {
                                     self.events.post_system(Event { payload: 0,
@@ -3663,7 +3670,7 @@ fn paint(canvas: &mut Canvas, command: &DrawCommand, cdef: DefinitionRef)
         {
             let mut state = control(command);
             let mut surface = Surface::from_canvas(canvas);
-            let mut call = DefinitionCall { reflow: 0, header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 0, reserved: 0, param: 0, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: &mut surface };
+            let mut call = DefinitionCall { properties: core::ptr::null(), properties_length: 0, reflow: 0, header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 0, reserved: 0, param: 0, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: &mut surface };
             super::resources::definitions::invoke(cdef, &mut call);
         }
         _ =>

@@ -5,8 +5,8 @@
 use core::{fmt::{self, Write},
            sync::atomic::{AtomicPtr, Ordering}};
 
-use mac_toolbox::{System, SystemServices};
 use mac_abi::events::EventKind;
+use mac_toolbox::{System, SystemServices};
 #[path = "../../../conformance/mod.rs"]
 mod conformance;
 mod reflow;
@@ -119,8 +119,8 @@ fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance:
         loop
         {
             let event = system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
-            if event.as_record().kind == EventKind::KeyDown
-               && event.as_record().character() == b' '
+            if event.as_record()?.kind == EventKind::KeyDown
+               && event.as_record()?.character() == b' '
             {
                 break;
             }

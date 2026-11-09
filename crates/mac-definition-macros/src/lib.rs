@@ -100,8 +100,8 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
                                         "StaticText" => Some(quote!(static_text_entry)),
                                         "Table" => Some(quote!(table_entry)),
                                         "Splitter" => Some(quote!(splitter_entry)),
-                                        "Separator" => Some(quote!(separator_entry)),
-                                        _ => None
+
+                                        name => mac_control_model::CONTROLS.iter().find(|control|control.name==name).map(|control|{let entry=proc_macro2::Ident::new(control.entry,segment.ident.span());quote!(#entry)})
                                     }
                                 })
                   }
@@ -112,7 +112,7 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
                        syn::Error::new(state.span(),
                                        format!("unsupported CDEF state type `{}`; expected \
                                                 Button, Scrollbar, Progress, StaticText, Table \
-                                                Splitter or Separator",
+                                                Splitter or a v2 suite control",
                                                quote!(#state)))
                    })?;
     Ok(quote! {

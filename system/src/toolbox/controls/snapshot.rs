@@ -10,11 +10,23 @@ use crate::toolbox::resources::definitions::BoundDefinition;
 
 pub(super) struct Title
 {
-    bytes:  [u8; mac_abi::INLINE_STRING_BYTES],
-    length: u32
+    bytes:                 [u8; mac_abi::INLINE_STRING_BYTES],
+    length:                u32,
+    pub(super) properties: Option<Arc<mac_control_state::State>>,
+    pub(super) revision:   u64
 }
 impl Title
 {
+    pub(super) fn with_properties(previous: &Self, properties: Arc<mac_control_state::State>,
+                                  revision: u64)
+                                  -> Self
+    {
+        Self { bytes: previous.bytes,
+               length: previous.length,
+               properties: Some(properties),
+               revision }
+    }
+
     pub(super) fn matches(&self, state: &ControlDefinitionState) -> bool
     {
         self.length == state.title_length && self.bytes == state.title
@@ -32,8 +44,14 @@ impl Title
         {
             return Ok(previous.clone());
         }
-        Arc::try_new(Self { bytes:  state.title,
-                            length: state.title_length }).map_err(|_| NO_MEMORY)
+        Arc::try_new(Self { bytes:      state.title,
+                            length:     state.title_length,
+                            properties: previous.and_then(|old| old.properties.clone()),
+                            revision:   match previous
+                            {
+                                Some(old) => old.revision.checked_add(1).ok_or(NO_MEMORY)?,
+                                None => 1
+                            } }).map_err(|_| NO_MEMORY)
     }
 }
 pub(super) struct Standard
@@ -95,9 +113,18 @@ impl Standard
                                  splitter_parent: self.splitter_parent }
     }
 
+    pub(super) fn properties(&self) -> Option<Arc<mac_control_state::State>>
+    {
+        self.title.properties.clone()
+    }
+
     pub(super) fn storage(&self) -> usize
     {
         core::mem::size_of::<Title>()
+        + self.title
+              .properties
+              .as_ref()
+              .map_or(0, |p| core::mem::size_of::<mac_control_state::State>() + p.as_bytes().len())
     }
 }
 

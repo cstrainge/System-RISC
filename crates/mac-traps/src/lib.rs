@@ -385,6 +385,12 @@ impl<'a> Client<'a>
     /// for the supplied resource's native contract throughout this call.
     pub unsafe fn definition(self, call: &mut DefinitionCall) -> Result<i64>
     {
+        // This legacy-shaped raw request carries no extended instance buffer.
+        // Those bytes use the canonical managed CTRL/callback snapshot path.
+        if call.properties_length != 0
+        {
+            return Err(Error::NotSupported);
+        }
         let mut request = definitions::UserCall { header:
                                                       Header::for_type::<definitions::UserCall>(),
                                                   kind:      call.kind,
@@ -1087,6 +1093,22 @@ impl SurfaceConnection<'_>
 
 impl Client<'_>
 {
+    /// Borrow property input/output only for this synchronous CONTROL request.
+    /// The resident manager validates and owns any accepted state.
+    pub fn control_properties(self, call: &mut mac_abi::controls::PropertiesCall, input: &[u8],
+                              output: &mut [u8])
+                              -> Result<()>
+    {
+        call.input = input.as_ptr();
+        call.length = input.len();
+        call.output = output.as_mut_ptr();
+        call.capacity = output.len();
+        let result = status(self.invoke(CONTROL, call));
+        call.input = core::ptr::null();
+        call.output = core::ptr::null_mut();
+        result
+    }
+
     pub fn control(self, call: &mut mac_abi::controls::ControlCall) -> Result<()>
     {
         call.surface = core::ptr::null_mut();

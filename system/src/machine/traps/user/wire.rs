@@ -1559,3 +1559,4 @@ wire_struct!(mac_abi::timers::Call { operation: u32,
                                      deadline:  u64,
                                      remaining: u64,
                                      anchor:    u64 });
+wire_struct!(mac_abi::controls::PropertiesCall {id:u64,operation:u32,field:u32,input:*const u8,length:usize,output:*mut u8,capacity:usize,required:usize,revision:u64});

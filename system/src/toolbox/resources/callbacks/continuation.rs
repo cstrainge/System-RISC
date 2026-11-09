@@ -15,6 +15,7 @@ use crate::{machine::scheduler::{callbacks::wait_call,
 pub(crate) enum Continuation
 {
     Direct(super::Pending),
+    ControlMessage(super::Pending),
     ScrollBoxStart,
     ScrollBox(UserScrollBoxOperation),
     Window(UserWindowBirth),
@@ -395,6 +396,58 @@ pub(crate) unsafe fn dispatch_user(number: u32, pointer: *mut (), size: usize,
         {
             unsafe { snapshot::<mac_abi::traps::WaitEventCall>(pointer, size) }?;
             return event_prelude(state, suspension);
+        }
+        CONTROL if size == size_of::<PropertiesCall>() =>
+        {
+            let call = unsafe { snapshot::<PropertiesCall>(pointer, size) }?;
+            if call.operation != SEND_MESSAGE
+            {
+                return None;
+            }
+            if state.is_none()
+            {
+                if let Err(status) = suspension
+                {
+                    return Some(RequestResult::done(status));
+                }
+                let input = if call.length == 0
+                {
+                    &[]
+                }
+                else
+                {
+                    unsafe { core::slice::from_raw_parts(call.input, call.length) }
+                };
+                match crate::toolbox::runtime::begin_message(call, input)
+                {
+                    Ok(Some(pending)) => *state = Some(Continuation::ControlMessage(pending)),
+                    Ok(None) => return Some(RequestResult::done(OK)),
+                    Err(status) => return Some(RequestResult::done(status))
+                }
+            }
+            let Some(Continuation::ControlMessage(pending)) = state.as_mut()
+            else
+            {
+                return Some(RequestResult::done(BAD_ARGUMENT));
+            };
+            match pending.poll()
+            {
+                Ok(Some(reply)) =>
+                {
+                    RequestResult::done(if reply.result == 0
+                                        {
+                                            OK
+                                        }
+                                        else
+                                        {
+                                            i32::try_from(reply.result).ok()
+                                                                       .filter(|s| *s < 0)
+                                                                       .unwrap_or(BAD_ABI)
+                                        })
+                }
+                Ok(None) => wait(pending),
+                Err(status) => RequestResult::done(status)
+            }
         }
         CONTROL =>
         {

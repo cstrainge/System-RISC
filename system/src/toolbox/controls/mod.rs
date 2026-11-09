@@ -61,6 +61,15 @@ pub struct Drawing
 }
 impl Drawing
 {
+    fn properties(&self) -> Option<Arc<mac_control_state::State>>
+    {
+        match &self.state
+        {
+            State::Standard(state) => state.properties(),
+            _ => None
+        }
+    }
+
     pub(crate) fn managed_origin(&self) -> Option<objects::ManagedPaintOrigin>
     {
         self.origin
@@ -225,7 +234,32 @@ fn standard_definition(procedure: i16) -> Result<i16, Status>
         | STATIC_TEXT_PROCEDURE
         | TABLE_PROCEDURE
         | SPLITTER_PROCEDURE
-        | SEPARATOR_PROCEDURE => Ok(procedure >> 4),
+        | SEPARATOR_PROCEDURE
+        | GROUP_BOX_PROCEDURE
+        | PICTURE_PROCEDURE
+        | ACTIVITY_INDICATOR_PROCEDURE
+        | DROP_MENU_PROCEDURE
+        | DROP_MENU_FIXED_PROCEDURE
+        | LIST_BOX_PROCEDURE
+        | SEARCH_FIELD_PROCEDURE
+        | OVERFLOW_ARROWS_PROCEDURE
+        | SLIDER_PROCEDURE
+        | STEPPER_PROCEDURE
+        | DISCLOSURE_TRIANGLE_PROCEDURE
+        | METER_PROCEDURE
+        | SEGMENTED_PROCEDURE
+        | DATE_TIME_PROCEDURE
+        | LIST_EDIT_PROCEDURE
+        | TAB_PROCEDURE
+        | BREADCRUMB_PROCEDURE
+        | COLOR_WELL_PROCEDURE
+        | TREE_PROCEDURE
+        | ICON_VIEW_PROCEDURE
+        | GRAPH_PROCEDURE
+        | TOOLTIP_PROCEDURE
+        | TEXT_EDIT_PROCEDURE
+        | TEXT_EDIT_VIEW_PROCEDURE
+        | TEXT_EDIT_PASSWORD_PROCEDURE => Ok(procedure >> 4),
         _ => Err(NOT_SUPPORTED)
     }
 }
@@ -299,7 +333,8 @@ pub(crate) fn preflight(call: &ControlCall) -> Result<i16, Status>
     Ok(id)
 }
 /// Validate CDEF state without allocating a retained drawing.
-pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
+pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate,
+                       properties: &[u8])
                        -> Result<(), Status>
 {
     let id = preflight(call)?;
@@ -311,7 +346,9 @@ pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapG
     {
         (&mut call.standard as *mut ControlDefinitionState).cast()
     };
-    let mut validation = DefinitionCall { reflow: call.reflow,
+    let mut validation = DefinitionCall { properties: properties.as_ptr(),
+                                          properties_length: properties.len(),
+                                          reflow: call.reflow,
                                           header: Header::for_type::<DefinitionCall>(),
                                           kind: CDEF,
                                           id,
@@ -358,7 +395,8 @@ pub(crate) fn user_validation_request(
 {
     use crate::toolbox::resources::definitions::callbacks::packet::{Arguments, Object, Request};
     let id = preflight(&validation_state(call))?;
-    Ok(Request { kind: CDEF,
+    Ok(Request { properties: None,
+                 kind: CDEF,
                  id,
                  variation: variation(call.procedure),
                  message: VALIDATE_DEFINITION,
@@ -381,7 +419,8 @@ pub(crate) fn user_disposal_request(
     -> crate::toolbox::resources::definitions::callbacks::packet::Request
 {
     use crate::toolbox::resources::definitions::callbacks::packet::{Arguments, Object, Request};
-    Request { kind: CDEF,
+    Request { properties: None,
+              kind: CDEF,
               id,
               variation: variation(call.procedure),
               message: mac_abi::definitions::DISPOSE,
@@ -424,16 +463,16 @@ pub(crate) fn apply_user_validation(call: &ControlCall,
 pub(crate) fn prepare(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
                       -> Result<Option<Drawing>, Status>
 {
-    prepare_with_title(call, entry, gate, None)
+    prepare_with_title(call, entry, gate, None, &[])
 }
 fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate,
-                      title: Option<&Arc<snapshot::Title>>)
+                      title: Option<&Arc<snapshot::Title>>, properties: &[u8])
                       -> Result<Option<Drawing>, Status>
 {
     let id = preflight(call)?;
     if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
     {
-        validate(call, entry, gate)?;
+        validate(call, entry, gate, properties)?;
         return drawing_validated(call, entry, gate, title).map(Some);
     }
     validate_state(call, id)?;
@@ -450,7 +489,9 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGa
     {
         bits |= ((call.anchor.h as u16 as u64) << 32) | ((call.anchor.v as u16 as u64) << 48);
     }
-    let mut definition = DefinitionCall { reflow: call.reflow,
+    let mut definition = DefinitionCall { properties: properties.as_ptr(),
+                                          properties_length: properties.len(),
+                                          reflow: call.reflow,
                                           header: Header::for_type::<DefinitionCall>(),
                                           kind: CDEF,
                                           id,

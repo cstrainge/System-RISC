@@ -63,6 +63,7 @@ pub const CALLBACK_SCALAR: u32 = 0;
 pub const CALLBACK_BYTES: u32 = 1;
 pub const CALLBACK_GRID_AXIS: u32 = 2;
 pub const CALLBACK_GRID_PAINT: u32 = 3;
+pub const CALLBACK_CONTROL_MESSAGE: u32 = 5;
 /// Original user addresses consumed only by code in that same Process.
 pub const CALLBACK_OPAQUE: u32 = 4;
 pub const CALLBACK_SURFACE: u32 = 1;
@@ -114,6 +115,7 @@ pub struct CallbackPacket
     pub object:         CallbackRange,
     pub arguments:      CallbackRange,
     pub auxiliary:      [CallbackRange; 2],
+    pub properties:     CallbackRange,
     pub pixels:         CallbackRange,
     pub surface_width:  u32,
     pub surface_height: u32,

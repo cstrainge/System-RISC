@@ -21,6 +21,8 @@ test = false
 bench = false
 
 [dependencies]
+mac-control-model = { path = "../crates/mac-control-model" }
+mac-control-state = { path = "../crates/mac-control-state" }
 mac-definition.workspace = true
 mac-file-types.workspace = true
 serde = { version = "1.0", default-features = false, features = ["derive"] }

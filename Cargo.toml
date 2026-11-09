@@ -5,6 +5,8 @@ members = [
     "crates/mac-abi",
     "crates/sr-event-async",
     "crates/sr-event-dispatch",
+    "crates/mac-control-model",
+    "crates/mac-control-state",
     "crates/mac-bootloader",
     "crates/mac-devicetree",
     "crates/mac-definition",

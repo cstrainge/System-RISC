@@ -133,7 +133,9 @@ unsafe fn invoke(pointer: *mut u8, length: usize) -> Result<i64, Status>
         {
             return Err(BAD_ABI);
         }
-        let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+        let mut call = DefinitionCall { properties: core::ptr::null(),
+                                        properties_length: 0,
+                                        header: Header::for_type::<DefinitionCall>(),
                                         kind: packet.kind,
                                         id: packet.id,
                                         variation: packet.variation,
@@ -150,9 +152,9 @@ unsafe fn invoke(pointer: *mut u8, length: usize) -> Result<i64, Status>
         let entry: DefinitionEntry = unsafe { core::mem::transmute(packet.entry as usize) };
         return Ok(unsafe { entry(&mut call) });
     }
-    let ranges =
-        [packet.object, packet.arguments, packet.auxiliary[0], packet.auxiliary[1], packet.pixels];
-    let mut checked = [0..0, 0..0, 0..0, 0..0, 0..0];
+    let ranges = [packet.object, packet.arguments, packet.auxiliary[0], packet.auxiliary[1],
+                  packet.pixels, packet.properties];
+    let mut checked = [0..0, 0..0, 0..0, 0..0, 0..0, 0..0];
     for (i, range) in ranges.into_iter().enumerate()
     {
         let range = range.checked(length, 8).ok_or(BAD_ABI)?;
@@ -173,8 +175,26 @@ unsafe fn invoke(pointer: *mut u8, length: usize) -> Result<i64, Status>
     {
         return Err(BAD_ABI);
     }
+    let mut message_data = controls::MessageData { data:   core::ptr::null(),
+                                                   length: 0 };
     let param = match packet.argument_kind
     {
+        CALLBACK_CONTROL_MESSAGE
+            if packet.kind == CDEF
+               && packet.message == controls::MESSAGE_DEFINITION
+               && checked[0].len() == size_of::<ControlDefinitionState>()
+               && !checked[1].is_empty()
+               && checked[2..5].iter().all(|r| r.is_empty())
+               && packet.flags == 0 =>
+        {
+            let bytes = unsafe {
+                core::slice::from_raw_parts(pointer.add(checked[1].start), checked[1].len())
+            };
+            controls::suite::messages::Request::read(bytes).map_err(|_| BAD_ABI)?;
+            message_data.data = bytes.as_ptr();
+            message_data.length = bytes.len();
+            core::ptr::from_mut(&mut message_data).addr() as i64
+        }
         CALLBACK_SCALAR if checked[1..4].iter().all(|r| r.is_empty()) => packet.param,
         CALLBACK_BYTES if !checked[1].is_empty() && checked[2..4].iter().all(|r| r.is_empty()) =>
         {
@@ -242,7 +262,16 @@ unsafe fn invoke(pointer: *mut u8, length: usize) -> Result<i64, Status>
     {
         return Err(BAD_ABI);
     };
-    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut call = DefinitionCall { properties: if checked[5].is_empty()
+                                    {
+                                        core::ptr::null()
+                                    }
+                                    else
+                                    {
+                                        unsafe { pointer.add(checked[5].start) }
+                                    },
+                                    properties_length: checked[5].len(),
+                                    header: Header::for_type::<DefinitionCall>(),
                                     kind: packet.kind,
                                     id: packet.id,
                                     variation: packet.variation,

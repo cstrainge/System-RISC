@@ -1,5 +1,5 @@
 //! Decoded native events. Classic EventRecords remain in `classic`.
-use mac_abi::{geometry::Point, WINDOW_CLOSE_REQUEST, WindowId, events as raw};
+use mac_abi::{WINDOW_CLOSE_REQUEST, WindowId, events as raw, geometry::Point};
 
 macro_rules! flags {
     ($name:ident) => {
@@ -83,7 +83,8 @@ impl EventMask
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DisplaySize
 {
-    pub width: u32, pub height: u32
+    pub width:  u32,
+    pub height: u32
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Input
@@ -132,6 +133,8 @@ impl Key
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event<'a>
 {
+    /// Typed control notifications share this enum; the V2 stubs emit none.
+    Control(crate::ControlNotification<'a>),
     /// Borrowed metadata or drop capabilities from the resident Drag Manager.
     Drag
     {
@@ -327,6 +330,7 @@ impl Event<'_>
     {
         match self
         {
+            Self::Control(notification) => notification.input,
             Self::DocumentsAvailable { input,
                                        .. }
             | Self::FileTransferChanged { input,
@@ -336,7 +340,7 @@ impl Event<'_>
             | Self::ProcessFileChanged { input,
                                        .. }
             | Self::DisplayChanged { input,
-                                     .. }
+                                   .. }
             | Self::WindowGeometryChanged { input,
                                           .. } => *input,
             Self::Idle { input,
@@ -381,7 +385,7 @@ impl Event<'_>
 
     /// Lossless native transport conversion. The original 16-byte EventRecord
     /// codec is a separate boundary and does not carry native object identities.
-    pub fn as_record(&self) -> raw::Event
+    pub fn as_record(&self) -> mac_traps::Result<raw::Event>
     {
         let input = self.input();
         let mut record = raw::Event { when: input.when,
@@ -390,8 +394,11 @@ impl Event<'_>
                                       ..Default::default() };
         match self
         {
+            // A fixed raw record cannot carry borrowed transaction deltas. Never
+            // silently discard them or turn a known event into Other.
+            Self::Control(_) => return Err(mac_traps::Error::BadArgument),
             Self::Drag { offer,
-                         .. } => return offer.as_record(input.when, input.modifiers.bits()),
+                         .. } => return Ok(offer.as_record(input.when, input.modifiers.bits())),
             Self::DocumentsAvailable { batch,
                                        .. } =>
             {
@@ -500,7 +507,7 @@ impl Event<'_>
                 record.payload = *payload;
             }
         }
-        record
+        Ok(record)
     }
 }
 impl Event<'_>
@@ -509,6 +516,7 @@ impl Event<'_>
     {
         match self
         {
+            Self::Control(notification) => Some(notification.window),
             Self::MouseDown { window,
                               .. }
             | Self::MouseUp { window,
@@ -533,14 +541,16 @@ impl Event<'_>
 {
     /// Consume an event as a diagnostic record. An unhandled owned drop is
     /// rejected on consumption; wire records never transfer its capability.
-    pub fn into_record(self) -> raw::Event
+    pub fn into_record(self) -> mac_traps::Result<raw::Event>
     {
         self.as_record()
     }
 }
-impl From<Event<'_>> for raw::Event
+impl TryFrom<Event<'_>> for raw::Event
 {
-    fn from(event: Event<'_>) -> Self
+    type Error = mac_traps::Error;
+
+    fn try_from(event: Event<'_>) -> mac_traps::Result<Self>
     {
         event.into_record()
     }

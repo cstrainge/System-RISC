@@ -263,7 +263,9 @@ fn invoke(definition: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionS
           message: i16, param: i64, surface: *mut Surface)
           -> i64
 {
-    let mut call = DefinitionCall { reflow: 0,
+    let mut call = DefinitionCall { properties: core::ptr::null(),
+                                    properties_length: 0,
+                                    reflow: 0,
                                     header: Header::for_type::<DefinitionCall>(),
                                     kind: MDEF,
                                     id: 0,

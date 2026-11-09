@@ -85,12 +85,62 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
             return Err(Error::NotSupported);
         }
         F::variation(call.variation)?;
+        if call.properties_length > isize::MAX as usize
+           || call.properties_length != 0 && call.properties.is_null()
+        {
+            return Err(Error::BadArgument);
+        }
+        // SAFETY: the ordinary native invocation pins its own immutable record;
+        // U-mode callbacks first validate a disjoint initialized packet range.
+        let properties = if call.properties_length == 0
+        {
+            &[]
+        }
+        else
+        {
+            unsafe { core::slice::from_raw_parts(call.properties, call.properties_length) }
+        };
+
         let reflow = crate::Reflow::try_from(call.reflow).map_err(|_| Error::BadArgument)?;
         let grid = call.message == controls::reflow::CALCULATE_GRID_AXIS;
         let layout = (30..=42).contains(&call.message) || grid;
         if layout && reflow != crate::Reflow::Yes
         {
             return Err(Error::NotSupported);
+        }
+        if call.message == controls::MESSAGE_DEFINITION
+        {
+            if !F::STUB
+               || call.object.is_null()
+               || !call.object.addr().is_multiple_of(align_of::<controls::MessageData>())
+               || call.param == 0
+               || !(call.param as usize).is_multiple_of(align_of::<controls::MessageData>())
+            {
+                return Err(Error::BadArgument);
+            }
+            let data = unsafe { &*(call.param as usize as *const controls::MessageData) };
+            if data.data.is_null() || data.length > isize::MAX as usize
+            {
+                return Err(Error::BadArgument);
+            }
+            let bytes = unsafe { core::slice::from_raw_parts(data.data, data.length) };
+            let request =
+                controls::suite::messages::Request::read(bytes).map_err(|_| Error::BadArgument)?;
+            let state = F::message(unsafe {
+                                       &*call.object
+                                             .cast::<mac_abi::definitions::ControlDefinitionState>()
+                                   },
+                                   call.variation,
+                                   properties)?;
+            let services = SystemServices { header:       Header::for_type::<SystemServices>(),
+                                            capabilities: 0 };
+            return match handler(Message::Control { state,
+                                                    request },
+                                 Services::new(mac_traps::Client::new(&services)?, reflow))?
+            {
+                Reply::Done => Ok(0),
+                _ => Err(Error::BadAbi)
+            };
         }
         let operation = if layout { Operation::Validate } else { operation::<F>(call.message)? };
         let services = SystemServices { header:       Header::for_type::<SystemServices>(),
@@ -103,7 +153,7 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
         if grid
         {
             let pointer = call.param as usize as *mut controls::reflow::GridAxisCall;
-            if F::ID != controls::CDEF_TABLE
+            if (F::ID != controls::CDEF_TABLE && !F::STUB)
                || !call.surface.is_null()
                || pointer.is_null()
                || pointer.addr() % align_of::<controls::reflow::GridAxisCall>() != 0
@@ -168,7 +218,9 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
                                                                  Error::from_status(error.status())
                                                              })?;
             let creation = payload.creation.try_into().map_err(|_| Error::BadArgument)?;
-            let state = F::decode(unsafe { &*call.object.cast::<F::Wire>() }, call.variation)?;
+            let state = F::decode_properties(unsafe { &*call.object.cast::<F::Wire>() },
+                                             call.variation,
+                                             properties)?;
             let reply = handler(Message::Reflow { state,
                                                   request,
                                                   creation },
@@ -184,7 +236,7 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
                 _ => Err(Error::BadAbi)
             };
         }
-        let grid_cells = if F::ID == controls::CDEF_TABLE
+        let grid_cells = if (F::ID == controls::CDEF_TABLE || F::STUB)
                             && matches!(operation, Operation::Draw)
                             && call.param != 0
         {
@@ -223,7 +275,8 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
                 return Err(Error::BadArgument);
             }
             let change = unsafe { &mut *call.object.cast::<ControlChange>() };
-            let (before, after) = F::change(&change.before, &change.after, call.variation)?;
+            let (before, after) =
+                F::change(&change.before, &change.after, call.variation, properties)?;
             handler(Message::ChangeBounds { before,
                                             after,
                                             damage: &mut change.damage },
@@ -235,7 +288,9 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
             {
                 return Err(Error::BadArgument);
             }
-            let state = F::decode(unsafe { &*call.object.cast::<F::Wire>() }, call.variation)?;
+            let state = F::decode_properties(unsafe { &*call.object.cast::<F::Wire>() },
+                                             call.variation,
+                                             properties)?;
             let message = match operation
             {
                 Operation::Draw =>
@@ -340,4 +395,14 @@ adapter!(scrollbar_entry, ScrollbarFamily, crate::Scrollbar);
 adapter!(table_entry, TableFamily, crate::Table);
 
 adapter!(splitter_entry, SplitterFamily, crate::Splitter);
-adapter!(separator_entry, SeparatorFamily, crate::Separator);
+
+
+
+macro_rules! suite_adapters {
+ ($(
+ ($lt:lifetime,$name:ident,$tag:ident,$family:ident,$entry:ident,$constructor:ident,$properties:ident,$reference:ident,$id:literal,$variant:ident){
+  $(($index:literal,$field:ident,$setter:ident,$marker:ident,[$ty:ty],$getter:ident,[$default:expr],$default_kind:ident)),*$(,)?
+ }=>$validate:expr;
+ )*)=>{$(adapter!($entry,$family,crate::$name<$lt>);)*};
+}
+mac_abi::controls::suite::control_suite_inventory!(suite_adapters);

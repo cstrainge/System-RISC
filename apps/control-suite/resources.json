@@ -21,6 +21,11 @@
                 "items":
                 [
                     {
+                        "text": "Control Stubs...",
+                        "command": "stub",
+                        "enabled": true
+                    },
+                    {
                         "text": "Quit",
                         "command": "quit",
                         "enabled": true,

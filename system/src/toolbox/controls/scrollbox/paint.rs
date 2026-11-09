@@ -125,11 +125,10 @@ impl Drawing
 
     pub(crate) fn paint_snapshot(&self) -> ScrollBoxPaintSnapshot
     {
-        ScrollBoxPaintSnapshot { origin:                                   self.origin,
-                                 _raster:                                  self.raster.clone(),
+        ScrollBoxPaintSnapshot { origin:                      self.origin,
+                                 _raster:                     self.raster.clone(),
                                  #[cfg(systemrisc)]
-                                 recovery:                                 self._recovery_origin
-                                                                               .clone() }
+                                 recovery:                    self._recovery_origin.clone() }
     }
 }
 impl Manager
@@ -175,18 +174,14 @@ impl Manager
         }
         self.paint_scope(origin)?;
         let object = self.objects.get(origin.key.id()).ok_or(NOT_FOUND)?;
-        Ok(ScrollBoxPaintClaim { origin:                                   *origin,
-                                 spec:                                     object.view.spec,
-                                 top:                                      object.view.top,
-                                 highlight:                                object.view.highlight,
-                                 raster:                                   object.view
-                                                                                 .raster
-                                                                                 .clone(),
-                                 source:                                   object.definition
-                                                                                 .retain_source(),
+        Ok(ScrollBoxPaintClaim { origin:                      *origin,
+                                 spec:                        object.view.spec,
+                                 top:                         object.view.top,
+                                 highlight:                   object.view.highlight,
+                                 raster:                      object.view.raster.clone(),
+                                 source:                      object.definition.retain_source(),
                                  #[cfg(systemrisc)]
-                                 recovery:                                 object._recovery_origin
-                                                                                 .clone() })
+                                 recovery:                    object._recovery_origin.clone() })
     }
 
     /// Revalidate before capture and replay alongside the real Window target

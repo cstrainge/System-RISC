@@ -19,7 +19,7 @@
         "title": "\u0014",
         "items": [
           {
-            "text": "About System RISC…",
+            "text": "About System RISC\u2026",
             "enabled": true,
             "command": "asys"
           }
@@ -4334,6 +4334,226 @@
       "payload": {
         "format": "file",
         "path": "assets/fonts/FOND-13413.bin"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 30,
+      "symbol": "CDEF_GROUP_BOX",
+      "name": "Group Box",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_GROUP_BOX"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 31,
+      "symbol": "CDEF_PICTURE",
+      "name": "Picture",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_PICTURE"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 32,
+      "symbol": "CDEF_ACTIVITY_INDICATOR",
+      "name": "Activity Indicator",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_ACTIVITY_INDICATOR"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 25,
+      "symbol": "CDEF_DROP_MENU",
+      "name": "Drop Menu",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_DROP_MENU"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 33,
+      "symbol": "CDEF_LIST_BOX",
+      "name": "List Box",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_LIST_BOX"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 34,
+      "symbol": "CDEF_SEARCH_FIELD",
+      "name": "Search Field",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_SEARCH_FIELD"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 35,
+      "symbol": "CDEF_OVERFLOW_ARROWS",
+      "name": "Overflow Arrows",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_OVERFLOW_ARROWS"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 36,
+      "symbol": "CDEF_SLIDER",
+      "name": "Slider",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_SLIDER"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 37,
+      "symbol": "CDEF_STEPPER",
+      "name": "Stepper",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_STEPPER"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 38,
+      "symbol": "CDEF_DISCLOSURE_TRIANGLE",
+      "name": "Disclosure Triangle",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_DISCLOSURE_TRIANGLE"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 39,
+      "symbol": "CDEF_METER",
+      "name": "Meter",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_METER"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 40,
+      "symbol": "CDEF_SEGMENTED",
+      "name": "Segmented",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_SEGMENTED"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 41,
+      "symbol": "CDEF_DATE_TIME",
+      "name": "Date Time",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_DATE_TIME"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 42,
+      "symbol": "CDEF_LIST_EDIT",
+      "name": "List Edit",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_LIST_EDIT"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 43,
+      "symbol": "CDEF_TAB",
+      "name": "Tab",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_TAB"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 44,
+      "symbol": "CDEF_BREADCRUMB",
+      "name": "Breadcrumb",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_BREADCRUMB"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 45,
+      "symbol": "CDEF_COLOR_WELL",
+      "name": "Color Well",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_COLOR_WELL"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 46,
+      "symbol": "CDEF_TREE",
+      "name": "Tree",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_TREE"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 47,
+      "symbol": "CDEF_ICON_VIEW",
+      "name": "Icon View",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_ICON_VIEW"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 48,
+      "symbol": "CDEF_GRAPH",
+      "name": "Graph",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_GRAPH"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 49,
+      "symbol": "CDEF_TOOLTIP",
+      "name": "Tooltip",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_TOOLTIP"
+      }
+    },
+    {
+      "type": "CDEF",
+      "id": 17,
+      "symbol": "CDEF_TEXT_EDIT",
+      "name": "Text Edit",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_TEXT_EDIT"
       }
     }
   ]

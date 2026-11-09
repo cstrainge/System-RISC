@@ -335,6 +335,7 @@ fn main<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> Res
         }
         Message::HitTest { .. } => return Ok(Reply::Hit(Part::None)),
         Message::CalculateRegions(_) | Message::Initialize(_) | Message::Dispose(_) => (),
+        Message::Control { .. } => return Err(mac_definition::Error::NotSupported),
         Message::ChangeBounds { .. } | Message::Track { .. } => return Err(Error::NotSupported)
     }
     Ok(Reply::Done)

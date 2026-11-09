@@ -561,7 +561,8 @@ impl PaintLoan
             return PaintProgress::Failed(failure);
         };
         let reference = data.plan.source().reference();
-        let request = Request { kind: CDEF,
+        let request = Request { properties: data.plan.properties(),
+                                kind: CDEF,
                                 id: data.plan.id(),
                                 variation: data.plan.variation(),
                                 message: DRAW,

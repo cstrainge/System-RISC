@@ -58,7 +58,8 @@ pub(super) struct Tracking
 {
     active:      Option<Target>,
     highlighted: i16,
-    keyboard:    bool
+    keyboard:    bool,
+    standalone:  bool
 }
 
 fn title_paint_bounds(state: &MenuDefinitionState) -> Rect
@@ -155,6 +156,65 @@ impl Manager
         self.objects.get(id).map(|menu| menu.state.menu_id)
     }
 
+    pub(super) fn track_popup(&mut self, id: u64, selected: i16)
+    {
+        self.tracking = Tracking { active:      Some(Target::Resource(id)),
+                                   highlighted: selected,
+                                   keyboard:    false,
+                                   standalone:  true };
+    }
+
+    pub(crate) fn popup_key(&mut self, id: u64, direction: i16) -> Result<(), Status>
+    {
+        if !self.tracking.standalone || self.tracking.active != Some(Target::Resource(id))
+        {
+            return Err(NOT_FOUND);
+        }
+        let state = &self.objects.get(id).ok_or(NOT_FOUND)?.state;
+        let count = state.item_count as i16;
+        if count == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let mut next = self.tracking.highlighted;
+        for _ in 0..count
+        {
+            next = if direction < 0
+            {
+                if next <= 1 { count } else { next - 1 }
+            }
+            else if next >= count
+            {
+                1
+            }
+            else
+            {
+                next + 1
+            };
+            let row = &state.items[next as usize - 1];
+            if row.enabled != 0 && row.separator == 0
+            {
+                self.tracking.highlighted = next;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn popup_choice(&self, id: u64) -> Option<Selection>
+    {
+        (self.tracking.standalone && self.tracking.active == Some(Target::Resource(id)))
+            .then(|| self.selection(id, self.tracking.highlighted)).flatten()
+    }
+
+    pub(super) fn cancel_popup(&mut self, id: u64)
+    {
+        if self.tracking.active == Some(Target::Resource(id))
+        {
+            self.cancel_tracking();
+        }
+    }
+
     pub fn cancel_tracking(&mut self)
     {
         self.tracking = Tracking::default();
@@ -184,7 +244,7 @@ impl Manager
             return false;
         };
         let previous = self.tracking;
-        if (0..20).contains(&point.v)
+        if !self.tracking.standalone && (0..20).contains(&point.v)
         {
             if let Some(target) = self.title_at(point, system, applications)
             {
@@ -263,6 +323,14 @@ impl Manager
                                    applications: &mut ApplicationMenu)
                                    -> Option<Command>
     {
+        // A modal standalone popup has its own genuine consumer and frozen row
+        // mapping. If that consumer is no longer active, ordinary bar handling
+        // must not publish its private rows as application MenuCommands.
+        if self.tracking.standalone
+        {
+            self.cancel_tracking();
+            return None;
+        }
         self.hover(point, system, applications);
         let command = self.feedback_target(system, applications);
         if command.is_none()
@@ -293,7 +361,8 @@ impl Manager
         let command = self.command(target, item, system, applications)?;
         self.tracking = Tracking { active:      Some(target),
                                    highlighted: 0,
-                                   keyboard:    true };
+                                   keyboard:    true,
+                                   standalone:  false };
         Some(command)
     }
 

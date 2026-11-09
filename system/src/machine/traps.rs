@@ -332,8 +332,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             // privileged fault would stop a machine that is otherwise healthy.
             if !UNHANDLED_INTERRUPT_REPORTED.swap(true, Ordering::Relaxed)
             {
-                serial!("SYSTEM_INTERRUPT_UNHANDLED: number={} pc=0x{:x}; completed and \
-                         ignored",
+                serial!("SYSTEM_INTERRUPT_UNHANDLED: number={} pc=0x{:x}; completed and ignored",
                         number, frame.pc);
             }
             return Dispatch::Resume;
@@ -1446,6 +1445,37 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 })
             })
         },
+        CONTROL if size == core::mem::size_of::<mac_abi::controls::PropertiesCall>() =>
+        {
+            let call = read_request!(mac_abi::controls::PropertiesCall);
+            if call.length > isize::MAX as usize
+               || call.capacity > isize::MAX as usize
+               || (!call.input.is_null() && call.length == usize::MAX)
+               || call.length != 0 && call.input.is_null()
+               || call.capacity != 0 && call.output.is_null()
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            // The production UserRequest has copied/pinned these spans before
+            // dispatch. Internal callers lend the same exclusive live buffers.
+            let input = if call.length == 0
+            {
+                &[]
+            }
+            else
+            {
+                unsafe { core::slice::from_raw_parts(call.input, call.length) }
+            };
+            let output = if call.capacity == 0
+            {
+                &mut []
+            }
+            else
+            {
+                unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
+            };
+            toolbox::runtime::native_properties(call, input, output) as i64
+        }
         CONTROL =>
         {
             let call = read_request!(mac_abi::controls::ControlCall);
@@ -1509,12 +1539,21 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 OK
             }).unwrap_or_else(|error| error.status()) as i64
         }
-        TIMERS=>toolbox::timers::request(read_request!(mac_abi::timers::Call)).err().unwrap_or(OK) as i64,
+        TIMERS =>
+        {
+            toolbox::timers::request(read_request!(mac_abi::timers::Call)).err().unwrap_or(OK)
+            as i64
+        }
         READINESS =>
         {
             let call = read_request!(mac_abi::readiness::Call);
             // The U envelope captures and validates this entire writable span.
-            let sources = if call.count == 0 { &mut [] } else {
+            let sources = if call.count == 0
+            {
+                &mut []
+            }
+            else
+            {
                 unsafe { core::slice::from_raw_parts_mut(call.sources, call.count) }
             };
             crate::machine::scheduler::readiness::request(call, sources).err().unwrap_or(OK) as i64

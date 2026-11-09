@@ -1126,6 +1126,11 @@ impl Call
                 span!(abi::textedit::TextEditCall, input, input_length, u8, false);
                 span!(abi::textedit::TextEditCall, output, capacity, u8, true);
             }
+            CONTROL if self.size == size_of::<abi::controls::PropertiesCall>() =>
+            {
+                span!(abi::controls::PropertiesCall, input, length, u8, false);
+                span!(abi::controls::PropertiesCall, output, capacity, u8, true);
+            }
             CONTROL =>
             {
                 surface!(abi::controls::ControlCall);
@@ -1242,7 +1247,7 @@ fn layout(number: u32, bytes: usize) -> Result<Layout, Status>
         MEMORY => select!(abi::memory::MemoryCall),
         SCRAP => select!(abi::scrap::ScrapCall),
         DRAG => select!(abi::drag::Call),
-        CONTROL => select!(abi::controls::ControlCall),
+        CONTROL => select!(abi::controls::ControlCall, abi::controls::PropertiesCall),
         SCROLL_BOX => select!(abi::scrollbox::Call),
         EVENTS => select!(abi::events::EventCall),
         CLOCK => select!(abi::dates::ClockCall),
@@ -1265,7 +1270,7 @@ fn layout(number: u32, bytes: usize) -> Result<Layout, Status>
         ADDRESS_WAIT => select!(abi::address_wait::Call),
         PIPES => select!(abi::pipes::Call),
         READINESS => select!(abi::readiness::Call),
-        TIMERS=>select!(abi::timers::Call),
+        TIMERS => select!(abi::timers::Call),
         TLS => select!(abi::tls::Call),
         ENTROPY => select!(abi::entropy::Call),
         POWER => select!(abi::power::PowerCall),

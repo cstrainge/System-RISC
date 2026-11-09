@@ -134,6 +134,7 @@ impl WaitSlot
 pub(super) struct Author
 {
     gate:         TrapGate,
+    properties:   Option<Arc<mac_control_state::State>>,
     asynchronous: Option<(CompletionTarget,
                           Arc<WaitSlot>,
                           crate::machine::scheduler::accounting::AllocationAuthority)>,
@@ -145,6 +146,7 @@ impl Author
     pub(super) fn trusted(gate: TrapGate) -> Self
     {
         Self { gate,
+               properties: None,
                custody: None,
                asynchronous: None }
     }
@@ -154,8 +156,23 @@ impl Author
                          -> Self
     {
         Self { gate,
+               properties: None,
                custody: None,
                asynchronous: Some((completion, wait, allocation)) }
+    }
+
+    pub(super) fn with_properties(&self, properties: Option<Arc<mac_control_state::State>>)
+                                  -> Self
+    {
+        Self { gate: self.gate,
+               properties,
+               asynchronous: self.asynchronous.clone(),
+               custody: self.custody.clone() }
+    }
+
+    fn property_bytes(&self) -> &[u8]
+    {
+        self.properties.as_ref().map_or(&[], |p| p.as_bytes())
     }
 
     pub(super) fn with_custody(mut self, custody: Arc<dyn callbacks::CallbackCustody>) -> Self
@@ -194,12 +211,17 @@ impl Author
         {
             let mut wire = call.wire();
             let mut payload = payload;
-            super::reflow::invoke(&mut wire, &mut payload, reference, self.gate)?;
+            super::reflow::invoke(&mut wire,
+                                  &mut payload,
+                                  reference,
+                                  self.gate,
+                                  self.property_bytes())?;
             return Ok(payload);
         }
         let id = definition_id(&call.wire())?;
         let reply = self.invoke(reference,
-                                Request { kind: CDEF,
+                                Request { properties: self.properties.clone(),
+                                          kind: CDEF,
                                           id,
                                           variation: variation(call.procedure),
                                           message: payload.message,
@@ -243,18 +265,19 @@ impl Author
         let owned_items = copy(items)?;
         let reply =
             self.invoke(reference,
-                        Request { kind:      CDEF,
-                                  id:        CDEF_TABLE,
-                                  variation: 0,
-                                  message:   mac_abi::controls::reflow::CALCULATE_GRID_AXIS,
-                                  reflow:    1,
-                                  object:    Object::Control(ControlDefinitionState::default()),
-                                  arguments: Arguments::GridAxis { constraint,
-                                                                   percent_basis:
-                                                                       percent_basis.unwrap_or(-1),
-                                                                   tracks: owned_tracks,
-                                                                   items: owned_items },
-                                  surface:   None })
+                        Request { properties: self.properties.clone(),
+                                  kind:       CDEF,
+                                  id:         CDEF_TABLE,
+                                  variation:  0,
+                                  message:    mac_abi::controls::reflow::CALCULATE_GRID_AXIS,
+                                  reflow:     1,
+                                  object:     Object::Control(ControlDefinitionState::default()),
+                                  arguments:  Arguments::GridAxis { constraint,
+                                                                    percent_basis:
+                                                                        percent_basis.unwrap_or(-1),
+                                                                    tracks: owned_tracks,
+                                                                    items: owned_items },
+                                  surface:    None })
                 .await?;
         zero(reply.result)?;
         let (minimum, preferred) = reply.grid_axis(tracks, items)?;
@@ -267,7 +290,9 @@ impl Author
     {
         if !definitions::is_user(reference)?
         {
-            let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+            let mut call = DefinitionCall { properties: core::ptr::null(),
+                                            properties_length: 0,
+                                            header: Header::for_type::<DefinitionCall>(),
                                             kind: CDEF,
                                             id: CDEF_PROGRESS_BAR,
                                             variation: 0,
@@ -286,7 +311,8 @@ impl Author
             return Ok(change);
         }
         let reply = self.invoke(reference,
-                                Request { kind: CDEF,
+                                Request { properties: self.properties.clone(),
+                                          kind: CDEF,
                                           id: CDEF_PROGRESS_BAR,
                                           variation: 0,
                                           message: CHANGE_BOUNDS_DEFINITION,
@@ -308,10 +334,11 @@ impl Author
         if !definitions::is_user(reference)?
         {
             let mut wire = call.wire();
-            super::validate(&mut wire, reference, self.gate)?;
+            super::validate(&mut wire, reference, self.gate, self.property_bytes())?;
             return DetachedCall::capture(&wire);
         }
-        let request = user_validation_request(&call.wire())?;
+        let mut request = user_validation_request(&call.wire())?;
+        request.properties = self.properties.clone();
         let reply = self.invoke(reference, request).await?;
         DetachedCall::capture(&apply_user_validation(&call.wire(), &reply)?)
     }
@@ -323,7 +350,11 @@ impl Author
         if !definitions::is_user(reference)?
         {
             let mut wire = call.wire();
-            let drawing = super::prepare_with_title(&mut wire, reference, self.gate, title)?;
+            let drawing = super::prepare_with_title(&mut wire,
+                                                    reference,
+                                                    self.gate,
+                                                    title,
+                                                    self.property_bytes())?;
             return Ok((DetachedCall::capture(&wire)?, drawing));
         }
         let id = preflight(&call.wire())?;
@@ -341,7 +372,8 @@ impl Author
             bits |= ((call.anchor.h as u16 as u64) << 32) | ((call.anchor.v as u16 as u64) << 48);
         }
         let reply = self.invoke(reference,
-                                Request { kind: CDEF,
+                                Request { properties: self.properties.clone(),
+                                          kind: CDEF,
                                           id,
                                           variation: variation(call.procedure),
                                           message: if tracking { 2 } else { 1 },

@@ -1034,7 +1034,7 @@ impl Manager
         if call.operation != CONFIGURE_OBJECT
            || self.get(call.id, owner)?.state.spec != Spec::from_call(&spec, scrollbar)
         {
-            super::validate(&mut spec, entry, gate)?;
+            super::validate(&mut spec, entry, gate, &[])?;
         }
         Ok((Spec::from_call(&spec, scrollbar), scrollbar))
     }
@@ -1243,6 +1243,11 @@ impl State
         }
         call.reflow = u32::from(self.layout.is_some());
         call.point = point;
+        let property_author = self.title
+                                  .as_ref()
+                                  .and_then(|title| title.properties.clone())
+                                  .map(|properties| author.with_properties(Some(properties)));
+        let author = property_author.as_ref().unwrap_or(author);
         let (call, _) = author.prepare(call, entry, None).await?;
         Ok(call.result as i16)
     }
@@ -1284,3 +1289,6 @@ pub(crate) use callbacks::{ControlLayout, ControlProgress, ControlWork, LayoutPr
                            PreparedWindowLayout};
 
 mod hit;
+
+mod properties;
+pub(crate) use properties::{PreparedProperties, PropertySnapshot};

@@ -493,7 +493,7 @@ fn main() -> Result<(), Error>
             deferred_command = Some((event, position));
             continue;
         }
-        alerts.set_context(&event);
+        alerts.set_context(&event)?;
         if (!alerts.active() || matches!(event, Event::FileTransferChanged { .. }))
            && dragging.ui_event(system, &event, position)
         {

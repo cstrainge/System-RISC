@@ -1,7 +1,7 @@
 //! System 7 Standard File DLOG/DITL geometry; resource data owns the layout.
 use alloc::{string::String, vec::Vec};
 
-use mac_abi::{BAD_ARGUMENT, NO_MEMORY, geometry::Rect, Status};
+use mac_abi::{BAD_ARGUMENT, NO_MEMORY, Status, geometry::Rect};
 pub struct Item
 {
     pub bounds: Rect,

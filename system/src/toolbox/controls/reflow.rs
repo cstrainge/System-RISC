@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn invoke(state: &mut ControlCall, payload: &mut mac_abi::controls::reflow::Payload,
-                     entry: DefinitionRef, gate: TrapGate)
+                     entry: DefinitionRef, gate: TrapGate, properties: &[u8])
                      -> Result<(), Status>
 {
     let id = definition_id(state)?;
@@ -13,7 +13,9 @@ pub(super) fn invoke(state: &mut ControlCall, payload: &mut mac_abi::controls::r
     {
         (&mut state.standard as *mut ControlDefinitionState).cast()
     };
-    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut call = DefinitionCall { properties: properties.as_ptr(),
+                                    properties_length: properties.len(),
+                                    header: Header::for_type::<DefinitionCall>(),
                                     kind: CDEF,
                                     id,
                                     variation: variation(state.procedure),
@@ -60,7 +62,9 @@ pub(super) fn grid_axis(entry: DefinitionRef, gate: TrapGate,
                                         minimum: 0,
                                         preferred: 0 };
     let mut state = ControlDefinitionState::default();
-    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut call = DefinitionCall { properties: core::ptr::null(),
+                                    properties_length: 0,
+                                    header: Header::for_type::<DefinitionCall>(),
                                     kind: CDEF,
                                     id: CDEF_TABLE,
                                     variation: 0,

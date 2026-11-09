@@ -1,9 +1,8 @@
 //! Native control-family values and their private wire codecs.
 use mac_abi::{controls, definitions::ControlDefinitionState};
 
-mod separator;
-pub(crate) use separator::SeparatorFamily;
-pub use separator::{Separator, SeparatorOrientation};
+mod suite;
+pub use suite::*;
 
 use crate::{Alignment, Error, FontSelection, Part, Rect, Result, StaticText};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,13 +104,28 @@ pub(crate) trait Family
     type Wire;
     type View<'a>: Copy;
     const ID: i16;
+    const STUB: bool = false;
     const TRACK: bool = false;
     const DELTA: bool = false;
     fn variation(value: i16) -> Result<()>;
     fn decode<'a>(wire: &'a Self::Wire, variation: i16) -> Result<Self::View<'a>>;
+    fn decode_properties<'a>(wire: &'a Self::Wire, variation: i16, properties: &'a [u8])
+                             -> Result<Self::View<'a>>
+    {
+        if !properties.is_empty()
+        {
+            return Err(Error::BadArgument);
+        }
+        Self::decode(wire, variation)
+    }
+    fn message<'a>(_wire: &'a ControlDefinitionState, _variation: i16, _properties: &'a [u8])
+                   -> Result<Self::View<'a>>
+    {
+        Err(Error::NotSupported)
+    }
     fn bounds(state: &Self::View<'_>) -> Rect;
     fn change<'a>(_before: &'a ControlDefinitionState, _after: &'a ControlDefinitionState,
-                  _variation: i16)
+                  _variation: i16, _properties: &'a [u8])
                   -> Result<(Self::View<'a>, Self::View<'a>)>
     {
         Err(Error::NotSupported)
@@ -351,9 +365,14 @@ impl Family for ProgressFamily
         state.bounds
     }
 
-    fn change(before: &ControlDefinitionState, after: &ControlDefinitionState, variation: i16)
-              -> Result<(Progress, Progress)>
+    fn change<'a>(before: &'a ControlDefinitionState, after: &'a ControlDefinitionState,
+                  variation: i16, properties: &'a [u8])
+                  -> Result<(Progress, Progress)>
     {
+        if !properties.is_empty()
+        {
+            return Err(Error::BadArgument);
+        }
         Ok((Self::decode(before, variation)?, Self::decode(after, variation)?))
     }
 }

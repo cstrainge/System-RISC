@@ -18,6 +18,9 @@ use crate::toolbox::{events::input::Input,
                      standard_file::{self, Action, Query, Reply, Sheet, Widgets, layout::Layout,
                                      view::Text}};
 
+#[path = "popup.rs"]
+mod popup;
+
 fn checked(status: Status) -> Result<(), Status>
 {
     if status == OK { Ok(()) } else { Err(status) }
@@ -252,6 +255,7 @@ impl super::Toolbox
                                -> Result<(), Status>
     {
         let owner = recipient.owner().incarnation();
+        self.sf_close_popup(owner, handle)?;
         let dialog = self.standard_file.take(owner, handle)?;
         // Validation has succeeded and this exact protocol is invalidated.
         // Malformed/foreign Dispose requests above must leave it untouched.
@@ -347,7 +351,14 @@ impl super::Toolbox
         let mode = dialog.mode;
         let template = layout(mode, sheet)?;
         let window = if sheet == Sheet::Main { dialog.window } else { dialog.auxiliary };
-        let mut widgets = Widgets::default();
+        if sheet == Sheet::Main
+        {
+            self.standard_file.get_mut(self.owner, id)?.main_widgets = Widgets::default();
+        }
+        else
+        {
+            self.standard_file.get_mut(self.owner, id)?.auxiliary_widgets = Widgets::default();
+        }
         for (index, item) in template.items.iter().enumerate()
         {
             if item.kind & 0x7f != 4 && !(sheet == Sheet::Main && mode == PUT && index == 11)
@@ -368,10 +379,18 @@ impl super::Toolbox
                                                    standard,
                                                    ..Default::default() };
             self.managed_control(&mut call, &mut None)?;
-            widgets.buttons[index] = call.id;
+            self.sf_widgets_mut(id)?.buttons[index] = call.id;
         }
         if sheet == Sheet::Main
         {
+            let mut call = controls::ControlCall {
+                operation: controls::CREATE_STANDARD, window: window.0,
+                procedure: controls::DROP_MENU_FIXED_PROCEDURE,
+                standard: definitions::ControlDefinitionState::new(template.item(8), label(0)?),
+                ..Default::default()
+            };
+            self.managed_control(&mut call, &mut None)?;
+            self.standard_file.get_mut(self.owner, id)?.main_widgets.buttons[8] = call.id;
             let list = template.item(7);
             let mut call = scrollbox::Call { operation: scrollbox::CREATE,
                                              window: window.0,
@@ -391,12 +410,7 @@ impl super::Toolbox
                                                                      ..Default::default() },
                                              ..Default::default() };
             self.scroll_box(&mut call)?;
-            widgets.scrollbox = call.id;
-            self.standard_file.get_mut(self.owner, id)?.main_widgets = widgets;
-        }
-        else
-        {
-            self.standard_file.get_mut(self.owner, id)?.auxiliary_widgets = widgets;
+            self.standard_file.get_mut(self.owner, id)?.main_widgets.scrollbox = call.id;
         }
         Ok(())
     }
@@ -487,6 +501,7 @@ impl super::Toolbox
         {
             return Ok(false);
         }
+        self.sf_close_popup(self.owner, id)?;
         if self.windows.window(old).is_some()
         {
             let closed = checked(self.window(CLOSE_WINDOW, &mut request(old)));
@@ -601,13 +616,6 @@ impl super::Toolbox
                              selection_count += 1;
                          }
                      });
-        let popup = dialog.popup;
-        let mut ancestors = [Text::default(); standard_file::page::ANCESTORS];
-        let ancestor_count = dialog.ancestors.len();
-        for (index, entry) in dialog.ancestors.iter().enumerate()
-        {
-            ancestors[index] = Text::new(entry.name())?;
-        }
         let can_accept = dialog.can_accept();
         let scrollbox = dialog.main_widgets.scrollbox;
         let mut icons = core::array::from_fn::<_, { standard_file::page::ROWS }, _>(|_| None);
@@ -753,23 +761,7 @@ impl super::Toolbox
             let pop = template.item(8);
             if damage.touches(pop)
             {
-                self.sf_shape(window.0, pop, VERB_FRAME)?;
-                self.sf_text(window.0, pop.left + 8, pop.top + 14, title.text()?)?;
-                let points = [Point { h: pop.right - 14,
-                                      v: pop.top + 7 },
-                              Point { h: pop.right - 6,
-                                      v: pop.top + 7 },
-                              Point { h: pop.right - 10,
-                                      v: pop.top + 11 }];
-                self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
-                                                  target: Target::window(window),
-                                                  shape: SHAPE_POLYGON,
-                                                  verb: VERB_PAINT,
-                                                  points: points.as_ptr(),
-                                                  point_count: points.len(),
-                                                  ..Default::default() },
-                              &points,
-                              &[])?;
+                self.sf_draw_location(id, title.text()?)?;
             }
             if damage.touches(Rect::new(238, 0, 344, 30))
             {
@@ -897,27 +889,6 @@ impl super::Toolbox
                                   &[])?;
                 }
             }
-            if popup
-            {
-                let height = (ancestor_count + 1) as i16 * 18;
-                let area = Rect::new(pop.left, pop.top, pop.right, pop.top + height);
-                if damage.touches(area)
-                {
-                    self.sf_shape(window.0, area, VERB_ERASE)?;
-                    self.sf_shape(window.0, area, VERB_FRAME)?;
-                    for (index, title) in ancestors[..ancestor_count].iter().enumerate()
-                    {
-                        self.sf_text(window.0,
-                                     pop.left + 8,
-                                     pop.top + 14 + index as i16 * 18,
-                                     title.text()?)?;
-                    }
-                    self.sf_text(window.0,
-                                 pop.left + 8,
-                                 pop.top + 14 + ancestor_count as i16 * 18,
-                                 label(0)?)?;
-                }
-            }
             Ok(())
         })();
         let finish = if result.is_ok()
@@ -940,6 +911,11 @@ impl super::Toolbox
 
     fn sf_action(&mut self, id: u64, action: Action, when: u32)
     {
+        if let Err(status) = self.sf_close_popup(self.owner, id)
+        {
+            serial!("STANDARD_FILE_POPUP_CLOSE_REFUSED status={status}; original capture retained");
+            return;
+        }
         let before = match self.standard_file.get(self.owner, id)
         {
             Ok(d) =>
@@ -1119,6 +1095,29 @@ impl super::Toolbox
             {
                 self.sf_widgets_mut(id)?.tracking =
                     if call.flags & controls::TRACKING != 0 { Some(index) } else { None };
+                if index == 8 && begin && call.flags & controls::TRACKING != 0
+                {
+                    if let Err(cause) = self.sf_open_popup(id)
+                    {
+                        let mut cancel = controls::ControlCall { operation:
+                                                                     controls::CANCEL_TRACKING,
+                                                                 id: control,
+                                                                 ..Default::default() };
+                        if let Err(cleanup) = self.managed_control(&mut cancel, &mut None)
+                        {
+                            serial!("STANDARD_FILE_POPUP_ROLLBACK_RETAINED original={cause} \
+                                     cleanup={cleanup}");
+                            return Err(cleanup);
+                        }
+                        self.sf_widgets_mut(id)?.tracking = None;
+                        let dialog = self.standard_file.get_mut(self.owner, id)?;
+                        dialog.error_context = Text::new("Opening the folder menu")?;
+                        dialog.fail(cause);
+                        self.sf_sync_sheet(id)?;
+                        self.standard_file_draw(id, Damage::full())?;
+                        return Ok(true);
+                    }
+                }
                 if call.flags & controls::ACTION != 0
                 {
                     let action = match index
@@ -1201,6 +1200,16 @@ impl super::Toolbox
         {
             return false;
         };
+        match self.sf_popup_input(id, input, when)
+        {
+            Ok(true) => return true,
+            Err(status) =>
+            {
+                serial!("STANDARD_FILE_POPUP_FAILED status={status}");
+                return true;
+            }
+            Ok(false) => ()
+        }
         let Ok(dialog) = self.standard_file.get(self.owner, id)
         else
         {
@@ -1351,34 +1360,6 @@ impl super::Toolbox
                     {
                         return true;
                     };
-                    if dialog.popup
-                    {
-                        let row = ((point.v - template.item(8).top) / 18).max(0) as usize;
-                        let destination = dialog.ancestors
-                                                .get(row)
-                                                .map(|entry| (entry.volume, entry.id))
-                                                .unwrap_or((0, 0));
-                        WORK_READY.store(true, Ordering::Release);
-                        if let Err(error) =
-                            self.standard_file.navigate_to(self.owner, id, destination)
-                        {
-                            serial!("STANDARD_FILE_NAVIGATION_FAILED status={error}");
-                        }
-                        let _ = self.standard_file_draw(id, Damage::full());
-                        return true;
-                    }
-                    if template.item(8).contains(point)
-                    {
-                        if let Ok(dialog) = self.standard_file.get_mut(self.owner, id)
-                        {
-                            dialog.popup = true;
-                        }
-                        let mut damage = Damage::new();
-                        let pop = template.item(8);
-                        damage.add(Rect::new(pop.left, pop.top, pop.right, pop.top + 12 * 18));
-                        let _ = self.standard_file_draw(id, damage);
-                        return true;
-                    }
                     if template.item(7).contains(point)
                     {
                         if !dialog.entries.ready(dialog.page())
@@ -1832,7 +1813,7 @@ impl super::Toolbox
                     dialog.visible_entries().get(i).map(|e| (e.volume, e.id))
                 });
                 let before_title = dialog.ancestors.first().map(|e| (e.volume, e.id));
-                let before_ancestors = dialog.ancestors.len();
+
                 let before_accept = dialog.can_accept();
                 let before_volume = dialog.volume_info.id;
                 let name_changed = matches!(&reply, Ok(Reply::Name(_)));
@@ -1939,11 +1920,6 @@ impl super::Toolbox
                             let mut button = template.item(1);
                             button.inset(-4, -4);
                             damage.add(button);
-                        }
-                        if dialog.popup && before_ancestors != dialog.ancestors.len()
-                        {
-                            let pop = template.item(8);
-                            damage.add(Rect::new(pop.left, pop.top, pop.right, pop.top + 12 * 18));
                         }
                     }
                     toolbox.sf_sync_sheet(handle)?;

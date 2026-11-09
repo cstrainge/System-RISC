@@ -41,6 +41,7 @@ fn main<'a>(message: Message<'a, Table>, services: Services<'a>) -> Result<Reply
         | Message::CalculateRegions(_)
         | Message::Initialize(_)
         | Message::Dispose(_) => (),
+        Message::Control { .. } => return Err(mac_definition::Error::NotSupported),
         Message::Track { .. } | Message::ChangeBounds { .. } => return Err(Error::NotSupported)
     }
 

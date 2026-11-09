@@ -29,7 +29,7 @@ toolbox-resources = { path = "../../toolbox/resources" }
 toolbox-files = { path = "../../toolbox/files" }
 toolbox-memory = { path = "../../toolbox/memory" }
 toolbox-menus = { path = "../../toolbox/menus" }
-toolbox-controls = { path = "../../toolbox/controls" }
+toolbox-controls = { path = "../../toolbox/controls", features = ["suite"] }
 toolbox-crashes = { path = "../../toolbox/crashes" }
 toolbox-dialogs = { path = "../../toolbox/dialogs" }
 

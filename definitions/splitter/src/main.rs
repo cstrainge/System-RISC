@@ -90,6 +90,7 @@ fn main<'a>(message: Message<'a, Splitter>, services: Services<'a>) -> Result<Re
         | Message::CalculateRegions(_)
         | Message::Initialize(_)
         | Message::Dispose(_) => (),
+        Message::Control { .. } => return Err(mac_definition::Error::NotSupported),
         Message::CalculateGridAxis(_) | Message::DrawGrid { .. } | Message::ChangeBounds { .. } =>
         {
             return Err(Error::NotSupported);

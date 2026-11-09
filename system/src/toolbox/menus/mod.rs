@@ -16,6 +16,7 @@ pub(crate) mod lifetime;
 mod apple;
 pub(crate) use apple::{Action as AppleAction, SystemBar};
 mod tracking;
+mod popup;
 pub(crate) use tracking::Command;
 use tracking::Tracking;
 
@@ -46,7 +47,8 @@ struct Menu
 {
     id:       u64,
     state:    Box<MenuDefinitionState>,
-    revision: u64
+    revision: u64,
+    popup:    bool
 }
 #[derive(Clone, Copy)]
 struct Layout
@@ -441,7 +443,8 @@ impl Manager
                              .insert_with(owner, |id| {
                                  Menu { id,
                                         state,
-                                        revision: 1 }
+                                        revision: 1,
+                                        popup: false }
                              })
                              .map_err(pool_status)?;
                 let Some(bar) = self.bar_mut()
@@ -817,7 +820,9 @@ fn invoke(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState,
           param: i64, surface: *mut Surface)
           -> i64
 {
-    let mut call = DefinitionCall { reflow: 0,
+    let mut call = DefinitionCall { properties: core::ptr::null(),
+                                    properties_length: 0,
+                                    reflow: 0,
                                     header: Header::for_type::<DefinitionCall>(),
                                     kind: MDEF,
                                     id: 0,

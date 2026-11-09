@@ -59,8 +59,6 @@ pub const STATIC_TEXT_PROCEDURE: i16 = CDEF_STATIC_TEXT << 4;
 pub const TABLE_PROCEDURE: i16 = CDEF_TABLE << 4;
 pub const SPLITTER_PROCEDURE: i16 = CDEF_SPLITTER << 4;
 pub const SEPARATOR_PROCEDURE: i16 = CDEF_SEPARATOR << 4;
-/// Separator instance orientation; flags zero draws a horizontal rule.
-pub const SEPARATOR_VERTICAL: i16 = 1;
 
 /// Native progress presentation flag, independent of the classic procedure.
 /// Procedure 81 belongs to the Appearance relevance bar, not monochrome mode.
@@ -138,4 +136,100 @@ pub struct ControlCall
     pub reserved:  i16,
     /// Optional exclusive borrowed offscreen pixels, set only by safe transport.
     pub surface:   *mut crate::Surface
+}
+
+/// V2 control property vocabulary. The decoder is shared with loaded CDEFs.
+pub use mac_control_model as suite;
+pub const CDEF_GROUP_BOX: i16 = 30;
+pub const GROUP_BOX_PROCEDURE: i16 = CDEF_GROUP_BOX << 4;
+pub const CDEF_PICTURE: i16 = 31;
+pub const PICTURE_PROCEDURE: i16 = CDEF_PICTURE << 4;
+pub const CDEF_ACTIVITY_INDICATOR: i16 = 32;
+pub const ACTIVITY_INDICATOR_PROCEDURE: i16 = CDEF_ACTIVITY_INDICATOR << 4;
+pub const CDEF_DROP_MENU: i16 = 25;
+pub const DROP_MENU_PROCEDURE: i16 = CDEF_DROP_MENU << 4;
+/// Classic fixed-width popup variation. Standard File is a real customer;
+/// variation zero remains the suite's rectangle-and-X stub.
+pub const DROP_MENU_FIXED_PROCEDURE: i16 = DROP_MENU_PROCEDURE | 1;
+pub const CDEF_LIST_BOX: i16 = 33;
+pub const LIST_BOX_PROCEDURE: i16 = CDEF_LIST_BOX << 4;
+pub const CDEF_SEARCH_FIELD: i16 = 34;
+pub const SEARCH_FIELD_PROCEDURE: i16 = CDEF_SEARCH_FIELD << 4;
+pub const CDEF_OVERFLOW_ARROWS: i16 = 35;
+pub const OVERFLOW_ARROWS_PROCEDURE: i16 = CDEF_OVERFLOW_ARROWS << 4;
+pub const CDEF_SLIDER: i16 = 36;
+pub const SLIDER_PROCEDURE: i16 = CDEF_SLIDER << 4;
+pub const CDEF_STEPPER: i16 = 37;
+pub const STEPPER_PROCEDURE: i16 = CDEF_STEPPER << 4;
+pub const CDEF_DISCLOSURE_TRIANGLE: i16 = 38;
+pub const DISCLOSURE_TRIANGLE_PROCEDURE: i16 = CDEF_DISCLOSURE_TRIANGLE << 4;
+pub const CDEF_METER: i16 = 39;
+pub const METER_PROCEDURE: i16 = CDEF_METER << 4;
+pub const CDEF_SEGMENTED: i16 = 40;
+pub const SEGMENTED_PROCEDURE: i16 = CDEF_SEGMENTED << 4;
+pub const CDEF_DATE_TIME: i16 = 41;
+pub const DATE_TIME_PROCEDURE: i16 = CDEF_DATE_TIME << 4;
+pub const CDEF_LIST_EDIT: i16 = 42;
+pub const LIST_EDIT_PROCEDURE: i16 = CDEF_LIST_EDIT << 4;
+pub const CDEF_TAB: i16 = 43;
+pub const TAB_PROCEDURE: i16 = CDEF_TAB << 4;
+pub const CDEF_BREADCRUMB: i16 = 44;
+pub const BREADCRUMB_PROCEDURE: i16 = CDEF_BREADCRUMB << 4;
+pub const CDEF_COLOR_WELL: i16 = 45;
+pub const COLOR_WELL_PROCEDURE: i16 = CDEF_COLOR_WELL << 4;
+pub const CDEF_TREE: i16 = 46;
+pub const TREE_PROCEDURE: i16 = CDEF_TREE << 4;
+pub const CDEF_ICON_VIEW: i16 = 47;
+pub const ICON_VIEW_PROCEDURE: i16 = CDEF_ICON_VIEW << 4;
+pub const CDEF_GRAPH: i16 = 48;
+pub const GRAPH_PROCEDURE: i16 = CDEF_GRAPH << 4;
+pub const CDEF_TOOLTIP: i16 = 49;
+pub const TOOLTIP_PROCEDURE: i16 = CDEF_TOOLTIP << 4;
+pub const CDEF_TEXT_EDIT: i16 = 17;
+pub const TEXT_EDIT_PROCEDURE: i16 = CDEF_TEXT_EDIT << 4;
+pub const TEXT_EDIT_VIEW_PROCEDURE: i16 = TEXT_EDIT_PROCEDURE | 1;
+pub const TEXT_EDIT_PASSWORD_PROCEDURE: i16 = TEXT_EDIT_PROCEDURE | 2;
+
+/// Instance property calls share CONTROL and canonical CTRL identities. The
+/// bytes use the shared typed model codec, never app pointers retained by CTRL.
+pub const GET_PROPERTIES: u32 = 0;
+pub const SET_PROPERTIES: u32 = 1;
+/// Typed requests are delivered to the object's real retained definition.
+pub const SEND_MESSAGE: u32 = 2;
+pub const MESSAGE_DEFINITION: i16 = 7;
+#[repr(C)]
+pub struct MessageData
+{
+    pub data:   *const u8,
+    pub length: usize
+}
+pub const ALL_PROPERTIES: u32 = u32::MAX;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PropertiesCall
+{
+    pub id:        u64,
+    pub operation: u32,
+    pub field:     u32,
+    pub input:     *const u8,
+    pub length:    usize,
+    pub output:    *mut u8,
+    pub capacity:  usize,
+    pub required:  usize,
+    pub revision:  u64
+}
+impl Default for PropertiesCall
+{
+    fn default() -> Self
+    {
+        Self { id:        0,
+               operation: GET_PROPERTIES,
+               field:     ALL_PROPERTIES,
+               input:     core::ptr::null(),
+               length:    0,
+               output:    core::ptr::null_mut(),
+               capacity:  0,
+               required:  0,
+               revision:  0 }
+    }
 }

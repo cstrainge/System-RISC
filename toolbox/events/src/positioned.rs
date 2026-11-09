@@ -118,7 +118,7 @@ impl<'a> Events<'a>
     pub fn locate(self, event: &Event<'_>) -> Result<PointerPosition>
     {
         let mut call = raw::PositionedEventCall { operation: raw::POSITION_LOCATE,
-                                                  event: event.as_record(),
+                                                  event: event.as_record()?,
                                                   ..Default::default() };
         self.client.positioned_event(&mut call)?;
         Ok(PointerPosition::from_record(call.event.where_, call.position))

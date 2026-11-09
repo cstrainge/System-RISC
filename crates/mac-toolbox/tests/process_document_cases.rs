@@ -29,7 +29,7 @@ fn raw(system: &System<'_>, handle: u64, operation: u32) -> core::result::Result
 }
 fn idle(system: &System<'_>) -> Result<()>
 {
-    let event = system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?.into_record();
+    let event = system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?.into_record()?;
     if event.kind == EventKind::Update && event.window != 0
     {
         let _update = system.windows().update(mac_toolbox::WindowId(event.window))?;
@@ -245,7 +245,7 @@ pub fn receive(system: &System<'_>) -> Result<bool>
             notified = true;
             break;
         }
-        let raw = event.into_record();
+        let raw = event.into_record()?;
         if raw.kind == EventKind::Update && raw.window != 0
         {
             let _update = system.windows().update(mac_toolbox::WindowId(raw.window))?;
@@ -273,7 +273,7 @@ pub fn receive(system: &System<'_>) -> Result<bool>
     let start = system.events().uptime_ticks()?;
     loop
     {
-        let event = system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?.into_record();
+        let event = system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?.into_record()?;
         if event.kind == EventKind::KeyDown && event.character() == b'x'
         {
             break;

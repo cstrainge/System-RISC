@@ -183,7 +183,7 @@ impl PreparedDialog
                      error: OK,
                      error_context: Text::default(),
                      last_click: None,
-                     popup: false,
+                     popup: None,
                      ancestors,
                      typeahead: Text::default(),
                      typed_at: 0,

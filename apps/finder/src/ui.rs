@@ -530,12 +530,18 @@ impl<'a> Alerts<'a>
                          Completion::Dismissed)
     }
 
-    pub fn set_context(&mut self, event: &Event<'a>)
+    pub fn set_context(&mut self, event: &Event<'a>) -> Result<(), Error>
     {
         if !self.active()
         {
-            self.context = Some(Event::from(event.as_record()));
+            // Control notifications are handled as typed notifications, not input
+            // context for a subsequent alert. They have no raw EventRecord.
+            if !matches!(event, Event::Control(_))
+            {
+                self.context = Some(Event::from(event.as_record()?));
+            }
         }
+        Ok(())
     }
 
     pub fn confirm_empty(&mut self, system: &System<'a>, browser: &crate::browser::Browser)

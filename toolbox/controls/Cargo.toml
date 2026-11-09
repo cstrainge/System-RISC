@@ -5,7 +5,13 @@ edition.workspace = true
 publish.workspace = true
 
 
+[features]
+default = []
+suite = ["dep:mac-control-state"]
+
 [dependencies]
+mac-control-model = { path = "../../crates/mac-control-model" }
+mac-control-state = { path = "../../crates/mac-control-state", optional = true }
 mac-abi.workspace = true
 sr-control-reflow-handling.workspace = true
 mac-traps.workspace = true

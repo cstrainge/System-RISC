@@ -290,14 +290,15 @@ impl PreparedWindow
         {
             return Err(CreationError::InvalidRequest);
         }
-        Ok(Request { kind:      definition::WDEF,
-                     id:        self.window.procedure >> 4,
-                     variation: self.window.procedure & 15,
-                     message:   operation,
-                     reflow:    0,
-                     object:    Object::Window(self.window.state),
-                     arguments: Arguments::Scalar(0),
-                     surface:   None })
+        Ok(Request { properties: None,
+                     kind:       definition::WDEF,
+                     id:         self.window.procedure >> 4,
+                     variation:  self.window.procedure & 15,
+                     message:    operation,
+                     reflow:     0,
+                     object:     Object::Window(self.window.state),
+                     arguments:  Arguments::Scalar(0),
+                     surface:    None })
     }
 
     pub(crate) fn apply_user_reply(&mut self, operation: i16,

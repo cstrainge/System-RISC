@@ -181,7 +181,8 @@ impl PaintPlan
                 }
             }
         };
-        Ok(Request { kind: definition::WDEF,
+        Ok(Request { properties: None,
+                     kind: definition::WDEF,
                      id: self.window.procedure >> 4,
                      variation: self.window.procedure & 15,
                      message,

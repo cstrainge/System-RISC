@@ -107,16 +107,16 @@ fn verify_positions(system: &System<'_>) -> Result<(), Error>
                                                          v: 135 },
                                                  88,
                                                  true) };
-    let record = event.as_record();
+    let record = event.as_record()?;
     system.events().post(event)?;
     let first = system.events().peek_positioned(EventMask::MOUSE_DOWN)?.ok_or(Error::NotFound)?;
     let again = system.events().peek_positioned(EventMask::MOUSE_DOWN)?.ok_or(Error::NotFound)?;
     require(system,
-            first.event().into_record() == record && first.position() == again.position(),
+            first.event().into_record()? == record && first.position() == again.position(),
             "coordinate peek changed input")?;
     let (received, position) = system.next_positioned(EventMask::MOUSE_DOWN)?.into_parts();
     require(system,
-            received.as_record() == record
+            received.as_record()? == record
             && position.screen().point() == record.where_
             && position.in_window(id)?.point()?
                == (Point { h: 25,
@@ -174,7 +174,7 @@ fn verify_positions(system: &System<'_>) -> Result<(), Error>
     // Original native consumers still read the exact global EventRecord.
     system.events().post(Event::from(record))?;
     require(system,
-            system.next_event(EventMask::MOUSE_DOWN)?.as_record() == record,
+            system.next_event(EventMask::MOUSE_DOWN)?.as_record()? == record,
             "old native input changed")?;
     system.events().post(Event::from(record))?;
     window.close()?;
@@ -589,7 +589,7 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
             "ready deferred click did not complete on replay")?;
     let (received_up, up_position) = browser.next_deferred_pointer().ok_or(Error::NotFound)?;
     require(system,
-            received_up.as_record() == up.as_record(),
+            received_up.as_record()? == up.as_record()?,
             "deferred release lost its sampled modifiers")?;
     browser.track(system, &received_up, up_position)?;
     require(system,

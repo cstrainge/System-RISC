@@ -277,12 +277,7 @@ impl Manager
             let assignment=ControlCall{id:call.id,operation:REFLOW_OBJECT,
                 layout:mac_abi::controls::reflow::Payload{message:mac_abi::controls::reflow::ASSIGN_RECT,
                     rect:root.state.spec.bounds(),..Default::default()},..Default::default()};
-            Some(self.snapshot_layout_change(&assignment,
-                                             owner,
-                                             false,
-                                             None,
-                                             None,
-                                             Some(released))
+            Some(self.snapshot_layout_change(&assignment, owner, false, None, None, Some(released))
                      .map_err(|status| {
                          TrackingStage::refusal(diagnostic, TrackingStage::SnapshotRelease, status)
                      })?)

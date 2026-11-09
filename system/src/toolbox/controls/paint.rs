@@ -139,6 +139,7 @@ impl Input
 /// application pointer, Pending, account selector or fake CTRL seal is stored.
 pub(crate) struct PaintPlan
 {
+    properties: Option<Arc<mac_control_state::State>>,
     subject:    UnclaimedSubject,
     origin:     PaintOrigin,
     input:      Input,
@@ -196,6 +197,11 @@ impl PaintPlan
     pub(crate) fn reflow(&self) -> u32
     {
         self.reflow
+    }
+
+    pub(crate) fn properties(&self) -> Option<Arc<mac_control_state::State>>
+    {
+        self.properties.clone()
     }
 
     pub(crate) fn object(&self) -> Object
@@ -324,13 +330,14 @@ impl Source<'_>
 }
 struct Call<'a>
 {
-    source:    Source<'a>,
-    input:     Input,
-    id:        i16,
-    variation: i16,
-    reflow:    u32,
-    grid:      Option<&'a Arc<snapshot::Grid>>,
-    gate:      TrapGate
+    properties: Option<Arc<mac_control_state::State>>,
+    source:     Source<'a>,
+    input:      Input,
+    id:         i16,
+    variation:  i16,
+    reflow:     u32,
+    grid:       Option<&'a Arc<snapshot::Grid>>,
+    gate:       TrapGate
 }
 impl Call<'_>
 {
@@ -358,7 +365,8 @@ impl Call<'_>
                                 origin,
                                 geometry };
             cursor.waiting = Some(key);
-            return Ok(Some(PaintPlan { source: self.source.retain(),
+            return Ok(Some(PaintPlan { properties: self.properties.clone(),
+                                       source: self.source.retain(),
                                        subject,
                                        origin,
                                        input: self.input,
@@ -385,7 +393,14 @@ impl Call<'_>
                             });
         let mut surface = Surface::from_canvas(canvas);
         let mut call =
-            DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+            DefinitionCall { properties:
+                                 self.properties
+                                     .as_ref()
+                                     .map_or(core::ptr::null(), |p| p.as_bytes().as_ptr()),
+                             properties_length: self.properties
+                                                    .as_ref()
+                                                    .map_or(0, |p| p.as_bytes().len()),
+                             header: Header::for_type::<DefinitionCall>(),
                              kind: CDEF,
                              id: self.id,
                              variation: self.variation,
@@ -455,7 +470,8 @@ fn body<'a>(drawing: &'a Drawing, bounds: Option<Rect>, corner: bool) -> Result<
             (Input::Control(v), standard_definition(drawing.variation)?)
         }
     };
-    Ok(Call { source: Source::Retained(&drawing.source),
+    Ok(Call { properties: drawing.properties(),
+              source: Source::Retained(&drawing.source),
               input,
               id,
               variation: variation(drawing.variation),
@@ -526,13 +542,14 @@ pub(crate) fn run(drawing: &Drawing, cursor: &mut Cursor, canvas: &mut Canvas<'_
                         cursor.next()?;
                         continue;
                     };
-                    let call = Call { source:    Source::Bound(bars.definition.as_ref()),
-                                      input:     Input::Scrollbar(*state),
-                                      id:        1,
-                                      variation: 0,
-                                      reflow:    1,
-                                      grid:      None,
-                                      gate:      drawing.gate };
+                    let call = Call { properties: None,
+                                      source:     Source::Bound(bars.definition.as_ref()),
+                                      input:      Input::Scrollbar(*state),
+                                      id:         1,
+                                      variation:  0,
+                                      reflow:     1,
+                                      grid:       None,
+                                      gate:       drawing.gate };
                     clipped(canvas, state.bounds, |canvas| {
                         call.visit(cursor, canvas, staged, subject, origin)
                     })?.flatten()
@@ -568,14 +585,15 @@ pub(crate) fn run(drawing: &Drawing, cursor: &mut Cursor, canvas: &mut Canvas<'_
                         cursor.phase = Phase::Complete;
                         continue;
                     };
-                    let call = Call { source:    Source::Bound(dividers.definition.as_ref()),
-                                      input:     Input::Control(divider.state(dividers.viewport,
-                                                                              enabled)),
-                                      id:        CDEF_SPLITTER,
-                                      variation: 0,
-                                      reflow:    1,
-                                      grid:      None,
-                                      gate:      drawing.gate };
+                    let call = Call { properties: None,
+                                      source:     Source::Bound(dividers.definition.as_ref()),
+                                      input:      Input::Control(divider.state(dividers.viewport,
+                                                                               enabled)),
+                                      id:         CDEF_SPLITTER,
+                                      variation:  0,
+                                      reflow:     1,
+                                      grid:       None,
+                                      gate:       drawing.gate };
                     call.visit(cursor, canvas, staged, subject, origin)?
                 }
                 Phase::Complete => return Ok(Progress::Complete)

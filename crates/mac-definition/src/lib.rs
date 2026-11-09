@@ -10,9 +10,7 @@ mod binding;
 mod families;
 #[doc(hidden)]
 pub mod validation;
-pub use families::{Button, ButtonKind, CaptionMode, Highlight, Progress, ProgressRange,
-                   ProgressStyle, Reply, Scrollbar, Separator, SeparatorOrientation, Splitter,
-                   Table};
+pub use families::*;
 /// Generate the CDEF entry and panic scaffold for the family named by `Message`.
 pub use mac_definition_macros::cdef_main;
 pub use toolbox_controls::Part;
@@ -20,8 +18,7 @@ pub use toolbox_controls::Part;
 #[doc(hidden)]
 pub mod runtime;
 #[doc(hidden)]
-pub use binding::{buttons_entry, progress_entry, scrollbar_entry, separator_entry, splitter_entry,
-                  static_text_entry, table_entry};
+pub use binding::*;
 pub use mac_abi::{INLINE_STRING_BYTES, quickdraw::FontSelection, theme::Palette as Theme};
 pub use mac_traps::{Error, Result};
 pub use toolbox_controls::TextLayout;
@@ -52,6 +49,12 @@ pub enum Message<'a, S>
 {
     /// Container-only pure calculation over resident-admitted scratch storage.
     CalculateGridAxis(reflow::grid::AxisCalculation<'a>),
+    /// Borrowed, checked request delivered through this same CDEF invocation.
+    Control
+    {
+        state:   S,
+        request: mac_abi::controls::suite::messages::Request<'a>
+    },
     DrawGrid
     {
         state: S,
@@ -165,3 +168,7 @@ pub fn leaf_reflow(request: reflow::Message, creation: reflow::Size, minimum: re
         _ => Err(Error::NotSupported)
     }
 }
+
+pub mod stub;
+
+pub use mac_abi::controls::suite as properties;

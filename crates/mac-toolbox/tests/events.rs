@@ -177,10 +177,10 @@ fn application_file_lifecycle_events_preserve_exact_identity_without_window_rout
                                                          id: mac_toolbox::Cnid(0x8765_4321),
                                                          running,
                                                          input: Default::default() };
-            let record = event.as_record();
+            let record = event.as_record().unwrap();
             system.events().post(event).unwrap();
             let received = system.next_event(mac_toolbox::EventMask::ALL).unwrap();
-            assert_eq!(received.as_record(), record);
+            assert_eq!(received.as_record().unwrap(), record);
             assert_eq!(received.window(), None);
             assert!(matches!(received, mac_toolbox::Event::ProcessFileChanged {
                 volume: mac_toolbox::VolumeId(0x1234_5678), id: mac_toolbox::Cnid(0x8765_4321),
@@ -203,7 +203,7 @@ fn geometry_notifications_preserve_full_window_identity_and_snapshot_input()
                             modifiers: Modifiers::SHIFT };
         let event = Event::WindowGeometryChanged { window,
                                                    input };
-        let record = event.as_record();
+        let record = event.as_record().unwrap();
         assert_eq!(record.message, mac_toolbox::abi::events::WINDOW_GEOMETRY_CHANGED);
         assert_eq!(record.window, window.0);
         assert_eq!(record.payload, 0);
@@ -213,7 +213,7 @@ fn geometry_notifications_preserve_full_window_identity_and_snapshot_input()
         assert_eq!(peek.input(), input);
         assert_eq!(peek.key(), None);
         let received = system.next_event(EventMask::ALL).unwrap();
-        assert_eq!(received.as_record(), record);
+        assert_eq!(received.as_record().unwrap(), record);
         assert!(matches!(received, Event::WindowGeometryChanged { window: id, .. } if id == window));
     });
 }
@@ -235,18 +235,18 @@ fn positioned_delivery_is_additive_and_shares_the_existing_native_queue()
                                                                           v: 71 },
                                                        when:      99,
                                                        modifiers: Modifiers::SHIFT } };
-        let record = event.as_record();
+        let record = event.as_record().unwrap();
         system.events().post(event).unwrap();
         let snapshot = system.events().peek_positioned(EventMask::ALL).unwrap().unwrap();
-        assert_eq!(snapshot.event().into_record(), record);
+        assert_eq!(snapshot.event().into_record().unwrap(), record);
         assert_eq!(snapshot.position().screen().point(), record.where_);
         assert_eq!(snapshot.position().window(), None);
-        assert_eq!(system.next_event(EventMask::ALL).unwrap().as_record(), record);
+        assert_eq!(system.next_event(EventMask::ALL).unwrap().as_record().unwrap(), record);
         assert!(system.events().peek_positioned(EventMask::ALL).unwrap().is_none());
         system.events().post(Event::from(record)).unwrap();
         let (event, position) =
             system.events().wait_positioned(EventMask::ALL, 0).unwrap().into_parts();
-        assert_eq!(event.as_record(), record);
+        assert_eq!(event.as_record().unwrap(), record);
         assert_eq!(position.screen().point(), record.where_);
         assert_eq!(position.window(), None);
         assert!(system.events().peek(EventMask::ALL).unwrap().is_none());

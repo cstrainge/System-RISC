@@ -141,6 +141,16 @@ pub(super) struct Widgets
     pub scroll_tracking: bool,
     pub tracking:        Option<usize>
 }
+/// One genuine MENU capture and its original immutable destination mapping.
+/// Catalog IDs are routing metadata only; Files revalidates navigation.
+pub(super) struct Popup
+{
+    pub handle:       u64,
+    pub storage:      crate::toolbox::handles::OwnerRef,
+    pub destinations: [(u32, u32); page::ANCESTORS + 1],
+    pub count:        usize,
+    pub pressed:      bool
+}
 pub struct Dialog
 {
     saved_name:                   Option<Text>,
@@ -168,7 +178,7 @@ pub struct Dialog
     pub error:                    Status,
     pub(super) error_context:     Text,
     pub last_click:               Option<(usize, u32)>,
-    pub popup:                    bool,
+    pub(super) popup:             Option<Popup>,
     pub ancestors:                Vec<CatalogInfo>,
     typeahead:                    Text,
     pub typed_at:                 u32,
@@ -283,7 +293,8 @@ impl Dialog
         self.first = 0;
         self.last_click = None;
         self.name_tracking = false;
-        self.popup = false;
+        // A menu already being tracked retains its ORIGINAL row mapping.
+        // Async scan completion must not silently retarget or orphan it.
         self.typeahead.clear();
         self.error_context.clear();
         self.issued = false;

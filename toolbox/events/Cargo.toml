@@ -10,3 +10,4 @@ mac-abi.workspace = true
 mac-traps.workspace = true
 mac-text = { path = "../../crates/mac-text" }
 toolbox-drag = { path = "../drag" }
+toolbox-controls = { path = "../controls" }

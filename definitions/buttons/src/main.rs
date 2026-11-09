@@ -94,6 +94,7 @@ fn main<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<
             }
         }
         Message::CalculateRegions(_) | Message::Initialize(_) | Message::Dispose(_) => (),
+        Message::Control { .. } => return Err(mac_definition::Error::NotSupported),
         Message::Track { .. } | Message::ChangeBounds { .. } => return Err(Error::NotSupported)
     }
     Ok(Reply::Done)
@@ -173,8 +174,10 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &Button<'_>, theme: mac_definit
         let left = i32::from(r.left) + 2;
         if style == ButtonKind::Check
         {
-            let glyph =
-                mac_abi::geometry::Rect::new(left as i16, top as i16, (left + 12) as i16, (top + 12) as i16);
+            let glyph = mac_abi::geometry::Rect::new(left as i16,
+                                                     top as i16,
+                                                     (left + 12) as i16,
+                                                     (top + 12) as i16);
             port.pen_size = Point { h: if pressed { 2 } else { 1 },
                                     v: if pressed { 2 } else { 1 } };
             canvas.draw_shape(&mut port, Shape::Rect(glyph), Verb::Frame)?;
@@ -298,9 +301,9 @@ fn draw_radio(canvas: &mut SurfacePort<'_>, left: i32, top: i32, pressed: bool, 
             }
             let y = top + y as i32;
             canvas.paint_rect(mac_abi::geometry::Rect::new((left + start) as i16,
-                                                            y as i16,
-                                                            (left + x) as i16,
-                                                            (y + 1) as i16),
+                                                           y as i16,
+                                                           (left + x) as i16,
+                                                           (y + 1) as i16),
                               ink)?;
         }
     }
@@ -308,7 +311,11 @@ fn draw_radio(canvas: &mut SurfacePort<'_>, left: i32, top: i32, pressed: bool, 
 }
 fn pixel(canvas: &mut SurfacePort<'_>, x: i32, y: i32, ink: u32) -> mac_traps::Result<()>
 {
-    canvas.paint_rect(mac_abi::geometry::Rect::new(x as i16, y as i16, (x + 1) as i16, (y + 1) as i16), ink)
+    canvas.paint_rect(mac_abi::geometry::Rect::new(x as i16,
+                                                   y as i16,
+                                                   (x + 1) as i16,
+                                                   (y + 1) as i16),
+                      ink)
 }
 // Original CDEF0 FrameOval12×12 with1px/2px pen, and PaintOval inset3.
 // Provenance: results/control-tracking-reference/static-{0,1,3}.png; resource

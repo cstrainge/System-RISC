@@ -27,6 +27,7 @@ wire::wire_struct!(CallbackPacket { header:         Header,
                                     object:         CallbackRange,
                                     arguments:      CallbackRange,
                                     auxiliary:      [CallbackRange; 2],
+                                    properties:     CallbackRange,
                                     pixels:         CallbackRange,
                                     surface_width:  u32,
                                     surface_height: u32,
@@ -110,7 +111,8 @@ pub(crate) enum Arguments
         tracks:        Vec<GridTrack>,
         items:         Vec<GridItem>
     },
-    GridPaint(Vec<Rect>)
+    GridPaint(Vec<Rect>),
+    ControlMessage(Vec<u8>)
 }
 
 /// Geometry-only admission. The owning manager pins its real target/revision;
@@ -236,6 +238,7 @@ pub(crate) struct SurfaceSnapshot
 
 pub(crate) struct Request
 {
+    pub properties:       Option<Arc<mac_control_state::State>>,
     pub(crate) kind:      u32,
     pub(crate) id:        i16,
     pub(crate) variation: i16,
@@ -299,6 +302,7 @@ impl Request
                                           arguments: CallbackRange { offset: *surface as u64,
                                                                      length: 0 },
                                           auxiliary: [CallbackRange::default(); 2],
+                                          properties: CallbackRange::default(),
                                           pixels: CallbackRange::default(),
                                           surface_width: 0,
                                           surface_height: 0,
@@ -348,15 +352,39 @@ impl Request
                                           object,
                                           arguments: CallbackRange::default(),
                                           auxiliary: [CallbackRange::default(); 2],
+                                          properties: CallbackRange::default(),
                                           pixels: CallbackRange::default(),
                                           surface_width: 0,
                                           surface_height: 0,
                                           surface_origin: Point::default(),
                                           surface_clip: Rect::ZERO,
                                           reserved2: 0 };
+        if let Some(properties) = &self.properties
+        {
+            if self.kind != CDEF || properties.kind() != self.id
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            packet.properties = append_slice(&mut bytes, properties.as_bytes())?;
+        }
         match self.arguments
         {
             Arguments::Scalar(value) => packet.param = value,
+            Arguments::ControlMessage(bytes_in) =>
+            {
+                if self.kind != CDEF
+                   || self.message != mac_abi::controls::MESSAGE_DEFINITION
+                   || !matches!(kind, ObjectKind::Control)
+                   || self.surface.is_some()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                mac_abi::controls::suite::messages::Request::read(&bytes_in).map_err(|_| {
+                                                                                BAD_ARGUMENT
+                                                                            })?;
+                packet.argument_kind = CALLBACK_CONTROL_MESSAGE;
+                packet.arguments = append_slice(&mut bytes, &bytes_in)?;
+            }
             Arguments::Rect(rect) =>
             {
                 packet.argument_kind = CALLBACK_BYTES;
@@ -593,6 +621,20 @@ impl Packet
 
     fn validate_immutable_object(&self, bytes: &[u8]) -> Result<(), Status>
     {
+        if self.layout.argument_kind == CALLBACK_CONTROL_MESSAGE
+        {
+            let range = self.layout.arguments.checked(self.bytes.len(), 8).ok_or(BAD_ABI)?;
+            if self.bytes[range.clone()] != bytes[range]
+            {
+                return Err(BAD_ABI);
+            }
+        }
+        let properties = self.layout.properties.checked(self.bytes.len(), 8).ok_or(BAD_ABI)?;
+        if self.bytes[properties.clone()] != bytes[properties]
+        {
+            return Err(BAD_ABI);
+        }
+
         if !matches!(self.object, ObjectKind::Control | ObjectKind::Scrollbar | ObjectKind::Change)
         {
             return Ok(());

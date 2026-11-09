@@ -133,7 +133,8 @@ impl OperationPlan
             Purpose::Dispose => (definition::DISPOSE, 0),
             Purpose::Initialize(message) => (message, 0)
         };
-        Request { kind: definition::WDEF,
+        Request { properties: None,
+                  kind: definition::WDEF,
                   id: self.window.procedure >> 4,
                   variation: self.window.procedure & 15,
                   message,

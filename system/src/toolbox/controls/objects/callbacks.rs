@@ -896,6 +896,11 @@ impl Configuration
     pub(super) async fn prepare(self, reference: DefinitionRef, author: &Author)
                                 -> Result<Configured, Status>
     {
+        let property_author = self.previous_title
+                                  .as_ref()
+                                  .and_then(|title| title.properties.clone())
+                                  .map(|properties| author.with_properties(Some(properties)));
+        let author = property_author.as_ref().unwrap_or(author);
         let call =
             if self.validate { author.validate(self.call, reference).await? } else { self.call };
         let title = if !self.scrollbar && call.procedure != PROGRESS_BAR_PROCEDURE

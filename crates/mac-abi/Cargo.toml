@@ -3,3 +3,5 @@ name = "mac-abi"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+[dependencies]
+mac-control-model = { path = "../mac-control-model" }

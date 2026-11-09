@@ -3,8 +3,10 @@
 #![forbid(unsafe_code)]
 use mac_abi::events::{EventCall, EventKind, INPUT_STATE, NATIVE_FLUSH, NATIVE_PEEK, NATIVE_POST,
                       OS_FLUSH, OS_GET, OS_GET_MASK, OS_PEEK, OS_POST, OS_SET_MASK, OS_STILL_DOWN};
-pub use mac_abi::{geometry::Point, events::KeyMap};
+pub use mac_abi::{events::KeyMap, geometry::Point};
 mod decoded;
+mod control;
+pub use control::{ControlChange, ControlNotification};
 mod timer;
 pub use timer::TimeTask;
 mod positioned;
@@ -57,7 +59,7 @@ impl<'a> Events<'a>
     /// It is a native service, separate from the classic OS-level queue.
     pub fn post(self, event: Event<'_>) -> Result<()>
     {
-        let record = event.as_record();
+        let record = event.as_record()?;
         if record.kind == classic::EventKind::OsEvent
            && matches!(record.message & 0xff00_0000,
                        mac_abi::drag::ENTERED_EVENT
@@ -72,7 +74,7 @@ impl<'a> Events<'a>
             return Err(mac_traps::Error::BadArgument);
         }
         self.call(EventCall { operation: NATIVE_POST,
-                              event: event.into_record(),
+                              event: event.into_record()?,
                               ..Default::default() })
             .map(|_| ())
     }

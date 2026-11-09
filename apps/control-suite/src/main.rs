@@ -1,3 +1,4 @@
+mod gallery;
 use mac_toolbox::{Rect, System,
                   controls::{Anchors, BorderOffsets, Cell, Fill, Reflow, SizeBounds, SizeUnit,
                              StaticTextSpec, TextAlignment, TextLayout},
@@ -98,6 +99,7 @@ fn run(system: System) -> Result<(), Failure>
     table.control().set_window_border(BorderOffsets::new(12,12,12,12).map_err(|e|mac_toolbox::Error::from_status(e.status()))?)?;
     table.control().set_anchors(Anchors::ALL)?;
 
+    let mut gallery: Option<gallery::Gallery<'_>> = None;
     loop
     {
         let (event, position) = system.wait_positioned(EventMask::ALL, 30)
@@ -110,12 +112,58 @@ fn run(system: System) -> Result<(), Failure>
         {
             match selection.command
             {
-                QUIT => return window.close().map_err(|cause| Failure::at("window close", cause)),
+                resources::commands::STUB =>
+                {
+                    if let Some(gallery) = &gallery
+                    {
+                        gallery.select()?;
+                    }
+                    else
+                    {
+                        gallery = Some(gallery::Gallery::open(system)?);
+                    }
+                    continue;
+                }
+                QUIT =>
+                {
+                    if let Some(mut gallery) = gallery.take()
+                    {
+                        gallery.close()?;
+                    }
+                    return window.close().map_err(|cause| Failure::at("window close", cause));
+                }
 
                 _ => continue
             }
         }
 
+        if let Some(active) = &mut gallery
+        {
+            match event
+            {
+                Event::Update { window: target,
+                                .. } if target == active.id() =>
+                {
+                    active.draw(system)?;
+                    continue;
+                }
+                Event::MouseDown { window: Some(target),
+                                   .. } if target == active.id() =>
+                {
+                    active.track(position.in_window(target)?)?;
+                    continue;
+                }
+                Event::CloseRequested { window: target,
+                                        .. } if target == active.id() =>
+                {
+                    active.close()?;
+                    gallery = None;
+                    window.select()?;
+                    continue;
+                }
+                _ => ()
+            }
+        }
         match event
         {
             Event::Update { window: target,

@@ -1,23 +1,17 @@
 # Separator control definition
 
-System CDEF 29 (`CDEF_SEPARATOR`), classic procedure 464, variation 0.
-This initial definition draws a one-pixel rule in the current theme's separator
-role. Flags zero selects horizontal; `SEPARATOR_VERTICAL` selects vertical.
-Both forms are passive: hit testing always returns `Part::None`, with no focus,
-selection or tracking. Enabled/disabled instances draw the same grouping chrome.
+System CDEF 29, classic procedure 464, ABI 1.
 
-Use the public Toolbox `controls().create_standard` with `StandardKind::Separator`,
-`StandardState { bounds, ..Default::default() }`, and the desired reflow policy.
-Set `state.flags = controls::SEPARATOR_VERTICAL` for a vertical rule. The existing
-managed Control owner/ref provides drawing, configuration and disposal.
+This v2 stub draws only a theme-role rectangle and X. Typed instance
+properties are shared with resident storage and the public SDK; it participates
+in leaf reflow. Unimplemented behavior deliberately ignores events and emits
+none. It does not implement the final control's chrome or interactions.
 
-Reflow reports a one-pixel minimum on both axes and the creation size as the
-preferred size. The line spans its assigned long axis without adding margins.
-Drawing is clipped to its own bounds. Invalid flags, inverted bounds and
-interactive state are refused with `BadArgument`. Unsupported variations,
-nonempty labels, tracking, grid/container operations and bounds-delta messages
-return typed `NotSupported`; no label is silently discarded. Labeled rules,
-Geneva text/rotation and replacement-theme etched chrome remain future work.
+Unspecified size defaults are explicit placeholders: minimum 1 by 1, no
+application maximum, creation size preferred. Other placeholder defaults are
+spelled out in the shared property model. Theme properties describe theme
+policy, not application-selected colors. Composed child/source identities are
+state only; the stub does not turn them into capabilities or run providers.
 
-This is a real independently loaded definition, installed in the System resource
-fork and inspectable by the resource editor, not a second resident renderer.
+Properties: `visible`, `voice`, `tooltip`, `drag_drop`, `minimum`, `maximum`, `orientation`, `label`, `thickness`, `line_style`, `length`, `spacing`, plus resident
+`bounds` and `enabled`. Use the typed public control owner and properties API.

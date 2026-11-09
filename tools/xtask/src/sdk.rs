@@ -41,7 +41,7 @@ use crate::{Workspace, patch, run, write_json};
 /// Bumped when the preparation logic changes in a way that invalidates a
 /// previously prepared tree. A prepared tree is not upgraded in place; it is
 /// abandoned under its old key.
-const BUILDER: &str = "xtask-sdk-4";
+const BUILDER: &str = "xtask-sdk-5";
 
 /// The proxy mode this executable runs in when the SDK build invokes it as
 /// `RUSTC`.
@@ -539,7 +539,7 @@ pub(super) fn prepare(workspace: &Workspace) -> Result<Private>
                                  pin.rustup_toolchain, pin.rust_src_sha256, source_digest)));
     }
 
-    let private = ["crates/mac-abi", "crates/mac-traps"];
+    let private = ["crates/mac-control-model", "crates/mac-abi", "crates/mac-traps"];
 
     let mut inputs = Map::new();
     inputs.insert("schema".into(), json!(1));
@@ -672,15 +672,21 @@ fn stage(workspace: &Workspace, pin: &Pin, compiler: &Compiler, port: &Path, ups
 
     let package = workspace_package(root)?;
 
-    // The two core-only transport packages resolve into the private workspace
+    // The core-only model and transport packages resolve into the private workspace
     // under the directory names the patched `library/std/Cargo.toml` already
     // points at. Only their sources are copied: no application facade and no
     // OS implementation joins the private source root.
-    for name in ["mac-abi", "mac-traps"]
+    for name in ["mac-control-model", "mac-abi", "mac-traps"]
     {
         let destination = copied.join("library").join(name);
 
         copy_tree(&root.join("crates").join(name).join("src"), &destination.join("src"))?;
+        let build_script = root.join("crates").join(name).join("build.rs");
+        if build_script.exists()
+        {
+            fs::copy(build_script, destination.join("build.rs"))?;
+        }
+
         write_manifest(&destination.join("Cargo.toml"),
                        &name.replace("mac-", "systemrisc-std-"),
                        &package,
@@ -744,7 +750,7 @@ fn workspace_package(root: &Path) -> Result<(String, String)>
 
 /// Write one private transport manifest.
 ///
-/// The two packages are compiled as part of the standard library's own
+/// The core-only packages are compiled as part of the standard library's own
 /// workspace, so they take the in-tree `core` rather than the host's, and the
 /// trap entry reaches the ABI crate through the path the standard library
 /// already names.
@@ -765,6 +771,11 @@ fn write_manifest(path: &Path, name: &str, package: &(String, String), with_abi:
                            }\n");
     }
 
+    if name == "systemrisc-std-abi"
+    {
+        manifest.push_str("mac-control-model = { package = \"systemrisc-std-control-model\", \
+                           path = \"../mac-control-model\" }\n");
+    }
     fs::write(path, manifest)?;
 
     Ok(())

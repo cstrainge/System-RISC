@@ -652,7 +652,7 @@ impl<'a> Controller<'a>
         if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. })
         {
             let mut batch: [Event; 128] = core::array::from_fn(|_| Event::default());
-            batch[0] = Event::from(event.as_record());
+            batch[0] = Event::from(event.as_record()?);
             let mut count = 1;
             while count < batch.len()
             {

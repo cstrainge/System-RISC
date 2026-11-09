@@ -179,7 +179,8 @@ fn native(system: &System<'_>) -> Result<(), Failure>
             == Some(event.into()),
             "native peek does not dequeue")?;
     require(events.os_get(EVERY_EVENT)?.is_none(), "native posting isolated from OS queue")?;
-    require(events.next(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?.into_record()
+    require(events.next(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?
+                  .into_record()?
             == event,
             "native next receives posted record")?;
     require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?.is_none(),
@@ -211,7 +212,7 @@ fn native(system: &System<'_>) -> Result<(), Failure>
     for message in 2..130
     {
         require(events.next(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?
-                      .into_record()
+                      .into_record()?
                       .message
                 == message,
                 "native128 queue retention")?;
@@ -230,12 +231,12 @@ fn native(system: &System<'_>) -> Result<(), Failure>
     events.flush(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT),
                  mac_toolbox::events::EventMask::from_bits_retain(2))?;
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT))?
-                  .into_record()
+                  .into_record()?
                   .kind
             == EventKind::MouseDown,
             "native flush keeps stopping event")?;
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT))?
-                  .into_record()
+                  .into_record()?
                   .message
             == 3,
             "native flush keeps trailing event")?;

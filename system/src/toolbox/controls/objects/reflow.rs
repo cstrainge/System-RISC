@@ -8,6 +8,11 @@ impl State
                                     author: &super::super::effects::Author)
                                     -> Result<bool, Status>
     {
+        let property_author = self.title
+                                  .as_ref()
+                                  .and_then(|title| title.properties.clone())
+                                  .map(|properties| author.with_properties(Some(properties)));
+        let author = property_author.as_ref().unwrap_or(author);
         let request = layout::decode_leaf(payload).map_err(|e| e.status())?;
         let layout = self.layout.as_mut().ok_or(NOT_SUPPORTED)?;
         if let layout::Message::SetAnchors(anchors) = request

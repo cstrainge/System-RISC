@@ -408,6 +408,19 @@ impl<'a> crate::QuickDraw<'a>
 
 impl crate::SurfacePort<'_>
 {
+    /// Stroke a one-pixel line through the resident raster path, clipped to the
+    /// borrowed port. No per-pixel service calls or private renderer.
+    pub fn stroke_line(&mut self, from: Point, to: Point, color: u32) -> Result<()>
+    {
+        let mut state = PortState { location: from,
+                                    foreground: color,
+                                    ..Default::default() };
+        self.connection.graphics(&mut state,
+                                 GraphicsCommand { operation: QD_LINE_TO,
+                                                   point: to,
+                                                   ..Default::default() })
+    }
+
     pub fn draw_shape(&mut self, state: &mut PortState, shape: Shape<'_>, verb: Verb)
                       -> Result<()>
     {

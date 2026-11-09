@@ -2,7 +2,8 @@
 //! threading extensions, distinct from the original cooperative scheduling model.
 #![cfg(target_arch = "riscv64")]
 use mac_toolbox::{Cnid, ProcessId, Rect, System, VolumeId, WindowId,
-                  abi::{ACCESS_DENIED, events::{ACTIVE_FLAG, EventKind}},
+                  abi::{ACCESS_DENIED,
+                        events::{ACTIVE_FLAG, EventKind}},
                   events::classic::{EVERY_EVENT, Event},
                   memory::Handle,
                   processes::ProcessInfo,
@@ -241,23 +242,24 @@ fn atomic_activation(system: &System<'_>, own: ProcessId, other: ProcessId, fron
     system.processes().activate(own)?;
     for active in [false, true]
     {
-        let event = events.next(mac_toolbox::events::EventMask::from_bits_retain(activate))
-                          .map(|event| (!event.is_idle()).then(|| event.into_record()))?
-                          .ok_or(Failure::Contract("missing activation edge"))?;
-        require(event.window == front.0
-                && (event.modifiers & ACTIVE_FLAG != 0) == active,
+        let event =
+            events.next(mac_toolbox::events::EventMask::from_bits_retain(activate))
+                  .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
+                  .ok_or(Failure::Contract("missing activation edge"))?;
+        require(event.window == front.0 && (event.modifiers & ACTIVE_FLAG != 0) == active,
                 "application activation selected an intermediate window")?;
     }
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(activate))
-                  .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                  .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                   .is_none(),
             "extra application activation edge")?;
     // Acknowledge pending damage, then no-op activation/visibility requests
     // must not manufacture additional Update events.
     for _ in 0..32
     {
-        let Some(event) = events.next(mac_toolbox::events::EventMask::UPDATE)
-                                .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+        let Some(event) =
+            events.next(mac_toolbox::events::EventMask::UPDATE)
+                  .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
         else
         {
             break;
@@ -271,13 +273,13 @@ fn atomic_activation(system: &System<'_>, own: ProcessId, other: ProcessId, fron
         system.processes().show_all()?;
     }
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(activate))
-                  .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                  .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                   .is_none(),
             "repeated activation generated events")?;
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(1
                                                                          << EventKind::Update
                                                                             as u16))
-                  .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                  .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                   .is_none(),
             "unchanged visibility generated damage")?;
     require(system.window(mac_toolbox::WindowId(0))?.id == mac_toolbox::WindowId(front.0),
@@ -575,7 +577,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                   .next(mac_toolbox::events::EventMask::from_bits_retain(1
                                                                          << EventKind::Application1
                                                                             as u16))
-                  .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                  .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                   .ok_or(Failure::Contract("observer private event missing"))?;
         require(event.message == 0x1111aaaa, "worker private event leaked to observer")?;
         synthetic_private(system, child_window, OBSERVER_SYNTHETIC)?;
@@ -587,7 +589,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                   .create(WindowSpec::new(Rect::new(65, 100, 355, 210), "Background Create"))?;
         require(system.events()
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
-                      .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                      .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                       .is_none(),
                 "background creation transiently activated its own window")?;
         require(state(system, child.id)?.foreground == true
@@ -602,13 +604,13 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                 "background desktop selection did not activate Finder")?;
         require(system.events()
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
-                      .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                      .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                       .is_none(),
                 "background desktop selection transiently activated a Finder window")?;
         system.windows().select_desktop()?;
         require(system.events()
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
-                      .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                      .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                       .is_none()
                 && system.window(mac_toolbox::WindowId(0))?.id
                    == mac_toolbox::WindowId(own_front.0),
@@ -626,14 +628,15 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
             let event =
                 system.events()
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
-                      .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                      .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                       .ok_or(Failure::Contract("missing requested window activation"))?;
-            require(event.window == selected.0
-                    && event.modifiers & ACTIVE_FLAG != 0,
+            require(event.window == selected.0 && event.modifiers & ACTIVE_FLAG != 0,
                     "background select activated the previous front window")?;
             require(system.events()
                           .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
-                          .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                          .map(|event| {
+                              (!event.is_idle()).then(|| event.into_record()).transpose()
+                          })??
                           .is_none(),
                     "background select emitted intermediate activation")?;
             require(system.window(mac_toolbox::WindowId(0))?.id
@@ -709,14 +712,14 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
         let final_activation =
             system.events()
                   .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
-                  .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                  .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                   .ok_or(Failure::Contract("missing final exit activation"))?;
         require(final_activation.window == own_front.0
                 && final_activation.modifiers & ACTIVE_FLAG != 0,
                 "multiwindow exit activated an intermediate window")?;
         require(system.events()
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
-                      .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+                      .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
                       .is_none(),
                 "multiwindow exit emitted extra activation")?;
         system.log("PROCESS_MULTIWINDOW_EXIT_PASS cases=2\n")?;
@@ -994,7 +997,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
               .next(mac_toolbox::events::EventMask::from_bits_retain(1
                                                                      << EventKind::Application1
                                                                         as u16))
-              .map(|event| (!event.is_idle()).then(|| event.into_record()))?
+              .map(|event| (!event.is_idle()).then(|| event.into_record()).transpose())??
               .ok_or(Failure::Contract("worker private event missing"))?;
     require(event.message == 0x2222bbbb, "observer private event leaked to worker")?;
     // The parent announcement has been consumed. Scrap Put appends formats, so
