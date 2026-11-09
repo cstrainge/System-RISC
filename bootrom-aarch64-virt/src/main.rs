@@ -43,6 +43,18 @@ core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardwar
                         include_str!("entry.S"));
 
 include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
+include!(concat!(env!("OUT_DIR"), "/platform-virtual.rs"));
+
+/// The bounded resource read a startup companion gets.
+///
+/// The payload is retained only for as long as the check runs, so the bound is
+/// what the firmware heap can pay for at that moment; the larger System image is
+/// read after the check returns and drops it.
+fn startup_resource_budget() -> mac_formats::resource::stream::Budget
+{
+    mac_formats::resource::stream::Budget { payload_bytes: HEAP.lock().free(),
+                                            ..Default::default() }
+}
 
 /// The machine's device tree, as a checked slice.
 ///
@@ -716,6 +728,19 @@ fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volu
         puts(&alloc::format!("{}\n", report::refused(report::NOT_COMPATIBLE_SYSTEM)));
         return None;
     }
+    // The image must occupy the window this platform reserved for it; a System
+    // linked for another machine is refused here, in the shared words, before
+    // its code is read.
+    if let Err(error) =
+        mac_bootloader::reservation::system(&descriptor,
+                                            mac_bootloader::reservation::Window {
+                                                base:  VM_SYSTEM_IMAGE_BASE,
+                                                limit: VM_SYSTEM_IMAGE_LIMIT
+                                            })
+    {
+        puts(&alloc::format!("{}\n", report::refused(error)));
+        return None;
+    }
     let Some(code) = find(*b"RV64")
     else
     {
@@ -783,15 +808,17 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
 {
     use mac_block::BlockDevice;
     use mac_filesystem::{Format, Partition, Volume};
-    // The table format comes from the shared reader, not from the filesystem
-    // crate: an MBR medium is not an Apple partition map, and reading it with
-    // the wrong parser reports a valid disk as having no partitions.
-    let partitions = match mac_block::mbr_partitions(disk)
+    // Every medium is described by the shared reader, the same one the RISC-V
+    // bootstrap and the resident disk driver use: a bare HFS-B volume is one
+    // whole-disk extent, and an Apple partition map is enumerated by the code
+    // that understands it rather than by the bootstrap.
+    let partitions = match mac_filesystem::partitions(disk)
     {
         Ok(partitions) => partitions,
         Err(_) =>
         {
-            // An unpartitioned medium is a whole-disk volume, not a refusal.
+            // A medium the shared reader cannot describe is still worth trying
+            // as one whole-disk volume, which is how an unpartitioned card reads.
             puts("BOOT_AARCH64_NO_PARTITION_TABLE: trying the whole disk\n");
             alloc::vec::Vec::new()
         }
@@ -800,18 +827,20 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
     puthex(partitions.len() as u64);
     for partition in &partitions
     {
-        puts(" type=");
-        puthex(u64::from(partition.kind));
         puts(" start=");
-        puthex(partition.range.start);
+        puthex(partition.start);
+        puts(" sectors=");
+        puthex(partition.sectors);
     }
     puts("\n");
     // A partitioned medium states its own extents; a whole-disk volume is
     // mounted as one partition covering the card.
-    let mut candidates: alloc::vec::Vec<Partition> =
-        partitions.into_iter().map(|partition| partition.range).collect();
-    candidates.push(Partition { start:   0,
-                                sectors: disk.sector_count() });
+    let mut candidates = partitions;
+    if candidates.is_empty()
+    {
+        candidates.push(Partition { start:   0,
+                                    sectors: disk.sector_count() });
+    }
     for candidate in candidates
     {
         let mut volume = match Volume::mount(disk, candidate)
@@ -849,6 +878,12 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
             puts("\n");
             continue;
         }
+        // The volume's name and sector in the shared words, so a gate comparing
+        // two boots reads one line from either machine.
+        puts(&alloc::format!("{}\n",
+                             report::volume(core::str::from_utf8(&volume.name[..name_end])
+                                                .unwrap_or("?"),
+                                            candidate.start)));
         let folder = match volume.blessed_folder()
         {
             Ok(folder) => folder,
@@ -890,6 +925,22 @@ fn find_system<D: mac_filesystem::BlockDevice>(disk: &mut D, disk_index: usize) 
                 puts(" resource=");
                 puthex(file.resources.length);
                 puts("\n");
+                // A bootable installation includes a compatible Finder, and the
+                // shared admission the RISC-V bootstrap uses decides it here:
+                // entering System with a Finder that cannot run would turn a
+                // refused volume into a boot that dies after the handoff.
+                if let Err(error) =
+                    mac_bootloader::finder::admit(&mut volume,
+                                                  folder.id,
+                                                  startup_resource_budget(),
+                                                  mac_bootloader::finder::Application {
+                                                      image_base: VM_APPLICATION_IMAGE_BASE,
+                                                      end:        VM_APPLICATION_END,
+                                                      page_bytes: memory::PAGE_BYTES })
+                {
+                    puts(&alloc::format!("{}\n", report::refused(error)));
+                    return None;
+                }
                 return load_system(&mut volume, file).map(|mut loaded| {
                                                          loaded.partition_start = candidate.start;
                                                          loaded.disk_index = disk_index;

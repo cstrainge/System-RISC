@@ -21,6 +21,20 @@ use alloc::string::String;
 /// 0x40080000.
 pub const BANNER: &str = "System RISC Boot ROM v1 at 0x";
 
+/// A volume mounted, named and located by the sector its medium starts at.
+///
+/// The name and the sector are what a reader compares between two boots, and a
+/// check that built a volume at a known offset asserts that offset: a case can
+/// then say that a partitioned medium was read through its partition table
+/// rather than as one whole disk.
+pub fn volume(name: &str, sector: u64) -> String
+{
+    alloc::format!("{VOLUME_PREFIX}{name}' at sector {sector}")
+}
+
+/// The part of [`volume`] that does not depend on the volume's contents.
+pub const VOLUME_PREFIX: &str = "HFS-B: volume '";
+
 /// A native volume was found and its blessed folder admitted.
 pub fn blessed_folder(name: &str, cnid: u32) -> String
 {
@@ -66,6 +80,11 @@ pub const NO_CODE_RESOURCE: &str = "System has no native code resource";
 
 /// The volume carried a System this build cannot start.
 pub const NOT_COMPATIBLE_SYSTEM: &str = "startup executable is not a compatible System";
+
+/// The volume carried a System linked for a different virtual window.
+pub const SYSTEM_RESERVATION_MISMATCH: &str = "System execution reservation disagrees with the \
+                                               selected virtual platform; rebuild ROM and System \
+                                               together";
 
 /// A volume was found but is not in the format native boot requires.
 ///

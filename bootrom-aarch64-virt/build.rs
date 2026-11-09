@@ -22,8 +22,6 @@ fn main()
     let ram_bytes = memory["minimum_ram_bytes"].as_str().expect("memory.minimum_ram_bytes");
     let physmap_base = record["virtual_memory"]["physmap"]["start"].as_str()
                              .expect("virtual_memory.physmap.start");
-    let system_image_base = record["virtual_memory"]["system_image_base"].as_str()
-                                  .expect("virtual_memory.system_image_base");
     let image_base = memory["images"]["base"].as_str().expect("memory.images.base");
     let image_bytes = memory["images"]["bytes"].as_str().expect("memory.images.bytes");
     let out = Path::new(&env::var("OUT_DIR").expect("Cargo supplies OUT_DIR")).to_path_buf();
@@ -106,7 +104,6 @@ fn main()
                        pub const L2_LOWDEV: u64 = {};\n\
                        pub const L2_IMAGE: u64 = {};\n\
                        pub const L3_BASE: u64 = {};\n\
-                       pub const VM_SYSTEM_IMAGE_BASE: u64 = {system_image_base};\n\
                        pub const IMAGE_BASE: u64 = {image_base};\n\
                        pub const IMAGE_BYTES: u64 = {image_bytes};\n\
                        // The reservation a machine-supplied tree must fit inside. A blob that\
@@ -128,6 +125,16 @@ fn main()
               format!("{ram_base}u64 + 0x6000"),
               format!("{ram_base}u64 + 0x1_0000")))
         .expect("memory constants");
+    // The windows an admitted executable must occupy, taken from the checked
+    // virtual layout - the same derivation the RISC-V bootstrap uses - so
+    // neither bootstrap states a placement the record does not.
+    let virtual_constants =
+        platform.virtual_memory()
+                .expect("checked virtual layout")
+                .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE", "VM_SYSTEM_IMAGE_LIMIT",
+                                      "VM_APPLICATION_IMAGE_BASE", "VM_APPLICATION_END"])
+                .expect("checked bootstrap virtual symbols");
+    fs::write(out.join("platform-virtual.rs"), virtual_constants).expect("virtual constants");
     let linker = format!("OUTPUT_ARCH(aarch64)\nENTRY(_start)\nMEMORY {{ ram (rwx) : ORIGIN = \
                           {boot_base}, LENGTH = {bytes} }}\nSECTIONS {{\n. = ORIGIN(ram);\n.text : {{ \
                           KEEP(*(.text.entry)) *(.text .text.*) }} > ram\n.rodata : ALIGN(4096) \

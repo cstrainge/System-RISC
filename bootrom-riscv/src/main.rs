@@ -167,9 +167,9 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     {
         return Err(Error::Malformed(mac_bootloader::report::NOT_NATIVE_VOLUME));
     }
-    serial!("HFS-B: volume '{}' at sector {}",
-            core::str::from_utf8(&volume.name).unwrap_or("?"),
-            partition.start);
+    serial!("{}",
+            mac_bootloader::report::volume(core::str::from_utf8(&volume.name).unwrap_or("?"),
+                                           partition.start));
     let folder = volume.blessed_folder()?;
     serial!("{}",
             mac_bootloader::report::blessed_folder(core::str::from_utf8(&folder.name)
@@ -180,56 +180,19 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     {
         return Err(Error::Malformed("startup file is not type zsys"));
     }
-    // Validate the companion before retaining the larger System image. These
-    // temporary code/relocation buffers must not overlap System's lifetime in
-    // the bounded firmware heap. Both validations still precede all loading.
-    {
-        // A bootable installation includes a compatible Finder. Validate its code
-        // and relocation plan before displaying Happy Mac or entering System.
-        let finder = volume.find_file(folder.id, b"Finder")?;
-        if finder.file_type != *b"FNDR"
-        {
-            return Err(Error::Malformed("startup Finder does not have type FNDR"));
-        }
-        let mut fork = finder.resources;
-        let finder =
-            resource::stream::read_selected(fork.length,
-                                            startup_resource_budget(),
-                                            |kind, id| {
-                                                id == 0
-                                                && matches!(&kind, b"NABI" | b"RV64" | b"RLOC")
-                                            },
-                                            |offset, output| {
-                                                let n = volume.read(&mut fork, offset, output)?;
-                                                if n == output.len()
-                                                {
-                                                    Ok(())
-                                                }
-                                                else
-                                                {
-                                                    Err(Error::Malformed("short Finder resource \
-                                                                          read"))
-                                                }
-                                            })?;
-        let get = |kind| {
-            finder.iter()
-                  .find(|r| r.kind == kind)
-                  .ok_or(Error::Malformed("startup Finder code metadata is missing"))
-        };
-        let abi = Descriptor::decode(&get(*b"NABI")?.data)?;
-        if abi.role != Role::Application
-           || abi.abi_version != mac_abi::ABI_VERSION
-           || abi.load_base != virtual_memory::VM_APPLICATION_IMAGE_BASE
-           || abi.load_limit > virtual_memory::VM_APPLICATION_END
-           || !abi.load_limit.is_multiple_of(memory::PAGE_BYTES)
-        {
-            return Err(Error::Malformed("startup Finder is incompatible; rebuild System disk"));
-        }
-        image::LoadPlan::new(&get(*b"RV64")?.data,
-                             &abi,
-                             Some(&get(*b"RLOC")?.data),
-                             abi.load_base)?;
-    }
+    // A bootable installation includes a compatible Finder. The shared check
+    // decodes its code and relocation plan before Happy Mac is displayed or
+    // System is entered, and its temporary buffers are dropped before the
+    // larger System image is retained in the bounded firmware heap.
+    mac_bootloader::finder::admit(&mut volume,
+                                  folder.id,
+                                  startup_resource_budget(),
+                                  mac_bootloader::finder::Application { image_base:
+                                                                            virtual_memory::VM_APPLICATION_IMAGE_BASE,
+                                                                        end:
+                                                                            virtual_memory::VM_APPLICATION_END,
+                                                                        page_bytes:
+                                                                            memory::PAGE_BYTES })?;
     let mut fork = file.resources;
     let resources =
         resource::stream::read_selected(fork.length,
@@ -256,13 +219,14 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     {
         return Err(Error::Malformed(mac_bootloader::report::NOT_COMPATIBLE_SYSTEM));
     }
-    // Placement policy is generated from the checked platform record.
-    if descriptor.load_base != virtual_memory::VM_SYSTEM_IMAGE_BASE
-       || descriptor.load_limit != virtual_memory::VM_SYSTEM_IMAGE_LIMIT
-    {
-        return Err(Error::Malformed("System execution reservation disagrees with the selected \
-                                     virtual platform; rebuild ROM and System together"));
-    }
+    // Placement policy is generated from the checked platform record, and the
+    // admission is the shared one: a System linked for another window is refused
+    // in the same words on either machine.
+    mac_bootloader::reservation::system(&descriptor,
+                                        mac_bootloader::reservation::Window {
+                                            base:  virtual_memory::VM_SYSTEM_IMAGE_BASE,
+                                            limit: virtual_memory::VM_SYSTEM_IMAGE_LIMIT
+                                        })?;
     let code = resources.into_iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
                         .ok_or(Error::Malformed(mac_bootloader::report::NO_CODE_RESOURCE))?
