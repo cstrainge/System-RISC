@@ -145,6 +145,32 @@ fn fault(text: &'static str) -> Line
     line
 }
 
+/// A failed resolution of the `Pipes` folder, naming the identities it was given
+/// and whether the parent itself still resolves. A missing parent and a missing
+/// name are different faults, and a run that fails must say which one it saw.
+fn lookup_failure(stage: &'static str, error: Error, files: files::Files<'_>,
+                  volume: files::VolumeId, blessed: files::Cnid)
+                  -> Line
+{
+    let mut line = Line::new();
+    let _ = write!(line,
+                   "PIPES_PROBE_FAIL {stage} {error:?} volume={} blessed={}",
+                   volume.0,
+                   blessed.0);
+    match files.catalog(volume, blessed)
+    {
+        Ok(parent) =>
+        {
+            let _ = write!(line,
+                           " parent_present=1 parent_name={} name_length={}",
+                           parent.name(),
+                           parent.name().len());
+        }
+        Err(error) => { let _ = write!(line, " parent_present=0 {error:?}"); }
+    }
+    line
+}
+
 /// A File Manager mutation inside the Pipes folder, or on a virtual item, must
 /// be refused with a named status rather than reaching a volume or the
 /// registry. Anything else is a failure of the merge, including success.
@@ -630,7 +656,18 @@ fn scan(system: &System<'_>) -> Result<(), Line>
     let files = system.files();
     let volume = startup_volume(files)?;
     let folder = files.lookup(volume.id, volume.blessed_folder, mac_abi::files::PIPES_FOLDER_NAME)
-                      .map_err(|error| failed("lookup Pipes", error))?;
+                      .map_err(|error| {
+                          lookup_failure("lookup Pipes", error, files, volume.id,
+                                         volume.blessed_folder)
+                      })?;
+    let mut resolved = Line::new();
+    let _ = writeln!(resolved,
+                     "PIPES_SCAN_FOLDER id={} parent={} name={}",
+                     folder.id.0,
+                     folder.parent.0,
+                     folder.name());
+    note(system, resolved.text());
+    note(system, "\n");
     let (mut reader, writer) = system.pipes()
                                      .create_named(FIRST, wire::MIN_CAPACITY, 0)
                                      .map_err(|error| failed("create scanned pipe", error))?;
@@ -724,10 +761,25 @@ fn icons(system: &System<'_>) -> Result<(), Line>
     let files = system.files();
     let volume = startup_volume(files)?;
     let folder = files.lookup(volume.id, volume.blessed_folder, mac_abi::files::PIPES_FOLDER_NAME)
-                      .map_err(|error| failed("lookup Pipes", error))?;
+                      .map_err(|error| {
+                          lookup_failure("lookup Pipes", error, files, volume.id,
+                                         volume.blessed_folder)
+                      })?;
     check(folder.is_directory(), "Pipes is not a folder")?;
     check(folder.parent == volume.blessed_folder,
           "Pipes is not directly inside the blessed folder")?;
+    // What the lookup actually returned, before the table is asked for a glyph:
+    // a wrong identity or a damaged name here is a different fault from the
+    // table not knowing the folder, and the failure line alone cannot say which.
+    let mut entry = Line::new();
+    let _ = writeln!(entry,
+                     "PIPES_ICON_FOLDER id={} parent={} kind={:?} name={}",
+                     folder.id.0,
+                     folder.parent.0,
+                     folder.kind,
+                     folder.name());
+    note(system, entry.text());
+    note(system, "\n");
     // The only way this can fail is the shared table not knowing the folder's
     // name, which is the one thing it exists to get right. Its value is not
     // compared with the constant the table returns: that cannot fail.
