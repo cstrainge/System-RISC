@@ -6,6 +6,48 @@ as the list of things fixed.
 
 ## Position
 
+### Position after every arm64 ROM boot case passes (2026-11-08)
+
+`cargo xtask boot-check --platform qemu_arm64` at `24f2461c` passes **19 of 19**
+cases. The two cases that failed after the refusal vocabulary was unified are
+refused or booted by the ROM itself now:
+
+- `missing-finder` ends in the ROM's voice:
+  `BOOT_REFUSED: startup file is missing from blessed folder`, then
+  `BOOT_NO_SYSTEM: searched 1 disk(s); no bootable native System found`, with no
+  boot. System is never entered with a Finder that cannot run.
+- `apple-partition-map` enumerates the partition map through the shared reader
+  (`BOOT_AARCH64_PARTITIONS: count=… start=0x800`), reports the mounted volume as
+  `HFS-B: volume 'System RISC' at sector 2048`, and boots to `BOOT_SYSTEM_READY:`.
+
+`raw-hfs-b` still reaches `DESKTOP_READY: Finder and native Window Manager` with
+`FINDER_POWER_CAPABILITIES shutdown=true restart=true` and
+`HFS-B: volume 'System RISC' at sector 0`.
+`cargo xtask boot-check --platform qemu_riscv` is still 19 of 19, and its
+`raw-hfs-b` still reaches `DESKTOP_READY:`.
+
+What moved into shared code to get there:
+
+- `mac_bootloader::finder::admit` is the single check of the startup Finder: type
+  `FNDR`, a `NABI` naming role Application and the caller's application window,
+  and code plus relocation records that decode. The window is a parameter, so
+  each bootstrap supplies its own record's numbers. RISC-V's inline copy is gone
+  and AArch64 calls the shared one before loading System.
+- `mac_bootloader::reservation::system` is the single check that a System
+  descriptor occupies the window the platform reserved. AArch64 now generates
+  `VM_SYSTEM_IMAGE_BASE`, `VM_SYSTEM_IMAGE_LIMIT`, `VM_APPLICATION_IMAGE_BASE`
+  and `VM_APPLICATION_END` from the checked virtual layout, the derivation RISC-V
+  already used, rather than reading one of them from the raw record.
+- `find_system` reads partitions through `mac_filesystem::partitions`, the shared
+  reader the resident disk driver uses, so an Apple partition map is enumerated
+  by the code that understands it. A medium the shared reader cannot describe is
+  still tried as one whole-disk volume. This bootstrap no longer parses an MBR
+  itself; no platform record here attaches MBR-partitioned media, and the
+  resident driver does not read one either.
+- `report::volume` states a mounted native volume's name and sector once, and
+  both bootroms use it, so the sector a partitioned medium was read from is
+  comparable between boots.
+
 ### Position after the boot-outcome vocabulary was unified (2026-11-08)
 
 `cargo xtask boot-check --platform qemu_arm64` at `00bd56b9` passes the first ten
