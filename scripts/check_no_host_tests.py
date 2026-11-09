@@ -31,6 +31,9 @@ SKIP = {'target', 'dist', 'build', 'results', 'iso', '.git', 'vendor', 'node_mod
 FORBIDDEN_TEST_ROOTS = ('crates', 'drivers', 'system')
 ALLOWED_TEST_DIRS = (Path('crates/mac-toolbox/tests/fixtures'),
                      Path('crates/mac-toolbox/tests/data'))
+# The tests directory that holds those two is allowed, but only because they are
+# all it holds: a Rust file or any other directory next to them is a host test.
+ALLOWED_CONTAINER = Path('crates/mac-toolbox/tests')
 
 # `#[cfg(...)]`, `#[cfg_attr(..., ...)]` and the inner `#![cfg(...)]` forms.
 ATTRIBUTE = re.compile(r'#!?\[\s*(cfg|cfg_attr)\s*\(')
@@ -113,6 +116,11 @@ def find_test_directories():
             relative = directory.relative_to(WORKSPACE)
             if any(relative == allowed or allowed in relative.parents
                    for allowed in ALLOWED_TEST_DIRS):
+                continue
+            if relative == ALLOWED_CONTAINER and all(
+                    (WORKSPACE / relative / child.name).is_dir()
+                    and relative / child.name in ALLOWED_TEST_DIRS
+                    for child in directory.iterdir()):
                 continue
             found.append(f'{relative}: host test crate directory')
     return found
