@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 
 use mac_toolbox::{Error, Point, Rect,
                   quickdraw::{bitmaps::Bitmap,
-                              fonts::FontSelection,
+                              fonts::{BOLD, FontSelection, ITALIC},
                               graphics::{GraphicsPort, TransferMode}}};
 
 use crate::color::{Color, Palette};
@@ -24,16 +24,26 @@ pub(super) struct Style
 {
     pub fg:      Color,
     pub bg:      Color,
-    pub reverse: bool
+    pub reverse: bool,
+    pub attrs:   u8
 }
 impl Style
 {
+    pub const BOLD: u8 = 1;
+    pub const DOUBLE_UNDERLINE: u8 = 16;
     pub const ERROR: Self = Self { fg:      Color::rgb(0xff7777),
                                    bg:      Color::DEFAULT,
-                                   reverse: false };
+                                   reverse: false,
+                                   attrs:   0 };
+    pub const FAINT: u8 = 2;
+    pub const HIDDEN: u8 = 32;
+    pub const ITALIC: u8 = 4;
     pub const NORMAL: Self = Self { fg:      Color::DEFAULT,
                                     bg:      Color::DEFAULT,
-                                    reverse: false };
+                                    reverse: false,
+                                    attrs:   0 };
+    pub const STRIKE: u8 = 64;
+    pub const UNDERLINE: u8 = 8;
 }
 
 #[derive(Clone, Copy)]
@@ -671,6 +681,7 @@ impl Screen
                     cell.style.fg = Color::rgb(self.palette.background);
                     cell.style.bg = Color::rgb(self.palette.cursor);
                     cell.style.reverse = false;
+                    cell.style.attrs &= !Style::FAINT;
                 }
                 cell
             };
@@ -705,13 +716,74 @@ impl Screen
                                               end as i16 * self.cell,
                                               top + ROW_HEIGHT))?;
                 }
-                if !text.trim_end_matches(' ').is_empty()
+                if style.attrs & Style::FAINT != 0
                 {
-                    port.text(FONT,
-                              Point { h: left,
-                                      v: top + 12 },
-                              text.trim_end_matches(' '),
-                              foreground)?;
+                    foreground = ((foreground & 0xfefefe) >> 1) + ((background & 0xfefefe) >> 1);
+                }
+                if style.attrs & Style::HIDDEN == 0
+                {
+                    let face = if style.attrs & Style::BOLD != 0 { BOLD } else { 0 }
+                               | if style.attrs & Style::ITALIC != 0 { ITALIC } else { 0 };
+                    let glyphs = text.trim_end_matches(' ');
+                    if face == 0
+                    {
+                        if !glyphs.is_empty()
+                        {
+                            port.text(FONT,
+                                      Point { h: left,
+                                              v: top + 12 },
+                                      glyphs,
+                                      foreground)?;
+                        }
+                    }
+                    else
+                    {
+                        // Synthetic font styles change advances. Anchor each glyph to
+                        // its retained cell and contain its ink within that cell.
+                        for (offset, glyph) in glyphs.chars().enumerate()
+                        {
+                            if glyph == ' '
+                            {
+                                continue;
+                            }
+                            let x = left + offset as i16 * self.cell;
+                            let bounds = Rect::new(x.max(clip.left),
+                                                   top.max(clip.top),
+                                                   (x + self.cell).min(clip.right),
+                                                   (top + ROW_HEIGHT).min(clip.bottom));
+                            if bounds.left >= bounds.right || bounds.top >= bounds.bottom
+                            {
+                                continue;
+                            }
+                            port.clip_rect(bounds)?;
+                            let mut bytes = [0; 4];
+                            port.text(FontSelection { face,
+                                                      ..FONT },
+                                      Point { h: x,
+                                              v: top + 12 },
+                                      glyph.encode_utf8(&mut bytes),
+                                      foreground)?;
+                        }
+                        port.clip_rect(clip)?;
+                    }
+                    if style.attrs & (Style::UNDERLINE | Style::DOUBLE_UNDERLINE | Style::STRIKE)
+                       != 0
+                    {
+                        port.colors(foreground, background)?;
+                        let right = end as i16 * self.cell;
+                        if style.attrs & (Style::UNDERLINE | Style::DOUBLE_UNDERLINE) != 0
+                        {
+                            port.paint_rect(Rect::new(left, top + 13, right, top + 14))?;
+                        }
+                        if style.attrs & Style::DOUBLE_UNDERLINE != 0
+                        {
+                            port.paint_rect(Rect::new(left, top + 15, right, top + 16))?;
+                        }
+                        if style.attrs & Style::STRIKE != 0
+                        {
+                            port.paint_rect(Rect::new(left, top + 7, right, top + 8))?;
+                        }
+                    }
                 }
                 start = end;
             }

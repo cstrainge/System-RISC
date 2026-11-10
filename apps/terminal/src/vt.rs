@@ -74,6 +74,39 @@ impl Target<'_>
             match code
             {
                 0 => *self.style = self.default,
+                1 => self.style.attrs |= Style::BOLD,
+                2 => self.style.attrs |= Style::FAINT,
+                3 => self.style.attrs |= Style::ITALIC,
+                4 =>
+                {
+                    match group.get(1).copied().unwrap_or(1)
+                    {
+                        0 => self.style.attrs &= !(Style::UNDERLINE | Style::DOUBLE_UNDERLINE),
+                        1 =>
+                        {
+                            self.style.attrs &= !Style::DOUBLE_UNDERLINE;
+                            self.style.attrs |= Style::UNDERLINE;
+                        }
+                        2 =>
+                        {
+                            self.style.attrs &= !Style::UNDERLINE;
+                            self.style.attrs |= Style::DOUBLE_UNDERLINE;
+                        }
+                        _ => ()
+                    }
+                }
+                8 => self.style.attrs |= Style::HIDDEN,
+                9 => self.style.attrs |= Style::STRIKE,
+                21 =>
+                {
+                    self.style.attrs &= !Style::UNDERLINE;
+                    self.style.attrs |= Style::DOUBLE_UNDERLINE;
+                }
+                22 => self.style.attrs &= !(Style::BOLD | Style::FAINT),
+                23 => self.style.attrs &= !Style::ITALIC,
+                24 => self.style.attrs &= !(Style::UNDERLINE | Style::DOUBLE_UNDERLINE),
+                28 => self.style.attrs &= !Style::HIDDEN,
+                29 => self.style.attrs &= !Style::STRIKE,
                 7 | 27 => self.style.reverse = code == 7,
                 30..=37 | 90..=97 =>
                 {
