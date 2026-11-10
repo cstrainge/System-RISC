@@ -23,7 +23,7 @@ use mac_abi::{files::*, *};
 use mac_object_table::shared::InvocationGate as _;
 
 use super::{Manager, Mounted, ResidentReply, ResidentRequest, SystemLoad,
-            application::Selection};
+            application::Selection, provider::SystemReader};
 
 /// Applications remembered per volume. A volume with more is indexed up to
 /// this many and the walk's report says so.
@@ -379,7 +379,7 @@ impl Walk
                         if asked.pending()
                         {
                             let _ = files(|manager| {
-                                manager.index_read(volume, true);
+                                manager.system_work(volume, SystemReader::Walk, true);
                                 Ok(())
                             });
                         }
@@ -394,7 +394,7 @@ impl Walk
                 {
                     self.request = None;
                     let _ = files(|manager| {
-                        manager.index_read(volume, false);
+                        manager.system_work(volume, SystemReader::Walk, false);
                         Ok(())
                     });
                 }
@@ -467,7 +467,7 @@ impl Drop for Walk
         {
             let volume = self.volume;
             let _ = files(|manager| {
-                manager.index_read(volume, false);
+                manager.system_work(volume, SystemReader::Walk, false);
                 Ok(())
             });
         }
@@ -595,6 +595,15 @@ impl Volume
     fn probe(&mut self) -> bool
     {
         let volume = self.id;
+        if self.load.is_some() && self.applications.iter().all(|entry| entry.probed)
+        {
+            // A new walk replaced the application this read was for.
+            self.load = None;
+            let _ = files(|manager| {
+                manager.system_work(volume, SystemReader::Declarations, false);
+                Ok(())
+            });
+        }
         let Some(entry) = self.applications.iter_mut().find(|entry| !entry.probed)
         else
         {
@@ -616,6 +625,11 @@ impl Volume
                     Err(status) => refused = Some(status)
                 }
             }
+            let reading = self.load.is_some();
+            let _ = files(|manager| {
+                manager.system_work(volume, SystemReader::Declarations, reading);
+                Ok(())
+            });
             let polled = match (self.load.as_mut(), refused)
             {
                 (_, Some(status)) => Err(status),
@@ -629,12 +643,20 @@ impl Volume
                 Ok(Some(loaded)) =>
                 {
                     self.load = None;
+                    let _ = files(|manager| {
+                        manager.system_work(volume, SystemReader::Declarations, false);
+                        Ok(())
+                    });
                     let loaded = *loaded;
                     Ok((loaded.catalog, loaded.resources))
                 }
                 Err(status) =>
                 {
                     self.load = None;
+                    let _ = files(|manager| {
+                        manager.system_work(volume, SystemReader::Declarations, false);
+                        Ok(())
+                    });
                     Err(status)
                 }
             }

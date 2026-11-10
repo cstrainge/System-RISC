@@ -28,10 +28,11 @@ pub(super) struct Mounted
     pub info:                               Option<VolumeInfo>,
     pub phase:                              Phase,
     reads:                                  usize,
-    /// How many of `reads` are the application index walking this volume. The
-    /// System's own bookkeeping loses nothing if the machine restarts under
-    /// it, so it must never be why a person cannot restart.
-    index_reads:                            usize,
+    /// Which of the System's own background readers have an operation
+    /// outstanding on this volume. Each holds at most one of `reads`. The
+    /// System's bookkeeping loses nothing if the machine restarts under it,
+    /// so it must never be why a person cannot restart.
+    system_work:                            [bool; 3],
     pub(in crate::toolbox::files) revision: u64,
     pub(in crate::toolbox::files) changes:  bool
 }
@@ -43,7 +44,11 @@ impl Mounted
         match self.phase
         {
             Phase::Quarantined => Err(ROLLBACK_FAILED),
-            Phase::Live if self.reads == self.index_reads => Ok(()),
+            Phase::Live
+                if self.reads <= self.system_work.iter().filter(|busy| **busy).count() =>
+            {
+                Ok(())
+            }
             _ => Err(SERVICE_BUSY)
         }
     }
@@ -111,6 +116,17 @@ fn scan_entry(volume: u32, parent: u32, bytes: &[u8]) -> Result<Option<CatalogIn
     }
 }
 
+/// The System's own background readers of provider volumes.
+#[derive(Clone, Copy)]
+pub(super) enum SystemReader
+{
+    /// The application index walking the catalogue.
+    Walk         = 0,
+    /// The application index reading what an application declares.
+    Declarations = 1,
+    /// File icons being read.
+    Icons        = 2
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase
 {
@@ -176,7 +192,7 @@ impl Manager
                                                          info: None,
                                                          phase: Phase::Mounting,
                                                          reads: 0,
-                                                         index_reads: 0,
+                                                         system_work: [false; 3],
                                                          revision: 0,
                                                          changes: false });
         InvocationGate::with_system_allocation(|| self.volumes.insert(mounted)).map_err(|_| {
@@ -318,13 +334,14 @@ impl Manager
         Ok(provider)
     }
 
-    /// The application index says whether it has a scan step outstanding on
-    /// this volume. It holds at most one, and says so only while it does.
-    pub(super) fn index_read(&mut self, id: u32, outstanding: bool)
+    /// One of the System's background readers says whether it has an
+    /// operation outstanding on this volume. Each has at most one, and says so
+    /// only while it does.
+    pub(super) fn system_work(&mut self, id: u32, reader: SystemReader, outstanding: bool)
     {
         if let Ok(mounted) = self.provider_mount(id)
         {
-            mounted.index_reads = usize::from(outstanding);
+            mounted.system_work[reader as usize] = outstanding;
         }
     }
 

@@ -17,6 +17,9 @@ pub(crate) enum Selection
 {
     All,
     OpenTypes,
+    /// What a file's icon is made from: its bundle, its file references and
+    /// its icon families. Any file may be asked, not only an application.
+    Icons,
     Console
     {
         session: u64,
@@ -36,8 +39,15 @@ impl Selection
             {
                 crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, operation)
             }
-            Self::OpenTypes => operation()
+            Self::OpenTypes | Self::Icons => operation()
         }
+    }
+
+    /// Whether the file may be of any type. The others read one kind of
+    /// program and refuse anything else.
+    pub(super) fn any_type(self) -> bool
+    {
+        self == Self::Icons
     }
 
     pub(super) fn file_type(self) -> [u8; 4]
@@ -50,7 +60,24 @@ impl Selection
         match self
         {
             Self::All | Self::Console { .. } => |_, _| true,
-            Self::OpenTypes => |kind, _| kind == *b"open"
+            Self::OpenTypes => |kind, _| kind == *b"open",
+            Self::Icons =>
+            {
+                |kind, _| {
+                    matches!(&kind,
+                             b"BNDL"
+                             | b"FREF"
+                             | b"ICN#"
+                             | b"icl4"
+                             | b"icl8"
+                             | b"ics#"
+                             | b"ics4"
+                             | b"ics8"
+                             | b"ICON"
+                             | b"SICN"
+                             | b"cicn")
+                }
+            }
         }
     }
 
@@ -60,6 +87,10 @@ impl Selection
         if self == Self::OpenTypes
         {
             budget.payload_bytes = 64 * 1024;
+        }
+        if self == Self::Icons
+        {
+            budget.payload_bytes = 512 * 1024;
         }
         budget
     }

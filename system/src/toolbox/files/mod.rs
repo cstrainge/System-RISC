@@ -110,6 +110,8 @@ pub(crate) mod module_preferences;
 pub(crate) mod installed_fonts;
 #[cfg(systemrisc)]
 pub(crate) mod applications;
+#[cfg(systemrisc)]
+pub(crate) mod provider_icons;
 mod moves;
 const MAX_PATH: usize = 4096;
 
@@ -1695,10 +1697,29 @@ impl Manager
                 {
                     applications::owner(creator)?
                 };
-                // The index answers from memory; the catalogue confirms the
-                // application is still there before it is named to a caller.
-                call.entry = metadata(application.volume,
-                                      &self.catalog_entry(application.volume, application.cnid)?)
+                call.entry = if matches!(self.volumes.get(application.volume),
+                                         Some(Mounted::Provider(_)))
+                {
+                    // A provider cannot confirm in this call; it answers
+                    // later. Name the application as the index recorded it.
+                    // Opening it is what finds out whether it is still there.
+                    CatalogInfo { volume: application.volume,
+                                  id: application.cnid,
+                                  parent: application.parent,
+                                  kind: FILE,
+                                  file_type: *b"APPL",
+                                  creator: application.creator,
+                                  created: application.created,
+                                  modified: application.modified,
+                                  ..Default::default() }
+                }
+                else
+                {
+                    // The index answers from memory; the catalogue confirms
+                    // the application is still there before it is named.
+                    metadata(application.volume,
+                             &self.catalog_entry(application.volume, application.cnid)?)
+                }
             }
             CATALOG =>
             {

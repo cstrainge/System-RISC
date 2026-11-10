@@ -136,7 +136,9 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
             {
                 let catalog =
                     super::super::catalog(state.volume, &bytes, Some(flight.key.cnid), None)?;
-                if catalog.kind != FILE || catalog.file_type != state.selection.file_type()
+                if catalog.kind != FILE
+                   || !state.selection.any_type()
+                      && catalog.file_type != state.selection.file_type()
                 {
                     return Err(BAD_ARGUMENT);
                 }

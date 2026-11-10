@@ -1693,6 +1693,7 @@ pub(super) fn schedule(capture: crate::machine::traps::OuterCapture) -> *mut Tra
                     crate::toolbox::files::pump_provider_operations();
                     crate::toolbox::files::installed_fonts::pump();
                     crate::toolbox::files::applications::pump();
+                    crate::toolbox::files::provider_icons::pump();
                     crate::toolbox::runtime::Toolbox::pump_standard_file();
                     pump_recovery_backing();
                     crate::recovery::pump();

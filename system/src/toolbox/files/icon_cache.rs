@@ -15,7 +15,7 @@ const MAX_BYTES: usize = 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
 /// Remembered "this application has no icon for that document type" answers,
 /// so a folder of such documents reads the application's bundle once.
-const MAX_ABSENT: usize = 128;
+const MAX_ABSENT: usize = 4096;
 /// The kind of an entry holding a file's own icon.
 pub(super) const OWN: [u8; 4] = [0; 4];
 

@@ -481,6 +481,11 @@ impl Manager
         resident: crate::toolbox::resources::manager::Manager<'_>)
         -> Result<alloc::sync::Arc<crate::toolbox::quickdraw::icons::IconFamily>, Status>
     {
+        #[cfg(systemrisc)]
+        if matches!(self.volumes.get(volume), Some(Mounted::Provider(_)))
+        {
+            return self.provider_file_icon(volume, cnid);
+        }
         // A cache key never validates an object. Even a hit must reject an
         // unmounted/reused volume or a quarantined device, without storage I/O.
         if self.mounted(volume)?.poisoned
@@ -594,6 +599,14 @@ impl Manager
         match self.volumes.get(owner.volume)
         {
             Some(Mounted::Block(mounted)) if !mounted.poisoned => (),
+            // A provider answers later. Have it read, and say "not yet".
+            Some(Mounted::Provider(_)) =>
+            {
+                super::provider_icons::want(super::provider_icons::Wanted { volume: owner.volume,
+                                                                            file: owner.cnid,
+                                                                            kind });
+                return Err(SERVICE_BUSY);
+            }
             _ => return Err(NOT_FOUND)
         }
         let read = self.with_volume(owner.volume, |volume| {
@@ -634,6 +647,148 @@ impl Manager
             }
             Err(status) => Err(status)
         }
+    }
+
+    /// A file's icon on a provider volume: the cached one, a remembered
+    /// "none", or "not yet" with the icon now wanted.
+    #[cfg(systemrisc)]
+    fn provider_file_icon(&mut self, volume: u32, cnid: u32)
+                          -> Result<alloc::sync::Arc<icons::IconFamily>, Status>
+    {
+        // Refuse an unmounted or quarantined volume before any cache answer.
+        self.read_provider(volume)?;
+        if let Some(family) = self.file_icons.get(volume, cnid)
+        {
+            return Ok(family);
+        }
+        if self.file_icons.absent(volume, cnid, super::icon_cache::OWN)
+        {
+            return Err(NOT_FOUND);
+        }
+        super::provider_icons::want(super::provider_icons::Wanted { volume,
+                                                                    file: cnid,
+                                                                    kind:
+                                                                        super::icon_cache::OWN });
+        Err(SERVICE_BUSY)
+    }
+
+    /// Whether an icon that was wanted has since been answered either way.
+    #[cfg(systemrisc)]
+    pub(super) fn provider_icon_settled(&self, wanted: super::provider_icons::Wanted) -> bool
+    {
+        self.file_icons.get_kind(wanted.volume, wanted.file, wanted.kind).is_some()
+        || self.file_icons.absent(wanted.volume, wanted.file, wanted.kind)
+    }
+
+    /// Put what the background read found into the icon cache, and say whose
+    /// watchers should look again. A remembered "none" tells nobody: nothing
+    /// they show has changed.
+    #[cfg(systemrisc)]
+    pub(super) fn provider_icon_settle(
+        &mut self, wanted: super::provider_icons::Wanted, outcome: super::provider_icons::Outcome,
+        resident: crate::toolbox::resources::manager::Manager<'_>)
+        -> Result<super::provider_icons::Tell, Status>
+    {
+        use super::{icon_cache::OWN,
+                    provider_icons::{Outcome, Tell}};
+        InvocationGate::with_system_allocation(|| {
+            let (volume, file, kind) = (wanted.volume, wanted.file, wanted.kind);
+            let document = |manager: &mut Self, entry: &CatalogInfo| {
+                let document = Document { creator:   entry.creator,
+                                          file_type: entry.file_type };
+                match manager.document_icon(document, resident)
+                {
+                    Ok(family) =>
+                    {
+                        manager.file_icons.alias(volume, entry.parent, file, &family);
+                        Ok(Tell::Folder(volume, entry.parent))
+                    }
+                    // The application's own icon is on its way, or the index
+                    // is. Leave this unanswered; the next draw asks again.
+                    Err(SERVICE_BUSY) => Ok(Tell::Nobody),
+                    Err(_) =>
+                    {
+                        manager.file_icons.note_absent(volume, file, OWN);
+                        Ok(Tell::Nobody)
+                    }
+                }
+            };
+            let loaded = match outcome
+            {
+                Outcome::Failed(_) =>
+                {
+                    self.file_icons.note_absent(volume, file, kind);
+                    return Ok(Tell::Nobody);
+                }
+                Outcome::Document(entry) => return document(self, &entry),
+                Outcome::Loaded(loaded) => loaded
+            };
+            let entry = loaded.catalog;
+            let resources = &loaded.resources;
+            let family = |id: i16| {
+                icons::IconFamily::from_lookup(id, |kind, rid| {
+                    if kind == *b"clut"
+                    {
+                        resident.get(mac_abi::resources::SYSTEM,
+                                     ResourceKey { kind,
+                                                   id: rid })
+                                .ok()
+                                .map(|(_, r)| r.data.as_slice())
+                    }
+                    else
+                    {
+                        resources.iter()
+                                 .find(|r| r.kind == kind && r.id == rid)
+                                 .map(|r| r.data.as_slice())
+                    }
+                }).map_err(icons_service::status)
+            };
+            if kind != OWN
+            {
+                // The icon this application declares for a document type.
+                let found = icons_service::file_id(resources, entry.creator, kind).and_then(family);
+                return match found
+                {
+                    Ok(found) =>
+                    {
+                        let found = alloc::sync::Arc::try_new(found).map_err(|_| NO_MEMORY)?;
+                        self.file_icons.insert_kind(volume, entry.parent, file, kind, found)?;
+                        // Its documents may be in any folder on any volume.
+                        Ok(Tell::Everybody)
+                    }
+                    Err(_) =>
+                    {
+                        self.file_icons.note_absent(volume, file, kind);
+                        Ok(Tell::Nobody)
+                    }
+                };
+            }
+            let program =
+                matches!(&entry.file_type, b"APPL" | b"INIT" | b"DRVR" | b"FNDR" | b"CLAP");
+            let custom = entry.finder_flags() & 0x0400 != 0;
+            let mut own = if custom { family(-16455).ok() } else { None };
+            if own.is_none() && program
+            {
+                own = icons_service::file_id(resources, entry.creator, entry.file_type)
+                    .and_then(family)
+                    .ok();
+            }
+            match own
+            {
+                Some(own) =>
+                {
+                    let own = alloc::sync::Arc::try_new(own).map_err(|_| NO_MEMORY)?;
+                    self.file_icons.insert(volume, entry.parent, file, own)?;
+                    Ok(Tell::Folder(volume, entry.parent))
+                }
+                None if program =>
+                {
+                    self.file_icons.note_absent(volume, file, OWN);
+                    Ok(Tell::Nobody)
+                }
+                None => document(self, &entry)
+            }
+        })
     }
 
     pub(crate) fn resource_value(&mut self, volume: u32, cnid: u32, key: ResourceKey)

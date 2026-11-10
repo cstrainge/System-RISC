@@ -301,7 +301,12 @@ impl Drawing for Port<'_, '_>
                 match icons.plot_file(self.graphics.target(), volume, cnid, bounds, flags)
                 {
                     Ok(()) => return Ok(()),
-                    Err(Error::NotFound | Error::BadArgument | Error::NotSupported) => fallback,
+                    // None, or still being read from a volume that answers
+                    // later.
+                    Err(Error::NotFound
+                        | Error::BadArgument
+                        | Error::NotSupported
+                        | Error::ServiceBusy) => fallback,
                     Err(e) => return Err(e)
                 }
             }
@@ -828,7 +833,9 @@ impl Browser
                     {
                         match system.quickdraw().icons().load_file(volume, cnid)
                         {
-                            Ok(()) => icon,
+                            // Being read: the folder's watch says when it
+                            // has arrived.
+                            Ok(()) | Err(Error::ServiceBusy) => icon,
                             Err(Error::NotFound | Error::BadArgument | Error::NotSupported) =>
                             {
                                 Icon::Resource(fallback)

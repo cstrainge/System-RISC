@@ -392,11 +392,26 @@ impl Manager
     #[cfg(systemrisc)]
     pub(super) fn applications_arrived(&mut self) -> Result<(), Status>
     {
-        let revision = scan::next_revision()?;
         self.file_icons.forget_owners();
+        self.notify_presentation(None)
+    }
+
+    /// What a folder shows has changed though nothing in it has: an icon that
+    /// was being read has arrived. Its watchers are told to read again, which
+    /// is where they ask for icons. `None` tells every watcher. No catalogue
+    /// revision moves and nothing cached is forgotten.
+    #[cfg(systemrisc)]
+    pub(super) fn notify_presentation(&mut self, folder: Option<(u32, u32)>)
+                                      -> Result<(), Status>
+    {
+        let revision = scan::next_revision()?;
         let transfers = &self.transfers;
         for watch in self.watches.values_mut()
         {
+            if folder.is_some_and(|folder| folder != (watch.volume, watch.directory))
+            {
+                continue;
+            }
             if transfers.iter().any(|(_, entry)| entry.holds_notices(watch.volume))
             {
                 watch.deferred_revision = Some(revision);
