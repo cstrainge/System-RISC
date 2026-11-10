@@ -21,6 +21,17 @@ pub enum Icon
         cnid:     Cnid,
         fallback: i16
     },
+    /// A document. The System resolves its icon: its custom icon if it has one,
+    /// otherwise the one its creator's application declares for its type. When
+    /// the System has neither, draw the icon registered for `file_type`, then
+    /// `fallback`.
+    Document
+    {
+        volume:    VolumeId,
+        cnid:      Cnid,
+        file_type: TypeCode,
+        fallback:  i16
+    },
     /// The icon registered for this file type. `fallback` is the family to draw
     /// if nothing is registered.
     Associated
@@ -115,7 +126,9 @@ pub fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &CatalogInfo)
     }
     else
     {
-        Icon::Associated { file_type: entry.file_type,
-                           fallback }
+        Icon::Document { volume: volume.id,
+                         cnid: entry.id,
+                         file_type: entry.file_type,
+                         fallback }
     }
 }

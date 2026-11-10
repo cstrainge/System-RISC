@@ -253,6 +253,33 @@ impl Drawing for Port<'_, '_>
         let id = match icon
         {
             Icon::Resource(id) => id,
+            Icon::Document { volume,
+                             cnid,
+                             file_type,
+                             fallback } =>
+            {
+                match icons.plot_file(self.graphics.target(), volume, cnid, bounds, flags)
+                {
+                    Ok(()) => return Ok(()),
+                    // No icon of its own and none from its application, or the
+                    // System is still indexing applications.
+                    Err(Error::NotFound
+                        | Error::BadArgument
+                        | Error::NotSupported
+                        | Error::ServiceBusy) => (),
+                    Err(error) => return Err(error)
+                }
+                match icons.plot_file_default(self.graphics.target(),
+                                              file_type,
+                                              name,
+                                              bounds,
+                                              flags)
+                {
+                    Ok(()) => return Ok(()),
+                    Err(Error::NotFound | Error::NotSupported) => fallback,
+                    Err(error) => return Err(error)
+                }
+            }
             Icon::Associated { file_type,
                                fallback } =>
             {
@@ -793,23 +820,43 @@ impl Browser
                     cache::with(slot, |folder| folder.volume.unwrap())
                 };
                 let icon = entry_icon(system, &volume, &entry);
-                let paint_icon = if let Icon::Application { volume,
-                                                            cnid,
-                                                            fallback } = icon
+                let paint_icon = match icon
                 {
-                    match system.quickdraw().icons().load_file(volume, cnid)
+                    Icon::Application { volume,
+                                        cnid,
+                                        fallback } =>
                     {
-                        Ok(()) => icon,
-                        Err(Error::NotFound | Error::BadArgument | Error::NotSupported) =>
+                        match system.quickdraw().icons().load_file(volume, cnid)
                         {
-                            Icon::Resource(fallback)
+                            Ok(()) => icon,
+                            Err(Error::NotFound | Error::BadArgument | Error::NotSupported) =>
+                            {
+                                Icon::Resource(fallback)
+                            }
+                            Err(error) => return Err(error)
                         }
-                        Err(error) => return Err(error)
                     }
-                }
-                else
-                {
-                    icon
+                    Icon::Document { volume,
+                                     cnid,
+                                     file_type,
+                                     fallback } =>
+                    {
+                        match system.quickdraw().icons().load_file(volume, cnid)
+                        {
+                            // Still indexing applications: keep asking at paint
+                            // time until the System has an answer.
+                            Ok(()) | Err(Error::ServiceBusy) => icon,
+                            // Settled: there is none. Paint by type from now on
+                            // without asking again for every draw.
+                            Err(Error::NotFound | Error::BadArgument | Error::NotSupported) =>
+                            {
+                                Icon::Associated { file_type,
+                                                   fallback }
+                            }
+                            Err(error) => return Err(error)
+                        }
+                    }
+                    other => other
                 };
                 let running = matches!(icon, Icon::Application { .. })
                               && system.processes().is_running(entry.volume, entry.id)?;

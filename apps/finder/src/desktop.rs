@@ -423,12 +423,18 @@ fn advance(system: &System<'_>, selected: Selection) -> Result<Option<Publicatio
                 let icon = super::entry_icon(system, &volume, &entry);
                 if let Icon::Application { volume,
                                            cnid,
-                                           .. } = icon
+                                           .. }
+                | Icon::Document { volume,
+                                   cnid,
+                                   .. } = icon
                 {
                     match system.quickdraw().icons().load_file(volume, cnid)
                     {
                         Ok(())
-                        | Err(Error::NotFound | Error::BadArgument | Error::NotSupported) => (),
+                        | Err(Error::NotFound
+                              | Error::BadArgument
+                              | Error::NotSupported
+                              | Error::ServiceBusy) => (),
                         Err(error) => return Err(error)
                     }
                 }

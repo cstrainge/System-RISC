@@ -473,7 +473,9 @@ impl Manager
     }
 
     /// Decode a file's custom icon, then its bundle's selected icon family.
-    /// Executable resources are never loaded by this path.
+    /// A document, which carries no bundle of its own, gets the icon its
+    /// creator's application declares for its type. Executable resources are
+    /// never loaded by this path.
     pub(crate) fn file_icon(
         &mut self, volume: u32, cnid: u32,
         resident: crate::toolbox::resources::manager::Manager<'_>)
@@ -493,19 +495,34 @@ impl Manager
         // root. Changing authority only when inserting would retain the first
         // requesting application's account in the decoded pixels and masks.
         InvocationGate::with_system_allocation(|| {
-            let (parent, family) = self.with_volume(volume, |volume| {
+            let (parent, own) = self.with_volume(volume, |volume| {
             let entry = required(io(volume.entry(cnid))?)?;
             let catalog = metadata(0, &entry);
-            let mut fork = entry.resources.ok_or(NOT_FOUND)?;
+            let parent = entry.parent;
+            // Files that are programs carry their own bundle. Anything else is
+            // a document: only its custom icon, if any, is its own.
+            let program = matches!(&catalog.file_type,
+                                   b"APPL" | b"INIT" | b"DRVR" | b"FNDR" | b"CLAP");
+            let custom = catalog.finder_flags() & 0x0400 != 0;
+            let document = Document { creator:   catalog.creator,
+                                      file_type: catalog.file_type };
+            let Some(mut fork) = entry.resources
+            else
+            {
+                return if program { Err(NOT_FOUND) } else { Ok((parent, Err(document))) };
+            };
             let length = fork.length;
             let mut read = |offset, output: &mut [u8]| {
                 let count = io(volume.read(&mut fork, offset, output))?;
                 if count == output.len() { Ok(()) } else { Err(BAD_ARGUMENT) }
             };
-            if catalog.finder_flags() & 0x0400 != 0
-               && let Ok(custom) = read_icon(length, -16455, resident, &mut read)
+            if custom && let Ok(custom) = read_icon(length, -16455, resident, &mut read)
             {
-                return Ok((entry.parent, custom));
+                return Ok((parent, Ok(custom)));
+            }
+            if !program
+            {
+                return Ok((parent, Err(document)));
             }
             let metadata = crate::toolbox::resources::file::read_selected(length,
                                                                           |key| {
@@ -516,12 +533,107 @@ impl Manager
                                                                           64 * 1024,
                                                                           &mut read)?;
             let id = icons_service::file_id(&metadata, catalog.creator, catalog.file_type)?;
-            Ok((entry.parent, read_icon(length, id, resident, &mut read)?))
+            Ok((parent, Ok(read_icon(length, id, resident, &mut read)?)))
         })?;
-            let family = alloc::sync::Arc::try_new(family).map_err(|_| NO_MEMORY)?;
-            self.file_icons.insert(volume, parent, cnid, family.clone())?;
-            Ok(family)
+            match own
+            {
+                Ok(family) =>
+                {
+                    let family = alloc::sync::Arc::try_new(family).map_err(|_| NO_MEMORY)?;
+                    self.file_icons.insert(volume, parent, cnid, family.clone())?;
+                    Ok(family)
+                }
+                Err(document) =>
+                {
+                    let family = self.document_icon(document, resident)?;
+                    self.file_icons.alias(volume, parent, cnid, &family);
+                    Ok(family)
+                }
+            }
         })
+    }
+
+    /// The icon the creator's application declares for a document type. One
+    /// decoded family per application and type is shared by every such
+    /// document. `NOT_FOUND` covers every ordinary reason there is none: no
+    /// application owns the creator, or its bundle does not mention the type.
+    #[cfg(not(systemrisc))]
+    fn document_icon(
+        &mut self, _document: Document,
+        _resident: crate::toolbox::resources::manager::Manager<'_>)
+        -> Result<alloc::sync::Arc<crate::toolbox::quickdraw::icons::IconFamily>, Status>
+    {
+        Err(NOT_FOUND)
+    }
+
+    #[cfg(systemrisc)]
+    fn document_icon(
+        &mut self, document: Document,
+        resident: crate::toolbox::resources::manager::Manager<'_>)
+        -> Result<alloc::sync::Arc<crate::toolbox::quickdraw::icons::IconFamily>, Status>
+    {
+        let owner = match super::applications::owner(document.creator)
+        {
+            Ok(owner) => owner,
+            // Still indexing: say so, so a caller can ask again instead of
+            // settling on a generic icon.
+            Err(SERVICE_BUSY) => return Err(SERVICE_BUSY),
+            Err(_) => return Err(NOT_FOUND)
+        };
+        let kind = document.file_type;
+        if let Some(family) = self.file_icons.get_kind(owner.volume, owner.cnid, kind)
+        {
+            return Ok(family);
+        }
+        if self.file_icons.absent(owner.volume, owner.cnid, kind)
+        {
+            return Err(NOT_FOUND);
+        }
+        // The owner may be on another volume, and may have gone since the
+        // index last looked.
+        match self.volumes.get(owner.volume)
+        {
+            Some(Mounted::Block(mounted)) if !mounted.poisoned => (),
+            _ => return Err(NOT_FOUND)
+        }
+        let read = self.with_volume(owner.volume, |volume| {
+            let entry = required(io(volume.entry(owner.cnid))?)?;
+            let parent = entry.parent;
+            let mut fork = entry.resources.ok_or(NOT_FOUND)?;
+            let length = fork.length;
+            let mut read = |offset, output: &mut [u8]| {
+                let count = io(volume.read(&mut fork, offset, output))?;
+                if count == output.len() { Ok(()) } else { Err(BAD_ARGUMENT) }
+            };
+            let metadata = crate::toolbox::resources::file::read_selected(length,
+                                                                          |key| {
+                                                                              matches!(&key.kind,
+                                                                                       b"BNDL"
+                                                                                       | b"FREF")
+                                                                          },
+                                                                          64 * 1024,
+                                                                          &mut read)?;
+            let id = icons_service::file_id(&metadata, document.creator, kind)?;
+            Ok((parent, read_icon(length, id, resident, &mut read)?))
+        });
+        match read
+        {
+            Ok((parent, family)) =>
+            {
+                let family = alloc::sync::Arc::try_new(family).map_err(|_| NO_MEMORY)?;
+                self.file_icons.insert_kind(owner.volume, parent, owner.cnid, kind,
+                                            family.clone())?;
+                Ok(family)
+            }
+            // The bundle has nothing for this type, or is not one this path
+            // can read. Remember it; every document of the type would ask.
+            Err(NOT_FOUND | BAD_ARGUMENT | NOT_SUPPORTED) =>
+            {
+                self.file_icons.note_absent(owner.volume, owner.cnid, kind);
+                Err(NOT_FOUND)
+            }
+            Err(status) => Err(status)
+        }
     }
 
     pub(crate) fn resource_value(&mut self, volume: u32, cnid: u32, key: ResourceKey)
@@ -537,6 +649,14 @@ impl Manager
                 })
             })
     }
+}
+
+/// What a file with no icon of its own is, as far as choosing one goes.
+#[derive(Clone, Copy)]
+struct Document
+{
+    creator:   [u8; 4],
+    file_type: [u8; 4]
 }
 
 #[cfg(systemrisc)]
