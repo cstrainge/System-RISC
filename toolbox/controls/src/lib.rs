@@ -105,23 +105,47 @@ impl TryFrom<i16> for StandardKind
         }
     }
 }
-#[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Part
 {
-    None     = 0,
-    Button   = 10,
-    Check    = 11,
-    Up       = 20,
-    Down     = 21,
-    PageUp   = 22,
-    PageDown = 23,
-    Thumb    = 129,
-    Splitter = 130,
-    Inactive = 254
+    None,
+    Button,
+    Check,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Thumb,
+    Splitter,
+    Inactive,
+    /// One tab of a Tab control, by its position in the control's list.
+    Tab(u16)
 }
 impl Part
 {
+    /// The number this part travels as.
+    pub fn code(self) -> i16
+    {
+        match self
+        {
+            Self::None => 0,
+            Self::Button => 10,
+            Self::Check => 11,
+            Self::Up => 20,
+            Self::Down => 21,
+            Self::PageUp => 22,
+            Self::PageDown => 23,
+            Self::Thumb => 129,
+            Self::Splitter => 130,
+            Self::Inactive => 254,
+            Self::Tab(position) =>
+            {
+                let last = (i16::MAX - mac_abi::controls::TAB_PART) as u16;
+                mac_abi::controls::TAB_PART + position.min(last) as i16
+            }
+        }
+    }
+
     pub fn from_code(code: i16) -> Result<Self>
     {
         match code
@@ -136,6 +160,10 @@ impl Part
             129 => Ok(Self::Thumb),
             130 => Ok(Self::Splitter),
             254 => Ok(Self::Inactive),
+            code if code >= mac_abi::controls::TAB_PART =>
+            {
+                Ok(Self::Tab((code - mac_abi::controls::TAB_PART) as u16))
+            }
             _ => Err(Error::BadArgument)
         }
     }

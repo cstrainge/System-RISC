@@ -755,6 +755,7 @@ impl RequestSnapshot
                             | SCROLL_PAGE_UP
                             | SCROLL_PAGE_DOWN
                             | SCROLL_THUMB)
+                   || part >= TAB_PART
                 {
                     handled = true;
                     o.tracking =

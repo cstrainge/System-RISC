@@ -49,7 +49,7 @@ fn encode(operation: Operation, reply: Reply) -> Result<i64>
 {
     match (operation, reply)
     {
-        (Operation::Hit, Reply::Hit(part)) => Ok(part as i64),
+        (Operation::Hit, Reply::Hit(part)) => Ok(i64::from(part.code())),
         (Operation::Track, Reply::Position(value)) => Ok(i64::from(value as u16)),
         (Operation::Track, Reply::Value(value)) if value <= i16::MAX as u16 => Ok(i64::from(value)),
         (Operation::Draw

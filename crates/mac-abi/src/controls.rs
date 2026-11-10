@@ -93,6 +93,10 @@ pub struct ControlChange
 }
 pub const BUTTON_PART: i16 = 10;
 pub const CHECKBOX_PART: i16 = 11;
+/// A tab of a Tab control is its own part: this plus the tab's position in the
+/// control's list. A press on one tracks, highlights and activates exactly as
+/// a button does.
+pub const TAB_PART: i16 = 1000;
 pub const SCROLL_UP: i16 = 20;
 pub const SCROLL_DOWN: i16 = 21;
 pub const SCROLL_PAGE_UP: i16 = 22;
