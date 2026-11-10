@@ -21,7 +21,7 @@ pub(crate) fn format_status(error: mac_formats::Error) -> Status
         }
         mac_formats::Error::Missing(_) => NOT_FOUND,
         mac_formats::Error::TranslationRequired(_) => TRANSLATION_REQUIRED,
-        mac_formats::Error::Malformed(_) => BAD_ARGUMENT
+        mac_formats::Error::Malformed(_) | mac_formats::Error::TextConversion(_) => BAD_ARGUMENT
     }
 }
 fn read(files: &mut crate::toolbox::files::Manager, owner: u64, handle: u32, offset: u64,
@@ -200,4 +200,3 @@ unsafe fn checked(pointer: *mut (), size: usize,
     };
     invoke(call, name, output) as i64
 }
-

@@ -76,9 +76,8 @@ Object storage grows until actual memory admission refuses it. Geometry limits
 are dimensions up to 2048 pixels, a 16-pixel scrollbar, positive fixed row height,
 and 768 UTF8 bytes per supplied row. Apps may choose fonts, padding and
 normal/selected colors.
-The resident interface is native trap `SCROLL_BOX` (`0x10021`), with a companion
-`PSTRING_SCROLL_BOX` trap for MacRoman Pascal row text. Public Rust APIs expose
-only UTF8. This adds no classic 68k adapter or claim of complete TrackControl
+The resident interface is native trap `SCROLL_BOX` (`0x10021`). All native row
+text is UTF-8; classic MacRoman/Pascal conversion is a separate format boundary. This adds no classic 68k adapter or claim of complete TrackControl
 compatibility.
 
 Canonical public-SDK lifecycle assertions were the disk-booted

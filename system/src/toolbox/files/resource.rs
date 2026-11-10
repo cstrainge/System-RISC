@@ -50,7 +50,8 @@ impl ModuleReadError
                          | mac_formats::Error::AllocationFailed(_)) => NO_MEMORY,
             Self::Format(mac_formats::Error::Missing(_)) => NOT_FOUND,
             Self::Format(mac_formats::Error::TranslationRequired(_)) => TRANSLATION_REQUIRED,
-            Self::Format(mac_formats::Error::Malformed(_)) => BAD_ABI
+            Self::Format(mac_formats::Error::Malformed(_)
+                         | mac_formats::Error::TextConversion(_)) => BAD_ABI
         }
     }
 }
@@ -220,7 +221,7 @@ pub(super) fn application_format_status(error: mac_formats::Error) -> Status
         }
         mac_formats::Error::Missing(_) => NOT_FOUND,
         mac_formats::Error::TranslationRequired(_) => TRANSLATION_REQUIRED,
-        mac_formats::Error::Malformed(_) => CORRUPT_DATA
+        mac_formats::Error::Malformed(_) | mac_formats::Error::TextConversion(_) => CORRUPT_DATA
     }
 }
 
@@ -949,4 +950,3 @@ impl Manager
             .map_err(ModuleReadError::Storage)?
     }
 }
-

@@ -22,7 +22,6 @@ pub mod classic;
 #[cfg(systemrisc)]
 pub(crate) mod runtime;
 
-pub(crate) mod strings;
 
 #[cfg(systemrisc)]
 pub mod processes;

@@ -1,4 +1,4 @@
-//! Allocation-free System7 Mac Roman scalar conversion.
+//! Allocation-free System 7 MacRoman and checked Pascal-string conversion.
 #![no_std]
 #![forbid(unsafe_code)]
 
@@ -20,8 +20,316 @@ pub const HIGH: [char; 128] =
      '\u{2dc}', '\u{af}', '\u{2d8}', '\u{2d9}', '\u{2da}', '\u{b8}', '\u{2dd}', '\u{2db}',
      '\u{2c7}'];
 
-/// Decode one System7 Mac Roman byte without allocating.
-pub fn character(byte: u8) -> char
+/// A conversion refusal. Positions name the zero-based Unicode scalar index
+/// and UTF-8 byte offset in the original input. Conversion never substitutes characters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error
 {
-    if byte < 128 { byte as char } else { HIGH[byte as usize - 128] }
+    Unrepresentable
+    {
+        character:       char,
+        character_index: usize,
+        byte_offset:     usize
+    },
+    MissingLength,
+    LengthOverrun
+    {
+        declared:  usize,
+        available: usize
+    },
+    TrailingBytes
+    {
+        used:      usize,
+        available: usize
+    },
+    TooLong
+    {
+        capacity: usize,
+        required: usize
+    },
+    OutputTooSmall
+    {
+        required:  usize,
+        available: usize
+    },
+    LengthOverflow
+}
+impl core::fmt::Display for Error
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Unrepresentable { character,
+                                    character_index,
+                                    byte_offset } =>
+            {
+                write!(f,
+                       "character {character:?} (U+{:04X}) at character {character_index}, UTF-8 \
+                        byte {byte_offset}, has no System 7 MacRoman representation",
+                       *character as u32)
+            }
+            Self::MissingLength => f.write_str("Pascal string is missing its length byte"),
+            Self::LengthOverrun { declared,
+                                  available } =>
+            {
+                write!(f,
+                       "Pascal string declares {declared} bytes but only {available} payload \
+                        bytes are available")
+            }
+            Self::TrailingBytes { used,
+                                  available } =>
+            {
+                write!(f,
+                       "Pascal string uses {used} bytes but its exact input contains {available}")
+            }
+            Self::TooLong { capacity,
+                            required } =>
+            {
+                write!(f, "Pascal string needs {required} characters; capacity is {capacity}")
+            }
+            Self::OutputTooSmall { required,
+                                   available } =>
+            {
+                write!(f,
+                       "conversion needs {required} output bytes; only {available} are available")
+            }
+            Self::LengthOverflow =>
+            {
+                f.write_str("decoded UTF-8 length exceeds the addressable buffer size")
+            }
+        }
+    }
+}
+impl core::error::Error for Error
+{
+}
+
+/// Decode one System 7 MacRoman byte. Every byte, including control bytes, has
+/// one Unicode scalar. Byte DB is the pre-8.5 currency sign, not the euro sign.
+pub fn character(value: u8) -> char
+{
+    if value < 128 { value as char } else { HIGH[value as usize - 128] }
+}
+
+/// The exact inverse scalar mapping; no normalization or substitution.
+pub fn byte(character: char) -> Option<u8>
+{
+    if character.is_ascii()
+    {
+        Some(character as u8)
+    }
+    else
+    {
+        HIGH.iter().position(|&value| value == character).map(|index| index as u8 + 128)
+    }
+}
+
+/// Decode without allocating. A caller may collect these scalars into an owned
+/// string, or write them through its own formatter.
+pub fn characters(bytes: &[u8]) -> impl ExactSizeIterator<Item = char> + DoubleEndedIterator + '_
+{
+    bytes.iter().map(|&value| character(value))
+}
+
+pub fn utf8_length(bytes: &[u8]) -> Result<usize, Error>
+{
+    characters(bytes).try_fold(0usize, |length, character| {
+                         length.checked_add(character.len_utf8()).ok_or(Error::LengthOverflow)
+                     })
+}
+
+/// Write UTF-8 into caller-owned storage. Ordinary refusals preserve the entire
+/// output buffer; successful conversion writes only the returned prefix.
+pub fn decode_into(bytes: &[u8], output: &mut [u8]) -> Result<usize, Error>
+{
+    let required = utf8_length(bytes)?;
+    if output.len() < required
+    {
+        return Err(Error::OutputTooSmall { required,
+                                           available: output.len() });
+    }
+    let mut offset = 0;
+    for character in characters(bytes)
+    {
+        let end = offset + character.len_utf8();
+        character.encode_utf8(&mut output[offset..end]);
+        offset = end;
+    }
+    Ok(offset)
+}
+
+/// A fully validated immutable UTF-8 borrow and its MacRoman encoded length.
+/// Validation precedes output publication and any caller's optional allocation.
+#[derive(Clone, Copy, Debug)]
+pub struct MacRomanText<'a>
+{
+    text:   &'a str,
+    length: usize
+}
+impl<'a> MacRomanText<'a>
+{
+    pub fn new(text: &'a str) -> Result<Self, Error>
+    {
+        let mut length = 0;
+        for (character_index, (byte_offset, character)) in text.char_indices().enumerate()
+        {
+            byte(character).ok_or(Error::Unrepresentable { character,
+                                                           character_index,
+                                                           byte_offset })?;
+            length += 1;
+        }
+        Ok(Self { text,
+                  length })
+    }
+
+    pub const fn len(self) -> usize
+    {
+        self.length
+    }
+
+    pub const fn is_empty(self) -> bool
+    {
+        self.length == 0
+    }
+
+    pub fn write_into(self, output: &mut [u8]) -> Result<usize, Error>
+    {
+        if output.len() < self.length
+        {
+            return Err(Error::OutputTooSmall { required:  self.length,
+                                               available: output.len() });
+        }
+        // The held immutable borrow and the immutable mapping preserve the
+        // complete validation performed by new; no input can change mid-write.
+        for (index, (offset, character)) in self.text.char_indices().enumerate()
+        {
+            output[index] = byte(character).ok_or(Error::Unrepresentable { character,
+                                                                           character_index:
+                                                                               index,
+                                                                           byte_offset: offset })?;
+        }
+        Ok(self.length)
+    }
+
+    /// Validate capacity and return the required storage, including the prefix.
+    pub fn pascal_length(self, capacity: u8) -> Result<usize, Error>
+    {
+        if self.length > usize::from(capacity)
+        {
+            return Err(Error::TooLong { capacity: usize::from(capacity),
+                                        required: self.length });
+        }
+        Ok(self.length + 1)
+    }
+
+    /// Capacity counts MacRoman payload bytes (one per representable scalar).
+    /// Str255, Str63, Str31 and Str27 use capacities 255, 63, 31 and 27.
+    pub fn write_pascal(self, capacity: u8, output: &mut [u8]) -> Result<usize, Error>
+    {
+        let required = self.pascal_length(capacity)?;
+        if output.len() < required
+        {
+            return Err(Error::OutputTooSmall { required,
+                                               available: output.len() });
+        }
+        self.write_into(&mut output[1..required])?;
+        output[0] = self.length as u8;
+        Ok(required)
+    }
+}
+
+pub fn encode_into(text: &str, output: &mut [u8]) -> Result<usize, Error>
+{
+    MacRomanText::new(text)?.write_into(output)
+}
+pub fn encode_pascal(text: &str, capacity: u8, output: &mut [u8]) -> Result<usize, Error>
+{
+    MacRomanText::new(text)?.write_pascal(capacity, output)
+}
+
+/// Checked Pascal-string payload. Exact encoded values and padded storage have
+/// different constructors so trailing data is never silently accepted by an
+/// exact-value reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PascalStr<'a>
+{
+    payload: &'a [u8]
+}
+impl<'a> PascalStr<'a>
+{
+    /// Read one string from storage that may have unused bytes after it.
+    /// Capacity is the maximum permitted payload length, not padding to consume.
+    pub fn from_buffer(buffer: &'a [u8], capacity: u8) -> Result<Self, Error>
+    {
+        let length = usize::from(*buffer.first().ok_or(Error::MissingLength)?);
+        if length > usize::from(capacity)
+        {
+            return Err(Error::TooLong { capacity: usize::from(capacity),
+                                        required: length });
+        }
+        let payload = buffer.get(1..1 + length)
+                            .ok_or(Error::LengthOverrun { declared:  length,
+                                                          available: buffer.len() - 1 })?;
+        Ok(Self { payload })
+    }
+
+    /// Read exactly one encoded value, rejecting extra bytes after its payload.
+    pub fn from_exact(buffer: &'a [u8], capacity: u8) -> Result<Self, Error>
+    {
+        let value = Self::from_buffer(buffer, capacity)?;
+        let used = value.payload.len() + 1;
+        if used != buffer.len()
+        {
+            return Err(Error::TrailingBytes { used,
+                                              available: buffer.len() });
+        }
+        Ok(value)
+    }
+
+    pub const fn payload(self) -> &'a [u8]
+    {
+        self.payload
+    }
+
+    pub fn characters(self) -> impl ExactSizeIterator<Item = char> + DoubleEndedIterator + 'a
+    {
+        characters(self.payload)
+    }
+
+    pub fn decode_into(self, output: &mut [u8]) -> Result<usize, Error>
+    {
+        decode_into(self.payload, output)
+    }
+}
+
+/// Project a native filename to a classic Str31 view. Validate the ENTIRE name,
+/// including any suffix beyond the projected prefix, and the native 255-scalar
+/// limit before writing. This view never changes the input or stored filename.
+/// This explicit projection is separate from Pascal builders, which never
+/// truncate. The returned count includes the prefix byte.
+pub fn project_filename_31(text: &str, output: &mut [u8]) -> Result<usize, Error>
+{
+    let validated = MacRomanText::new(text)?;
+    if validated.len() > 255
+    {
+        return Err(Error::TooLong { capacity: 255,
+                                    required: validated.len() });
+    }
+    let length = validated.len().min(31);
+    let required = length + 1;
+    if output.len() < required
+    {
+        return Err(Error::OutputTooSmall { required,
+                                           available: output.len() });
+    }
+    for (index, (offset, character)) in text.char_indices().take(length).enumerate()
+    {
+        output[index + 1] = byte(character).ok_or(Error::Unrepresentable { character,
+                                                                           character_index:
+                                                                               index,
+                                                                           byte_offset: offset })?;
+    }
+    output[0] = length as u8;
+    Ok(required)
 }

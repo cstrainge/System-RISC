@@ -56,14 +56,11 @@ zero-based record enumeration are explicit extensions. Any future text-aware
 format must receive a deliberate string representation before it is exposed as
 human text; storing an opaque flavor does not implement its parser or semantics.
 
-`PSTRING_SCRAP` is a paired convenience trap for the native text operations only.
-The trap boundary converts Pascal/MacRoman input to resident UTF-8 and reverses
-that conversion on output. Malformed input, unrepresentable characters and text
-over255 MacRoman bytes fail without modifying output. Rust bindings expose only
-native strings. This paired convenience trap is **not** the original A-line
-`PutScrap(TEXT)` convention: that historical interface takes counted raw MacRoman
-text, can exceed255bytes, and needs its own adapter. No original Scrap A-line
-adapter is claimed in this slice.
+Native requests accept UTF-8 only. A legacy boundary may use the shared
+`mac-text` codec for checked Pascal/MacRoman conversion before calling the
+native service. The original A-line `PutScrap(TEXT)` convention uses counted
+raw MacRoman text and can exceed 255 bytes; no original Scrap A-line adapter
+is claimed in this slice.
 
 ## Bounds, failure and unfinished contracts
 

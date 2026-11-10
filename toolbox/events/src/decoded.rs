@@ -105,17 +105,7 @@ impl Key
     /// encoding. Unsupported Unicode is rejected rather than substituted.
     pub fn new(character: char, code: u8) -> mac_traps::Result<Self>
     {
-        let byte = if character.is_ascii()
-        {
-            character as u8
-        }
-        else
-        {
-            mac_text::HIGH.iter()
-                          .position(|&c| c == character)
-                          .map(|index| index as u8 + 128)
-                          .ok_or(mac_traps::Error::BadArgument)?
-        };
+        let byte = mac_text::byte(character).ok_or(mac_traps::Error::BadArgument)?;
         Ok(Self { message: (u32::from(code) << 8) | u32::from(byte) })
     }
 

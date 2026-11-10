@@ -697,21 +697,22 @@ placement) are preserved. Self/descendant moves, name collisions and protected
 objects are rejected before publication. Both source and destination directory
 watches are notified only after success; the same parent is a no-op. Cross-volume
 copy/move has distinct identity and transaction requirements and is not encoded
-as this operation. Legacy Pascal replies project the result name to Str31.
+as this operation. Native replies retain full UTF-8 names; the classic conversion
+crate provides an explicit read-only Str31 projection.
 
 References pair opaque mounted-volume IDs with persistent catalog IDs; volume
 and open handles include a generation. Reads copy into caller storage, and both forks have independent
 marks. Native slash paths are distinct from classic colon paths. CONTROL requests
 use mac-abi/src/controls.rs and dispatch CDEF0 (standard controls) or CDEF1
 (scrollbars); their inline state does not expose classic ControlHandle or
-WindowRecord ABI. CONTROL and PSTRING_CONTROL share resident managed objects:
+WindowRecord ABI. Native CONTROL manages resident objects:
 operations10/11 create standard/scrollbar objects;12 configures,13 queries,
 14 disposes,15 draws,16 begins tracking,17 polls and18 cancels. ControlCall now
 also carries id/flags/ticks/step/page. Rebuild all modules for this unreleased
 layout; there is no old-size decoder. IDs use the central generation facility
 with a distinct Controls namespace; close/app exit retires parent-owned objects.
-The Pascal trap converts standard-control title input/output while retaining the
-same identity/owner checks. Rust apps use only the UTF-8 SDK surface.
+Native control titles are UTF-8. Pascal conversion belongs to the classic
+format/guest boundary through the shared allocation-free `mac-text` codec.
 
 Tracking flags report held/tracking, handled, action and visual/value change.
 Buttons/checks/radios report an action only on release inside the original part;
@@ -810,8 +811,7 @@ dimming and command policy. Applications can query its LAYOUT/COMMAND state
 through menuID-16489 but cannot mutate it. Rebuild all native modules together
 when the definition state changes; development ABI stays at 1.
 
-DIALOG0x10017 carries `dialogs::DialogCall`; PSTRING_DIALOG0x30017 converts the
-inline substitution at the boundary. The current alert profile loads ALRT/DITL
+DIALOG0x10017 carries `dialogs::DialogCall` with UTF-8 inline substitutions. The current alert profile loads ALRT/DITL
 resources, button/static-text/ICON items, WDEF1 and CDEF0. It provides ^0
 substitution, modal input routing, default Return, cancel Escape and button
 press/leave/reentry/release. General DLOG/edit-text/user-items/alert stages remain

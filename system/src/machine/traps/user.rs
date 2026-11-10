@@ -331,7 +331,7 @@ impl Call
                 return Some(crate::machine::scheduler::service::RequestResult::done(status));
             }
         };
-        let number = native_string_trap(self.number).unwrap_or(self.number);
+        let number = self.number;
         // The envelope owns the exclusive snapshot and every nested buffer.
         unsafe {
             definitions::callbacks::dispatch_user(number, pointer, size, &mut self.continuation,
@@ -911,7 +911,7 @@ impl Call
                 self.surface(offset_of!($ty, surface))?
             };
         }
-        let number = native_string_trap(self.number).unwrap_or(self.number);
+        let number = self.number;
         match number
         {
             PROCESS if self.size == size_of::<abi::processes::LaunchArgvCall>() =>
@@ -1187,7 +1187,6 @@ fn layout(number: u32, bytes: usize) -> Result<Layout, Status>
 {
     // These numbers are trusted module/worker gates. In particular, never
     // decode a user-supplied Rust fn pointer or invoke it with System privilege.
-    let number = native_string_trap(number).unwrap_or(number);
     macro_rules! select {
         ($($ty:ty),+ $(,)?) => { {
             $(if bytes == size_of::<$ty>() { return Ok(Layout::of::<$ty>()); })+

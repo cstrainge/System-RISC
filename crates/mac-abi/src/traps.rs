@@ -21,9 +21,7 @@ pub const USER_CALLBACK: u32 = 0x1002e;
 /// Byte-transport pipes; the first unoccupied number after the full native block.
 pub const PIPES: u32 = 0x1002f;
 pub const COROUTINE_STACK: u32 = 0x10030;
-pub const PSTRING_SCROLL_BOX: u32 = SCROLL_BOX | PSTRING_BIT;
 pub const STANDARD_FILE: u32 = 0x10020;
-pub const PSTRING_STANDARD_FILE: u32 = STANDARD_FILE | PSTRING_BIT;
 pub const CRASH: u32 = 0x1001f;
 pub const SCRAP: u32 = 0x10019;
 pub const EVENTS: u32 = 0x1001a;
@@ -158,44 +156,6 @@ pub const ICON: u32 = 0x10011;
 
 pub const CONTROL: u32 = 0x10013;
 pub const MEMORY: u32 = 0x10014;
-
-/// Pascal/MacRoman counterparts of every native service carrying human text.
-/// Wire structs are identical; string lengths include the Pascal length byte.
-/// These are legacy ABI entry points, deliberately absent from Rust SDK clients.
-pub const PSTRING_BIT: u32 = 0x20000;
-pub const PSTRING_PROCESS: u32 = PROCESS | PSTRING_BIT;
-pub const PSTRING_LOG: u32 = LOG | PSTRING_BIT;
-pub const PSTRING_WINDOW: u32 = WINDOW | PSTRING_BIT;
-pub const PSTRING_DRAW: u32 = DRAW | PSTRING_BIT;
-pub const PSTRING_SURFACE: u32 = SURFACE | PSTRING_BIT;
-pub const PSTRING_FONT: u32 = FONT | PSTRING_BIT;
-pub const PSTRING_RESOURCE: u32 = RESOURCE | PSTRING_BIT;
-pub const PSTRING_FILE: u32 = FILE | PSTRING_BIT;
-pub const PSTRING_TEXTEDIT: u32 = TEXTEDIT | PSTRING_BIT;
-pub const PSTRING_SCRAP: u32 = SCRAP | PSTRING_BIT;
-pub const PSTRING_DIALOG: u32 = DIALOG | PSTRING_BIT;
-pub const PSTRING_CONTROL: u32 = CONTROL | PSTRING_BIT;
-pub const fn native_string_trap(number: u32) -> Option<u32>
-{
-    match number
-    {
-        PSTRING_SCROLL_BOX
-        | PSTRING_LOG
-        | PSTRING_WINDOW
-        | PSTRING_DRAW
-        | PSTRING_SURFACE
-        | PSTRING_FONT
-        | PSTRING_STANDARD_FILE
-        | PSTRING_RESOURCE
-        | PSTRING_FILE
-        | PSTRING_CONTROL
-        | PSTRING_DIALOG
-        | PSTRING_SCRAP
-        | PSTRING_TEXTEDIT
-        | PSTRING_PROCESS => Some(number & !PSTRING_BIT),
-        _ => None
-    }
-}
 
 pub const PROCESS: u32 = 0x1001c;
 

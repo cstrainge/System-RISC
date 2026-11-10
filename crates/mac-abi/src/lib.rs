@@ -18,7 +18,9 @@ pub const NATIVE_SEGMENT_RECORD_BYTES: usize = 28;
 /// Native descriptors carry this fingerprint so stale packages fail before
 /// entry rather than interpreting new payloads with an older struct layout.
 pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
-    let words = [core::mem::size_of::<SystemServices>(),
+    // Native text is UTF-8 only. The protocol tag rejects pre-cutover artifacts.
+    let words = [u32::from_be_bytes(*b"UTF8") as usize,
+                 core::mem::size_of::<SystemServices>(),
                  core::mem::size_of::<definitions::UserCall>(),
                  core::mem::align_of::<definitions::UserCall>(),
                  core::mem::offset_of!(definitions::UserCall, header),

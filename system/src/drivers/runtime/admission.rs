@@ -20,7 +20,8 @@ pub(super) fn package_status(cause: mac_formats::Error) -> Status
         }
         mac_formats::Error::Missing(_)
         | mac_formats::Error::TranslationRequired(_)
-        | mac_formats::Error::Malformed(_) => BAD_ABI
+        | mac_formats::Error::Malformed(_)
+        | mac_formats::Error::TextConversion(_) => BAD_ABI
     }
 }
 
@@ -61,4 +62,3 @@ pub(super) fn metadata_refusal(cause: Status) -> MetadataRefusal
         }
     }
 }
-

@@ -44,7 +44,7 @@ pub(crate) fn read_selected(length: u64, mut select: impl FnMut(ResourceKey) -> 
             mac_formats::Error::BudgetExceeded(_) | mac_formats::Error::AllocationFailed(_) => NO_MEMORY,
             mac_formats::Error::Missing(_) => NOT_FOUND,
             mac_formats::Error::TranslationRequired(_) => TRANSLATION_REQUIRED,
-            mac_formats::Error::Malformed(_) => BAD_ARGUMENT
+            mac_formats::Error::Malformed(_) | mac_formats::Error::TextConversion(_) => BAD_ARGUMENT
         }))
 }
 

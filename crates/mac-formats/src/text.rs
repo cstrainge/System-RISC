@@ -1,45 +1,37 @@
-//! System7 Mac Roman conversion (before the Mac OS8.5 currency-to-euro change).
+//! Owned format values around the allocation-free `mac-text` codec.
+//! Character mapping, representability and Pascal capacity rules live there.
 use alloc::{string::String, vec::Vec};
 
-use mac_text::HIGH;
-pub use mac_text::character;
+pub use mac_text::{MacRomanText, byte, character, decode_into, utf8_length};
 
 use crate::{Error, Result};
 
+fn output(length: usize) -> Result<Vec<u8>>
+{
+    let mut result = Vec::new();
+    result.try_reserve_exact(length)
+          .map_err(|_| Error::AllocationFailed("text conversion output allocation refused"))?;
+    result.resize(length, 0);
+    Ok(result)
+}
+
 pub fn encode(text: &str) -> Result<Vec<u8>>
 {
-    text.chars()
-        .map(|c| {
-            if c.is_ascii()
-            {
-                Ok(c as u8)
-            }
-            else
-            {
-                HIGH.iter()
-                    .position(|&v| v == c)
-                    .map(|i| i as u8 + 128)
-                    .ok_or(Error::Malformed("text is not representable in Mac Roman"))
-            }
-        })
-        .collect()
+    let value = MacRomanText::new(text)?;
+    let mut result = output(value.len())?;
+    value.write_into(&mut result)?;
+    Ok(result)
 }
 
 pub fn decode(bytes: &[u8]) -> String
 {
-    bytes.iter().map(|&b| character(b)).collect()
+    mac_text::characters(bytes).collect()
 }
 
 pub fn pstring(text: &str) -> Result<Vec<u8>>
 {
-    let bytes = encode(text)?;
-    if bytes.len() > 255
-    {
-        return Err(Error::Malformed("Pascal string exceeds 255 bytes"));
-    }
-    let mut out = Vec::with_capacity(bytes.len() + 1);
-    out.push(bytes.len() as u8);
-    out.extend(bytes);
-    Ok(out)
+    let value = MacRomanText::new(text)?;
+    let mut result = output(value.pascal_length(255)?)?;
+    value.write_pascal(255, &mut result)?;
+    Ok(result)
 }
-

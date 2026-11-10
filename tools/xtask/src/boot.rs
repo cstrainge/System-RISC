@@ -254,35 +254,30 @@ fn transfer_volume(workspace: &Workspace, invocation: &mut emulator::Invocation)
     }
     run_command(&mut build)?;
     let tool = |name: &str| {
-        workspace.target()
-                 .join("release")
-                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+        workspace.target().join("release").join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     };
     if !formatted
     {
         // The formatter refuses a folder that already holds files. Ordinary
         // host files are never imported or erased to make a volume.
-        let status = Command::new(tool("risc-forks")).arg("init")
-                                                     .arg(&folder)
-                                                     .arg("Transfer")
-                                                     .status()?;
+        let status =
+            Command::new(tool("risc-forks")).arg("init").arg(&folder).arg("Transfer").status()?;
         if !status.success()
         {
-            println!("{} is not a System RISC volume and could not be made one; it must be \
-                      empty to start. Booting without the Transfer volume.",
+            println!("{} is not a System RISC volume and could not be made one; it must be empty \
+                      to start. Booting without the Transfer volume.",
                      folder.display());
             return Ok(None);
         }
     }
     let log = workspace.dist().join("host-companion.log");
-    let mut child =
-        Command::new(tool("risc-host")).arg("--one-session")
-                                       .arg("--export")
-                                       .arg(format!("Transfer={}", folder.display()))
-                                       .stdin(Stdio::null())
-                                       .stdout(Stdio::piped())
-                                       .stderr(File::create(&log)?)
-                                       .spawn()?;
+    let mut child = Command::new(tool("risc-host")).arg("--one-session")
+                                                   .arg("--export")
+                                                   .arg(format!("Transfer={}", folder.display()))
+                                                   .stdin(Stdio::null())
+                                                   .stdout(Stdio::piped())
+                                                   .stderr(File::create(&log)?)
+                                                   .spawn()?;
     let ready = child.stdout.take();
     let companion = Guest(child);
     let Some(ready) = ready
@@ -675,7 +670,8 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               // case below is where the folder itself is checked.
                               &[mac_bootloader::report::BANNER,
                                 mac_bootloader::report::BLESSED_FOLDER_PREFIX,
-                                "System: native service table ready", "BOOT_SYSTEM_READY:",
+                                "System: native service table ready",
+                                "BOOT_SYSTEM_READY:",
                                 // The pooled-resource arbiter's invariants, observed
                                 // in the guest: a grant, a refusal that names the
                                 // holder, a second resource granted concurrently, a
@@ -693,7 +689,8 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                                 // how many entries it accepted; the count itself is
                                 // not asserted because it moves with the image's
                                 // root contents.
-                                "FINDER_FOLDER_LAYOUT window=", " folder="],
+                                "FINDER_FOLDER_LAYOUT window=",
+                                " folder="],
                               true)?];
     // A second probe replaces Finder on a clone to exercise font selection the
     // way an application does: by name, through the public client.
@@ -709,6 +706,17 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                       "FONTS_PROBE_SELECT name=\"American Heritage\"",
                       "FONTS_PROBE_STYLE plain=", "FONTS_PROBE_STYLE_OK",
                       "FONTS_PROBE_PASS cases=5"],
+                    true)?);
+    let text_image = directory.join("text-conversion-probe.hfsb");
+    probe_image(workspace, &text_image, "text-conversion-probe")?;
+    cases.push(case(workspace,
+                    &directory,
+                    "text-conversion-probe",
+                    &[text_image],
+                    &["TEXT_CONVERSION_CASE case=complete-scalar-mapping status=pass",
+                      "TEXT_CONVERSION_CASE case=str31-unrepresentable-suffix status=pass",
+                      "TEXT_CONVERSION_CASE case=owned-format-refusal-causes status=pass",
+                      "TEXT_CONVERSION_PASS cases=42"],
                     true)?);
     let pipes_image = directory.join("pipes-probe.hfsb");
     probe_image(workspace, &pipes_image, "pipes-probe")?;
@@ -774,7 +782,8 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &directory,
                     "classic-hfs-is-not-native-startup",
                     &[classic.clone()],
-                    &[mac_bootloader::report::NOT_NATIVE_VOLUME, mac_bootloader::report::NO_SYSTEM_PREFIX],
+                    &[mac_bootloader::report::NOT_NATIVE_VOLUME,
+                      mac_bootloader::report::NO_SYSTEM_PREFIX],
                     false)?);
     let renamed = directory.join("renamed.hfsb");
     clone_raw(&raw, &renamed)?;

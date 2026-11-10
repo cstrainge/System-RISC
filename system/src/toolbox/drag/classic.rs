@@ -5,38 +5,25 @@ use super::*;
 // bytes (not Pascal strings), including its sizes and partial-read/set offsets.
 fn utf8(bytes: &[u8]) -> Result<Vec<u8>, Status>
 {
-    let length: usize = bytes.iter().map(|&b| mac_formats::text::character(b).len_utf8()).sum();
+    let length = mac_formats::text::utf8_length(bytes).map_err(|_| NO_MEMORY)?;
     if length > MAX_BYTES
     {
         return Err(NO_MEMORY);
     }
     let mut result = Vec::new();
     result.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
-    for &byte in bytes
-    {
-        let mut scalar = [0; 4];
-        result.extend_from_slice(mac_formats::text::character(byte).encode_utf8(&mut scalar)
-                                                                   .as_bytes());
-    }
+    result.resize(length, 0);
+    mac_formats::text::decode_into(bytes, &mut result).map_err(|_| BAD_ARGUMENT)?;
     Ok(result)
 }
 fn roman(bytes: &[u8]) -> Result<Vec<u8>, Status>
 {
     let text = core::str::from_utf8(bytes).map_err(|_| BAD_ABI)?;
+    let value = mac_formats::text::MacRomanText::new(text).map_err(|_| -1854)?;
     let mut result = Vec::new();
-    result.try_reserve_exact(text.chars().count()).map_err(|_| NO_MEMORY)?;
-    for ch in text.chars()
-    {
-        let byte = if ch.is_ascii()
-        {
-            ch as u8
-        }
-        else
-        {
-            (128..=255).find(|&b| mac_formats::text::character(b) == ch).ok_or(-1854)?
-        };
-        result.push(byte);
-    }
+    result.try_reserve_exact(value.len()).map_err(|_| NO_MEMORY)?;
+    result.resize(value.len(), 0);
+    value.write_into(&mut result).map_err(|_| -1854)?;
     Ok(result)
 }
 fn bytes(kind: [u8; 4], input: &[u8]) -> Result<Vec<u8>, Status>

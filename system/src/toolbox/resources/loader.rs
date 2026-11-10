@@ -369,7 +369,7 @@ pub(crate) fn status(error: impl Into<LoadError>) -> Status
         }
         LoadError::Format(Error::Missing(_)) => NOT_FOUND,
         LoadError::Format(Error::TranslationRequired(_)) => mac_abi::TRANSLATION_REQUIRED,
-        LoadError::Format(Error::Malformed(_)) => BAD_ARGUMENT,
+        LoadError::Format(Error::Malformed(_) | Error::TextConversion(_)) => BAD_ARGUMENT,
         LoadError::Mapping(crate::machine::paging::modules::Error::Format(cause)) =>
         {
             status(LoadError::Format(cause))

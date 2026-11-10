@@ -1011,12 +1011,6 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
 /// valid live pointees remain the calling module's ABI contract, not an MMU guarantee.
 unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
 {
-    if native_string_trap(number).is_some()
-    {
-        return unsafe {
-            crate::toolbox::strings::dispatch(number, pointer, size, |n, p, s| dispatch(n, p, s))
-        };
-    }
     macro_rules! read_request {
         ($ty:ty) => {
             match unsafe { request::<$ty>(pointer, size) }

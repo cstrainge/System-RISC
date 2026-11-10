@@ -23,7 +23,8 @@ pub enum Error
     AllocationFailed(&'static str),
     Missing(&'static str),
     TranslationRequired(&'static str),
-    Malformed(&'static str)
+    Malformed(&'static str),
+    TextConversion(mac_text::Error)
 }
 impl Error
 {
@@ -35,7 +36,8 @@ impl Error
             | Self::AllocationFailed(message)
             | Self::Missing(message)
             | Self::TranslationRequired(message)
-            | Self::Malformed(message) => message
+            | Self::Malformed(message) => message,
+            Self::TextConversion(_) => "text conversion refused"
         }
     }
 }
@@ -43,11 +45,30 @@ impl core::fmt::Display for Error
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
     {
-        f.write_str(self.message())
+        match self
+        {
+            Self::TextConversion(cause) => cause.fmt(f),
+            _ => f.write_str(self.message())
+        }
     }
 }
 impl core::error::Error for Error
 {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)>
+    {
+        match self
+        {
+            Self::TextConversion(cause) => Some(cause),
+            _ => None
+        }
+    }
+}
+impl From<mac_text::Error> for Error
+{
+    fn from(cause: mac_text::Error) -> Self
+    {
+        Self::TextConversion(cause)
+    }
 }
 impl From<mac_code_resource::Error> for Error
 {

@@ -114,15 +114,8 @@ impl Name
 
     pub fn utf8<'a>(&self, output: &'a mut [u8]) -> Result<&'a str>
     {
-        let mut at = 0;
-        for byte in self.as_macroman()
-        {
-            let ch = mac_text::character(*byte);
-            let end = at + ch.len_utf8();
-            ch.encode_utf8(output.get_mut(at..end).ok_or(Error::Limit)?);
-            at = end;
-        }
-        core::str::from_utf8(&output[..at]).map_err(|_| Error::Name)
+        let length = mac_text::decode_into(self.as_macroman(), output).map_err(|_| Error::Limit)?;
+        core::str::from_utf8(&output[..length]).map_err(|_| Error::Name)
     }
 }
 

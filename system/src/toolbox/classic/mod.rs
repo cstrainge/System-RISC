@@ -374,7 +374,12 @@ fn execute(instruction: u16, registers: &mut ClassicRegisters, memory: &mut Memo
                                                                           ..Default::default() },
                                       "")?;
             let name=core::str::from_utf8(&reply.name[..(reply.name_length as usize).min(reply.name.len())]).map_err(|_|BAD_ARGUMENT)?;
-            let bytes = super::strings::encode(name)?;
+            let bytes = mac_formats::text::pstring(name).map_err(|cause| {
+                                                            match cause {
+                mac_formats::Error::AllocationFailed(_) => NO_MEMORY,
+                _ => BAD_ARGUMENT
+            }
+                                                        })?;
             memory.write(pointer, &bytes)?;
             6
         }
@@ -459,4 +464,3 @@ fn execute(instruction: u16, registers: &mut ClassicRegisters, memory: &mut Memo
     registers.pc = pc;
     Ok(())
 }
-
