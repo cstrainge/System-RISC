@@ -19,6 +19,7 @@ pub(crate) enum Outcome
 {
     Normal(i32),
     Abort(i32),
+    Interrupted,
     Legacy,
     ShellReplacement
 }
@@ -30,6 +31,7 @@ impl fmt::Display for Outcome
         {
             Self::Normal(code) => write!(out, "normal code={code}"),
             Self::Abort(code) => write!(out, "abort code={code}"),
+            Self::Interrupted => out.write_str("terminal-interrupt"),
             Self::Legacy => out.write_str("legacy"),
             Self::ShellReplacement => out.write_str("shell-replacement")
         }
@@ -520,6 +522,14 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
             // advance this stage; there is no second root or guessed timer.
             if scheduler::application::failure_quiescent(pending.binding.ledger())?
             {
+                if pending.record.outcome == Outcome::Interrupted
+                {
+                    // Interruption is a requested terminal outcome, not a
+                    // crash. Use the same actual quiescence and cleanup gates
+                    // without manufacturing a crash report or modal dialog.
+                    toolbox(pending, |toolbox| toolbox.stop_native_failure(&pending.binding))?;
+                    return Ok(true);
+                }
                 pending.phase = Phase::Claim;
                 again();
             }
@@ -768,4 +778,98 @@ pub(crate) fn pump()
             retain_work(Some(pending), rotate);
         }
     }
+}
+
+/// Terminal-scoped interruption. The pipe manager supplies the non-forgeable
+/// target set; every target must also belong to the authenticated host's CLAP
+/// relation. Admission retains the original runtime root and cleanup protocol.
+pub(crate) fn interrupt(targets: &crate::toolbox::pipes::InterruptTargets) -> Result<(), Status>
+{
+    // Resolve the CLAP relation from the authenticated input owners first.
+    // Descendants can redirect every stream and still belong to this window;
+    // endpoint enumeration alone would miss those members of the tree.
+    let members = crate::kernel::with_toolbox(|toolbox| {
+        let mut sessions = alloc::vec::Vec::new();
+        InvocationGate::with_system_allocation(|| sessions.try_reserve(targets.owners().len()))
+            .map_err(|_| NO_MEMORY)?;
+        for &id in targets.owners()
+        {
+            let process = toolbox.processes.get(id)?;
+            let session = process.console_session.ok_or(ACCESS_DENIED)?;
+            if !process.console() || session.0 != targets.host() { return Err(ACCESS_DENIED); }
+            if !sessions.contains(&session) { sessions.push(session); }
+        }
+        let mut members = alloc::vec::Vec::new();
+        for entry in toolbox.processes.entries.iter()
+        {
+            let process = entry.value();
+            if process.console_session.is_some_and(|session| sessions.contains(&session))
+            {
+                InvocationGate::with_system_allocation(|| members.try_reserve(1)).map_err(|_| NO_MEMORY)?;
+                members.push(entry.owner().incarnation());
+            }
+        }
+        Ok::<_, Status>(members)
+    }).map_err(|cause| cause.status())??;
+    let mut prepared = alloc::vec::Vec::new();
+    InvocationGate::with_system_allocation(|| prepared.try_reserve(members.len())).map_err(|_| {
+                                                                                      NO_MEMORY
+                                                                                  })?;
+    for id in members
+    {
+        let candidate = crate::kernel::with_toolbox(|toolbox| {
+                            let process = toolbox.processes.get(id)?;
+                            if !process.console()
+                               || process.console_session
+                                         .is_none_or(|session| session.0 != targets.host())
+                            {
+                                return Err(ACCESS_DENIED);
+                            }
+                            if process.termination.record.is_some()
+                            {
+                                return Ok(None);
+                            }
+                            let owner = toolbox.processes.ledger(id)?;
+                            if !owner.accepting()
+                            {
+                                return Ok(None);
+                            }
+                            let image = process.image.ok_or(NOT_FOUND)?;
+                            let root = toolbox.processes.native_exit_preflight(&owner, image)?;
+                            Ok(Some((owner, image, process.info.thread, root)))
+                        }).map_err(|cause| cause.status())??;
+        if let Some((owner, image, thread, root)) = candidate
+        {
+            let runtime = crate::toolbox::native_threads::runtime_admission(&root, &owner)
+                .map_err(|cause| cause.status())?;
+            prepared.push((owner, image, thread, runtime));
+        }
+    }
+    for (owner, image, thread, runtime) in prepared
+    {
+        let first = crate::kernel::with_toolbox(|toolbox| {
+                        toolbox.processes.queue_native_failure(&owner,
+                                                               image,
+                                                               thread,
+                                                               Outcome::Interrupted,
+                                                               None)
+                    }).map_err(|cause| cause.status())??;
+        if let Err(cause) = scheduler::application::fail_owner(&runtime)
+        {
+            if first
+            {
+                let refused = crate::kernel::with_toolbox(|toolbox| {
+                                  toolbox.processes.rollback_native_failure(&owner,
+                                                                            thread,
+                                                                            Outcome::Interrupted)
+                              }).map_err(|cause| cause.status())??;
+                drop(refused);
+            }
+            return Err(cause);
+        }
+        drop(runtime);
+        crate::recovery::owner_failed(&owner);
+    }
+    progress();
+    Ok(())
 }

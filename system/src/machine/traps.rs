@@ -969,7 +969,8 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
                     let empty_out: &mut [u8] = &mut [];
                     let (input, output) = if matches!(call.operation,
                                                       mac_abi::pipes::READ
-                                                      | mac_abi::pipes::READ_WAIT)
+                                                      | mac_abi::pipes::READ_WAIT
+                                                      | mac_abi::pipes::TERMINAL_READ_WAIT)
                     {
                         let output: &mut [u8] = if call.length == 0
                         {

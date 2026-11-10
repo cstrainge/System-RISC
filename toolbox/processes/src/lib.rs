@@ -56,8 +56,9 @@ pub use mac_traps::{Client, Result};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChildExit
 {
-    pub code:    i32,
-    pub aborted: bool
+    pub code:        i32,
+    pub aborted:     bool,
+    pub interrupted: bool
 }
 
 #[derive(Clone, Copy)]
@@ -153,10 +154,11 @@ impl<'a> Processes<'a>
         match call.index
         {
             CHILD_RUNNING => Ok(None),
-            CHILD_EXITED | CHILD_ABORTED =>
+            CHILD_EXITED | CHILD_ABORTED | CHILD_INTERRUPTED =>
             {
-                Ok(Some(ChildExit { code:    call.exit_code,
-                                    aborted: call.index == CHILD_ABORTED }))
+                Ok(Some(ChildExit { code:        call.exit_code,
+                                    aborted:     call.index == CHILD_ABORTED,
+                                    interrupted: call.index == CHILD_INTERRUPTED }))
             }
             _ => Err(mac_traps::Error::BadAbi)
         }

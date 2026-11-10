@@ -1,77 +1,53 @@
-#[cfg(not(target_os = "systemrisc"))]
-use std::process::Stdio;
-
-use crate::runtime::paths::{join_paths, split_paths};
-
-use std::{ cell::RefCell,
-           collections::{ HashMap, HashSet, VecDeque },
-           env::{ consts::OS,
-                  current_dir,
-                  current_exe,
-                  home_dir,
-                  set_current_dir,
-                },
-           fmt::{ self, Debug, Display, Formatter },
-           panic::Location as NativeLocation,
-           fs::File,
-           io::{ BufReader, Error, ErrorKind, Read, Write, copy, pipe, stderr },
-           path::{ Path, PathBuf, Component, MAIN_SEPARATOR_STR, is_separator },
-           process::{ Command, id },
-           rc::Rc,
-           mem::{ replace, take },
-           thread::Builder,
-           time::Duration };
-
-use glob::{ MatchOptions, Pattern, glob };
+use std::{cell::RefCell,
+          collections::{HashMap, HashSet, VecDeque},
+          env::{consts::OS, current_dir, current_exe, home_dir, set_current_dir},
+          fmt::{self, Debug, Display, Formatter},
+          fs::File,
+          io::{BufReader, Error, ErrorKind, Read, Write, copy, pipe, stderr},
+          mem::{replace, take},
+          panic::Location as NativeLocation,
+          path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, is_separator},
+          process::{Command, Stdio, id},
+          rc::Rc,
+          thread::Builder,
+          time::Duration};
 
 use crossterm::event::Event;
-
+use glob::{MatchOptions, Pattern, glob};
 #[cfg(not(target_os = "systemrisc"))]
 use hostname::get as get_hostname;
 
-use crate::{
-    language::{
-        ast::AstTopLevel,
-        bytecode::{Code, Instruction, FunctionRef},
-        compiler::CompileError,
-        interpreter::CallFrame,
-        native::{NativeFunction, NativeFunctions, NativeVisibility, NativeOutcome},
-        data::{
-            value::{ExecResult, Executable, Value},
-            closure::ClosureValue,
-            formats::{FACTORIES, encode, decode},
-            map_key::MapKey,
-            methods::{BoundMethod, MethodDefinition, method_key},
-            range::Range,
-            conversion::is_conversion_method,
-            scoped_variables::{
-                PropertyReference, ScopedValue, ScopedVariables, ValueReference, ValueVisibility,
-            },
-            types::{StructValue, TypeId, TypeKind, TypeRegistry},
-        },
-        parser::{ParserError, parse_text},
-        tokenizer::Tokenizer,
-        text::{
-            interpolation::interpolation_references, buffer::Buffer, location::Location,
-            read_buffer::ReadBuffer,
-        },
-        interpreter::{
-            Alias,
-            iteration::Iteration,
-            scope::Scope,
-            modules::{Prelude, ModuleSource, PendingModule},
-            redirection::{Redirection, Output, configure},
-        },
-    },
-    runtime::{
-        color::TtyColorMode,
-        process::{COMMANDS, invoke},
-        terminal::detect_capabilities,
-        sixel::banner as sixel_banner,
-        iterm2::banner as iterm2_banner,
-        signals::take_interrupt,
-    },
-};
+use crate::{language::{ast::AstTopLevel,
+                       bytecode::{Code, FunctionRef, Instruction},
+                       compiler::CompileError,
+                       data::{closure::ClosureValue,
+                              conversion::is_conversion_method,
+                              formats::{FACTORIES, decode, encode},
+                              map_key::MapKey,
+                              methods::{BoundMethod, MethodDefinition, method_key},
+                              range::Range,
+                              scoped_variables::{PropertyReference, ScopedValue,
+                                                 ScopedVariables, ValueReference,
+                                                 ValueVisibility},
+                              types::{StructValue, TypeId, TypeKind, TypeRegistry},
+                              value::{ExecResult, Executable, Value}},
+                       interpreter::{Alias, CallFrame,
+                                     iteration::Iteration,
+                                     modules::{ModuleSource, PendingModule, Prelude},
+                                     redirection::{Output, Redirection, configure},
+                                     scope::Scope},
+                       native::{NativeFunction, NativeFunctions, NativeOutcome, NativeVisibility},
+                       parser::{ParserError, parse_text},
+                       text::{buffer::Buffer, interpolation::interpolation_references,
+                              location::Location, read_buffer::ReadBuffer},
+                       tokenizer::Tokenizer},
+            runtime::{color::TtyColorMode,
+                      iterm2::banner as iterm2_banner,
+                      paths::{join_paths, split_paths},
+                      process::{COMMANDS, invoke},
+                      signals::take_interrupt,
+                      sixel::banner as sixel_banner,
+                      terminal::detect_capabilities}};
 
 const MAIN_SCOPE: &str = "main";
 
@@ -473,6 +449,7 @@ impl Interpreter
             halted: false,
         }
     }
+
     pub fn take_startup_input(&mut self) -> Vec<Event>
     {
         take(&mut self.startup_input)
@@ -1174,7 +1151,6 @@ impl Interpreter
                 ErrorWhat::InvalidOperand(
                     "$SHELLY_TAB_SIZE must be an integer from 1 through 32".into())))
     }
-
 
     pub fn execute_from_buffer(&mut self, buffer: &mut dyn Buffer) -> InterpreterResult<()>
     {
@@ -4273,12 +4249,8 @@ impl Interpreter
         self.execute_external(location, executable, args)
     }
 
-    fn execute_external(
-        &mut self,
-        location: &Location,
-        executable: String,
-        args: Vec<Value>,
-    ) -> InterpreterResult<()>
+    fn execute_external(&mut self, location: &Location, executable: String, args: Vec<Value>)
+                        -> InterpreterResult<()>
     {
         #[cfg(not(target_os = "systemrisc"))]
         let env_vars = self.exported_environment(location)?;
@@ -4305,28 +4277,10 @@ impl Interpreter
         #[cfg(not(target_os = "systemrisc"))]
         {
             command.env_clear().envs(env_vars);
-            command.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
         }
+        command.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
         let redirected_output = configure(&mut command, &self.redirections)
             .map_err(|error| Self::redirection_error(location, error))?;
-        #[cfg(target_os = "systemrisc")]
-        let status_result = command.output().and_then(|result| {
-            if let Some(capture) = self.captured_stdout.as_mut().filter(|_| !redirected_output)
-            {
-                capture.extend_from_slice(&result.stdout);
-            }
-            else
-            {
-                let mut output = std::io::stdout().lock();
-                output.write_all(&result.stdout)?;
-                output.flush()?;
-            }
-            let mut error = stderr().lock();
-            error.write_all(&result.stderr)?;
-            error.flush()?;
-            Ok(result.status)
-        });
-        #[cfg(not(target_os = "systemrisc"))]
         let status_result = if self.captured_stdout.is_some() && !redirected_output
             {
                 command

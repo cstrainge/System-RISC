@@ -124,12 +124,6 @@ impl Command
         let stdin = self.stdin.as_ref().unwrap_or(&default);
         let stdout = self.stdout.as_ref().unwrap_or(&default);
         let stderr = self.stderr.as_ref().unwrap_or(&default);
-        if !(matches!(stdin, Stdio::MakePipe | Stdio::Null)
-             && matches!(stdout, Stdio::MakePipe)
-             && matches!(stderr, Stdio::MakePipe))
-        {
-            return unsupported();
-        }
         let invalid = || io::Error::from(io::ErrorKind::InvalidInput);
         let path = self.program.to_str().ok_or_else(invalid)?;
         if self.args.len() > processes::ARGUMENT_COUNT
@@ -156,9 +150,9 @@ impl Command
             return Err(invalid());
         }
         let entry = resolve_cli(path, search_path)?;
-        let (mut child_in, parent_in) = ChildPipe::pair()?;
-        let (parent_out, mut child_out) = ChildPipe::pair()?;
-        let (parent_err, mut child_err) = ChildPipe::pair()?;
+        let (mut child_in, parent_in) = ChildPipe::prepare(stdin, 0)?;
+        let (mut child_out, parent_out) = ChildPipe::prepare(stdout, 1)?;
+        let (mut child_err, parent_err) = ChildPipe::prepare(stderr, 2)?;
         let mut session = processes::ProcessCall { operation: processes::CONSOLE_SESSION,
                                                    ..Default::default() };
         runtime::client().process(&mut session).map_err(native_error)?;
@@ -174,12 +168,12 @@ impl Command
         child_in.handle = 0;
         child_out.handle = 0;
         child_err.handle = 0;
-        let stdin = (needs_stdin && matches!(stdin, Stdio::MakePipe)).then_some(parent_in);
+        let stdin = if needs_stdin { parent_in } else { None };
         Ok((Process { child:  call.info.id,
                       result: None },
             StdioPipes { stdin,
-                         stdout: Some(parent_out),
-                         stderr: Some(parent_err) }))
+                         stdout: parent_out,
+                         stderr: parent_err }))
     }
 }
 
@@ -218,9 +212,19 @@ pub fn output(cmd: &mut Command) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)>
     let (mut process, mut streams) = cmd.spawn(Stdio::MakePipe, false)?;
     drop(streams.stdin.take());
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
-    let out = streams.stdout.take().ok_or(io::ErrorKind::InvalidData)?;
-    let err = streams.stderr.take().ok_or(io::ErrorKind::InvalidData)?;
-    read_output(out, &mut stdout, err, &mut stderr)?;
+    match (streams.stdout.take(), streams.stderr.take())
+    {
+        (Some(out), Some(err)) => read_output(out, &mut stdout, err, &mut stderr)?,
+        (Some(mut out), None) =>
+        {
+            out.read_to_end(&mut stdout)?;
+        }
+        (None, Some(mut err)) =>
+        {
+            err.read_to_end(&mut stderr)?;
+        }
+        (None, None) => ()
+    }
     Ok((process.wait()?, stdout, stderr))
 }
 
@@ -352,20 +356,28 @@ impl fmt::Debug for Command
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 pub struct ExitStatus
 {
-    code:    i32,
-    aborted: bool
+    code:        i32,
+    aborted:     bool,
+    interrupted: bool
 }
 
 impl ExitStatus
 {
     pub fn exit_ok(&self) -> Result<(), ExitStatusError>
     {
-        if self.code == 0 && !self.aborted { Ok(()) } else { Err(ExitStatusError(*self)) }
+        if self.code == 0 && !self.aborted && !self.interrupted
+        {
+            Ok(())
+        }
+        else
+        {
+            Err(ExitStatusError(*self))
+        }
     }
 
     pub fn code(&self) -> Option<i32>
     {
-        (!self.aborted).then_some(self.code)
+        (!self.aborted && !self.interrupted).then_some(self.code)
     }
 }
 
@@ -373,6 +385,10 @@ impl fmt::Display for ExitStatus
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {
+        if self.interrupted
+        {
+            return f.write_str("interrupted by terminal");
+        }
         if self.aborted
         {
             write!(f, "aborted with code {}", self.code)
@@ -473,10 +489,12 @@ impl Process
         match state
         {
             processes::CHILD_RUNNING => Ok(None),
-            processes::CHILD_EXITED | processes::CHILD_ABORTED =>
+            processes::CHILD_EXITED | processes::CHILD_ABORTED | processes::CHILD_INTERRUPTED =>
             {
                 self.result = Some(ExitStatus { code,
-                                                aborted: state == processes::CHILD_ABORTED });
+                                                aborted: state == processes::CHILD_ABORTED,
+                                                interrupted: state
+                                                             == processes::CHILD_INTERRUPTED });
                 Ok(self.result)
             }
             _ => Err(io::ErrorKind::InvalidData.into())
@@ -544,6 +562,52 @@ pub struct ChildPipe
 
 impl ChildPipe
 {
+    fn duplicate(handle: u64) -> io::Result<Self>
+    {
+        if handle == 0
+        {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let mut call = pipes::Call { operation: pipes::DUPLICATE,
+                                     handle,
+                                     ..Default::default() };
+        runtime::client().pipes(&mut call).map_err(native_error)?;
+        let handle = match (call.reader, call.writer)
+        {
+            (reader, 0) if reader != 0 => reader,
+            (0, writer) if writer != 0 => writer,
+            _ => return Err(io::ErrorKind::InvalidData.into())
+        };
+        Ok(Self { handle })
+    }
+
+    /// Every spawn receives fresh aliases. Failure drops only those aliases;
+    /// neither the parent's standard handles nor reusable Command configuration
+    /// are consumed. The resident launch validates direction and ownership.
+    fn prepare(configuration: &Stdio, index: usize) -> io::Result<(Self, Option<Self>)>
+    {
+        match configuration
+        {
+            Stdio::Inherit => Ok((Self::duplicate(runtime::stream(index))?, None)),
+            Stdio::ParentStdout => Ok((Self::duplicate(runtime::stream(1))?, None)),
+            Stdio::ParentStderr => Ok((Self::duplicate(runtime::stream(2))?, None)),
+            Stdio::Pipe(pipe) => Ok((Self::duplicate(pipe.handle)?, None)),
+            Stdio::MakePipe =>
+            {
+                let (reader, writer) = Self::pair()?;
+                if index == 0 { Ok((reader, Some(writer))) } else { Ok((writer, Some(reader))) }
+            }
+            Stdio::Null if index == 0 =>
+            {
+                let (reader, writer) = Self::pair()?;
+                drop(writer);
+                Ok((reader, None))
+            }
+            // A readerless pipe is BrokenPipe, not a null output sink.
+            Stdio::Null | Stdio::InheritFile(_) => unsupported()
+        }
+    }
+
     fn pair() -> io::Result<(Self, Self)>
     {
         let mut call = pipes::Call { operation: pipes::CREATE,

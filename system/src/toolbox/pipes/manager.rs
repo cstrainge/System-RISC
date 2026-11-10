@@ -24,17 +24,21 @@ type Name = (u8, [u8; wire::NAME_BYTES]);
 
 const READER: bool = true;
 const WRITER: bool = false;
+const MAX_ENDPOINTS: usize = 256;
 
 /// Resident pipe object. Owned by the System, not by any single process: the
 /// last endpoint of either kind decides when it may be destroyed.
 struct Pipe
 {
-    ring:        Ring,
-    readers:     u32,
-    writers:     u32,
+    ring:           Ring,
+    readers:        u32,
+    writers:        u32,
     /// Writer handles currently obtained through `connect`. The creator's own
     /// writer is not a connection and is not counted here.
-    connections: u32
+    connections:    u32,
+    /// Input pipe carries discipline; output pipes refer to that input identity.
+    terminal:       Option<super::terminal::State>,
+    terminal_input: u64
 }
 /// The named-pipe registry. Anonymous pipes never enter this vector, so they
 /// have no name, no catalog identity and no object in the folder's namespace:
@@ -76,7 +80,7 @@ struct Endpoint
     blocking:  bool,
     /// Obtained through `connect`, so its retirement releases a connection
     /// slot of the name's writer limit.
-    connected: bool
+    connected: u64
 }
 struct Manager
 {
@@ -130,7 +134,7 @@ impl Registration
             {
                 (*b"PIPE",
                  "Pipe endpoints",
-                 CapacityPolicy::HardBound { slots:  256,
+                 CapacityPolicy::HardBound { slots:  MAX_ENDPOINTS,
                                              reason: "Two endpoints per anonymous pipe plus one \
                                                       writer per connection" })
             }
@@ -355,8 +359,14 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
            -> Result<RequestAction, Status>
 {
     if call.reserved != [0; 1]
+       || call.terminal.reserved != 0
        || call.nonblocking > 1
-       || (call.operation != wire::READ_WAIT && call.wait_nanoseconds != 0)
+       || (!matches!(call.operation, wire::READ_WAIT | wire::TERMINAL_READ_WAIT)
+           && call.wait_nanoseconds != 0)
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    if !matches!(call.operation, wire::TERMINAL_ATTACH) && call.terminal_outputs != [0; 2]
     {
         return Err(BAD_ARGUMENT);
     }
@@ -364,7 +374,7 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
     // A resumed call must be the same request; a changed one is refused before
     // it can consume a different handle than the one that parked.
     let turn = crate::machine::scheduler::pipe::begin(identity, call.handle, call.operation,
-        (call.operation == wire::READ_WAIT).then_some(call.wait_nanoseconds))?;
+        matches!(call.operation, wire::READ_WAIT | wire::TERMINAL_READ_WAIT).then_some(call.wait_nanoseconds))?;
     let resumed = turn.resumed;
     match call.operation
     {
@@ -406,7 +416,7 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
                 decode_name(call.name.get(..call.name_length as usize).ok_or(BAD_ARGUMENT)?)?;
             connect(call, &owner, name)
         }
-        wire::READ | wire::READ_WAIT =>
+        wire::READ | wire::READ_WAIT | wire::TERMINAL_READ_WAIT =>
         {
             if call.handle == 0 || call.name_length != 0 || call.writers != 0 || !input.is_empty()
             {
@@ -433,6 +443,58 @@ fn perform(call: &mut wire::Call, input: &[u8], output: &mut [u8], identity: Req
                 return Err(BAD_ARGUMENT);
             }
             set_blocking(call, &owner)
+        }
+        wire::TERMINAL_ATTACH
+        | wire::TERMINAL_QUERY
+        | wire::TERMINAL_MODE
+        | wire::TERMINAL_RESIZE =>
+        {
+            if resumed
+               || call.handle == 0
+               || call.name_length != 0
+               || call.writers != 0
+               || !input.is_empty()
+               || !output.is_empty()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            terminal_control(call, &owner)
+        }
+        wire::TERMINAL_INTERRUPT =>
+        {
+            if resumed
+               || !input.is_empty()
+               || !output.is_empty()
+               || call.writers != 0
+               || call.name_length != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            terminal_interrupt(call, &owner)
+        }
+        wire::TERMINAL_INPUT =>
+        {
+            if call.handle == 0
+               || call.name_length != 0
+               || call.writers != 0
+               || !output.is_empty()
+               || input.is_empty()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            terminal_input(call, &owner, input, identity, suspension, turn)
+        }
+        wire::DUPLICATE =>
+        {
+            if resumed
+               || call.handle == 0
+               || call.writers != 0
+               || !output.is_empty()
+               || !input.is_empty()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            duplicate(call, &owner)
         }
         wire::CLOSE =>
         {
@@ -490,13 +552,15 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
                                         Pipe { ring,
                                                readers: 1,
                                                writers: 1,
-                                               connections: 0 })
+                                               connections: 0,
+                                               terminal: None,
+                                               terminal_input: 0 })
                }).map_err(status)?;
     let reader = match manager.endpoints.insert(owner,
                                                 Endpoint { pipe,
                                                            reader: READER,
                                                            blocking: call.nonblocking == 0,
-                                                           connected: false })
+                                                           connected: 0 })
     {
         Ok(id) => id,
         Err(error) =>
@@ -509,7 +573,7 @@ fn create(call: &mut wire::Call, owner: &OwnerRef, name: Option<Name>)
                                                 Endpoint { pipe,
                                                            reader: WRITER,
                                                            blocking: call.nonblocking == 0,
-                                                           connected: false })
+                                                           connected: 0 })
     {
         Ok(id) => id,
         Err(error) =>
@@ -576,8 +640,14 @@ fn connect_named(owner: &OwnerRef, name: &[u8], blocking: bool) -> Result<u64, S
                                 Endpoint { pipe,
                                            reader: WRITER,
                                            blocking,
-                                           connected: true })
+                                           connected: 0 })
                         .map_err(status)?;
+    // The original handle supplies a never-reused connection group identity.
+    // Aliases retain it; only the last alias releases the named connection.
+    if let Some(endpoint) = manager.endpoints.get_mut(writer)
+    {
+        endpoint.connected = writer;
+    }
     let Some(state) = manager.pipes.get_mut(pipe)
     else
     {
@@ -623,7 +693,23 @@ fn read(call: &mut wire::Call, owner: &OwnerRef, output: &mut [u8], identity: Re
         {
             return Err(NOT_FOUND);
         };
-        if pipe.ring.available() > 0
+        if call.operation == wire::TERMINAL_READ_WAIT
+        {
+            let state = pipe.terminal.as_ref().ok_or(NOT_SUPPORTED)?;
+            let changed = call.terminal.revision != state.info.revision;
+            call.terminal = state.info;
+            if changed
+            {
+                return Ok(RequestAction::Return);
+            }
+        }
+        if let Some(count) =
+            pipe.terminal.as_mut().and_then(|state| state.read(output, pipe.writers == 0))
+        {
+            call.transferred = count;
+            (OK, Some(endpoint.pipe))
+        }
+        else if pipe.ring.available() > 0
         {
             let count = pipe.ring.read_into(output);
             call.transferred = count;
@@ -635,7 +721,8 @@ fn read(call: &mut wire::Call, owner: &OwnerRef, output: &mut [u8], identity: Re
             call.transferred = 0;
             (OK, None)
         }
-        else if (call.operation == wire::READ_WAIT && turn.expired())
+        else if (matches!(call.operation, wire::READ_WAIT | wire::TERMINAL_READ_WAIT)
+                   && turn.expired())
                   || (call.operation == wire::READ && !endpoint.blocking)
         {
             (WOULD_BLOCK, None)
@@ -647,10 +734,15 @@ fn read(call: &mut wire::Call, owner: &OwnerRef, output: &mut [u8], identity: Re
             return Ok(RequestAction::Replay);
         }
     };
+    let related = manager.pipes.get(endpoint.pipe).map_or(0, |pipe| pipe.terminal_input);
     drop(manager);
     if let Some(pipe) = wake
     {
         crate::machine::scheduler::pipe::wake(pipe);
+        if related != 0 && related != pipe
+        {
+            crate::machine::scheduler::pipe::wake(related);
+        }
     }
     if status == OK { Ok(RequestAction::Return) } else { Err(status) }
 }
@@ -715,6 +807,38 @@ fn write(call: &mut wire::Call, owner: &OwnerRef, input: &[u8], identity: Reques
     if status == OK { Ok(RequestAction::Return) } else { Err(status) }
 }
 
+/// Each alias owns one endpoint count. Allocation and count overflow are
+/// preflighted before publication, so refusal cannot change EOF semantics.
+fn duplicate(call: &mut wire::Call, owner: &OwnerRef) -> Result<RequestAction, Status>
+{
+    let mut manager = manager()?.lock();
+    let mut endpoint = own_endpoint(&manager, call.handle, owner)?;
+    // A connected alias retains the existing connection group; it does not
+    // consume a second named-writer slot.
+    let pipe = manager.pipes.get(endpoint.pipe).ok_or(NOT_FOUND)?;
+    let count = if endpoint.reader { pipe.readers } else { pipe.writers };
+    let next = count.checked_add(1).ok_or(NO_MEMORY)?;
+    endpoint.blocking = call.nonblocking == 0;
+    let id = manager.endpoints.insert(owner, endpoint).map_err(status)?;
+    let Some(pipe) = manager.pipes.get_mut(endpoint.pipe)
+    else
+    {
+        let _ = manager.endpoints.remove(id);
+        return Err(NOT_FOUND);
+    };
+    if endpoint.reader
+    {
+        pipe.readers = next;
+        call.reader = id;
+    }
+    else
+    {
+        pipe.writers = next;
+        call.writer = id;
+    }
+    Ok(RequestAction::Return)
+}
+
 fn set_blocking(call: &mut wire::Call, owner: &OwnerRef) -> Result<RequestAction, Status>
 {
     let manager = manager()?;
@@ -740,35 +864,63 @@ fn close(call: &mut wire::Call, owner: &OwnerRef) -> Result<RequestAction, Statu
         return Err(BAD_ARGUMENT);
     };
     drop(removed);
-    retire_endpoint(&mut manager, endpoint);
+    let related = manager.pipes.get(endpoint.pipe).map_or(0, |pipe| pipe.terminal_input);
+    let echo = retire_endpoint(&mut manager, endpoint, owner.owner().incarnation());
     drop(manager);
     // Readers see end of stream, writers see broken pipe, and a destroyed pipe
     // also releases anyone still parked on it.
     crate::machine::scheduler::pipe::wake(endpoint.pipe);
+    if related != 0 && related != endpoint.pipe
+    {
+        crate::machine::scheduler::pipe::wake(related);
+    }
+    if echo != 0
+    {
+        crate::machine::scheduler::pipe::wake(echo);
+    }
     Ok(RequestAction::Return)
 }
 
 /// Apply one endpoint's departure to its pipe. A pipe with no endpoints left is
 /// destroyed here; the caller wakes the pipe after the manager lock ends.
-fn retire_endpoint(manager: &mut Manager, endpoint: Endpoint)
+fn retire_endpoint(manager: &mut Manager, endpoint: Endpoint, owner: u64) -> u64
 {
+    let last_reader =
+        endpoint.reader
+        && !manager.endpoints.iter().any(|(id, other)| {
+                                        other.reader && other.pipe == endpoint.pipe
+            && manager.endpoints.owner(id).is_some_and(|domain| domain.incarnation() == owner)
+                                    });
+    let last_connection =
+        endpoint.connected != 0
+        && !manager.endpoints.iter().any(|(_, other)| other.connected == endpoint.connected);
     let Some(pipe) = manager.pipes.get_mut(endpoint.pipe)
     else
     {
-        return;
+        return 0;
     };
+    if last_reader && let Some(state) = &mut pipe.terminal
+    {
+        state.reset(owner);
+    }
+    let mut echo_endpoint = 0;
     if endpoint.reader
     {
         pipe.readers = pipe.readers.saturating_sub(1);
         if pipe.readers == 0
         {
             pipe.ring.clear();
+            if let Some(state) = &mut pipe.terminal
+            {
+                state.cancel_input();
+                echo_endpoint = core::mem::take(&mut state.echo_endpoint);
+            }
         }
     }
     else
     {
         pipe.writers = pipe.writers.saturating_sub(1);
-        if endpoint.connected
+        if last_connection
         {
             pipe.connections = pipe.connections.saturating_sub(1);
         }
@@ -783,6 +935,15 @@ fn retire_endpoint(manager: &mut Manager, endpoint: Endpoint)
             manager.bump();
         }
     }
+    if echo_endpoint != 0
+       && let Some(removed) = manager.endpoints.remove(echo_endpoint)
+    {
+        let echo = *removed;
+        drop(removed);
+        retire_endpoint(manager, echo, 0);
+        return echo.pipe;
+    }
+    0
 }
 
 /// Validate that `handle` is a live endpoint of `owner` with the required kind.
@@ -823,6 +984,7 @@ fn release_endpoint(ticket: ReleasedResource)
                                                                                   "Pipes"));
     };
     let mut manager = manager.lock();
+    let owner = ticket.key().owner().incarnation();
     let removed = match manager.endpoints.release(ticket)
     {
         Ok(removed) => removed,
@@ -830,9 +992,18 @@ fn release_endpoint(ticket: ReleasedResource)
     };
     let endpoint = *removed;
     drop(removed);
-    retire_endpoint(&mut manager, endpoint);
+    let related = manager.pipes.get(endpoint.pipe).map_or(0, |pipe| pipe.terminal_input);
+    let echo = retire_endpoint(&mut manager, endpoint, owner);
     drop(manager);
     crate::machine::scheduler::pipe::wake(endpoint.pipe);
+    if related != 0 && related != endpoint.pipe
+    {
+        crate::machine::scheduler::pipe::wake(related);
+    }
+    if echo != 0
+    {
+        crate::machine::scheduler::pipe::wake(echo);
+    }
     Ok(())
 }
 
@@ -933,43 +1104,347 @@ pub(crate) fn readiness(owner: &OwnerRef, source: mac_abi::readiness::Source)
         return Err(BAD_ARGUMENT);
     }
     let pipe = manager.pipes.get(endpoint.pipe).ok_or(NOT_FOUND)?;
-    let flags = if endpoint.reader
-    {
-        if source.minimum != 0
+    let flags =
+        if endpoint.reader
         {
-            return Err(BAD_ARGUMENT);
-        }
-        if pipe.writers == 0
-        {
-            r::READY | r::CLOSED
-        }
-        else if pipe.ring.available() != 0
-        {
-            r::READY
+            if source.minimum != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            if pipe.writers == 0
+            {
+                r::READY | r::CLOSED
+            }
+            else if pipe.ring.available() != 0
+                      || pipe.terminal.as_ref().is_some_and(|state| state.readable(false))
+            {
+                r::READY
+            }
+            else
+            {
+                0
+            }
         }
         else
         {
-            0
+            if source.minimum == 0 || source.minimum > wire::ATOMIC_WRITE as u64
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            if pipe.readers == 0
+            {
+                r::READY | r::CLOSED
+            }
+            else if pipe.terminal.as_ref().is_some_and(|state| {
+                                                state.info.flags & wire::TERMINAL_ECHO != 0
+                                                && manager.pipes
+                                                          .get(state.output)
+                                                          .is_none_or(|output| output.readers == 0)
+                                            })
+            {
+                r::READY | r::CLOSED
+            }
+            else if pipe.terminal.as_ref().map_or_else(
+                                                         || {
+                                                             pipe.ring.space()
+                                                             >= source.minimum as usize
+                                                         },
+                                                         |state| {
+                                                             state.writable(&pipe.ring,
+                manager.pipes.get(state.output).filter(|out| out.readers != 0)
+                    .map_or(0, |out| out.ring.space()), source.minimum as usize)
+                                                         }
+            )
+            {
+                r::READY
+            }
+            else
+            {
+                0
+            }
+        };
+    Ok((endpoint.pipe, flags))
+}
+
+/// All three frontend endpoints are authenticated before any association is
+/// published. No named pipe or already-associated stream can be repurposed.
+fn terminal_control(call: &mut wire::Call, owner: &OwnerRef) -> Result<RequestAction, Status>
+{
+    let mut manager = manager()?.lock();
+    let endpoint = own_endpoint(&manager, call.handle, owner)?;
+    if call.operation == wire::TERMINAL_ATTACH
+    {
+        if endpoint.reader
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let out = endpoint_for_terminal(&manager, call.terminal_outputs[0], owner)?;
+        let err = endpoint_for_terminal(&manager, call.terminal_outputs[1], owner)?;
+        let ids = [endpoint.pipe, out, err];
+        if ids[0] == ids[1] || ids[0] == ids[2] || ids[1] == ids[2]
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        for id in ids
+        {
+            let pipe = manager.pipes.get(id).ok_or(NOT_FOUND)?;
+            if pipe.terminal_input != 0 || manager.named.iter().any(|entry| entry.pipe == id)
+            {
+                return Err(BAD_ARGUMENT);
+            }
+        }
+        let mut state = super::terminal::State::new(call.terminal, out)?;
+        let writers =
+            manager.pipes.get(out).ok_or(NOT_FOUND)?.writers.checked_add(1).ok_or(NO_MEMORY)?;
+        let system = crate::toolbox::handles::system_owner()?;
+        state.echo_endpoint = Gate::with_system_allocation(|| {
+                                  manager.endpoints.insert(&system,
+                                                           Endpoint { pipe:      out,
+                                                                      reader:    WRITER,
+                                                                      blocking:  false,
+                                                                      connected: 0 })
+                              }).map_err(status)?;
+        if let Some(pipe) = manager.pipes.get_mut(out)
+        {
+            pipe.writers = writers;
+        }
+        // Echo is a genuine System-owned producer, so a child's early stdout
+        // close does not manufacture EOF while input discipline still echoes.
+        // The manager lock pins all preflighted identities until publication.
+        for id in ids
+        {
+            if let Some(pipe) = manager.pipes.get_mut(id)
+            {
+                pipe.terminal_input = endpoint.pipe;
+            }
+        }
+        if let Some(pipe) = manager.pipes.get_mut(endpoint.pipe)
+        {
+            pipe.terminal = Some(state);
         }
     }
-    else
+    let source = manager.pipes.get(endpoint.pipe).ok_or(NOT_FOUND)?.terminal_input;
+    if source == 0
     {
-        if source.minimum == 0 || source.minimum > wire::ATOMIC_WRITE as u64
+        return Err(NOT_SUPPORTED);
+    }
+    let state = manager.pipes
+                       .get_mut(source)
+                       .and_then(|pipe| pipe.terminal.as_mut())
+                       .ok_or(NOT_SUPPORTED)?;
+    let previous = state.info.revision;
+    match call.operation
+    {
+        wire::TERMINAL_MODE =>
         {
-            return Err(BAD_ARGUMENT);
+            if endpoint.pipe != source || !endpoint.reader
+            {
+                return Err(ACCESS_DENIED);
+            }
+            Gate::with_system_allocation(|| {
+                state.set_mode(call.terminal.flags, owner.owner().incarnation())
+            })?;
         }
-        if pipe.readers == 0
+        wire::TERMINAL_RESIZE =>
         {
-            r::READY | r::CLOSED
+            if endpoint.pipe != source || endpoint.reader
+            {
+                return Err(ACCESS_DENIED);
+            }
+            state.resize(call.terminal)?;
         }
-        else if pipe.ring.space() >= source.minimum as usize
+        _ => ()
+    }
+    call.terminal = state.info;
+    let changed = previous != state.info.revision || call.operation == wire::TERMINAL_ATTACH;
+    drop(manager);
+    if changed
+    {
+        crate::machine::scheduler::pipe::wake(source);
+    }
+    Ok(RequestAction::Return)
+}
+fn endpoint_for_terminal(manager: &Manager, handle: u64, owner: &OwnerRef) -> Result<u64, Status>
+{
+    Ok(endpoint(manager, handle, owner, READER)?.pipe)
+}
+
+fn terminal_input(call: &mut wire::Call, owner: &OwnerRef, input: &[u8],
+                  identity: RequestIdentity, suspension: Result<(), Status>,
+                  turn: crate::machine::scheduler::pipe::Turn)
+                  -> Result<RequestAction, Status>
+{
+    let mut manager = manager()?.lock();
+    let endpoint = endpoint(&manager, call.handle, owner, WRITER)?;
+    let pipe = manager.pipes.get(endpoint.pipe).ok_or(NOT_FOUND)?;
+    if pipe.readers == 0
+    {
+        return Err(BROKEN_PIPE);
+    }
+    let state = pipe.terminal.as_ref().ok_or(NOT_SUPPORTED)?;
+    let echo = state.output;
+    if state.info.flags & wire::TERMINAL_ECHO != 0
+       && manager.pipes.get(echo).is_none_or(|output| output.readers == 0)
+    {
+        return Err(BROKEN_PIPE);
+    }
+    if state.info.flags == wire::TERMINAL_RAW && state.writable(&pipe.ring, 0, 1)
+    {
+        let pipe = manager.pipes.get_mut(endpoint.pipe).ok_or(NOT_FOUND)?;
+        call.transferred = pipe.ring.write_from(&input[..input.len().min(wire::ATOMIC_WRITE)]);
+        drop(manager);
+        crate::machine::scheduler::pipe::wake(endpoint.pipe);
+        return Ok(RequestAction::Return);
+    }
+    let mut refusal = None;
+    // One invocation does bounded work even if a caller supplies a huge span.
+    for &byte in input.iter().take(wire::ATOMIC_WRITE)
+    {
+        let interrupt =
+            byte == 3
+            && manager.pipes
+                      .get(endpoint.pipe)
+                      .and_then(|pipe| pipe.terminal.as_ref())
+                      .is_some_and(|state| state.info.flags & wire::TERMINAL_INTERRUPTS != 0);
+        if interrupt
         {
-            r::READY
+            // A previous byte has already committed. Return that progress;
+            // the next request admits the interrupt before consuming Ctrl+C.
+            if call.transferred != 0
+            {
+                break;
+            }
+            let targets = InterruptTargets::new(&manager, endpoint.pipe, owner);
+            drop(manager);
+            crate::toolbox::processes::termination::interrupt(&targets)?;
+            let mut manager = self::manager()?.lock();
+            if let Some(pipe) = manager.pipes.get_mut(endpoint.pipe)
+            {
+                pipe.ring.clear();
+                if let Some(state) = &mut pipe.terminal
+                {
+                    state.cancel_input();
+                }
+            }
+            call.transferred = 1;
+            drop(manager);
+            crate::machine::scheduler::pipe::wake(endpoint.pipe);
+            return Ok(RequestAction::Return);
         }
-        else
+        let space = manager.pipes
+                           .get(echo)
+                           .filter(|pipe| pipe.readers != 0)
+                           .map_or(0, |pipe| pipe.ring.space());
+        let pipe = manager.pipes.get_mut(endpoint.pipe).ok_or(NOT_FOUND)?;
+        let state = pipe.terminal.as_mut().ok_or(NOT_SUPPORTED)?;
+        let result = Gate::with_system_allocation(|| state.input(byte, &mut pipe.ring, space));
+        match result
         {
-            0
+            Ok((bytes, length)) =>
+            {
+                if length != 0
+                   && let Some(output) = manager.pipes.get_mut(echo)
+                {
+                    output.ring.write_from(&bytes[..length]);
+                }
+                call.transferred += 1;
+            }
+            Err(cause) =>
+            {
+                refusal = Some(cause);
+                break;
+            }
         }
-    };
-    Ok((endpoint.pipe, flags))
+    }
+    if call.transferred == 0
+    {
+        let cause = refusal.unwrap_or(WOULD_BLOCK);
+        if cause == WOULD_BLOCK && endpoint.blocking
+        {
+            crate::machine::scheduler::pipe::park(endpoint.pipe, call.handle, call.operation,
+                                                  identity, suspension, turn)?;
+            return Ok(RequestAction::Replay);
+        }
+        return Err(cause);
+    }
+    drop(manager);
+    crate::machine::scheduler::pipe::wake(endpoint.pipe);
+    crate::machine::scheduler::pipe::wake(echo);
+    Ok(RequestAction::Return)
+}
+
+/// Authority captured only from an authenticated terminal frontend write.
+/// Process IDs here are the owners of live input endpoints of this exact pipe.
+pub(crate) struct InterruptTargets
+{
+    host:   u64,
+    owners: [u64; MAX_ENDPOINTS],
+    count:  usize
+}
+impl InterruptTargets
+{
+    fn new(manager: &Manager, pipe: u64, owner: &OwnerRef) -> Self
+    {
+        let host = owner.owner().incarnation();
+        let mut targets = Self { host,
+                                 owners: [0; MAX_ENDPOINTS],
+                                 count: 0 };
+        for (id, endpoint) in manager.endpoints.iter()
+        {
+            if endpoint.pipe != pipe || !endpoint.reader
+            {
+                continue;
+            }
+            if let Some(domain) = manager.endpoints.owner(id)
+            {
+                let id = domain.incarnation();
+                if id != host && !targets.owners[..targets.count].contains(&id)
+                {
+                    // Endpoint population is bounded by this same limit.
+                    targets.owners[targets.count] = id;
+                    targets.count += 1;
+                }
+            }
+        }
+        targets
+    }
+
+    pub(crate) fn host(&self) -> u64
+    {
+        self.host
+    }
+
+    pub(crate) fn owners(&self) -> &[u64]
+    {
+        &self.owners[..self.count]
+    }
+}
+
+fn terminal_interrupt(call: &mut wire::Call, owner: &OwnerRef) -> Result<RequestAction, Status>
+{
+    let manager = manager()?.lock();
+    let endpoint = endpoint(&manager, call.handle, owner, WRITER)?;
+    let state = manager.pipes
+                       .get(endpoint.pipe)
+                       .and_then(|pipe| pipe.terminal.as_ref())
+                       .ok_or(NOT_SUPPORTED)?;
+    if state.info.flags & wire::TERMINAL_INTERRUPTS == 0
+    {
+        return Err(NOT_SUPPORTED);
+    }
+    let targets = InterruptTargets::new(&manager, endpoint.pipe, owner);
+    drop(manager);
+    crate::toolbox::processes::termination::interrupt(&targets)?;
+    let mut manager = self::manager()?.lock();
+    if let Some(pipe) = manager.pipes.get_mut(endpoint.pipe)
+    {
+        pipe.ring.clear();
+        if let Some(state) = &mut pipe.terminal
+        {
+            state.cancel_input();
+        }
+    }
+    drop(manager);
+    crate::machine::scheduler::pipe::wake(endpoint.pipe);
+    Ok(RequestAction::Return)
 }

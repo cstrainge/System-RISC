@@ -484,3 +484,18 @@ diff --git a/library/std/src/sys/args/mod.rs b/library/std/src/sys/args/mod.rs
      any(
          all(
              target_family = "unix",
+
+diff --git a/library/std/src/sys/io/mod.rs b/library/std/src/sys/io/mod.rs
+--- a/library/std/src/sys/io/mod.rs
++++ b/library/std/src/sys/io/mod.rs
+@@ -5,6 +5,10 @@
+ mod is_terminal {
+     cfg_select! {
++        target_os = "systemrisc" => {
++            mod systemrisc;
++            pub use systemrisc::*;
++        }
+         any(target_family = "unix", target_os = "wasi") => {
+             mod isatty;
+             pub use isatty::*;
+         }

@@ -70,30 +70,30 @@ impl Picture
 
 struct Grid
 {
-    rows:   Vec<Vec<Cell>>,
-    x:      usize,
-    y:      usize,
-    saved:  (usize, usize),
-    wrap:   bool,
-    top:    usize,
-    bottom: usize,
+    rows:     Vec<Vec<Cell>>,
+    x:        usize,
+    y:        usize,
+    saved:    (usize, usize),
+    wrap:     bool,
+    top:      usize,
+    bottom:   usize,
     // Lines that have scrolled off the top of this screen.
     scrolled: i64,
-    images: Vec<Picture>
+    images:   Vec<Picture>
 }
 impl Grid
 {
     fn new(cols: usize, rows: usize) -> Self
     {
-        Self { rows:   vec![vec![Cell::blank(Style::NORMAL); cols]; rows],
-               x:      0,
-               y:      0,
-               saved:  (0, 0),
-               wrap:   false,
-               top:    0,
-               bottom: rows - 1,
+        Self { rows:     vec![vec![Cell::blank(Style::NORMAL); cols]; rows],
+               x:        0,
+               y:        0,
+               saved:    (0, 0),
+               wrap:     false,
+               top:      0,
+               bottom:   rows - 1,
                scrolled: 0,
-               images: Vec::new() }
+               images:   Vec::new() }
     }
 
     fn resize(&mut self, cols: usize, rows: usize)
@@ -123,10 +123,8 @@ pub(super) struct Screen
     height:               i16,
     cell:                 i16,
     dirty:                Option<(usize, usize)>,
-    draft:                String,
     cursor:               bool,
     pub show_cursor:      bool,
-    pub raw_input:        bool,
     pub application_keys: bool,
     pub autowrap:         bool
 }
@@ -146,10 +144,8 @@ impl Screen
                height,
                cell,
                dirty: Some((0, rows)),
-               draft: String::new(),
                cursor: false,
                show_cursor: true,
-               raw_input: false,
                application_keys: false,
                autowrap: true }
     }
@@ -263,8 +259,7 @@ impl Screen
         let rows = picture.end() - picture.line;
         grid.images.push(picture);
         let mut pixels: usize = grid.images.iter().map(|p| p.raster.pixels.len()).sum();
-        while grid.images.len() > PICTURES
-              || (pixels > PICTURE_PIXELS && grid.images.len() > 1)
+        while grid.images.len() > PICTURES || (pixels > PICTURE_PIXELS && grid.images.len() > 1)
         {
             pixels -= grid.images.remove(0).raster.pixels.len();
         }
@@ -335,8 +330,7 @@ impl Screen
         if !grid.images.is_empty()
         {
             let shown_to = grid.scrolled + rows;
-            let shown =
-                grid.images.iter().any(|p| p.end() > shown_from && p.line < shown_to);
+            let shown = grid.images.iter().any(|p| p.end() > shown_from && p.line < shown_to);
             if whole && up
             {
                 // Pictures keep their lines, so they have moved with the text.
@@ -490,12 +484,19 @@ impl Screen
         }
     }
 
-    pub fn input(&mut self, draft: &str, cursor: bool)
+    pub fn terminal_info(&self) -> mac_toolbox::abi::pipes::TerminalInfo
     {
-        if self.draft != draft || self.cursor != cursor
+        mac_toolbox::abi::pipes::TerminalInfo { columns: self.cols as u16,
+                                                rows: self.rows as u16,
+                                                width: (self.width - BAR_WIDTH).max(0) as u16,
+                                                height: self.height.max(0) as u16,
+                                                ..Default::default() }
+    }
+
+    pub fn input(&mut self, cursor: bool)
+    {
+        if self.cursor != cursor
         {
-            self.draft.clear();
-            self.draft.push_str(draft);
             self.cursor = cursor;
             let y = self.grid().y;
             self.damage(y, y + 1);
@@ -541,9 +542,8 @@ impl Screen
         port.colors(0, 0)?;
         port.paint_rect(clip)?;
         let grid = self.grid();
-        let cursor_x = (grid.x + self.draft.chars().count()).min(self.cols - 1);
+        let cursor_x = grid.x.min(self.cols - 1);
         let cursor = self.cursor && self.show_cursor && self.view == 0;
-        let draft: Vec<char> = self.draft.chars().collect();
         let mut text = String::with_capacity(self.cols);
         for y in 0..self.rows
         {
@@ -557,17 +557,11 @@ impl Screen
             let row = if line < history { &self.history[line] } else { &grid.rows[line - history] };
             let cell_at = |x: usize| {
                 let mut cell = row.get(x).copied().unwrap_or(Cell::blank(Style::NORMAL));
-                if self.view == 0 && y == grid.y
+                // Reverse video belongs to every retained cell; the cursor
+                // toggles only its own cell in the live viewport.
+                if cell.style.reverse ^ (cursor && self.view == 0 && y == grid.y && x == cursor_x)
                 {
-                    if let Some(&glyph) = x.checked_sub(grid.x).and_then(|at| draft.get(at))
-                    {
-                        cell = Cell { glyph,
-                                      style: Style::NORMAL };
-                    }
-                    if cell.style.reverse ^ (cursor && x == cursor_x)
-                    {
-                        std::mem::swap(&mut cell.style.fg, &mut cell.style.bg);
-                    }
+                    std::mem::swap(&mut cell.style.fg, &mut cell.style.bg);
                 }
                 cell
             };

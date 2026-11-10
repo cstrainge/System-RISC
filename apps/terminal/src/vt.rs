@@ -1,9 +1,10 @@
 //! Decode terminal output into operations on the retained view.
 use std::collections::VecDeque;
 
+use mac_toolbox::Error;
 use vte::{Params, Parser, Perform};
 
-use crate::{PIPE_BYTES,
+use crate::{input,
             screen::{Screen, Style},
             sixel};
 
@@ -25,13 +26,17 @@ impl Stream
     }
 
     pub fn advance(&mut self, bytes: &[u8], screen: &mut Screen, replies: &mut VecDeque<u8>)
+                   -> Result<(), Error>
     {
+        let mut failure = None;
         let mut target = Target { screen,
                                   replies,
                                   style: &mut self.style,
                                   default: self.default,
-                                  image: &mut self.image };
+                                  image: &mut self.image,
+                                  failure: &mut failure };
         self.parser.advance(&mut target, bytes);
+        failure.map_or(Ok(()), Err)
     }
 }
 
@@ -41,15 +46,17 @@ struct Target<'a>
     replies: &'a mut VecDeque<u8>,
     style:   &'a mut Style,
     default: Style,
-    image:   &'a mut Option<Vec<u8>>
+    image:   &'a mut Option<Vec<u8>>,
+    failure: &'a mut Option<Error>
 }
 impl Target<'_>
 {
     fn reply(&mut self, bytes: &[u8])
     {
-        if bytes.len() <= PIPE_BYTES - self.replies.len()
+        if self.failure.is_none()
+           && let Err(cause) = input::queue(self.replies, bytes)
         {
-            self.replies.extend(bytes);
+            *self.failure = Some(cause);
         }
     }
 
@@ -236,16 +243,6 @@ impl Perform for Target<'_>
                 let (w, h) = self.screen.cell_size();
                 self.reply(format!("\x1b[6;{h};{w}t").as_bytes());
             }
-            _ => ()
-        }
-    }
-
-    fn osc_dispatch(&mut self, params: &[&[u8]], _: bool)
-    {
-        match params
-        {
-            [b"777", b"systemrisc", b"raw", b"1"] => self.screen.raw_input = true,
-            [b"777", b"systemrisc", b"raw", b"0"] => self.screen.raw_input = false,
             _ => ()
         }
     }

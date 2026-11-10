@@ -1,5 +1,8 @@
-//! Byte-transport pipes. `read` returns zero only at end of stream; a write with
-//! no readers fails with `BrokenPipe`; non-blocking mode reports `WouldBlock`
+//! Byte-transport pipes. A nonempty `read` on an ordinary pipe returns zero at
+//! end of stream. Attached cooked terminal input also returns zero once for
+//! Ctrl+D on an empty line; that indication does not close the pipe, and later
+//! reads can receive more input. A write with no readers fails with `BrokenPipe`;
+//! non-blocking mode reports `WouldBlock`
 //! instead of parking. A 512-byte write is atomic against other writers, and
 //! that bound is never a record size.
 #![no_std]
@@ -218,6 +221,52 @@ fn name_into(call: &mut wire::Call, name: &str) -> Result<()>
 
 impl<'a> PipeReader<'a>
 {
+    pub fn set_terminal_mode(&self, flags: u32) -> Result<()>
+    {
+        if !self.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::TERMINAL_MODE,
+                                    handle: self.handle,
+                                    terminal: wire::TerminalInfo { flags,
+                                                                   ..Default::default() },
+                                    ..Default::default() };
+        self.client.pipes(&mut call)
+    }
+
+    /// Query the terminal associated with this endpoint. Ordinary redirected
+    /// pipes return NotSupported; a stale or foreign endpoint is an error.
+    pub fn terminal(&self) -> Result<wire::TerminalInfo>
+    {
+        if !self.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::TERMINAL_QUERY,
+                                    handle: self.handle,
+                                    ..Default::default() };
+        self.client.pipes(&mut call)?;
+        Ok(call.terminal)
+    }
+
+    /// Obtain an independent blocking endpoint alias. It keeps the pipe alive
+    /// until dropped and can be transferred to a child without consuming this one.
+    pub fn try_clone(&self) -> Result<Self>
+    {
+        if !self.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::DUPLICATE,
+                                    handle: self.handle,
+                                    ..Default::default() };
+        self.client.pipes(&mut call)?;
+        Ok(Self { client: self.client,
+                  handle: call.reader,
+                  active: true })
+    }
+
     /// Non-owning readiness source. It grants no endpoint access and becomes
     /// invalid when this endpoint closes or is transferred to another owner.
     pub fn readiness(&self) -> mac_abi::readiness::Source
@@ -238,8 +287,9 @@ impl<'a> PipeReader<'a>
                    handle: Some(self.handle) }
     }
 
-    /// Remove up to `output.len()` bytes. Zero is returned only when no writer
-    /// remains and no buffered bytes remain.
+    /// Remove up to `output.len()` bytes. Zero indicates drained writer closure
+    /// or, for cooked terminal input, one empty-line Ctrl+D indication. The
+    /// latter leaves the endpoint open and later input can be read normally.
     pub fn read(&mut self, output: &mut [u8]) -> Result<usize>
     {
         if output.is_empty()
@@ -256,7 +306,9 @@ impl<'a> PipeReader<'a>
         result.map(|()| call.transferred)
     }
 
-    /// Wait for data or real EOF, without changing the endpoint's blocking mode.
+    /// Wait for data or an EOF indication without changing the blocking mode.
+    /// On cooked terminal input, an empty-line Ctrl+D is a single EOF indication
+    /// and leaves the endpoint open for subsequent reads.
     /// `None` waits indefinitely; expiry returns `Error::WouldBlock`, preserving
     /// the output buffer. Zero duration makes one immediate attempt.
     pub fn read_wait(&mut self, output: &mut [u8], timeout: Option<core::time::Duration>)
@@ -323,6 +375,100 @@ impl Drop for PipeReader<'_>
 
 impl<'a> PipeWriter<'a>
 {
+    /// Interrupt the associated cooked terminal even when its input is full.
+    /// NotSupported means interrupt processing is disabled (normally raw mode).
+    pub fn interrupt_terminal(&self) -> Result<()>
+    {
+        if !self.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::TERMINAL_INTERRUPT,
+                                    handle: self.handle,
+                                    ..Default::default() };
+        self.client.pipes(&mut call)
+    }
+
+    /// Query the terminal associated with this endpoint. Ordinary redirected
+    /// pipes return NotSupported; a stale or foreign endpoint is an error.
+    pub fn terminal(&self) -> Result<wire::TerminalInfo>
+    {
+        if !self.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::TERMINAL_QUERY,
+                                    handle: self.handle,
+                                    ..Default::default() };
+        self.client.pipes(&mut call)?;
+        Ok(call.terminal)
+    }
+
+    /// Turn caller-owned anonymous streams into a terminal. The frontend keeps
+    /// this input writer and both output readers; child ends may then transfer.
+    pub fn attach_terminal(&self, stdout: &PipeReader<'a>, stderr: &PipeReader<'a>,
+                           size: wire::TerminalInfo)
+                           -> Result<()>
+    {
+        if !self.active || !stdout.active || !stderr.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::TERMINAL_ATTACH,
+                                    handle: self.handle,
+                                    terminal_outputs: [stdout.handle, stderr.handle],
+                                    terminal: size,
+                                    ..Default::default() };
+        self.client.pipes(&mut call)
+    }
+
+    /// Feed keyboard or paste input through resident terminal discipline.
+    /// `write` is still the transparent path for terminal protocol replies.
+    pub fn terminal_input(&mut self, bytes: &[u8]) -> Result<usize>
+    {
+        if !self.active || bytes.is_empty()
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::TERMINAL_INPUT,
+                                    handle: self.handle,
+                                    buffer: bytes.as_ptr().cast_mut(),
+                                    length: bytes.len(),
+                                    ..Default::default() };
+        self.client.pipes(&mut call)?;
+        Ok(call.transferred)
+    }
+
+    pub fn resize_terminal(&self, size: wire::TerminalInfo) -> Result<()>
+    {
+        if !self.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::TERMINAL_RESIZE,
+                                    handle: self.handle,
+                                    terminal: size,
+                                    ..Default::default() };
+        self.client.pipes(&mut call)
+    }
+
+    /// Obtain an independent blocking endpoint alias. It keeps the pipe alive
+    /// until dropped and can be transferred to a child without consuming this one.
+    pub fn try_clone(&self) -> Result<Self>
+    {
+        if !self.active
+        {
+            return Err(Error::BadArgument);
+        }
+        let mut call = wire::Call { operation: wire::DUPLICATE,
+                                    handle: self.handle,
+                                    ..Default::default() };
+        self.client.pipes(&mut call)?;
+        Ok(Self { client: self.client,
+                  handle: call.writer,
+                  active: true })
+    }
+
     /// Non-owning readiness source. It grants no endpoint access and becomes
     /// invalid when this endpoint closes or is transferred to another owner.
     pub fn readiness(&self, minimum: usize) -> mac_abi::readiness::Source

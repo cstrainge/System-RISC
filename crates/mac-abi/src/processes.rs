@@ -39,6 +39,8 @@ pub const CONSOLE_SESSION: u32 = 14;
 pub const CHILD_RUNNING: u32 = 0;
 pub const CHILD_EXITED: u32 = 1;
 pub const CHILD_ABORTED: u32 = 2;
+/// Explicit terminal interruption, distinct from normal exit and panic/abort.
+pub const CHILD_INTERRUPTED: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]

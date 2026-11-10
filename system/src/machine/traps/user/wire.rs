@@ -1286,6 +1286,13 @@ wire_struct!(mac_abi::entropy::Call {
     detail: [u8; mac_abi::entropy::DETAIL_BYTES],
 });
 
+wire_struct!(mac_abi::pipes::TerminalInfo { flags:    u32,
+                                            columns:  u16,
+                                            rows:     u16,
+                                            width:    u16,
+                                            height:   u16,
+                                            reserved: u32,
+                                            revision: u64 });
 wire_struct!(mac_abi::pipes::Call {
     operation: u32,
     nonblocking: u32,
@@ -1301,6 +1308,8 @@ wire_struct!(mac_abi::pipes::Call {
     reserved: [u64; 1],
     wait_nanoseconds: u64,
     writers: u64,
+    terminal_outputs: [u64; 2],
+    terminal: mac_abi::pipes::TerminalInfo,
 });
 
 wire_struct!(mac_abi::power::PowerCall { operation:     u32,

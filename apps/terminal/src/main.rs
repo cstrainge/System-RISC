@@ -18,6 +18,7 @@ use mac_toolbox::{Error, Event, PointerPosition, Rect, ResourceScope, System, Ty
 use sr_event_async::{CHILD, Engine, ScopeOwner, Source as ReadySource, TIMER};
 use sr_event_dispatch::{Handler, Router};
 
+mod input;
 mod screen;
 mod sixel;
 mod vt;
@@ -27,23 +28,24 @@ mac_toolbox::include_resource_ids!();
 use resources::commands::{NEW_SHELL, OPEN_COMMAND, QUIT, SEND_EOF};
 
 const CLI_FOLDER: &str = "/Applications/Utility/Cli";
-const LINE_BYTES: usize = 72;
 const PIPE_BYTES: usize = 4096;
 struct Command<'a>
 {
     id:                      ProcessId,
     input:                   Option<PipeWriter<'a>>,
-    line:                    String,
+    replies:                 VecDeque<u8>,
     pending:                 VecDeque<u8>,
     eof:                     bool,
     readers:                 [Option<PipeReader<'a>>; 2],
     streams:                 [vt::Stream; 2],
-    hangup_refusal_reported: bool
+    hangup_refusal_reported: bool,
+    io_paused:               bool
 }
 
 impl<'a> Command<'a>
 {
-    fn start(system: &System<'a>, window: WindowId, entry: CatalogInfo, path: &str)
+    fn start(system: &System<'a>, window: WindowId, entry: CatalogInfo, path: &str,
+             size: mac_toolbox::abi::pipes::TerminalInfo)
              -> Result<Self, Error>
     {
         let pipes = system.pipes();
@@ -53,16 +55,18 @@ impl<'a> Command<'a>
         output.set_blocking(false)?;
         error.set_blocking(false)?;
         input_writer.set_blocking(false)?;
+        input_writer.attach_terminal(&output, &error, size)?;
         let id = pipes.launch_cli_with_path(window, entry.volume, entry.id, path, &mut input,
                                             &mut child_output, &mut child_error)?;
         Ok(Self { id,
                   input: Some(input_writer),
-                  line: String::new(),
+                  replies: VecDeque::new(),
                   pending: VecDeque::new(),
                   eof: false,
                   readers: [Some(output), Some(error)],
                   streams: [vt::Stream::new(Style::NORMAL), vt::Stream::new(Style::NORMAL)],
-                  hangup_refusal_reported: false })
+                  hangup_refusal_reported: false,
+                  io_paused: false })
     }
 
     fn hang_up(&mut self)
@@ -72,8 +76,9 @@ impl<'a> Command<'a>
         self.input.take();
         self.eof = true;
         self.hangup_refusal_reported = false;
+        self.io_paused = false;
         self.pending.clear();
-        self.line.clear();
+        self.replies.clear();
     }
 
     fn poll_hangup(&mut self, system: &System<'a>, ready: u8) -> bool
@@ -129,91 +134,53 @@ impl<'a> Command<'a>
         }
     }
 
-    fn key(&mut self, key: Key, modifiers: Modifiers, output: &mut Screen) -> bool
+    fn key(&mut self, key: Key, modifiers: Modifiers, output: &Screen) -> Result<bool, Error>
     {
         if self.input.is_none() || self.eof || modifiers.contains(Modifiers::COMMAND)
         {
-            return false;
+            return Ok(false);
         }
-        let character = key.character();
-        if output.alternate() || output.raw_input
+        if self.io_paused
         {
-            let bytes = match key.code()
+            self.io_paused = false;
+            if key.code() == 0x35
             {
-                0x7b..=0x7e =>
-                {
-                    let suffix = match key.code()
-                    {
-                        0x7b => 'D',
-                        0x7c => 'C',
-                        0x7d => 'B',
-                        _ => 'A'
-                    };
-                    format!("\x1b{}{suffix}", if output.application_keys { 'O' } else { '[' })
-                }
-                0x73 => "\x1b[H".into(),
-                0x77 => "\x1b[F".into(),
-                0x74 => "\x1b[5~".into(),
-                0x79 => "\x1b[6~".into(),
-                0x75 => "\x1b[3~".into(),
-                0x33 => "\x7f".into(),
-                _ if modifiers.contains(Modifiers::CONTROL) && character.is_ascii_alphabetic() =>
-                {
-                    ((character as u8 & 31) as char).to_string()
-                }
-                _ if character != '\0' => character.to_string(),
-                _ => return false
-            };
-            if self.pending.len() + bytes.len() <= PIPE_BYTES
-            {
-                self.pending.extend(bytes.bytes());
+                // The refusal message explicitly offers cancellation of only
+                // keyboard bytes not yet accepted by the resident service.
+                self.pending.clear();
+                return Ok(true);
             }
-            return true;
         }
-        let eof =
-            modifiers.contains(Modifiers::CONTROL) && matches!(character, 'd' | 'D' | '\u{4}');
-        if eof || matches!(character, '\r' | '\n')
+        let Some(bytes) = input::encode(key, modifiers, output.application_keys)
+        else
         {
-            return self.submit(eof, output);
-        }
-        if modifiers.contains(Modifiers::CONTROL)
+            return Ok(false);
+        };
+        if bytes.as_slice() == [3]
         {
-            return false;
+            match self.input.as_ref().ok_or(Error::BadArgument)?.interrupt_terminal()
+            {
+                Ok(()) =>
+                {
+                    self.pending.clear();
+                    return Ok(true);
+                }
+                Err(Error::NotSupported) => (),
+                Err(cause) => return Err(cause)
+            }
         }
-        if matches!(character, '\u{8}' | '\u{7f}')
-        {
-            return self.line.pop().is_some();
-        }
-        if !character.is_control() && self.line.len() + character.len_utf8() <= LINE_BYTES
-        {
-            self.line.push(character);
-            return true;
-        }
-        false
+        input::queue(&mut self.pending, bytes.as_slice())?;
+        Ok(true)
     }
 
-    fn submit(&mut self, eof: bool, output: &mut Screen) -> bool
+    fn send_eof(&mut self) -> Result<(), Error>
     {
-        if self.input.is_none() || self.eof
+        self.io_paused = false;
+        if self.input.is_some() && !self.eof
         {
-            return false;
+            input::queue(&mut self.pending, &[4])?;
         }
-        if self.pending.len() + self.line.len() + usize::from(!eof) > PIPE_BYTES
-        {
-            return false;
-        }
-        let line = std::mem::take(&mut self.line);
-        self.pending.extend(line.bytes());
-        if !eof
-        {
-            self.pending.push_back(b'\n');
-        }
-        if !eof || !line.is_empty()
-        {
-            output.line(false, &line);
-        }
-        self.eof = eof;
-        return true;
+        Ok(())
     }
 
     fn pump_input(&mut self) -> Result<bool, Error>
@@ -223,10 +190,23 @@ impl<'a> Command<'a>
         {
             return Ok(false);
         };
+        if !self.replies.is_empty()
+        {
+            let (first, _) = self.replies.as_slices();
+            match writer.write(&first[..first.len().min(512)])
+            {
+                Ok(count) =>
+                {
+                    self.replies.drain(..count);
+                }
+                Err(Error::WouldBlock) => return Ok(false),
+                Err(error) => return Err(error)
+            }
+        }
         if !self.pending.is_empty()
         {
             let (first, _) = self.pending.as_slices();
-            match writer.write(&first[..first.len().min(512)])
+            match writer.terminal_input(&first[..first.len().min(512)])
             {
                 Ok(count) =>
                 {
@@ -237,7 +217,8 @@ impl<'a> Command<'a>
                 {
                     self.input = None;
                     self.pending.clear();
-                    return Ok(!std::mem::take(&mut self.line).is_empty());
+                    self.replies.clear();
+                    return Ok(false);
                 }
                 Err(error) => return Err(error)
             }
@@ -254,12 +235,12 @@ impl<'a> Command<'a>
     fn poll(&mut self, system: &System<'a>, output: &mut Screen, ready: u8)
             -> Result<(bool, bool), Error>
     {
-        if self.hangup_refusal_reported
+        if self.hangup_refusal_reported || self.io_paused
         {
             return Ok((false, false));
         }
         let mut changed = if ready & 4 != 0 { self.pump_input()? } else { false };
-        let queued_before_output = self.pending.len();
+        let queued_before_output = self.replies.len();
         for (stream, slot) in self.readers.iter_mut().enumerate()
         {
             if ready & (1 << stream) == 0
@@ -282,14 +263,14 @@ impl<'a> Command<'a>
                 }
                 Ok(count) =>
                 {
-                    self.streams[stream].advance(&bytes[..count], output, &mut self.pending);
+                    self.streams[stream].advance(&bytes[..count], output, &mut self.replies)?;
                     changed = true;
                 }
                 Err(Error::WouldBlock) => (),
                 Err(error) => return Err(error)
             }
         }
-        if self.pending.len() > queued_before_output
+        if self.replies.len() > queued_before_output
         {
             // Answer queries parsed above during this pass, rather than
             // leaving the child blocked until the next UI polling interval.
@@ -302,7 +283,14 @@ impl<'a> Command<'a>
 
             output.switch(false);
             output.line(false,
-                        &format!("Application has terminated with exit code {}.", exit.code));
+                        &if exit.interrupted
+                        {
+                            "Application interrupted.".into()
+                        }
+                        else
+                        {
+                            format!("Application has terminated with exit code {}.", exit.code)
+                        });
             system.log(&format!("TERMINAL_CHILD_EXIT code={} aborted={}\n",
                                 exit.code, exit.aborted))?;
             return Ok((true, true));
@@ -333,7 +321,7 @@ fn launch_defaults(system: &System<'_>) -> Result<&'static LaunchDefaults, Error
     let files = system.files();
     let boot = files.startup_volume()?;
     let _ = DEFAULTS.set(LaunchDefaults { volume: boot.id,
-                                          path: format!("/Volumes/{}{CLI_FOLDER}", boot.name()) });
+                                  path:   format!("/Volumes/{}{CLI_FOLDER}", boot.name()) });
     DEFAULTS.get().ok_or(Error::BadAbi)
 }
 
@@ -416,6 +404,7 @@ impl Launcher
         let ready = Arc::new(AtomicBool::new(false));
         let completed = ready.clone();
         let window = session.window;
+        let size = session.output.terminal_info();
         match thread::Builder::new().name("Terminal launch".into()).spawn(move || {
             let result = (|| {
                 let system = System::new()?;
@@ -429,7 +418,7 @@ impl Launcher
                     }
                     LaunchTarget::File(entry) => entry
                 };
-                Command::start(&system, window, entry, &defaults.path)
+                Command::start(&system, window, entry, &defaults.path, size)
             })();
             if let Err(mpsc::SendError(Ok(command))) = sender.send(result)
                && let Ok(system) = System::new()
@@ -548,6 +537,10 @@ impl<'a> Session<'a>
                 {
                     command.hang_up();
                 }
+                if let Some(writer) = &command.input
+                {
+                    writer.resize_terminal(self.output.terminal_info())?;
+                }
                 self.command = Some(command);
                 if !self.closing && self.focused
                 {
@@ -612,14 +605,26 @@ impl<'a> Session<'a>
             {
                 if send_eof
                 {
-                    child.submit(true, &mut self.output);
+                    if let Err(error) = child.send_eof()
+                    {
+                        child.io_paused = true;
+                        self.output.line(true,
+                                         &format!("Input refused: {error:?}. Press a key to \
+                                                   retry; Escape discards unsent input."));
+                    }
                 }
                 else if let Event::KeyDown { key,
                                                input,
                                                .. } = event
                 {
                     self.output.browse(self.output.history().1);
-                    child.key(*key, input.modifiers, &mut self.output);
+                    if let Err(error) = child.key(*key, input.modifiers, &self.output)
+                    {
+                        child.io_paused = true;
+                        self.output.line(true,
+                                         &format!("Input refused: {error:?}. Press a key to \
+                                                   retry; Escape discards unsent input."));
+                    }
                     reset_blink = true;
                     self.cursor_on = true;
                 }
@@ -648,11 +653,11 @@ impl<'a> Session<'a>
                     {
                         if let Some(command) = &mut self.command
                         {
-                            command.hang_up();
-                            command.hangup_refusal_reported = true;
+                            command.io_paused = true;
                         }
-                        self.output.switch(false);
-                        self.output.line(true, &format!("Command I/O failed: {error:?}"));
+                        self.output.line(true,
+                                         &format!("Command I/O paused: {error:?}. Press a key \
+                                                   to retry; Escape discards unsent input."));
                     }
                 }
             }
@@ -666,14 +671,13 @@ impl<'a> Session<'a>
             self.cursor_on = !self.cursor_on;
             self.timer.prime(500)?;
         }
-        let (draft, cursor) = self.command.as_ref().map_or(("", false), |child| {
-                                                       (child.line.as_str(),
-                                                        self.focused
-                                                        && self.cursor_on
-                                                        && child.input.is_some()
-                                                        && !child.eof)
-                                                   });
-        self.output.input(draft, cursor);
+        let cursor = self.command.as_ref().is_some_and(|child| {
+                                              self.focused
+                                              && self.cursor_on
+                                              && child.input.is_some()
+                                              && !child.eof
+                                          });
+        self.output.input(cursor);
         let control = system.controls().control(self.scrollbar);
         if matches!(event, Event::MouseDown { window: Some(window), .. } if *window == self.window)
         {
@@ -733,6 +737,10 @@ impl<'a> Session<'a>
             system.windows().set_grow_icon_clip(self.window, Some(grow_clip(width, height)))?;
         }
         self.output.resize(width, height);
+        if let Some(writer) = self.command.as_ref().and_then(|command| command.input.as_ref())
+        {
+            writer.resize_terminal(self.output.terminal_info())?;
+        }
         let damage = system.begin_update(self.window)?;
         let result = self.output
                          .paint(system.quickdraw().graphics(self.window), damage)
@@ -926,7 +934,7 @@ fn receive(system: &System<'static>, engine: &Engine, parent: &ScopeOwner,
 fn command_sources(command: &Command<'_>, sources: &mut Vec<ReadySource>,
                    owners: &mut Vec<(Option<usize>, u8)>, owner: Option<usize>, queued: u8)
 {
-    if command.hangup_refusal_reported
+    if command.hangup_refusal_reported || command.io_paused
     {
         return;
     }
@@ -941,10 +949,9 @@ fn command_sources(command: &Command<'_>, sources: &mut Vec<ReadySource>,
     }
     if let Some(writer) = &command.input
     {
-        if !command.pending.is_empty() && queued & 4 == 0
+        if (!command.pending.is_empty() || !command.replies.is_empty()) && queued & 4 == 0
         {
-            let (first, _) = command.pending.as_slices();
-            sources.push(writer.readiness(first.len().min(512)));
+            sources.push(writer.readiness(1));
             owners.push((owner, 4));
         }
     }

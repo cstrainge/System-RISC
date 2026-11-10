@@ -990,7 +990,10 @@ impl Call
                     return Err(BAD_ARGUMENT);
                 }
                 // READ writes into the caller's buffer; WRITE only reads it.
-                let writable = matches!(call.operation, abi::pipes::READ | abi::pipes::READ_WAIT);
+                let writable = matches!(call.operation,
+                                        abi::pipes::READ
+                                        | abi::pipes::READ_WAIT
+                                        | abi::pipes::TERMINAL_READ_WAIT);
                 self.point(0,
                            offset_of!(abi::pipes::Call, buffer),
                            call.length,

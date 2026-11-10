@@ -1,67 +1,68 @@
 //! Terminal mode and size negotiation for a System RISC CLAP session.
-use crate::{
-    event::{filter::Filter, poll_internal, read_internal, InternalEvent},
-    terminal::WindowSize,
-};
-use std::{
-    io::{self, Write},
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
-};
+use std::{io::{self, Write},
+          time::Duration};
 
-static RAW: AtomicBool = AtomicBool::new(false);
+use crate::{event::{InternalEvent, filter::Filter, poll_internal, read_internal},
+            terminal::WindowSize};
 
-pub(crate) fn is_raw_mode_enabled() -> bool {
-    RAW.load(Ordering::Acquire)
+static SAVED_MODE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+
+fn terminal(operation: u32, flags: u32) -> io::Result<mac_toolbox::abi::pipes::TerminalInfo>
+{
+    use mac_toolbox::{System,
+                      abi::{pipes, processes}};
+    let error = |e: mac_toolbox::Error| io::Error::from_raw_os_error(e.status());
+    let system = System::new().map_err(error)?;
+    let mut streams = processes::ProcessCall { operation: processes::STANDARD_STREAMS,
+                                               ..Default::default() };
+    system.client().process(&mut streams).map_err(error)?;
+    let mut call = pipes::Call { operation,
+                                 handle: streams.streams[0],
+                                 terminal: pipes::TerminalInfo { flags,
+                                                                 ..Default::default() },
+                                 ..Default::default() };
+    system.client().pipes(&mut call).map_err(error)?;
+    Ok(call.terminal)
 }
 
-fn raw(value: bool) -> io::Result<()> {
-    if is_raw_mode_enabled() == value {
+pub(crate) fn is_raw_mode_enabled() -> bool
+{
+    use mac_toolbox::abi::pipes;
+    terminal(pipes::TERMINAL_QUERY, 0).is_ok_and(|info| info.flags & pipes::TERMINAL_RAW != 0)
+}
+
+pub(crate) fn enable_raw_mode() -> io::Result<()>
+{
+    use mac_toolbox::abi::pipes;
+    let mut saved = SAVED_MODE.lock().map_err(|_| io::ErrorKind::Other)?;
+    if saved.is_some()
+    {
         return Ok(());
     }
-    let mut out = io::stdout().lock();
-    let command = if value {
-        b"\x1b]777;systemrisc;raw;1\x1b\\"
-    } else {
-        b"\x1b]777;systemrisc;raw;0\x1b\\"
-    };
-    out.write_all(command)?;
-    out.flush()?;
-    RAW.store(value, Ordering::Release);
+    let old = terminal(pipes::TERMINAL_QUERY, 0)?.flags;
+    terminal(pipes::TERMINAL_MODE, pipes::TERMINAL_RAW)?;
+    *saved = Some(old);
+    Ok(())
+}
+pub(crate) fn disable_raw_mode() -> io::Result<()>
+{
+    use mac_toolbox::abi::pipes;
+    let mut saved = SAVED_MODE.lock().map_err(|_| io::ErrorKind::Other)?;
+    if let Some(flags) = *saved
+    {
+        terminal(pipes::TERMINAL_MODE, flags)?;
+        *saved = None;
+    }
     Ok(())
 }
 
-pub(crate) fn enable_raw_mode() -> io::Result<()> {
-    raw(true)
-}
-pub(crate) fn disable_raw_mode() -> io::Result<()> {
-    raw(false)
-}
-
-struct SizeFilter;
-impl Filter for SizeFilter {
-    fn eval(&self, event: &InternalEvent) -> bool {
-        matches!(event, InternalEvent::WindowSize(..))
-    }
-}
-
-pub(crate) fn window_size() -> io::Result<WindowSize> {
-    {
-        let mut out = io::stdout().lock();
-        out.write_all(b"\x1b[18t")?;
-        out.flush()?;
-    }
-    if poll_internal(Some(Duration::from_secs(2)), &SizeFilter)? {
-        if let InternalEvent::WindowSize(columns, rows) = read_internal(&SizeFilter)? {
-            return Ok(WindowSize {
-                columns,
-                rows,
-                width: 0,
-                height: 0,
-            });
-        }
-    }
-    Err(io::ErrorKind::TimedOut.into())
+pub(crate) fn window_size() -> io::Result<WindowSize>
+{
+    let info = terminal(mac_toolbox::abi::pipes::TERMINAL_QUERY, 0)?;
+    Ok(WindowSize { columns: info.columns,
+                    rows:    info.rows,
+                    width:   info.width,
+                    height:  info.height })
 }
 
 struct SixelFilter;

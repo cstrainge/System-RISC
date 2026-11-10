@@ -12,19 +12,24 @@ use mac_toolbox::{
 
 use crate::event::{source::EventSource, sys::native_parse::parse_event, InternalEvent};
 
-pub(crate) struct NativeSource {
-    handle: u64,
-    input: VecDeque<u8>,
-    sequence: Vec<u8>,
-    escape_since: Option<Instant>,
+pub(crate) struct NativeSource
+{
+    handle:       u64,
+    input:        VecDeque<u8>,
+    terminal:     pipes::TerminalInfo,
+    resized:      Option<(u16, u16)>,
+    sequence:     Vec<u8>,
+    escape_since: Option<Instant>
 }
 
 fn native_error(cause: Error) -> io::Error {
     io::Error::from_raw_os_error(cause.status())
 }
 
-impl NativeSource {
-    pub(crate) fn new() -> io::Result<Self> {
+impl NativeSource
+{
+    pub(crate) fn new() -> io::Result<Self>
+    {
         let system = System::new().map_err(native_error)?;
         let mut call = processes::ProcessCall {
             operation: processes::STANDARD_STREAMS,
@@ -38,18 +43,26 @@ impl NativeSource {
                 "Terminal stdin is required",
             ));
         }
+        let mut query = pipes::Call { operation: pipes::TERMINAL_QUERY,
+                                      handle,
+                                      ..Default::default() };
+        system.client().pipes(&mut query).map_err(native_error)?;
         Ok(Self {
             handle,
+            terminal: query.terminal,
+            resized: None,
             input: VecDeque::new(),
             sequence: Vec::new(),
             escape_since: None,
         })
     }
 
-    fn refill(&mut self, system: &System<'_>, timeout: Option<Duration>) -> io::Result<()> {
+    fn refill(&mut self, system: &System<'_>, timeout: Option<Duration>) -> io::Result<()>
+    {
         let mut bytes = [0; 128];
         let mut call = pipes::Call {
-            operation: pipes::READ_WAIT,
+            operation: pipes::TERMINAL_READ_WAIT,
+            terminal: self.terminal,
             wait_nanoseconds: match timeout {
                 Some(value) => u64::try_from(value.as_nanos())
                     .ok()
@@ -63,6 +76,16 @@ impl NativeSource {
             ..Default::default()
         };
         let result = system.client().pipes(&mut call);
+        if result.is_ok() && call.terminal.revision != self.terminal.revision
+        {
+            if (call.terminal.columns, call.terminal.rows)
+               != (self.terminal.columns, self.terminal.rows)
+            {
+                self.resized = Some((call.terminal.columns, call.terminal.rows));
+            }
+            self.terminal = call.terminal;
+            return Ok(());
+        }
         match result {
             Ok(()) if call.transferred != 0 => {
                 self.input.extend(
@@ -81,12 +104,15 @@ impl NativeSource {
     }
 }
 
-impl EventSource for NativeSource {
-    fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
+impl EventSource for NativeSource
+{
+    fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>>
+    {
         let system = System::new().map_err(native_error)?;
         let started = Instant::now();
         let mut attempted = false;
-        loop {
+        loop
+        {
             if self.input.is_empty() {
                 let remaining = timeout.map(|limit| limit.saturating_sub(started.elapsed()));
                 if attempted && remaining.is_some_and(|left| left.is_zero()) {
@@ -104,6 +130,9 @@ impl EventSource for NativeSource {
                 };
                 self.refill(&system, wait)?;
                 attempted = true;
+                if let Some((columns, rows)) = self.resized.take() {
+                    return Ok(Some(InternalEvent::Event(crate::event::Event::Resize(columns, rows))));
+                }
             }
             while let Some(byte) = self.input.pop_front() {
                 self.sequence.push(byte);

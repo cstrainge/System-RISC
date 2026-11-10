@@ -376,10 +376,10 @@ impl crate::toolbox::inspection::Subject for Process
 }
 pub struct Manager
 {
-    entries:                  Directory<Process>,
-    documents:                documents::storage::Batches,
-    document_sequence:        u64,
-    stamp:                    u64
+    entries:           Directory<Process>,
+    documents:         documents::storage::Batches,
+    document_sequence: u64,
+    stamp:             u64
 }
 impl Manager
 {
@@ -899,6 +899,7 @@ impl Manager
             None => (CHILD_RUNNING, 0),
             Some(Outcome::Normal(code)) => (CHILD_EXITED, code),
             Some(Outcome::Abort(code)) => (CHILD_ABORTED, code),
+            Some(Outcome::Interrupted) => (CHILD_INTERRUPTED, 0),
             Some(Outcome::Legacy | Outcome::ShellReplacement) => (CHILD_ABORTED, 1)
         };
         Ok(())

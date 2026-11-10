@@ -5,5 +5,6 @@
 //! writer is the scheduler's job, which both machines provide.
 pub(crate) mod ring;
 
+mod terminal;
 mod manager;
 pub(crate) use manager::*;

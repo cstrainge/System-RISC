@@ -1,48 +1,31 @@
-use crate::runtime::paths::split_paths;
+use std::{borrow::Cow,
+          collections::{BTreeMap, BTreeSet, VecDeque},
+          env::{current_dir, home_dir},
+          fs::read_dir,
+          mem::take,
+          path::{Path, PathBuf},
+          process::ExitCode,
+          sync::{Arc, Mutex,
+                 atomic::{AtomicBool, Ordering}},
+          time::{Duration, Instant}};
 
-use std::{ borrow::Cow,
-           collections::{ BTreeMap, BTreeSet, VecDeque },
-           mem::take,
-           sync::{ Arc, Mutex, atomic::{ AtomicBool, Ordering } },
-           process::ExitCode,
-           path::{ Path, PathBuf },
-           fs::read_dir,
-           env::{ current_dir, home_dir },
-           time::{ Duration, Instant } };
-
-use reedline::{ Color,
-                ColumnarMenu,
-                Completer,
-                CompletionResult,
-                EditMode,
-                Emacs,
-                InputMode,
-                Keybindings,
-                KeyModifiers,
-                KeyCode,
-                MenuBuilder,
-                Prompt,
-                PromptEditMode,
-                PromptHistorySearch,
-                Reedline,
-                ReedlineMenu,
-                ReedlineRawEvent,
-                Signal,
-                Span,
-                Suggestion,
-                ReedlineEvent,
-                EditCommand };
-
+use reedline::{Color, ColumnarMenu, Completer, CompletionResult, EditCommand, EditMode, Emacs,
+               InputMode, KeyCode, KeyModifiers, Keybindings, MenuBuilder, Prompt, PromptEditMode,
+               PromptHistorySearch, Reedline, ReedlineEvent, ReedlineMenu, ReedlineRawEvent,
+               Signal, Span, Suggestion, default_emacs_keybindings};
 #[cfg(unix)]
 use rustix::process::geteuid;
 
-use crate::{ language::{ analysis::SymbolSnapshot,
-                         interpreter::{ Interpreter, Interactive, RcFile, Startup },
-                         text::buffer::SimpleBuffer },
-             runtime::{ color::TtyColorMode, result::RuntimeResult, signals::take_interrupt,
-                        history::{ self, ReplHistory, DEFAULT_LIMIT },
-                        highlighting::ShellyHighlighter },
-             location_here };
+use crate::{language::{analysis::SymbolSnapshot,
+                       interpreter::{Interactive, Interpreter, RcFile, Startup},
+                       text::buffer::SimpleBuffer},
+            location_here,
+            runtime::{color::TtyColorMode,
+                      highlighting::ShellyHighlighter,
+                      history::{self, DEFAULT_LIMIT, ReplHistory},
+                      paths::split_paths,
+                      result::RuntimeResult,
+                      signals::take_interrupt}};
 
 struct ShellyPrompt
 {
@@ -582,7 +565,9 @@ impl Repl
                 multiline: multiline.clone(),
                 color_mode: self.color_mode
             };
-        let mut keybindings = Keybindings::empty();
+        // Preserve Reedline's complete editing/history/search bindings, then
+        // apply Shelly's language and completion overrides.
+        let mut keybindings = default_emacs_keybindings();
 
         Self::apply_keybindings(&mut keybindings);
 
