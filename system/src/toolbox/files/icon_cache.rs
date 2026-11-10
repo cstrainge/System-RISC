@@ -29,7 +29,11 @@ struct Entry
     kind:     [u8; 4],
     family:   Weak<IconFamily>,
     retained: Option<Arc<IconFamily>>,
-    bytes:    usize
+    bytes:    usize,
+    /// A document pointing at its application's icon, not an icon read from
+    /// this file. The link is only as good as the answer to "who owns this
+    /// creator".
+    alias:    bool
 }
 
 #[derive(Default)]
@@ -90,7 +94,8 @@ impl Cache
                                   kind,
                                   family: Arc::downgrade(&family),
                                   retained: Some(family),
-                                  bytes });
+                                  bytes,
+                                  alias: false });
         self.bytes += bytes;
         Ok(())
     }
@@ -111,7 +116,8 @@ impl Cache
                                   kind: OWN,
                                   family: Arc::downgrade(family),
                                   retained: None,
-                                  bytes: 0 });
+                                  bytes: 0,
+                                  alias: true });
     }
 
     pub fn absent(&self, volume: u32, file: u32, kind: [u8; 4]) -> bool
@@ -129,6 +135,15 @@ impl Cache
         {
             self.absent.push((volume, file, kind));
         }
+    }
+
+    /// An application arrived, so who owns a creator may have a new answer.
+    /// Forget what was derived from the old one: the misses and the links from
+    /// documents to owners. Every icon that was read stays.
+    pub fn forget_owners(&mut self)
+    {
+        self.absent.clear();
+        self.entries.retain(|entry| !entry.alias);
     }
 
     pub fn invalidate(&mut self, volume: u32, directory: u32)

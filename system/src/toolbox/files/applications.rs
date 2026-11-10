@@ -92,8 +92,10 @@ struct Volume
 
 struct State
 {
-    volumes: Vec<Volume>,
-    next:    usize
+    volumes:   Vec<Volume>,
+    next:      usize,
+    /// The last complete index. An arrival is measured against it.
+    announced: Option<Arc<Published>>
 }
 enum Slot
 {
@@ -101,8 +103,9 @@ enum Slot
     Busy
 }
 static STATE: spinning_top::Spinlock<Slot> =
-    spinning_top::Spinlock::new(Slot::Ready(State { volumes: Vec::new(),
-                                                    next:    0 }));
+    spinning_top::Spinlock::new(Slot::Ready(State { volumes:   Vec::new(),
+                                                    next:      0,
+                                                    announced: None }));
 /// Every volume's finished entries, replaced whole when any volume's change.
 static PUBLISHED: spinning_top::Spinlock<Option<Arc<Published>>> =
     spinning_top::Spinlock::new(None);
@@ -158,7 +161,33 @@ pub(crate) fn handler(creator: [u8; 4], file_type: [u8; 4]) -> Result<Applicatio
              .ok_or(if published.complete { NOT_FOUND } else { SERVICE_BUSY })
 }
 
-fn publish(state: &State)
+/// Whether `now` holds an application, or a declared type, `before` lacks.
+/// Losses do not count: an icon already shown for a document stays right enough
+/// when its application goes away.
+fn arrived(before: Option<&Published>, now: &Published) -> bool
+{
+    let Some(before) = before
+    else
+    {
+        return true;
+    };
+    now.entries.iter().any(|entry| {
+                          let same = |old: &&Indexed| {
+                              old.application.volume == entry.application.volume
+                              && old.application.cnid == entry.application.cnid
+                          };
+                          match before.entries.iter().find(same)
+                          {
+                              Some(old) =>
+                              {
+                                  entry.types.iter().any(|kind| !old.types.contains(kind))
+                              }
+                              None => true
+                          }
+                      })
+}
+
+fn publish(state: &mut State)
 {
     let count = state.volumes.iter().map(|volume| volume.applications.len()).sum();
     let mut entries = Vec::new();
@@ -195,7 +224,30 @@ fn publish(state: &State)
         serial!("APPLICATION_INDEX_PUBLISH_FAILED applications={count} status={NO_MEMORY}");
         return;
     };
-    crate::toolbox::handles::InvocationGate::run(|| *PUBLISHED.lock() = Some(published));
+    crate::toolbox::handles::InvocationGate::run(|| {
+        *PUBLISHED.lock() = Some(published.clone());
+    });
+    // Probing answers one application a turn. Announcing each would have every
+    // watcher read every folder once per application, so wait for the whole
+    // answer.
+    if !complete
+    {
+        return;
+    }
+    if arrived(state.announced.as_deref(), &published)
+    {
+        match files(|manager| manager.applications_arrived())
+        {
+            Ok(()) => serial!("APPLICATIONS_ARRIVED applications={count}"),
+            // The old snapshot stays, so the next publication tries again.
+            Err(status) =>
+            {
+                serial!("APPLICATIONS_ARRIVED_FAILED status={status}");
+                return;
+            }
+        }
+    }
+    state.announced = Some(published);
 }
 
 /// Block volumes that can be scanned right now, with their catalogue revision.
@@ -533,7 +585,7 @@ pub(crate) fn pump()
     }
     if changed
     {
-        publish(&state);
+        publish(&mut state);
     }
     crate::toolbox::handles::InvocationGate::run(|| *STATE.lock() = Slot::Ready(state));
 }

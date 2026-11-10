@@ -384,6 +384,32 @@ impl Manager
         }
     }
 
+    /// An application arrived on some volume. Documents anywhere may now have
+    /// an owner, and so an icon, they did not have before; nothing knows which
+    /// folders hold them. Every watcher is told to read again, which is where
+    /// it asks for icons. Nothing in any catalogue changed, so no volume's
+    /// catalogue revision moves.
+    #[cfg(systemrisc)]
+    pub(super) fn applications_arrived(&mut self) -> Result<(), Status>
+    {
+        let revision = scan::next_revision()?;
+        self.file_icons.forget_owners();
+        let transfers = &self.transfers;
+        for watch in self.watches.values_mut()
+        {
+            if transfers.iter().any(|(_, entry)| entry.holds_notices(watch.volume))
+            {
+                watch.deferred_revision = Some(revision);
+            }
+            else
+            {
+                watch.changed = true;
+                watch.revision = revision;
+            }
+        }
+        Ok(())
+    }
+
     /// A transaction reserves this revision before its first side effect. One
     /// sorted parent set visits the bounded watch table once, without allocation
     /// or a fallible counter increment after publication.
