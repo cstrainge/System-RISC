@@ -1899,8 +1899,10 @@ impl Session
 /// waits for this I/O while holding a resident File Manager lock.
 pub fn serve_connection(stream: &mut impl ReadWrite, exports: Arc<Vec<Export>>) -> io::Result<()>
 {
-    let mut session =
-        Session::new(exports).map_err(|e| io::Error::other(format!("session: {}", e.0)))?;
+    let mut session = Session::new(exports.clone()).map_err(|e| {
+                                                       io::Error::other(format!("session: {}",
+                                                                                e.0))
+                                                   })?;
     loop
     {
         let mut bytes = [0; wire::HEADER_BYTES];
@@ -1916,6 +1918,17 @@ pub fn serve_connection(stream: &mut impl ReadWrite, exports: Arc<Vec<Export>>) 
             Header::decode(&bytes).map_err(|e| io::Error::other(format!("protocol: {e:?}")))?;
         let mut payload = vec![0; request.payload as usize];
         stream.read_exact(&mut payload)?;
+        // A guest that restarts keeps this connection: the emulator does not
+        // reconnect when the machine resets. The restarted guest remembers
+        // nothing and greets again. That is a new machine, so everything the
+        // old one held here goes with it, and the greeting gets a new session.
+        if request.operation == Op::Hello && session.hello
+        {
+            session = Session::new(exports.clone()).map_err(|e| {
+                                                       io::Error::other(format!("session: {}",
+                                                                                e.0))
+                                                   })?;
+        }
         let (reply, payload) = session.respond(request, &payload);
         stream.write_all(&reply.encode()
                                .map_err(|e| io::Error::other(format!("reply: {e:?}")))?)?;
