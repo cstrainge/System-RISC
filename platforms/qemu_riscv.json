@@ -88,7 +88,6 @@
       "readonly": true,
       "slots": [
         0,
-        3,
         7
       ],
       "attach": [
@@ -135,6 +134,12 @@
       "transport": {
         "kind": "virtio-mmio",
         "slot": 4
+      }
+    },
+    "host_folders": {
+      "transport": {
+        "kind": "virtio-mmio",
+        "slot": 3
       }
     },
     "screen": {

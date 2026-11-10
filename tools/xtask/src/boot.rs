@@ -169,12 +169,22 @@ pub fn run(workspace: &Workspace, mode: emulator::Mode, media: &[PathBuf], extra
     // those disks instead.
     let media =
         if media.is_empty() { emulator::Media::Declared } else { emulator::Media::Given(media) };
-    let invocation = emulator::invocation(&workspace.platform,
-                                          &workspace.root,
-                                          workspace.dist(),
-                                          media,
-                                          mode,
-                                          extra)?;
+    let mut invocation = emulator::invocation(&workspace.platform,
+                                              &workspace.root,
+                                              workspace.dist(),
+                                              media,
+                                              mode,
+                                              extra)?;
+    // Checks run against private media and never touch the checkout's own
+    // transfer folder, so only an interactive launch offers it.
+    let _transfer = if mode == emulator::Mode::Interactive
+    {
+        transfer_volume(workspace, &mut invocation)?
+    }
+    else
+    {
+        None
+    };
     println!("Booting {} through {}. Ctrl+C stops the emulator.",
              workspace.platform
                       .emulation()
@@ -213,6 +223,95 @@ pub fn run(workspace: &Workspace, mode: emulator::Mode, media: &[PathBuf], extra
                                  payload(&workspace.platform, workspace.dist())?.display())));
     }
     Ok(())
+}
+
+/// Offer the checkout's `transfer` folder to the guest as the Transfer volume.
+///
+/// Nothing happens unless the folder exists and the platform record declares a
+/// host-folder connection. The returned companion serves the folder for this
+/// one launch and is stopped when the caller drops it.
+fn transfer_volume(workspace: &Workspace, invocation: &mut emulator::Invocation)
+                   -> Result<Option<Guest>>
+{
+    use std::{io::{BufRead, BufReader},
+              sync::mpsc,
+              time::Duration};
+
+    let folder = workspace.root.join("transfer");
+    let declared =
+        workspace.platform.emulation().is_some_and(|machine| machine.host_folders.is_some());
+    if !declared || !folder.is_dir()
+    {
+        return Ok(None);
+    }
+    // A folder that is not yet a volume needs the formatter as well.
+    let formatted = folder.join(".system-risc-root").exists();
+    let mut build = workspace.cargo();
+    build.args(["build", "--release", "--locked", "--package", "risc-host"]);
+    if !formatted
+    {
+        build.args(["--package", "risc-forks"]);
+    }
+    run_command(&mut build)?;
+    let tool = |name: &str| {
+        workspace.target()
+                 .join("release")
+                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    };
+    if !formatted
+    {
+        // The formatter refuses a folder that already holds files. Ordinary
+        // host files are never imported or erased to make a volume.
+        let status = Command::new(tool("risc-forks")).arg("init")
+                                                     .arg(&folder)
+                                                     .arg("Transfer")
+                                                     .status()?;
+        if !status.success()
+        {
+            println!("{} is not a System RISC volume and could not be made one; it must be \
+                      empty to start. Booting without the Transfer volume.",
+                     folder.display());
+            return Ok(None);
+        }
+    }
+    let log = workspace.dist().join("host-companion.log");
+    let mut child =
+        Command::new(tool("risc-host")).arg("--one-session")
+                                       .arg("--export")
+                                       .arg(format!("Transfer={}", folder.display()))
+                                       .stdin(Stdio::null())
+                                       .stdout(Stdio::piped())
+                                       .stderr(File::create(&log)?)
+                                       .spawn()?;
+    let ready = child.stdout.take();
+    let companion = Guest(child);
+    let Some(ready) = ready
+    else
+    {
+        return Err(error("the host companion has no readiness channel".to_string()));
+    };
+    // The companion prints exactly one readiness line. Reading it on a thread
+    // bounds the wait if it never does.
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(ready).read_line(&mut line);
+        let _ = sender.send(line);
+    });
+    let line = receiver.recv_timeout(Duration::from_secs(10)).unwrap_or_default();
+    let port = line.trim()
+                   .strip_prefix("HOST_BRIDGE_READY 127.0.0.1:")
+                   .and_then(|port| port.parse::<u16>().ok())
+                   .filter(|port| *port != 0);
+    let Some(port) = port
+    else
+    {
+        return Err(error(format!("the host companion did not become ready; see {}",
+                                 log.display())));
+    };
+    emulator::attach_host_folders(invocation, &workspace.platform, port)?;
+    println!("Sharing {} as the Transfer volume.", folder.display());
+    Ok(Some(companion))
 }
 
 struct Guest(Child);

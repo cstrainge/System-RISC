@@ -179,6 +179,16 @@ pub struct Clipboard
     pub transport: Transport
 }
 
+/// Connection to the host companion that serves host folders as guest volumes.
+/// The companion and the folders it offers belong to one launch; this names
+/// only the bus the connection sits on.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HostFolders
+{
+    pub transport: Transport
+}
+
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetworkKind
@@ -493,6 +503,8 @@ pub struct Definition
     #[serde(default)]
     pub clipboard:   Option<Clipboard>,
     #[serde(default)]
+    pub host_folders: Option<HostFolders>,
+    #[serde(default)]
     pub network:     Network,
     pub screen:      Screen,
     pub console:     Console,
@@ -764,7 +776,8 @@ impl Definition
              ("keyboard", self.keyboard.as_ref().map(|device| &device.transport)),
              ("pointer", self.pointer.as_ref().map(|device| &device.transport)),
              ("entropy", self.entropy.as_ref().and_then(|device| device.transport.as_ref())),
-             ("clipboard", self.clipboard.as_ref().map(|device| &device.transport))];
+             ("clipboard", self.clipboard.as_ref().map(|device| &device.transport)),
+             ("host_folders", self.host_folders.as_ref().map(|device| &device.transport))];
         for (field, transport) in
             devices.into_iter().filter_map(|(field, transport)| Some((field, transport?)))
         {

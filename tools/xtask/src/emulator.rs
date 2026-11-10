@@ -126,6 +126,51 @@ pub fn invocation(platform: &Platform, root: &Path, dist: &Path, media: Media<'_
                     description: definition.description.clone() })
 }
 
+/// Connect the guest to a host-folder companion listening on a loopback port.
+/// Returns false when the platform declares no connection for one.
+///
+/// This is separate from [`invocation`] because the port exists only once the
+/// companion for this launch is running; the record names the bus, not a port.
+pub fn attach_host_folders(invocation: &mut Invocation, platform: &Platform, port: u16)
+                           -> Result<bool>
+{
+    let definition = platform.require_emulation()?;
+    let Some(folders) = &definition.host_folders
+    else
+    {
+        return Ok(false);
+    };
+    let args = &mut invocation.args;
+    match definition.family
+    {
+        Family::Qemu =>
+        {
+            push(args,
+                 "-chardev",
+                 format!("socket,id=hostbridge,host=127.0.0.1,port={port},reconnect-ms=100"));
+            match folders.transport
+            {
+                Transport::VirtioMmio { slot } =>
+                {
+                    push(args,
+                         "-device",
+                         format!("virtio-serial-device,id=hostserial,bus=virtio-mmio-bus.{slot},\
+                                  max_ports=2"));
+                }
+                Transport::VirtioPci =>
+                {
+                    push(args, "-device", "virtio-serial-pci,id=hostserial,max_ports=2");
+                }
+            }
+            push(args,
+                 "-device",
+                 "virtserialport,bus=hostserial.0,nr=1,chardev=hostbridge,\
+                  name=org.system-risc.host-filesystem");
+        }
+    }
+    Ok(true)
+}
+
 fn push(args: &mut Vec<String>, flag: &str, value: impl Into<String>)
 {
     args.push(flag.to_string());
@@ -403,6 +448,7 @@ fn uses_mmio(definition: &Definition) -> bool
     || definition.pointer.as_ref().is_some_and(|pointer| mmio(&pointer.transport))
     || definition.entropy.as_ref().and_then(|entropy| entropy.transport.as_ref()).is_some_and(mmio)
     || definition.clipboard.as_ref().is_some_and(|clipboard| mmio(&clipboard.transport))
+    || definition.host_folders.as_ref().is_some_and(|folders| mmio(&folders.transport))
     || definition.disks.as_ref().is_some_and(|disks| disks.transport() == DiskTransport::VirtioMmio)
 }
 
