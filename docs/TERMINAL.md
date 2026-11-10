@@ -54,9 +54,14 @@ full-screen TUI or sixel protocol compatibility.
 
 Child stdout and stderr use their own byte streams and the terminal's styles;
 stderr is not automatically painted red. Terminal's own diagnostics can use an
-error style. Reedline controls its prompts and syntax highlighting. Sixel
-rendering exists, but Shelly's startup logo still needs completed capability
-negotiation and startup-cost qualification.
+error style. Reedline controls its prompts and syntax highlighting. Shelly
+asks for device attributes at startup and draws its prepared sixel logo when
+Terminal reports sixel support and a cell size. A screen keeps
+any number of pictures within a count and pixel budget, oldest removed first.
+Each stays on its text line, scrolls into history with that line and is drawn
+again when history is browsed. An erase or a partial scroll that covers a
+picture removes it. The cursor is left on the line below a picture. This path
+is unqualified on the guest.
 
 The QEMU key mapping uses left Alt for Command, Ctrl for Control, and right Alt
 for Option. This preserves terminal control keys while keeping host-intercepted

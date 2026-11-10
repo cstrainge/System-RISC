@@ -13,6 +13,9 @@ pub(super) const FONT: FontSelection = FontSelection { family: 4,
                                                        size:   12,
                                                        face:   0 };
 const HISTORY: usize = 2000;
+// Pictures retained by one screen, oldest removed first.
+const PICTURES: usize = 64;
+const PICTURE_PIXELS: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Style
@@ -46,6 +49,25 @@ impl Cell
     }
 }
 
+/// A picture stays on the text line it was drawn at. Lines are counted from
+/// the first line the screen ever showed, so a picture scrolls with its text
+/// into history and is found again when that history is browsed.
+struct Picture
+{
+    x:      i16,
+    line:   i64,
+    raster: crate::sixel::Raster
+}
+impl Picture
+{
+    /// The line after the last one this picture touches.
+    fn end(&self) -> i64
+    {
+        let row = i64::from(ROW_HEIGHT);
+        self.line + (self.raster.height as i64 + row - 1) / row
+    }
+}
+
 struct Grid
 {
     rows:   Vec<Vec<Cell>>,
@@ -55,7 +77,9 @@ struct Grid
     wrap:   bool,
     top:    usize,
     bottom: usize,
-    image:  Option<(i16, i16, crate::sixel::Raster)>
+    // Lines that have scrolled off the top of this screen.
+    scrolled: i64,
+    images: Vec<Picture>
 }
 impl Grid
 {
@@ -68,7 +92,8 @@ impl Grid
                wrap:   false,
                top:    0,
                bottom: rows - 1,
-               image:  None }
+               scrolled: 0,
+               images: Vec::new() }
     }
 
     fn resize(&mut self, cols: usize, rows: usize)
@@ -227,11 +252,30 @@ impl Screen
         self.all();
     }
 
-    pub fn image(&mut self, image: crate::sixel::Raster)
+    pub fn image(&mut self, raster: crate::sixel::Raster, style: Style)
     {
         let (x, y) = self.position();
-        self.grid_mut().image = Some((x as i16 * self.cell, y as i16 * ROW_HEIGHT, image));
+        let cell = self.cell;
+        let grid = self.grid_mut();
+        let picture = Picture { x: (x as i16).saturating_mul(cell),
+                                line: grid.scrolled + y as i64,
+                                raster };
+        let rows = picture.end() - picture.line;
+        grid.images.push(picture);
+        let mut pixels: usize = grid.images.iter().map(|p| p.raster.pixels.len()).sum();
+        while grid.images.len() > PICTURES
+              || (pixels > PICTURE_PIXELS && grid.images.len() > 1)
+        {
+            pixels -= grid.images.remove(0).raster.pixels.len();
+        }
         self.all();
+        // Leave the cursor at the start of the line below the picture, so
+        // following output and further pictures do not land on top of it.
+        self.place(0, y);
+        for _ in 0..rows
+        {
+            self.index(false, style);
+        }
     }
 
     pub fn scroll_region(&mut self, top: usize, bottom: usize)
@@ -278,10 +322,39 @@ impl Screen
             }
             self.grid_mut().rows.insert(if up { bottom } else { top }, row);
         }
-        if self.grid().image.is_some()
+        let moved = count.min(bottom - top + 1) as i64;
+        let whole = !from_cursor && top == 0 && bottom + 1 == self.rows;
+        let retained = if self.alternate() { 0 } else { self.history.len() as i64 };
+        let (view, rows) = (self.view as i64, self.rows as i64);
+        let grid = self.grid_mut();
+        let shown_from = grid.scrolled - view;
+        if whole && up
         {
-            self.grid_mut().image = None;
-            self.all();
+            grid.scrolled += moved;
+        }
+        if !grid.images.is_empty()
+        {
+            let shown_to = grid.scrolled + rows;
+            let shown =
+                grid.images.iter().any(|p| p.end() > shown_from && p.line < shown_to);
+            if whole && up
+            {
+                // Pictures keep their lines, so they have moved with the text.
+                // One goes when the last line it touches leaves history.
+                let oldest = grid.scrolled - retained;
+                grid.images.retain(|p| p.end() > oldest);
+            }
+            else
+            {
+                // Other scrolls move text within the screen. Pictures do not
+                // follow, so the ones this scroll crosses are removed.
+                let (first, last) = (grid.scrolled + top as i64, grid.scrolled + bottom as i64);
+                grid.images.retain(|p| p.end() <= first || p.line > last);
+            }
+            if shown
+            {
+                self.all();
+            }
         }
         self.damage(top, bottom + 1);
     }
@@ -333,13 +406,28 @@ impl Screen
         {
             self.history.clear();
             self.view = 0;
+            let oldest = self.main.scrolled;
+            self.main.images.retain(|p| p.end() > oldest);
             self.all();
             return;
         }
-        if display && self.grid().image.is_some()
+        if display && mode <= 2
         {
-            self.grid_mut().image = None;
-            self.all();
+            // Erasing lines a picture touches removes it. History is untouched.
+            let (first, last) = match mode
+            {
+                0 => (y, rows - 1),
+                1 => (0, y),
+                _ => (0, rows - 1)
+            };
+            let grid = self.grid_mut();
+            let (first, last) = (grid.scrolled + first as i64, grid.scrolled + last as i64);
+            let before = grid.images.len();
+            grid.images.retain(|p| p.end() <= first || p.line > last);
+            if grid.images.len() != before
+            {
+                self.all();
+            }
         }
         let (first, last) = match (display, mode)
         {
@@ -519,19 +607,32 @@ impl Screen
                 start = end;
             }
         }
-        if self.view == 0
-           && let Some((x, y, image)) = &grid.image
+        // The first line shown, counted the way pictures count their lines.
+        let first = grid.scrolled - self.view as i64;
+        for picture in &grid.images
         {
-            let source = Rect::new(0, 0, image.width as i16, image.height as i16);
-            let dest = Rect::new(*x, *y, *x + source.right, *y + source.bottom);
-            if dest.left < clip.right
-               && dest.right > clip.left
-               && dest.top < clip.bottom
-               && dest.bottom > clip.top
+            let raster = &picture.raster;
+            let bounds = Rect::new(0, 0, raster.width as i16, raster.height as i16);
+            let top = (picture.line - first) * i64::from(ROW_HEIGHT);
+            let bottom = top + i64::from(bounds.bottom);
+            if top >= i64::from(clip.bottom) || bottom <= i64::from(clip.top)
             {
-                port.copy_bits(&Bitmap::Rgb32 { pixels:     &image.pixels,
-                                                row_pixels: image.width,
-                                                bounds:     source },
+                continue;
+            }
+            // Both tests passed, so top is within a picture's height of the
+            // viewport. Rows above the viewport are cropped from the source.
+            let top = top as i16;
+            let hidden = (-top).clamp(0, bounds.bottom);
+            let source = Rect::new(0, hidden, bounds.right, bounds.bottom);
+            let dest = Rect::new(picture.x,
+                                 top + hidden,
+                                 picture.x.saturating_add(bounds.right),
+                                 top + bounds.bottom);
+            if dest.left < clip.right && dest.right > clip.left
+            {
+                port.copy_bits(&Bitmap::Rgb32 { pixels: &raster.pixels,
+                                                row_pixels: raster.width,
+                                                bounds },
                                source,
                                dest,
                                TransferMode::Copy,

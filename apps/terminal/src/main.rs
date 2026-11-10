@@ -480,7 +480,9 @@ impl<'a> Session<'a>
             system.new_window(Rect::new(64 + offset, 84 + offset, 704 + offset, 464 + offset),
                               title,
                               (420, 230),
-                              0)?;
+                              // A document window with a zoom box. System tracks the box
+                              // and alternates the user's size with the full screen.
+                              8)?;
         if let Err(error) = system.windows().set_close_deferred(window, true)
         {
             let _ = system.close_window(window);
@@ -508,8 +510,7 @@ impl<'a> Session<'a>
                 return Err(error);
             }
         };
-        let mut output = Screen::new(cell_width, width, height);
-        output.line(false, "Enter sends a line. Ctrl+D sends EOF.");
+        let output = Screen::new(cell_width, width, height);
         let shell = matches!(target, LaunchTarget::Shell);
         let mut timer = TimeTask::new(system.events());
         if let Err(cause) = timer.insert()

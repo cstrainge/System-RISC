@@ -275,7 +275,7 @@ impl Perform for Target<'_>
         if let Some(payload) = self.image.take()
            && let Some(image) = sixel::decode(&payload, self.style.bg)
         {
-            self.screen.image(image);
+            self.screen.image(image, *self.style);
         }
     }
 }
