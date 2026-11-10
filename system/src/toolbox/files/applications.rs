@@ -68,6 +68,7 @@ struct Published
 
 struct Walk
 {
+    volume:      u32,
     revision:    u64,
     pending:     Vec<u32>,
     directory:   u32,
@@ -179,7 +180,7 @@ fn arrived(before: Option<&Published>, now: &Published) -> bool
     let Some(before) = before
     else
     {
-        return true;
+        return !now.entries.is_empty();
     };
     now.entries.iter().any(|entry| {
                           let same = |old: &&Indexed| {
@@ -234,21 +235,37 @@ fn publish(state: &mut State)
         serial!("APPLICATION_INDEX_PUBLISH_FAILED applications={count} status={NO_MEMORY}");
         return;
     };
-    crate::toolbox::handles::InvocationGate::run(|| {
-        *PUBLISHED.lock() = Some(published.clone());
-    });
+    crate::toolbox::handles::InvocationGate::run(|| *PUBLISHED.lock() = Some(published));
     // Probing answers one application a turn. Announcing each would have every
-    // watcher read every folder once per application, so wait for the whole
-    // answer.
-    if !complete
+    // watcher read every folder once per application, so a volume is announced
+    // when all of it is known. A slow volume does not hold up a finished one.
+    let settled = |volume: &&Volume| {
+        volume.built != 0 && volume.applications.iter().all(|entry| entry.probed)
+    };
+    let mut entries = Vec::new();
+    for entry in state.volumes.iter().filter(settled).flat_map(|volume| &volume.applications)
+    {
+        let mut types = Vec::new();
+        if entries.try_reserve(1).is_err() || types.try_reserve_exact(entry.types.len()).is_err()
+        {
+            return;
+        }
+        types.extend_from_slice(&entry.types);
+        entries.push(Indexed { application: entry.application,
+                               types,
+                               probed: true });
+    }
+    let Ok(published) = Arc::try_new(Published { complete: true,
+                                                 entries })
+    else
     {
         return;
-    }
+    };
     if arrived(state.announced.as_deref(), &published)
     {
         match files(|manager| manager.applications_arrived())
         {
-            Ok(()) => serial!("APPLICATIONS_ARRIVED applications={count}"),
+            Ok(()) => serial!("APPLICATIONS_ARRIVED applications={}", published.entries.len()),
             // The old snapshot stays, so the next publication tries again.
             Err(status) =>
             {
@@ -293,7 +310,7 @@ fn mounted() -> Result<Vec<(u32, u64, bool)>, Status>
 
 impl Walk
 {
-    fn new(revision: u64, provider: bool) -> Result<Self, Status>
+    fn new(volume: u32, revision: u64, provider: bool) -> Result<Self, Status>
     {
         let system = if provider
         {
@@ -306,7 +323,8 @@ impl Walk
         let mut pending = Vec::new();
         pending.try_reserve(1).map_err(|_| NO_MEMORY)?;
         pending.push(ROOT_ID);
-        Ok(Self { revision,
+        Ok(Self { volume,
+                  revision,
                   pending,
                   directory: 0,
                   cursor: DirectoryScanCursor::default(),
@@ -350,7 +368,18 @@ impl Walk
                 let asked = match self.request.as_mut()
                 {
                     Some(asked) => asked,
-                    None => self.request.insert(ResidentRequest::scan(system, request)?)
+                    None =>
+                    {
+                        let asked = ResidentRequest::scan(system, request)?;
+                        if asked.pending()
+                        {
+                            let _ = files(|manager| {
+                                manager.index_read(volume, true);
+                                Ok(())
+                            });
+                        }
+                        self.request.insert(asked)
+                    }
                 };
                 // A refused poll keeps its request, and dropping the request
                 // hands its cleanup to the System, so every way out below
@@ -359,6 +388,10 @@ impl Walk
                 if !matches!(answer, Ok(None))
                 {
                     self.request = None;
+                    let _ = files(|manager| {
+                        manager.index_read(volume, false);
+                        Ok(())
+                    });
                 }
                 match answer?
                 {
@@ -418,6 +451,24 @@ impl Walk
     }
 }
 
+impl Drop for Walk
+{
+    /// A walk given up with a step still outstanding no longer vouches for it.
+    /// The abandoned step then counts as an ordinary read until the provider
+    /// has acknowledged it.
+    fn drop(&mut self)
+    {
+        if self.request.is_some()
+        {
+            let volume = self.volume;
+            let _ = files(|manager| {
+                manager.index_read(volume, false);
+                Ok(())
+            });
+        }
+    }
+}
+
 impl Volume
 {
     /// Advance this volume by one maintenance turn. Returns whether its
@@ -442,7 +493,7 @@ impl Volume
             {
                 return self.probe();
             }
-            match Walk::new(revision, self.provider)
+            match Walk::new(self.id, revision, self.provider)
             {
                 Ok(walk) => self.walk = Some(walk),
                 Err(status) =>
@@ -466,7 +517,7 @@ impl Volume
                 Ok(false) => (),
                 Ok(true) =>
                 {
-                    let Some(walk) = self.walk.take()
+                    let Some(mut walk) = self.walk.take()
                     else
                     {
                         return false;
@@ -493,7 +544,7 @@ impl Volume
                         self.refused = revision;
                         return false;
                     }
-                    for application in walk.found
+                    for application in core::mem::take(&mut walk.found)
                     {
                         // An application that has not changed keeps the claims
                         // already read from it.

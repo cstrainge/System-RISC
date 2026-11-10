@@ -28,6 +28,10 @@ pub(super) struct Mounted
     pub info:                               Option<VolumeInfo>,
     pub phase:                              Phase,
     reads:                                  usize,
+    /// How many of `reads` are the application index walking this volume. The
+    /// System's own bookkeeping loses nothing if the machine restarts under
+    /// it, so it must never be why a person cannot restart.
+    index_reads:                            usize,
     pub(in crate::toolbox::files) revision: u64,
     pub(in crate::toolbox::files) changes:  bool
 }
@@ -39,7 +43,7 @@ impl Mounted
         match self.phase
         {
             Phase::Quarantined => Err(ROLLBACK_FAILED),
-            Phase::Live if self.reads == 0 => Ok(()),
+            Phase::Live if self.reads == self.index_reads => Ok(()),
             _ => Err(SERVICE_BUSY)
         }
     }
@@ -172,6 +176,7 @@ impl Manager
                                                          info: None,
                                                          phase: Phase::Mounting,
                                                          reads: 0,
+                                                         index_reads: 0,
                                                          revision: 0,
                                                          changes: false });
         InvocationGate::with_system_allocation(|| self.volumes.insert(mounted)).map_err(|_| {
@@ -311,6 +316,16 @@ impl Manager
         let mounted = self.provider_mount(id)?;
         mounted.reads = mounted.reads.checked_add(1).ok_or(NO_MEMORY)?;
         Ok(provider)
+    }
+
+    /// The application index says whether it has a scan step outstanding on
+    /// this volume. It holds at most one, and says so only while it does.
+    pub(super) fn index_read(&mut self, id: u32, outstanding: bool)
+    {
+        if let Ok(mounted) = self.provider_mount(id)
+        {
+            mounted.index_reads = usize::from(outstanding);
+        }
     }
 
     pub(super) fn end_provider_read(&mut self, id: u32) -> Result<(), Status>
