@@ -106,6 +106,8 @@ pub(crate) mod write;
 pub(crate) mod module_preferences;
 #[cfg(systemrisc)]
 pub(crate) mod installed_fonts;
+#[cfg(systemrisc)]
+pub(crate) mod applications;
 mod moves;
 const MAX_PATH: usize = 4096;
 
