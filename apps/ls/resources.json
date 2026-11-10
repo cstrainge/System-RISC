@@ -1,0 +1,10 @@
+{
+  "name": "ls",
+  "binary_name": "ls",
+  "file_type": "CLAP",
+  "creator": "MACL",
+  "role": "application",
+  "abi_version": 1,
+  "description": "List directory contents with icons",
+  "resources": []
+}

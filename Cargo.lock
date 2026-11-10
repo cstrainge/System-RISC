@@ -1504,6 +1504,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-ls"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-toolbox",
+]
+
+[[package]]
 name = "mac-module"
 version = "0.1.0"
 

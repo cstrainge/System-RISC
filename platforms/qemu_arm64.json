@@ -285,7 +285,8 @@
       "control-suite",
       "mac-terminal",
       "shelly-shell",
-      "mac-echo"
+      "mac-echo",
+      "mac-ls"
     ],
     "modules": [
       "mac-system",
@@ -303,7 +304,8 @@
       "mac-finder": "System Folder",
       "mac-terminal": "Applications/Utility",
       "shelly-shell": "Applications/Utility/Cli",
-      "mac-echo": "Applications/Utility/Cli"
+      "mac-echo": "Applications/Utility/Cli",
+      "mac-ls": "Applications/Utility/Cli"
     }
   }
 }

@@ -463,6 +463,17 @@ impl<'a> Files<'a>
             .try_into()
     }
 
+    /// Resolve a path using the calling process's current directory and mount
+    /// authority. Absolute paths use the same native path policy as std files.
+    pub fn resolve_path(self, path: &str) -> Result<CatalogInfo>
+    {
+        self.call(FileCall { operation: RESOLVE_PATH,
+                             ..Default::default() },
+                  path)?
+            .entry
+            .try_into()
+    }
+
     pub fn parent(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
     {
         self.call(FileCall { operation: PARENT,
