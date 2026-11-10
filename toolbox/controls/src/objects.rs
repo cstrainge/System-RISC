@@ -371,53 +371,107 @@ impl ControlRef<'_>
                 mut action: impl FnMut(ControlInfo) -> Result<()>)
                 -> Result<bool>
     {
-        let mut input = EventCall { operation: INPUT_STATE,
-                                    ..Default::default() };
-        self.client.event(&mut input)?;
-        let mut state = self.call(ControlCall { operation: BEGIN_TRACKING,
-                                                point: anchor,
-                                                window,
-                                                ticks: input.uptime_ticks,
-                                                ..Default::default() })?;
-        let handled = state.handled;
-        if !handled
+        let Some(mut tracking) = self.begin_in(anchor, window)?
+        else
         {
             return Ok(false);
-        }
-        let capture = crate::capture::Capture::new(self);
+        };
         let result = (|| {
             loop
             {
+                let state = tracking.info();
                 if state.action
                 {
                     action(state)?;
                 }
                 if !state.tracking
                 {
-                    return Ok(handled);
+                    return Ok(true);
                 }
                 // Present only changed control bounds, then sleep until motion/tick.
                 self.client.wait_event(0, 1)?;
-                self.client.event(&mut input)?;
-                let origin = self.client
-                                 .window(GET_WINDOW,
-                                         WindowRequest { id:             state.window.0,
-                                                         bounds:         Rect::ZERO,
-                                                         title:          [0; WINDOW_TITLE_BYTES],
-                                                         title_length:   0,
-                                                         procedure:      0,
-                                                         minimum_width:  1,
-                                                         minimum_height: 1,
-                                                         reserved:       0 })?
-                                 .bounds;
-                state =
-                    self.poll_tracking(Point { h: input.event.where_.h.saturating_sub(origin.left),
-                                               v: input.event.where_.v.saturating_sub(origin.top) },
-                                       input.event.modifiers & BTN_STATE == 0,
-                                       input.uptime_ticks)?;
+                tracking.advance()?;
             }
         })();
-        capture.finish(result)
+        tracking.finish(result)
+    }
+}
+
+/// One press being tracked by a control, advanced a step at a time.
+///
+/// System holds the tracking state between steps and each step returns at
+/// once. The session owns the capture: finishing or dropping it cancels the
+/// tracking, so a caller that stops stepping cannot leave a control pressed.
+/// An application tracks one press at a time.
+#[must_use = "dropping a tracking session cancels the press"]
+pub struct Tracking<'a>
+{
+    capture: crate::capture::Capture<ControlRef<'a>>,
+    control: ControlRef<'a>,
+    state:   ControlInfo
+}
+impl Tracking<'_>
+{
+    /// The latest reply: whether an action occurred in the step that produced
+    /// it, whether tracking continues, and the control's current values.
+    pub fn info(&self) -> ControlInfo
+    {
+        self.state
+    }
+
+    /// False once the press has ended. Further steps change nothing.
+    pub fn tracking(&self) -> bool
+    {
+        self.state.tracking
+    }
+
+    /// Advance with input the caller already holds: the pointer in the
+    /// control's window coordinates, whether the button is still down, and the
+    /// uptime tick count. This makes no other call, so it suits a caller that
+    /// receives pointer wakes as events. Step on each wake and at least once a
+    /// tick while tracking, because held parts repeat by time without motion.
+    pub fn step(&mut self, point: Point, down: bool, ticks: u64) -> Result<ControlInfo>
+    {
+        if self.state.tracking
+        {
+            self.state = self.control.poll_tracking(point, down, ticks)?;
+        }
+        Ok(self.state)
+    }
+
+    /// Advance by reading the current physical input and the window's origin.
+    /// The blocking tracker uses this after each wait.
+    pub fn advance(&mut self) -> Result<ControlInfo>
+    {
+        if !self.state.tracking
+        {
+            return Ok(self.state);
+        }
+        let client = self.control.client;
+        let mut input = EventCall { operation: INPUT_STATE,
+                                    ..Default::default() };
+        client.event(&mut input)?;
+        let origin = client.window(GET_WINDOW,
+                                   WindowRequest { id:             self.state.window.0,
+                                                   bounds:         Rect::ZERO,
+                                                   title:          [0; WINDOW_TITLE_BYTES],
+                                                   title_length:   0,
+                                                   procedure:      0,
+                                                   minimum_width:  1,
+                                                   minimum_height: 1,
+                                                   reserved:       0 })?
+                           .bounds;
+        self.step(Point { h: input.event.where_.h.saturating_sub(origin.left),
+                          v: input.event.where_.v.saturating_sub(origin.top) },
+                  input.event.modifiers & BTN_STATE == 0,
+                  input.uptime_ticks)
+    }
+
+    /// End the session, releasing the capture. A result passed in keeps its
+    /// original cause if releasing also fails.
+    pub fn finish<T>(self, result: Result<T>) -> Result<T>
+    {
+        self.capture.finish(result)
     }
 }
 
@@ -441,5 +495,42 @@ impl<'a> ControlRef<'a>
     pub(super) fn client(self) -> Client<'a>
     {
         self.client
+    }
+
+    /// Begin tracking a press and return it as a session the caller advances.
+    ///
+    /// `None` means the control did not take the press. Unlike [`Self::track`],
+    /// this returns at once: the caller decides when to step, so an event-driven
+    /// application can keep running its other work between pointer wakes.
+    pub fn begin(self, anchor: Point) -> Result<Option<Tracking<'a>>>
+    {
+        self.begin_in(anchor, 0)
+    }
+
+    /// As [`Self::begin`], for a System-captured local point. The resident
+    /// manager checks that its complete WindowId matches this control.
+    pub fn begin_at(self, anchor: mac_traps::coordinates::WindowPoint)
+                    -> Result<Option<Tracking<'a>>>
+    {
+        self.begin_in(anchor.point()?, anchor.window().0)
+    }
+
+    fn begin_in(self, anchor: Point, window: u64) -> Result<Option<Tracking<'a>>>
+    {
+        let mut input = EventCall { operation: INPUT_STATE,
+                                    ..Default::default() };
+        self.client.event(&mut input)?;
+        let state = self.call(ControlCall { operation: BEGIN_TRACKING,
+                                            point: anchor,
+                                            window,
+                                            ticks: input.uptime_ticks,
+                                            ..Default::default() })?;
+        if !state.handled
+        {
+            return Ok(None);
+        }
+        Ok(Some(Tracking { capture: crate::capture::Capture::new(self),
+                           control: self,
+                           state }))
     }
 }

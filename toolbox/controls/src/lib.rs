@@ -261,7 +261,7 @@ pub mod scrollbox;
 pub use scrollbox::{ScrollBox, ScrollBoxId, ScrollBoxRef, ScrollBoxSpec};
 mod capture;
 pub mod objects;
-pub use objects::{Control, ControlId, ControlInfo, ControlRef};
+pub use objects::{Control, ControlId, ControlInfo, ControlRef, Tracking};
 mod splitter;
 pub use splitter::{Splitter, SplitterOrientation, SplitterRef, SplitterSpec};
 mod passive;
