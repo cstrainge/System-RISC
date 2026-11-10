@@ -15,7 +15,7 @@ use std::{env::args_os,
           io::{self, IsTerminal, Write},
           process::ExitCode};
 
-use icons::BuiltinIconProvider;
+use icons::SharedIconProvider;
 
 fn main() -> ExitCode
 {
@@ -38,7 +38,7 @@ fn main() -> ExitCode
     };
     let stdout = io::stdout();
     let tty = stdout.is_terminal();
-    let provider = BuiltinIconProvider;
+    let provider = SharedIconProvider::default();
     let mut out = stdout.lock();
     let mut err = io::stderr().lock();
     let code = listing::run(&opts, &provider, &mut out, &mut err, tty);

@@ -1,9 +1,8 @@
 //! Directory listing: reading, sorting, recursion, and output.
 //!
-//! One entry per line in v1: there is no column layout because std alone
-//! cannot ask the Terminal how wide it is, and an icon already makes each
-//! entry two cells wide and one row tall. `-1` is accepted and is
-//! currently a no-op for the same reason.
+//! One entry per line. Icons use the Terminal's published cell geometry and
+//! sit directly beside filenames, after any long-listing metadata. `-1` is
+//! accepted and currently has no additional effect.
 
 use std::{ffi::OsString,
           io::{self, Write},
@@ -15,13 +14,6 @@ use crate::{args::{Options, Sort},
             icons::IconProvider,
             native_fs::{self as fs, Metadata},
             sixel};
-
-/// Number of terminal cells a 16-pixel icon spans. Assumes the Terminal's
-/// space glyph is 8 pixels wide, so 16 pixels is two cells. Unverified:
-/// the Terminal measures its cell from font family 4 at runtime, so
-/// confirm on the guest; if the space glyph is wider, icons and names
-/// will overlap.
-const ICON_CELLS: usize = 2;
 
 struct Entry
 {
@@ -261,30 +253,35 @@ impl<'a> Lister<'a>
         {
             suffix.push_str(format::indicator(&entry.md));
         }
-        if self.icons
+        let prefix = if self.opts.long
         {
-            let icon = self.provider.icon_for(&entry.path, &entry.md);
-            self.out.write_all(&sixel::encode(&icon, self.opts.color))?;
-            // The cursor does not move when the Terminal places an image:
-            // it stays where the sixel sequence started, so step right
-            // past the icon and print the name on the same row. No
-            // cursor-up: the icon is exactly one row tall.
-            write!(self.out, "\x1b[{ICON_CELLS}C")?;
-        }
-        if self.opts.long
-        {
-            writeln!(self.out,
-                     "{} {:>size_width$} {} {}{}",
-                     format::attributes(&entry.md),
-                     size_text(entry, self.opts),
-                     format::mtime(&entry.md),
-                     name,
-                     suffix)?;
+            format!("{} {:>size_width$} {} ",
+                    format::attributes(&entry.md),
+                    size_text(entry, self.opts),
+                    format::mtime(&entry.md))
         }
         else
         {
-            writeln!(self.out, "{name}{suffix}")?;
+            String::new()
+        };
+        self.out.write_all(prefix.as_bytes())?;
+        if self.icons
+        {
+            let icon = self.provider.icon_for(&entry.path, &entry.md)?;
+            let (cells, rows, columns) = crate::icons::geometry()?;
+            let mut column = prefix.len() % columns;
+            if (!prefix.is_empty() && column == 0) || column + cells + 1 >= columns
+            {
+                self.out.write_all(b"\r\n")?;
+                column = 0;
+            }
+            self.out.write_all(&sixel::encode(&icon, self.opts.color))?;
+            // Terminal advances below the raster, including scrolling at the
+            // bottom margin. Move relative to that new position, then resume
+            // beside the image rather than restoring a stale saved row.
+            write!(self.out, "\x1b[{rows}A\x1b[{}G", column + cells + 2)?;
         }
+        writeln!(self.out, "{name}{suffix}")?;
         Ok(())
     }
 }

@@ -1,90 +1,84 @@
-//! A small DEC sixel encoder for 16x16 icons.
-//!
-//! Output is the subset the System RISC Terminal decodes
-//! (`apps/terminal/src/sixel.rs`): a DCS sequence whose payload starts with
-//! `"1;1;<width>;<height>`, `#n` color selects, `#n;2;r;g;b` palette
-//! definitions (RGB channels 0-100), sixel characters (`?`..`~`, where bit
-//! i of the character value is the pixel i rows below the band top), `$`
-//! carriage return, `-` next band (down 6 rows), terminated by ST.
-//! Only set pixels are emitted, so unset pixels stay the terminal
-//! background.
-//!
-//! Layout note, verified against `apps/terminal/src/screen.rs`: placing an
-//! image does not move the text cursor, and the Terminal keeps a single
-//! transient overlay image — each new sixel replaces the previous one, and
-//! scrolling clears it. So per-entry icons are correct on the wire, but
-//! only the last one is visible until the Terminal retains inline images.
-//! That is a Terminal gap, not an `ls` bug; `ls` emits exactly what the
-//! protocol asks for.
+//! Encode shared System icon pixels; no application-owned colour palette.
+use sr_files_list::icons::IconRaster;
 
-use crate::icons::Icon;
-
-/// Palette colors as (index, red, green, blue), channels 0-100.
-/// Index 0 is the terminal background and is never defined here.
-const PALETTE_MONO: &[(u8, u8, u8, u8)] = &[(1, 90, 90, 90)];
-const PALETTE_COLOR: &[(u8, u8, u8, u8)] =
-    &[(1, 90, 90, 90), (2, 100, 85, 0), (3, 60, 75, 100), (4, 20, 60, 100)];
-
-/// Highest palette index any icon layer uses.
-const MAX_COLOR: u8 = 4;
-
-/// Encode one icon as a complete DCS sixel sequence.
-pub fn encode(icon: &Icon, color_mode: bool) -> Vec<u8>
+pub fn encode(icon: &IconRaster, color_mode: bool) -> Vec<u8>
 {
-    let grid = icon.pixels(color_mode);
-    let mut out = Vec::new();
-    out.extend_from_slice(b"\x1bPq");
-    out.extend_from_slice(format!("\"1;1;{};{}", icon.width, icon.height).as_bytes());
-    let palette = if color_mode { PALETTE_COLOR } else { PALETTE_MONO };
-    for (index, r, g, b) in palette
+    let mut palette = Vec::<u32>::new();
+    let mut indices = [None; 256];
+    for (i, pixel) in icon.pixels.iter().enumerate()
     {
-        out.extend_from_slice(format!("#{index};2;{r};{g};{b}").as_bytes());
-    }
-    let bands = icon.height.div_ceil(6);
-    let width = icon.width.min(16);
-    for band in 0..bands
-    {
-        let rows = &grid[band * 6..((band + 1) * 6).min(icon.height)];
-        let mut used = [false; MAX_COLOR as usize + 1];
-        for row in rows
+        if let Some(rgb) = pixel
         {
-            for color in row.iter().take(width).flatten()
+            let value = if color_mode
             {
-                used[*color as usize] = true;
+                *rgb
             }
-        }
-        let colors: Vec<u8> = (1..=MAX_COLOR).filter(|&c| used[c as usize]).collect();
-        // Transpose the band into columns: each column's six pixels
-        // become one sixel character, top row as bit 0.
-        let mut columns = [[None; 6]; 16];
-        for (row, pixels) in rows.iter().enumerate()
-        {
-            for (x, pixel) in pixels.iter().enumerate().take(width)
+            else
             {
-                columns[x][row] = *pixel;
-            }
-        }
-        for (i, color) in colors.iter().enumerate()
-        {
-            out.extend_from_slice(format!("#{color}").as_bytes());
-            for column in columns.iter().take(width)
-            {
-                let mut bits = 0u8;
-                for (row, pixel) in column.iter().enumerate()
+                // Monochrome output keeps the dark strokes of the resolved
+                // System glyph visible against the terminal background.
+                let luminance =
+                    ((rgb >> 16) & 255) * 299 + ((rgb >> 8) & 255) * 587 + (rgb & 255) * 114;
+                if luminance >= 128000
                 {
-                    if *pixel == Some(*color)
+                    continue;
+                }
+                0xe5e5e5
+            };
+            let index = match palette.iter().position(|v| *v == value)
+            {
+                Some(index) => index,
+                None =>
+                {
+                    palette.push(value);
+                    palette.len() - 1
+                }
+            };
+            indices[i] = Some(index);
+        }
+    }
+    let mut out = b"\x1bPq\"1;1;16;16".to_vec();
+    for (i, rgb) in palette.iter().enumerate()
+    {
+        let channel = |v: u32| (v * 100 + 127) / 255;
+        out.extend_from_slice(format!("#{i};2;{};{};{}",
+                                      channel((rgb >> 16) & 255),
+                                      channel((rgb >> 8) & 255),
+                                      channel(rgb & 255)).as_bytes());
+    }
+    for band in 0..3
+    {
+        let mut first = true;
+        for color in 0..palette.len()
+        {
+            if !(band * 6..(band * 6 + 6).min(16)).any(|y| {
+                                                      (0..16).any(|x| {
+                                                                 indices[y * 16 + x] == Some(color)
+                                                             })
+                                                  })
+            {
+                continue;
+            }
+            if !first
+            {
+                out.push(b'$');
+            }
+            first = false;
+            out.extend_from_slice(format!("#{color}").as_bytes());
+            for x in 0..16
+            {
+                let mut bits = 0;
+                for y in 0..6
+                {
+                    if band * 6 + y < 16 && indices[(band * 6 + y) * 16 + x] == Some(color)
                     {
-                        bits |= 1 << row;
+                        bits |= 1 << y;
                     }
                 }
                 out.push(b'?' + bits);
             }
-            if i + 1 < colors.len()
-            {
-                out.push(b'$');
-            }
         }
-        if band + 1 < bands
+        if band < 2
         {
             out.push(b'-');
         }

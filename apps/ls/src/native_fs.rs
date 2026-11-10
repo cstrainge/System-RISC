@@ -12,6 +12,11 @@ use mac_toolbox::{System,
 pub struct Metadata(CatalogInfo);
 impl Metadata
 {
+    pub fn catalog(&self) -> &CatalogInfo
+    {
+        &self.0
+    }
+
     pub fn is_dir(&self) -> bool
     {
         self.0.kind == EntryKind::Directory
