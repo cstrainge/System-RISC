@@ -41,6 +41,8 @@ pub use mac_formats::macbinary::MacFile;
 #[cfg(systemrisc)]
 pub(in crate::toolbox) use provider::runtime::{ResidentReply, ResidentRequest};
 #[cfg(systemrisc)]
+use provider::runtime::SystemLoad;
+#[cfg(systemrisc)]
 pub(crate) use provider::runtime::{abandon_thread as abandon_provider_thread,
                                    mount_startup_exports, pump as pump_provider_operations,
                                    request_resource};

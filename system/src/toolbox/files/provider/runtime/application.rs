@@ -304,3 +304,101 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32,
                                        input: String::new(),
                                        path: None }))
 }
+
+/// The same composite load with no application and no thread behind it: the
+/// System reads as itself and asks again each maintenance turn. It exists so
+/// the System's own bookkeeping, the application index, can read what an
+/// application on a provider volume declares, as it does on a disk.
+pub(crate) struct SystemLoad
+{
+    flight: Option<Flight>
+}
+impl SystemLoad
+{
+    pub(crate) fn begin(volume: u32, cnid: u32,
+                        selection: super::super::super::application::Selection)
+                        -> Result<Self, Status>
+    {
+        // Giving the load up must be able to hand its cleanup over without
+        // allocating.
+        reserve_flight_storage(&mut FLIGHTS.lock())?;
+        let key = Key { record: Record::Application,
+                        operation: u32::MAX,
+                        volume,
+                        cnid,
+                        index: 0,
+                        handle: 0,
+                        fork: RESOURCE_FORK,
+                        capacity: 0,
+                        cursor: DirectoryScanCursor::default(),
+                        resource: None,
+                        metadata: None,
+                        when: 0 };
+        let mut state = Box::try_new(State { selection,
+                                             stage: Stage::Catalog,
+                                             volume,
+                                             handle: 0,
+                                             catalog: None,
+                                             loader: None,
+                                             reading: false,
+                                             outcome: None }).map_err(|_| NO_MEMORY)?;
+        let authority = crate::toolbox::files::creation_authority(0)?;
+        let (provider, handle) =
+            files(|m| m.reserve_provider_file_for(0, &authority, volume, cnid, RESOURCE_FORK))?;
+        state.handle = handle;
+        let job = match submit_object(IoObject::Fork(handle),
+                                      provider,
+                                      Operation::Catalog,
+                                      Arguments { volume,
+                                                  node: cnid,
+                                                  ..Default::default() })
+        {
+            Ok(job) => job,
+            Err(error) =>
+            {
+                retire(handle)?;
+                return Err(error);
+            }
+        };
+        Ok(Self { flight: Some(Flight { thread: 0,
+                                        owner: 0u64.into(),
+                                        key,
+                                        provider,
+                                        step: Step::Application(state),
+                                        job,
+                                        abandoned: false,
+                                        input: String::new(),
+                                        path: None }) })
+    }
+
+    /// Advance by at most one provider reply. `Ok(None)` while still reading.
+    pub(crate) fn poll(&mut self) -> Result<Option<Box<Loaded>>, Status>
+    {
+        let flight = self.flight.take().ok_or(NOT_FOUND)?;
+        match super::advance(flight)
+        {
+            Progress::Pending(flight) =>
+            {
+                self.flight = Some(flight);
+                Ok(None)
+            }
+            Progress::Done(Ok(Reply::Application(loaded))) => Ok(Some(loaded)),
+            Progress::Done(Err(error)) => Err(error),
+            Progress::Done(_) => Err(BAD_ABI)
+        }
+    }
+}
+impl Drop for SystemLoad
+{
+    /// A load given up part-way still owes the provider a Close. The ordinary
+    /// reaper finishes it.
+    fn drop(&mut self)
+    {
+        if let Some(mut flight) = self.flight.take()
+        {
+            flight.abandon();
+            FLIGHTS.lock().push(flight);
+            REAP.store(true, Ordering::Release);
+        }
+    }
+}

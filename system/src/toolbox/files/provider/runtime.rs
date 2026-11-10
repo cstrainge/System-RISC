@@ -41,7 +41,8 @@ mod desktop;
 mod resident;
 pub(crate) use resident::{Reply as ResidentReply, Request as ResidentRequest};
 pub(in crate::toolbox::files) mod transfer;
-pub(crate) use application::{pending as application_pending, request as request_application};
+pub(crate) use application::{SystemLoad, pending as application_pending,
+                             request as request_application};
 pub(crate) use groups::request as request_group;
 pub(crate) use metadata::{pending as metadata_pending, request as request_metadata};
 pub(crate) use streams::request as request_stream;

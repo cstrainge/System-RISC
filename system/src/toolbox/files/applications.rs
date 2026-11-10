@@ -7,9 +7,10 @@
 //! catalogue records only, never a fork. Until a walk finishes, the previous
 //! answer for that volume stands. Unmounting drops the volume's entries.
 //!
-//! A provider volume (a host folder, a mounted archive) is walked too. It
-//! answers a scan step later, through a job, and the System asks as itself:
-//! no application is behind the question.
+//! A provider volume (a host folder, a mounted archive) is a drive like any
+//! other: it is walked and its applications' declarations are read. It
+//! answers later, through a job, and the System asks as itself: no application
+//! is behind the question.
 //!
 //! After a walk, each application's declared document types are read from its
 //! `open` resources, one application per maintenance turn, with the same
@@ -21,7 +22,8 @@ use alloc::{sync::Arc, vec::Vec};
 use mac_abi::{files::*, *};
 use mac_object_table::shared::InvocationGate as _;
 
-use super::{Manager, Mounted, ResidentReply, ResidentRequest, application::Selection};
+use super::{Manager, Mounted, ResidentReply, ResidentRequest, SystemLoad,
+            application::Selection};
 
 /// Applications remembered per volume. A volume with more is indexed up to
 /// this many and the walk's report says so.
@@ -98,7 +100,10 @@ struct Volume
     /// A revision whose walk failed for a reason that waiting will not cure.
     refused:      u64,
     applications: Vec<Indexed>,
-    walk:         Option<Walk>
+    walk:         Option<Walk>,
+    /// A provider volume's application whose declarations are being read, by
+    /// catalogue id, and the read.
+    load:         Option<(u32, SystemLoad)>
 }
 
 struct State
@@ -596,9 +601,50 @@ impl Volume
             return false;
         };
         let cnid = entry.application.cnid;
-        let read = files(|manager| {
-            manager.application_resources_selected(volume, cnid, Selection::OpenTypes)
-        });
+        let read = if self.provider
+        {
+            if self.load.as_ref().is_some_and(|(reading, _)| *reading != cnid)
+            {
+                self.load = None;
+            }
+            let mut refused = None;
+            if self.load.is_none()
+            {
+                match SystemLoad::begin(volume, cnid, Selection::OpenTypes)
+                {
+                    Ok(load) => self.load = Some((cnid, load)),
+                    Err(status) => refused = Some(status)
+                }
+            }
+            let polled = match (self.load.as_mut(), refused)
+            {
+                (_, Some(status)) => Err(status),
+                (Some((_, load)), None) => load.poll(),
+                (None, None) => Err(BAD_ABI)
+            };
+            match polled
+            {
+                // Still reading; the next turn asks again.
+                Ok(None) => return false,
+                Ok(Some(loaded)) =>
+                {
+                    self.load = None;
+                    let loaded = *loaded;
+                    Ok((loaded.catalog, loaded.resources))
+                }
+                Err(status) =>
+                {
+                    self.load = None;
+                    Err(status)
+                }
+            }
+        }
+        else
+        {
+            files(|manager| {
+                manager.application_resources_selected(volume, cnid, Selection::OpenTypes)
+            })
+        };
         let types = match read
         {
             Ok((catalog, resources)) =>
@@ -621,9 +667,6 @@ impl Volume
             Err(SERVICE_BUSY) => return false,
             // No resource fork, or no longer an application.
             Err(NOT_FOUND | BAD_ARGUMENT) => Vec::new(),
-            // A provider volume: its applications are known and own their
-            // creators, but nothing reads their declarations yet.
-            Err(NOT_SUPPORTED) => Vec::new(),
             Err(status) =>
             {
                 serial!("APPLICATION_CLAIMS_REFUSED volume={volume} cnid={cnid} status={status}");
@@ -683,7 +726,8 @@ pub(crate) fn pump()
                                             quiet:        0,
                                             refused:      0,
                                             applications: Vec::new(),
-                                            walk:         None });
+                                            walk:         None,
+                                            load:         None });
             }
         }
         if !state.volumes.is_empty()
