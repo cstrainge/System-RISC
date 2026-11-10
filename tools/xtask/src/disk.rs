@@ -606,6 +606,10 @@ fn build_system7(workspace: &Workspace, path: &Path, size: u64, installed: &[Ins
                                    &mut volume,
                                    &format!("{}/{}", install.folders.system, name),
                                    when)?;
+        if name == "Fonts"
+        {
+            install_fonts(workspace, &mut volume, folder, when)?;
+        }
         if name == "Preferences"
         {
             let file = volume.create(folder, "File Types", false, when)?.id;
@@ -700,6 +704,45 @@ fn build_system7(workspace: &Workspace, path: &Path, size: u64, installed: &[Ins
         "blessed_system_folder_id":system,"files":verified,"catalog_files":checked.files,"catalog_directories":checked.directories}))
 }
 /// Create `path` on the volume if it does not exist yet, returning its CNID.
+/// Copy the fonts a default install carries into the Fonts folder.
+///
+/// They come from `system/assets/fonts-folder` and land as ordinary files, so
+/// a user can remove or replace one like any other installed font. Nothing here
+/// decides whether the Font Manager admits a font; it only places the file.
+fn install_fonts(workspace: &Workspace, volume: &mut mac_hfs_b::Volume<'_, hfs_b::Image>,
+                 folder: u32, when: mac_hfs_b::time::Timestamp)
+                 -> Result<()>
+{
+    let source = workspace.root.join("system/assets/fonts-folder");
+    let Ok(entries) = fs::read_dir(&source)
+    else
+    {
+        return Ok(());
+    };
+    let mut fonts: Vec<_> =
+        entries.filter_map(|entry| entry.ok().map(|entry| entry.path()))
+               .filter(|path| {
+                   path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("ttf"))
+               })
+               .collect();
+    // Directory order differs between hosts; the image must not.
+    fonts.sort();
+    for path in fonts
+    {
+        let Some(name) = path.file_name().and_then(|name| name.to_str())
+        else
+        {
+            return Err(error(format!("font file name is not UTF-8: {}", path.display())));
+        };
+        let file = volume.create(folder, name, false, when)?.id;
+        let mut finder_info = [0; 32];
+        finder_info[..4].copy_from_slice(b"sfnt");
+        volume.set_finder_metadata(file, 0, finder_info, when)?;
+        hfs_b::write_stream(volume, file, mac_hfs_b::ForkKind::Data, fs::File::open(&path)?, when)?;
+    }
+    Ok(())
+}
+
 fn create_folder(folders: &mut BTreeMap<String, u32>,
                  volume: &mut mac_hfs_b::Volume<'_, hfs_b::Image>, path: &str,
                  when: mac_hfs_b::time::Timestamp)

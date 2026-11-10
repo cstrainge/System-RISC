@@ -10,6 +10,7 @@ platforms/rust/patches/*.patch text eol=lf whitespace=-blank-at-eol
 *.bin binary
 *.png binary
 *.font binary
+*.ttf binary
 *.hfs binary
 *.rsrc binary
 *.rgb binary
