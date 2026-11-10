@@ -188,7 +188,8 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
         return None;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
-    if call.file_type != [0; 4] && call.operation != files::FIND_FOLDER
+    if call.file_type != [0; 4]
+       && !matches!(call.operation, files::FIND_FOLDER | files::RESOLVE_HANDLER)
        || !matches!(call.operation, files::OPEN_OPTIONS | files::OPEN_PATH) && call.open_flags != 0
        || call.operation != files::WRITE && call.input_length != 0
     {
@@ -855,7 +856,8 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
         return BAD_ARGUMENT as i64;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
-    if call.file_type != [0; 4] && call.operation != files::FIND_FOLDER
+    if call.file_type != [0; 4]
+       && !matches!(call.operation, files::FIND_FOLDER | files::RESOLVE_HANDLER)
        || !matches!(call.operation, files::OPEN_OPTIONS | files::OPEN_PATH) && call.open_flags != 0
        || call.operation != files::WRITE && call.input_length != 0
     {
