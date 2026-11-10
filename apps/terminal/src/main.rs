@@ -19,14 +19,17 @@ use sr_event_async::{CHILD, Engine, ScopeOwner, Source as ReadySource, TIMER};
 use sr_event_dispatch::{Handler, Router};
 
 mod color;
+mod schemes;
 mod input;
+mod preferences;
+mod options;
 mod screen;
 mod sixel;
 mod vt;
 use screen::{BAR_WIDTH, FONT, ROW_HEIGHT, Screen, Style};
 
 mac_toolbox::include_resource_ids!();
-use resources::commands::{NEW_SHELL, OPEN_COMMAND, QUIT, SEND_EOF};
+use resources::commands::{NEW_SHELL, OPEN_COMMAND, OPTIONS, QUIT, SEND_EOF};
 
 const CLI_FOLDER: &str = "/Applications/Utility/Cli";
 const PIPE_BYTES: usize = 4096;
@@ -970,6 +973,12 @@ fn main() -> Result<(), Error>
     let system = System::new()?;
     system.menus().clear()?;
     system.menus().install_menu_resource(ResourceScope::Application, 128)?;
+    let (mut settings, load_error) = match preferences::Settings::load(&system)
+    {
+        Ok(settings) => (settings, None),
+        Err(error) => (preferences::Settings::default(), Some(error))
+    };
+    let mut options_window = None;
     let mut location = None;
     let engine = Engine::new(&system)?;
     let app_scope = ScopeOwner::new(engine.notifier());
@@ -979,6 +988,16 @@ fn main() -> Result<(), Error>
     if sessions.is_empty() && !system.processes().opened_for_documents()?
     {
         add_session(&system, &engine, &app_scope, &mut sessions, LaunchTarget::Shell, "Shelly")?;
+    }
+    for row in &sessions
+    {
+        row.target.borrow_mut().output.apply_scheme(settings.selected()?);
+    }
+    if let Some(error) = load_error
+    {
+        let dialog = options::Options::open(&system, &settings)?;
+        dialog.error(error)?;
+        options_window = Some(dialog);
     }
     system.log("TERMINAL_READY\n")?;
     let mut launcher = Launcher::default();
@@ -1099,6 +1118,7 @@ fn main() -> Result<(), Error>
             {
                 QUIT =>
                 {
+                    options_window.take();
                     quitting = true;
                     if let Some(command) = &mut launcher.retiring
                     {
@@ -1125,6 +1145,17 @@ fn main() -> Result<(), Error>
                                 &mut sessions,
                                 LaunchTarget::Shell,
                                 "Shelly")?;
+                }
+                OPTIONS =>
+                {
+                    if let Some(dialog) = &options_window
+                    {
+                        system.select_window(dialog.id())?;
+                    }
+                    else
+                    {
+                        options_window = Some(options::Options::open(&system, &settings)?);
+                    }
                 }
                 OPEN_COMMAND =>
                 {
@@ -1157,6 +1188,31 @@ fn main() -> Result<(), Error>
                 _ => ()
             }
         }
+        if let Some(dialog) = &mut options_window
+        {
+            match dialog.handle(&system, &event, position)?
+            {
+                options::Outcome::Pending => (),
+                options::Outcome::Cancel =>
+                {
+                    options_window.take();
+                }
+                options::Outcome::Apply(index) =>
+                {
+                    let mut next = settings.clone();
+                    next.scheme = schemes::SCHEMES.get(index).ok_or(Error::BadArgument)?.id.into();
+                    match next.save(&system)
+                    {
+                        Ok(()) =>
+                        {
+                            settings = next;
+                            options_window.take();
+                        }
+                        Err(error) => dialog.error(error)?
+                    }
+                }
+            }
+        }
         let send_eof = selection.is_some_and(|selection| selection.command == SEND_EOF);
         let key_target = if send_eof
                             || selection.is_none() && matches!(event, Event::KeyDown { .. })
@@ -1170,6 +1226,15 @@ fn main() -> Result<(), Error>
         // Install completed launches before servicing this event's sessions.
         // A child's first output/query can then be consumed on its wake event.
         launcher.poll_completion(&system, &mut sessions, retiring_ready)?;
+        for row in &sessions
+        {
+            let mut session = row.target.borrow_mut();
+            if !session.closing && session.output.scheme_id() != settings.scheme
+            {
+                session.output.apply_scheme(settings.selected()?);
+                session.repaint(&system)?;
+            }
+        }
         let target = if send_eof
         {
             key_target

@@ -1,0 +1,39 @@
+{
+  "name": "Nord",
+  "foreground": 14212841,
+  "background": 3028032,
+  "cursor": 14212841,
+  "ansi": [
+    3883602,
+    12542314,
+    10731148,
+    15453067,
+    8495553,
+    11833005,
+    8962256,
+    15067632,
+    5002858,
+    12542314,
+    10731148,
+    15453067,
+    8495553,
+    11833005,
+    9419963,
+    15527924
+  ],
+  "license": "MIT",
+  "retrieved": "2026-11-10",
+  "sources": [
+    {
+      "sha": "b52b087055cef5240dd05862bc6e28d47cba8d52",
+      "display_url": "https://github.com/nordtheme/alacritty/blob/main/src/nord.yaml",
+      "display_title": "nord.yaml"
+    },
+    {
+      "sha": "996f8fb61226844c6bbd2167a8b1a118be10609f",
+      "display_url": "https://github.com/nordtheme/alacritty/blob/main/license",
+      "display_title": "license"
+    }
+  ],
+  "conversion": "Direct upstream hexadecimal RGB values from Alacritty theme; no calibrated-RGB conversion"
+}

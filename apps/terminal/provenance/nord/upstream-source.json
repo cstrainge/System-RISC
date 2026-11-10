@@ -1,0 +1,7 @@
+{
+  "content": "# Copyright (c) 2016-present Sven Greb <development@svengreb.de>\n# This source code is licensed under the MIT license found in the license file.\n\ncolors:\n  primary:\n    background: \"#2e3440\"\n    foreground: \"#d8dee9\"\n    dim_foreground: \"#a5abb6\"\n  cursor:\n    text: \"#2e3440\"\n    cursor: \"#d8dee9\"\n  vi_mode_cursor:\n    text: \"#2e3440\"\n    cursor: \"#d8dee9\"\n  selection:\n    text: CellForeground\n    background: \"#4c566a\"\n  search:\n    matches:\n      foreground: CellBackground\n      background: \"#88c0d0\"\n    bar:\n      background: \"#434c5e\"\n      foreground: \"#d8dee9\"\n  normal:\n    black: \"#3b4252\"\n    red: \"#bf616a\"\n    green: \"#a3be8c\"\n    yellow: \"#ebcb8b\"\n    blue: \"#81a1c1\"\n    magenta: \"#b48ead\"\n    cyan: \"#88c0d0\"\n    white: \"#e5e9f0\"\n  bright:\n    black: \"#4c566a\"\n    red: \"#bf616a\"\n    green: \"#a3be8c\"\n    yellow: \"#ebcb8b\"\n    blue: \"#81a1c1\"\n    magenta: \"#b48ead\"\n    cyan: \"#8fbcbb\"\n    white: \"#eceff4\"\n  dim:\n    black: \"#373e4d\"\n    red: \"#94545d\"\n    green: \"#809575\"\n    yellow: \"#b29e75\"\n    blue: \"#68809a\"\n    magenta: \"#8c738c\"\n    cyan: \"#6d96a5\"\n    white: \"#aeb3bb\"\n",
+  "encoding": "utf-8",
+  "sha": "b52b087055cef5240dd05862bc6e28d47cba8d52",
+  "display_url": "https://github.com/nordtheme/alacritty/blob/main/src/nord.yaml",
+  "display_title": "nord.yaml"
+}

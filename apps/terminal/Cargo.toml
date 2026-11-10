@@ -11,6 +11,8 @@ test = false
 bench = false
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
 mac-toolbox.workspace = true
 sr-event-async.workspace = true
 sr-event-dispatch.workspace = true

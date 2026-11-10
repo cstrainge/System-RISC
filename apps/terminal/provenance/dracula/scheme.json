@@ -1,0 +1,39 @@
+{
+  "name": "Dracula",
+  "foreground": 16316658,
+  "background": 2632246,
+  "cursor": 16316658,
+  "ansi": [
+    2171436,
+    16733525,
+    5307003,
+    15858316,
+    12424185,
+    16742854,
+    9169405,
+    16316658,
+    6451876,
+    16739950,
+    6946708,
+    16777125,
+    14068991,
+    16749279,
+    10813439,
+    16777215
+  ],
+  "license": "MIT",
+  "retrieved": "2026-11-10",
+  "sources": [
+    {
+      "sha": "0a56c295f2255ef3f212b428c17cf075b0ae6a54",
+      "display_url": "https://github.com/dracula/alacritty/blob/master/dracula.toml",
+      "display_title": "dracula.toml"
+    },
+    {
+      "sha": "7c7971f3a4ed4acb8382511324448435f02bea33",
+      "display_url": "https://github.com/dracula/alacritty/blob/master/LICENSE",
+      "display_title": "LICENSE"
+    }
+  ],
+  "conversion": "Direct upstream hexadecimal RGB values from Alacritty theme; no calibrated-RGB conversion"
+}

@@ -36,6 +36,12 @@
             "enabled": true,
             "key": "D"
           },
+          {
+            "text": "Options…",
+            "command": "opts",
+            "command_symbol": "OPTIONS",
+            "enabled": true
+          },
           "-",
           {
             "text": "Quit",

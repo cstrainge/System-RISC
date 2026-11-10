@@ -1,0 +1,43 @@
+{
+  "name": "Catppuccin Mocha",
+  "foreground": 13489908,
+  "background": 1973806,
+  "cursor": 16113884,
+  "ansi": [
+    4540250,
+    15961000,
+    10937249,
+    16376495,
+    9024762,
+    16106215,
+    9757397,
+    12239582,
+    5790576,
+    15961000,
+    10937249,
+    16376495,
+    9024762,
+    16106215,
+    9757397,
+    10923464
+  ],
+  "indexed_overrides": {
+    "16": 16429959,
+    "17": 16113884
+  },
+  "license": "MIT",
+  "retrieved": "2026-11-10",
+  "sources": [
+    {
+      "sha": "7762dcdbdfa82b11cb31f59a77cf10099dc09997",
+      "display_url": "https://github.com/catppuccin/alacritty/blob/main/catppuccin-mocha.toml",
+      "display_title": "catppuccin-mocha.toml"
+    },
+    {
+      "sha": "006383b861d7a9b11ebbaf84ec679b0e3c189bac",
+      "display_url": "https://github.com/catppuccin/alacritty/blob/main/LICENSE",
+      "display_title": "LICENSE"
+    }
+  ],
+  "conversion": "Exact upstream hexadecimal RGB; retain explicit indexed overrides16/17"
+}

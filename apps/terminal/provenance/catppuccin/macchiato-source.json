@@ -1,0 +1,8 @@
+{
+  "id": "macchiato",
+  "content": "[colors.primary]\nbackground = \"#24273a\"\nforeground = \"#cad3f5\"\ndim_foreground = \"#8087a2\"\nbright_foreground = \"#cad3f5\"\n\n[colors.cursor]\ntext = \"#24273a\"\ncursor = \"#f4dbd6\"\n\n[colors.vi_mode_cursor]\ntext = \"#24273a\"\ncursor = \"#b7bdf8\"\n\n[colors.search.matches]\nforeground = \"#24273a\"\nbackground = \"#a5adcb\"\n\n[colors.search.focused_match]\nforeground = \"#24273a\"\nbackground = \"#a6da95\"\n\n[colors.footer_bar]\nforeground = \"#24273a\"\nbackground = \"#a5adcb\"\n\n[colors.hints.start]\nforeground = \"#24273a\"\nbackground = \"#eed49f\"\n\n[colors.hints.end]\nforeground = \"#24273a\"\nbackground = \"#a5adcb\"\n\n[colors.selection]\ntext = \"#24273a\"\nbackground = \"#f4dbd6\"\n\n[colors.normal]\nblack = \"#494d64\"\nred = \"#ed8796\"\ngreen = \"#a6da95\"\nyellow = \"#eed49f\"\nblue = \"#8aadf4\"\nmagenta = \"#f5bde6\"\ncyan = \"#8bd5ca\"\nwhite = \"#b8c0e0\"\n\n[colors.bright]\nblack = \"#5b6078\"\nred = \"#ed8796\"\ngreen = \"#a6da95\"\nyellow = \"#eed49f\"\nblue = \"#8aadf4\"\nmagenta = \"#f5bde6\"\ncyan = \"#8bd5ca\"\nwhite = \"#a5adcb\"\n\n[[colors.indexed_colors]]\nindex = 16\ncolor = \"#f5a97f\"\n\n[[colors.indexed_colors]]\nindex = 17\ncolor = \"#f4dbd6\"\n",
+  "encoding": "utf-8",
+  "sha": "88c07a533bb686ecec24dc32e82059eef2696b81",
+  "display_url": "https://github.com/catppuccin/alacritty/blob/main/catppuccin-macchiato.toml",
+  "display_title": "catppuccin-macchiato.toml"
+}

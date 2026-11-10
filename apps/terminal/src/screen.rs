@@ -6,7 +6,7 @@ use mac_toolbox::{Error, Point, Rect,
                               fonts::FontSelection,
                               graphics::{GraphicsPort, TransferMode}}};
 
-use crate::color::{self, Color, Palette};
+use crate::color::{Color, Palette};
 
 pub(super) const ROW_HEIGHT: i16 = 16;
 // The scrollbar occupies 15 content pixels plus the window's right border.
@@ -553,19 +553,72 @@ impl Screen
         }
     }
 
-    pub fn reset_palette(&mut self)
+    pub fn scheme_id(&self) -> &'static str
     {
-        let mut changed = false;
-        for (index, slot) in self.palette.indexed.iter_mut().enumerate()
-        {
-            let value = color::indexed(index as u8);
-            changed |= *slot != value;
-            *slot = value;
-        }
+        self.palette.scheme.id
+    }
+
+    pub fn apply_scheme(&mut self, scheme: &'static crate::schemes::Scheme)
+    {
+        let next = Palette::from_scheme(scheme);
+        let changed = self.palette.indexed != next.indexed
+                      || self.palette.foreground != next.foreground
+                      || self.palette.background != next.background
+                      || self.palette.cursor != next.cursor;
+        self.palette = next;
         if changed
         {
             self.all();
         }
+    }
+
+    pub fn reset_palette_color(&mut self, index: u8)
+    {
+        let value = self.palette.default_indexed(index);
+        self.set_palette_color(index, value);
+    }
+
+    pub fn reset_palette(&mut self)
+    {
+        let defaults = Palette::from_scheme(self.palette.scheme);
+        if self.palette.indexed != defaults.indexed
+        {
+            self.palette.indexed = defaults.indexed;
+            self.all();
+        }
+    }
+
+    pub fn reset_dynamic_color(&mut self, foreground: bool)
+    {
+        let value = if foreground
+        {
+            self.palette.scheme.foreground
+        }
+        else
+        {
+            self.palette.scheme.background
+        };
+        self.set_dynamic_color(foreground, value);
+    }
+
+    pub fn cursor_color(&self) -> u32
+    {
+        self.palette.cursor
+    }
+
+    pub fn set_cursor_color(&mut self, value: u32)
+    {
+        if self.palette.cursor != value
+        {
+            self.palette.cursor = value;
+            let y = self.grid().y;
+            self.damage(y, y + 1);
+        }
+    }
+
+    pub fn reset_cursor_color(&mut self)
+    {
+        self.set_cursor_color(self.palette.scheme.cursor);
     }
 
     pub fn dynamic_color(&self, foreground: bool) -> u32
@@ -612,9 +665,13 @@ impl Screen
             let row = if line < history { &self.history[line] } else { &grid.rows[line - history] };
             let cell_at = |x: usize| {
                 let mut cell = row.get(x).copied().unwrap_or(Cell::blank(Style::NORMAL));
-                // Reverse video belongs to every retained cell; the cursor
-                // toggles only its own cell in the live viewport.
-                cell.style.reverse ^= cursor && self.view == 0 && y == grid.y && x == cursor_x;
+                // Cursor colour is a live overlay, never retained in cell styles.
+                if cursor && self.view == 0 && y == grid.y && x == cursor_x
+                {
+                    cell.style.fg = Color::rgb(self.palette.background);
+                    cell.style.bg = Color::rgb(self.palette.cursor);
+                    cell.style.reverse = false;
+                }
                 cell
             };
             let mut start = 0;

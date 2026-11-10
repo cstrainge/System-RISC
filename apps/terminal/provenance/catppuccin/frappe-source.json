@@ -1,0 +1,8 @@
+{
+  "id": "frappe",
+  "content": "[colors.primary]\nbackground = \"#303446\"\nforeground = \"#c6d0f5\"\ndim_foreground = \"#838ba7\"\nbright_foreground = \"#c6d0f5\"\n\n[colors.cursor]\ntext = \"#303446\"\ncursor = \"#f2d5cf\"\n\n[colors.vi_mode_cursor]\ntext = \"#303446\"\ncursor = \"#babbf1\"\n\n[colors.search.matches]\nforeground = \"#303446\"\nbackground = \"#a5adce\"\n\n[colors.search.focused_match]\nforeground = \"#303446\"\nbackground = \"#a6d189\"\n\n[colors.footer_bar]\nforeground = \"#303446\"\nbackground = \"#a5adce\"\n\n[colors.hints.start]\nforeground = \"#303446\"\nbackground = \"#e5c890\"\n\n[colors.hints.end]\nforeground = \"#303446\"\nbackground = \"#a5adce\"\n\n[colors.selection]\ntext = \"#303446\"\nbackground = \"#f2d5cf\"\n\n[colors.normal]\nblack = \"#51576d\"\nred = \"#e78284\"\ngreen = \"#a6d189\"\nyellow = \"#e5c890\"\nblue = \"#8caaee\"\nmagenta = \"#f4b8e4\"\ncyan = \"#81c8be\"\nwhite = \"#b5bfe2\"\n\n[colors.bright]\nblack = \"#626880\"\nred = \"#e78284\"\ngreen = \"#a6d189\"\nyellow = \"#e5c890\"\nblue = \"#8caaee\"\nmagenta = \"#f4b8e4\"\ncyan = \"#81c8be\"\nwhite = \"#a5adce\"\n\n[[colors.indexed_colors]]\nindex = 16\ncolor = \"#ef9f76\"\n\n[[colors.indexed_colors]]\nindex = 17\ncolor = \"#f2d5cf\"\n",
+  "encoding": "utf-8",
+  "sha": "3e6fac11bd2447ffb50e8dcfce3e9e558dc15d9b",
+  "display_url": "https://github.com/catppuccin/alacritty/blob/main/catppuccin-frappe.toml",
+  "display_title": "catppuccin-frappe.toml"
+}

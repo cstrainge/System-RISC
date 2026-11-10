@@ -1,0 +1,43 @@
+{
+  "name": "Catppuccin Macchiato",
+  "foreground": 13292533,
+  "background": 2369338,
+  "cursor": 16047062,
+  "ansi": [
+    4803940,
+    15566742,
+    10934933,
+    15651999,
+    9088500,
+    16104934,
+    9164234,
+    12108000,
+    5988472,
+    15566742,
+    10934933,
+    15651999,
+    9088500,
+    16104934,
+    9164234,
+    10857931
+  ],
+  "indexed_overrides": {
+    "16": 16099711,
+    "17": 16047062
+  },
+  "license": "MIT",
+  "retrieved": "2026-11-10",
+  "sources": [
+    {
+      "sha": "88c07a533bb686ecec24dc32e82059eef2696b81",
+      "display_url": "https://github.com/catppuccin/alacritty/blob/main/catppuccin-macchiato.toml",
+      "display_title": "catppuccin-macchiato.toml"
+    },
+    {
+      "sha": "006383b861d7a9b11ebbaf84ec679b0e3c189bac",
+      "display_url": "https://github.com/catppuccin/alacritty/blob/main/LICENSE",
+      "display_title": "LICENSE"
+    }
+  ],
+  "conversion": "Exact upstream hexadecimal RGB; retain explicit indexed overrides16/17"
+}

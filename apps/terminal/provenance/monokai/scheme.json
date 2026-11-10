@@ -1,0 +1,45 @@
+{
+  "name": "Monokai",
+  "foreground": 16316658,
+  "background": 2566178,
+  "cursor": 16316656,
+  "ansi": [
+    3355443,
+    12854878,
+    8827947,
+    11777067,
+    6979272,
+    9202632,
+    5680572,
+    14935005,
+    6710886,
+    16328306,
+    10936878,
+    14869038,
+    8493823,
+    11436543,
+    6740463,
+    16316658
+  ],
+  "license": "MIT (VS Code port)",
+  "retrieved": "2026-11-10",
+  "sources": [
+    {
+      "sha": "1f81caf96362c4d7805c2c30f020251d84216194",
+      "display_url": "https://github.com/microsoft/vscode/blob/main/extensions/theme-monokai/themes/monokai-color-theme.json",
+      "display_title": "monokai-color-theme.json"
+    },
+    {
+      "sha": "17e3f937274d9db8d3913fe01955c1da612d5893",
+      "display_url": "https://github.com/microsoft/vscode/blob/main/extensions/theme-monokai/package.json",
+      "display_title": "package.json"
+    },
+    {
+      "sha": "0ac28ee234d232ac0691f39cebf95bf6b2a763a5",
+      "display_url": "https://github.com/microsoft/vscode/blob/main/LICENSE.txt",
+      "display_title": "LICENSE.txt"
+    }
+  ],
+  "provenance": "Monokai palette originated with Wimer Hazenberg. This terminal adaptation is taken from Microsoft's explicitly MIT-licensed theme-monokai package. Its source header identifies the original Monokai basis. Original upstream palette licensing has not been established here; retain that uncertainty in provenance. No Monokai Pro assets used.",
+  "conversion": "ANSI entries preserved; defaults taken from editor foreground/background/cursor roles, hexadecimal RGB unchanged."
+}

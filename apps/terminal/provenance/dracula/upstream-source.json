@@ -1,0 +1,7 @@
+{
+  "content": "# Dracula theme for Alacritty\n# https://draculatheme.com/alacritty\n#\n# Color palette\n# https://spec.draculatheme.com\n#\n# Instructions\n# https://github.com/alacritty/alacritty/blob/master/extra/man/alacritty.5.scd\n\n[colors.primary]\n\nbackground = \"#282a36\"\nforeground = \"#f8f8f2\"\nbright_foreground = \"#ffffff\"\n\n[colors.cursor]\n\ntext = \"#282a36\"\ncursor = \"#f8f8f2\"\n\n[colors.vi_mode_cursor]\n\ntext = \"CellBackground\"\ncursor = \"CellForeground\"\n\n[colors.selection]\n\ntext = \"CellForeground\"\nbackground = \"#44475a\"\n\n[colors.normal]\n\nblack = \"#21222c\"\nred = \"#ff5555\"\ngreen = \"#50fa7b\"\nyellow = \"#f1fa8c\"\nblue = \"#bd93f9\"\nmagenta = \"#ff79c6\"\ncyan = \"#8be9fd\"\nwhite = \"#f8f8f2\"\n\n[colors.bright]\n\nblack = \"#6272a4\"\nred = \"#ff6e6e\"\ngreen = \"#69ff94\"\nyellow = \"#ffffa5\"\nblue = \"#d6acff\"\nmagenta = \"#ff92df\"\ncyan = \"#a4ffff\"\nwhite = \"#ffffff\"\n\n[colors.search.matches]\n\nforeground = \"#44475a\"\nbackground = \"#50fa7b\"\n\n[colors.search.focused_match]\n\nforeground = \"#44475a\"\nbackground = \"#ffb86c\"\n\n[colors.footer_bar]\n\nbackground = \"#282a36\"\nforeground = \"#f8f8f2\"\n\n[colors.hints.start]\n\nforeground = \"#282a36\"\nbackground = \"#f1fa8c\"\n\n[colors.hints.end]\n\nforeground = \"#f1fa8c\"\nbackground = \"#282a36\"\n",
+  "encoding": "utf-8",
+  "sha": "0a56c295f2255ef3f212b428c17cf075b0ae6a54",
+  "display_url": "https://github.com/dracula/alacritty/blob/master/dracula.toml",
+  "display_title": "dracula.toml"
+}

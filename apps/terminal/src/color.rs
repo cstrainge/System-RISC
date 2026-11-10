@@ -19,22 +19,47 @@ impl Color
 }
 const _: () = assert!(core::mem::size_of::<Color>() == 4);
 
-pub(super) const FOREGROUND: u32 = 0xc0c0c0;
-pub(super) const BACKGROUND: u32 = 0;
 
 pub(super) struct Palette
 {
+    pub scheme:     &'static crate::schemes::Scheme,
     pub indexed:    [u32; 256],
     pub foreground: u32,
-    pub background: u32
+    pub background: u32,
+    pub cursor:     u32
 }
 impl Palette
 {
     pub fn new() -> Self
     {
-        Self { indexed:    std::array::from_fn(|index| indexed(index as u8)),
-               foreground: FOREGROUND,
-               background: BACKGROUND }
+        Self::from_scheme(&crate::schemes::SCHEMES[0])
+    }
+
+    pub fn from_scheme(scheme: &'static crate::schemes::Scheme) -> Self
+    {
+        let mut result = Self { scheme,
+                                indexed: std::array::from_fn(|i| indexed(i as u8)),
+                                foreground: scheme.foreground,
+                                background: scheme.background,
+                                cursor: scheme.cursor };
+        result.indexed[..16].copy_from_slice(&scheme.ansi);
+        for &(index, value) in scheme.indexed_overrides
+        {
+            result.indexed[index as usize] = value;
+        }
+        result
+    }
+
+    pub fn default_indexed(&self, index: u8) -> u32
+    {
+        self.scheme
+            .indexed_overrides
+            .iter()
+            .find(|&&(i, _)| i == index)
+            .map(|&(_, value)| value)
+            .unwrap_or_else(|| {
+                if index < 16 { self.scheme.ansi[index as usize] } else { indexed(index) }
+            })
     }
 
     pub fn resolve(&self, color: Color, foreground: bool) -> u32

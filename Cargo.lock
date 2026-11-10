@@ -1632,6 +1632,8 @@ version = "0.1.0"
 dependencies = [
  "mac-build",
  "mac-toolbox",
+ "serde",
+ "serde_json",
  "sr-event-async",
  "sr-event-dispatch",
  "vte",

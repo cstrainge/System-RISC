@@ -1,0 +1,43 @@
+{
+  "name": "Catppuccin Latte",
+  "foreground": 5001065,
+  "background": 15725045,
+  "cursor": 14453368,
+  "ansi": [
+    12370124,
+    13766457,
+    4235307,
+    14650909,
+    1992437,
+    15365835,
+    1544857,
+    6053751,
+    11317438,
+    13766457,
+    4235307,
+    14650909,
+    1992437,
+    15365835,
+    1544857,
+    7106437
+  ],
+  "indexed_overrides": {
+    "16": 16671755,
+    "17": 14453368
+  },
+  "license": "MIT",
+  "retrieved": "2026-11-10",
+  "sources": [
+    {
+      "sha": "e9414adf7c1b2c2ab0ca8ade00bddea4e2f625fe",
+      "display_url": "https://github.com/catppuccin/alacritty/blob/main/catppuccin-latte.toml",
+      "display_title": "catppuccin-latte.toml"
+    },
+    {
+      "sha": "006383b861d7a9b11ebbaf84ec679b0e3c189bac",
+      "display_url": "https://github.com/catppuccin/alacritty/blob/main/LICENSE",
+      "display_title": "LICENSE"
+    }
+  ],
+  "conversion": "Exact upstream hexadecimal RGB; retain explicit indexed overrides16/17"
+}

@@ -310,20 +310,38 @@ impl Perform for Target<'_>
                 {
                     if let Some(index) = number(parameter)
                     {
-                        self.screen.set_palette_color(index, color::indexed(index));
+                        self.screen.reset_palette_color(index);
                     }
                 }
             }
-            b"10" | b"11" =>
+            b"10" | b"11" | b"12" =>
             {
-                let start = if operation == b"10" { 10 } else { 11 };
-                for (offset, spec) in params[1..].iter().enumerate().take(12 - start)
+                let start = if operation == b"10"
+                {
+                    10
+                }
+                else if operation == b"11"
+                {
+                    11
+                }
+                else
+                {
+                    12
+                };
+                for (offset, spec) in params[1..].iter().enumerate().take(13 - start)
                 {
                     let code = start + offset;
                     let foreground = code == 10;
                     if *spec == b"?"
                     {
-                        let value = self.screen.dynamic_color(foreground);
+                        let value = if code == 12
+                        {
+                            self.screen.cursor_color()
+                        }
+                        else
+                        {
+                            self.screen.dynamic_color(foreground)
+                        };
                         self.reply(format!("\x1b]{code};rgb:{:04x}/{:04x}/{:04x}{terminator}",
                                            ((value >> 16) & 255) * 257,
                                            ((value >> 8) & 255) * 257,
@@ -331,12 +349,20 @@ impl Perform for Target<'_>
                     }
                     else if let Some(value) = color::parse(spec)
                     {
-                        self.screen.set_dynamic_color(foreground, value);
+                        if code == 12
+                        {
+                            self.screen.set_cursor_color(value);
+                        }
+                        else
+                        {
+                            self.screen.set_dynamic_color(foreground, value);
+                        }
                     }
                 }
             }
-            b"110" => self.screen.set_dynamic_color(true, color::FOREGROUND),
-            b"111" => self.screen.set_dynamic_color(false, color::BACKGROUND),
+            b"110" => self.screen.reset_dynamic_color(true),
+            b"111" => self.screen.reset_dynamic_color(false),
+            b"112" => self.screen.reset_cursor_color(),
             _ => ()
         }
     }

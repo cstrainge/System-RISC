@@ -1,0 +1,38 @@
+{
+  "name": "Tomorrow Night",
+  "foreground": 12961990,
+  "background": 1908513,
+  "cursor": 11448237,
+  "ansi": [
+    0,
+    9511462,
+    7833856,
+    11434752,
+    1910164,
+    6826651,
+    2844241,
+    9606547,
+    6710886,
+    13395558,
+    11910504,
+    15779444,
+    8495806,
+    11703483,
+    9092791,
+    15526892
+  ],
+  "license": "MIT",
+  "retrieved": "2026-11-10",
+  "sources": [
+    {
+      "sha": "56e4e56a0e5ea4283a53f461b57f5fe1e8ccf4e4",
+      "display_url": "https://github.com/chriskempson/tomorrow-theme/blob/master/Xdefaults/Tomorrow%20Night",
+      "display_title": "Tomorrow Night"
+    },
+    {
+      "sha": "0e689d0a004eb37155ef430fe615a6e27209d30f",
+      "display_url": "https://github.com/chriskempson/tomorrow-theme/blob/master/LICENSE.md"
+    }
+  ],
+  "conversion": "Exact upstream Xdefaults RGB values; no substitution from the iTerm variant"
+}

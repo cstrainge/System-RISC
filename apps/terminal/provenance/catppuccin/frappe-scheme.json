@@ -1,0 +1,43 @@
+{
+  "name": "Catppuccin Frappe",
+  "foreground": 13029621,
+  "background": 3159110,
+  "cursor": 15914447,
+  "ansi": [
+    5330797,
+    15172228,
+    10932617,
+    15059088,
+    9218798,
+    16038116,
+    8505534,
+    11911138,
+    6449280,
+    15172228,
+    10932617,
+    15059088,
+    9218798,
+    16038116,
+    8505534,
+    10857934
+  ],
+  "indexed_overrides": {
+    "16": 15703926,
+    "17": 15914447
+  },
+  "license": "MIT",
+  "retrieved": "2026-11-10",
+  "sources": [
+    {
+      "sha": "3e6fac11bd2447ffb50e8dcfce3e9e558dc15d9b",
+      "display_url": "https://github.com/catppuccin/alacritty/blob/main/catppuccin-frappe.toml",
+      "display_title": "catppuccin-frappe.toml"
+    },
+    {
+      "sha": "006383b861d7a9b11ebbaf84ec679b0e3c189bac",
+      "display_url": "https://github.com/catppuccin/alacritty/blob/main/LICENSE",
+      "display_title": "LICENSE"
+    }
+  ],
+  "conversion": "Exact upstream hexadecimal RGB; retain explicit indexed overrides16/17"
+}
