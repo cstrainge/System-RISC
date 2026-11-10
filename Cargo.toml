@@ -11,6 +11,7 @@ members = [
     "crates/mac-devicetree",
     "crates/mac-definition",
     "crates/sr-control-reflow-handling",
+    "crates/sr-files-list",
     "crates/mac-definition-macros",
     "crates/mac-module",
     "crates/mac-scheduler-interface",
@@ -91,6 +92,7 @@ mac-riscv-pages = { path = "crates/mac-riscv-pages" }
 mac-kernel-model = { path = "crates/mac-kernel-model" }
 mac-definition = { path = "crates/mac-definition" }
 sr-control-reflow-handling = { path = "crates/sr-control-reflow-handling" }
+sr-files-list = { path = "crates/sr-files-list" }
 mac-file-types = { path = "crates/mac-file-types" }
 mac-module = { path = "crates/mac-module" }
 mac-scheduler-interface = { path = "crates/mac-scheduler-interface" }

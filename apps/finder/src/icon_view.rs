@@ -1,5 +1,5 @@
 //! Finder's large-icon geometry and presentation. System supplies only primitives.
-use mac_toolbox::{Cnid, Error, Point, Rect, VolumeId};
+use mac_toolbox::{Error, Point, Rect};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const GRID_WIDTH: i16 = 64;
@@ -326,29 +326,8 @@ pub trait Drawing
     fn icon(&mut self, id: Icon, name: &str, bounds: Rect, state: State) -> Result<(), Error>;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Icon
-{
-    Resource(i16),
-    Application
-    {
-        volume:   VolumeId,
-        cnid:     Cnid,
-        fallback: i16
-    },
-    Associated
-    {
-        file_type: mac_toolbox::TypeCode,
-        fallback:  i16
-    }
-}
-impl From<i16> for Icon
-{
-    fn from(id: i16) -> Self
-    {
-        Self::Resource(id)
-    }
-}
+/// The icon descriptor is decided in one place for every file list.
+pub use sr_files_list::rules::Icon;
 
 pub fn label_bounds(icon: Rect, width: i16) -> Rect
 {

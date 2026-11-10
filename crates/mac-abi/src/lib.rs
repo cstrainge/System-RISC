@@ -385,6 +385,8 @@ pub mod textedit;
 pub mod menus;
 pub mod memory;
 pub mod images;
+pub mod icons;
+
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]

@@ -1435,6 +1435,7 @@ dependencies = [
  "mac-build",
  "mac-toolbox",
  "spinning_top",
+ "sr-files-list",
  "unicode-segmentation",
 ]
 
@@ -2767,6 +2768,14 @@ version = "0.1.0"
 dependencies = [
  "mac-toolbox",
  "sr-event-async",
+]
+
+[[package]]
+name = "sr-files-list"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-toolbox",
 ]
 
 [[package]]

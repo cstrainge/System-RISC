@@ -1,0 +1,11 @@
+
+[package]
+name = "sr-files-list"
+description = "A Rust crate for managing and listing files and their icons."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mac-abi.workspace = true
+mac-toolbox.workspace = true

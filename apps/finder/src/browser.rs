@@ -11,8 +11,10 @@ use mac_toolbox::{System,
                   files::{CatalogInfo, FolderState, ROOT_ID, VolumeInfo},
                   quickdraw::{fonts::FontSelection,
                               graphics::GraphicsPort,
-                              icons::{IconFlags, standard}},
+                              icons::IconFlags},
                   *};
+
+pub(crate) use sr_files_list::rules::{entry_icon, visible, volume_icon};
 
 use crate::{cache,
             icon_view::{self, Caption, Drawing, Icon, Layout, State},
@@ -278,79 +280,6 @@ impl Drawing for Port<'_, '_>
             }
         };
         icons.plot(self.graphics.target(), id, bounds, flags)
-    }
-}
-fn visible(entry: &CatalogInfo) -> bool
-{
-    !entry.finder_flags().contains(files::FinderFlags::INVISIBLE)
-    && !(entry.parent == ROOT_ID
-         && entry.is_directory()
-         && ["Trash", "Desktop Folder"].contains(&entry.name()))
-}
-fn volume_icon(volume: &VolumeInfo) -> i16
-{
-    if volume.icon_kind == TypeCode::new(*b"ICN#") { volume.icon_id } else { standard::FLOPPY }
-}
-fn folder_icon(volume: &VolumeInfo, entry: &CatalogInfo) -> i16
-{
-    let blessed = volume.blessed_folder;
-    if entry.id == blessed
-    {
-        return standard::SYSTEM_FOLDER;
-    }
-    if entry.parent == blessed
-    {
-        // The System's own folders are recognised by name; the table lives with
-        // the constants it returns so every caller shares it.
-        if let Some(id) = standard::for_blessed_folder(entry.name())
-        {
-            return id;
-        }
-    }
-    standard::FOLDER
-}
-pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &CatalogInfo) -> Icon
-{
-    if entry.id == ROOT_ID
-    {
-        return volume_icon(volume).into();
-    }
-    if entry.is_directory()
-    {
-        return folder_icon(volume, entry).into();
-    }
-    // Original System generic stationery family: stacked paper with the
-    // lower-right fold. App-specific document/pad compositing is separate.
-    if entry.is_stationery()
-    {
-        return (-3985).into();
-    }
-    let fallback = system.quickdraw()
-                         .icons()
-                         .for_file(entry.creator, entry.file_type)
-                         .unwrap_or(if entry.file_type == TypeCode::new(*b"APPL")
-                                       || entry.file_type == TypeCode::new(*b"FNDR")
-                                    {
-                                        standard::APPLICATION
-                                    }
-                                    else
-                                    {
-                                        standard::DOCUMENT
-                                    });
-    // Extensions arrive self-decorated: like applications, an INIT file's
-    // own BNDL/FREF icon family is its icon, with the generic extension
-    // puzzle as fallback. The associated-type path below never opens the
-    // file's own fork, so without this every extension shows the generic.
-    if entry.file_type == TypeCode::new(*b"APPL") || entry.file_type == TypeCode::new(*b"INIT")
-    {
-        Icon::Application { volume: volume.id,
-                            cnid: entry.id,
-                            fallback }
-    }
-    else
-    {
-        Icon::Associated { file_type: entry.file_type,
-                           fallback }
     }
 }
 // The 16-pixel controls overlap the content frame and size-box borders by 1px.
