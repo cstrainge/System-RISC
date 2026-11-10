@@ -6,6 +6,8 @@ use mac_toolbox::{Error, Point, Rect,
                               fonts::FontSelection,
                               graphics::{GraphicsPort, TransferMode}}};
 
+use crate::color::{self, Color, Palette};
+
 pub(super) const ROW_HEIGHT: i16 = 16;
 // The scrollbar occupies 15 content pixels plus the window's right border.
 pub(super) const BAR_WIDTH: i16 = 15;
@@ -20,17 +22,17 @@ const PICTURE_PIXELS: usize = 2 * 1024 * 1024;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Style
 {
-    pub fg:      u32,
-    pub bg:      u32,
+    pub fg:      Color,
+    pub bg:      Color,
     pub reverse: bool
 }
 impl Style
 {
-    pub const ERROR: Self = Self { fg:      0xff7777,
-                                   bg:      0,
+    pub const ERROR: Self = Self { fg:      Color::rgb(0xff7777),
+                                   bg:      Color::DEFAULT,
                                    reverse: false };
-    pub const NORMAL: Self = Self { fg:      0xc0c0c0,
-                                    bg:      0,
+    pub const NORMAL: Self = Self { fg:      Color::DEFAULT,
+                                    bg:      Color::DEFAULT,
                                     reverse: false };
 }
 
@@ -114,6 +116,7 @@ impl Grid
 pub(super) struct Screen
 {
     main:                 Grid,
+    palette:              Palette,
     alternate:            Option<Grid>,
     history:              VecDeque<Vec<Cell>>,
     view:                 usize,
@@ -135,6 +138,7 @@ impl Screen
         let cell = cell.max(1);
         let (cols, rows) = dimensions(cell, width, height);
         Self { main: Grid::new(cols, rows),
+               palette: Palette::new(),
                alternate: None,
                history: VecDeque::new(),
                view: 0,
@@ -529,6 +533,57 @@ impl Screen
                        if bottom == self.rows { self.height } else { bottom as i16 * ROW_HEIGHT }))
     }
 
+    pub fn resolve_color(&self, color: Color, foreground: bool) -> u32
+    {
+        self.palette.resolve(color, foreground)
+    }
+
+    pub fn palette_color(&self, index: u8) -> u32
+    {
+        self.palette.indexed[index as usize]
+    }
+
+    pub fn set_palette_color(&mut self, index: u8, value: u32)
+    {
+        let slot = &mut self.palette.indexed[index as usize];
+        if *slot != value
+        {
+            *slot = value;
+            self.all();
+        }
+    }
+
+    pub fn reset_palette(&mut self)
+    {
+        let mut changed = false;
+        for (index, slot) in self.palette.indexed.iter_mut().enumerate()
+        {
+            let value = color::indexed(index as u8);
+            changed |= *slot != value;
+            *slot = value;
+        }
+        if changed
+        {
+            self.all();
+        }
+    }
+
+    pub fn dynamic_color(&self, foreground: bool) -> u32
+    {
+        self.palette.resolve(Color::DEFAULT, foreground)
+    }
+
+    pub fn set_dynamic_color(&mut self, foreground: bool, value: u32)
+    {
+        let slot =
+            if foreground { &mut self.palette.foreground } else { &mut self.palette.background };
+        if *slot != value
+        {
+            *slot = value;
+            self.all();
+        }
+    }
+
     pub fn paint(&self, port: GraphicsPort<'_>, damage: Rect) -> Result<(), Error>
     {
         let right = self.width.saturating_sub(BAR_WIDTH);
@@ -539,7 +594,7 @@ impl Screen
         }
         port.reset()?;
         port.clip_rect(clip)?;
-        port.colors(0, 0)?;
+        port.colors(self.palette.background, self.palette.background)?;
         port.paint_rect(clip)?;
         let grid = self.grid();
         let cursor_x = grid.x.min(self.cols - 1);
@@ -559,10 +614,7 @@ impl Screen
                 let mut cell = row.get(x).copied().unwrap_or(Cell::blank(Style::NORMAL));
                 // Reverse video belongs to every retained cell; the cursor
                 // toggles only its own cell in the live viewport.
-                if cell.style.reverse ^ (cursor && self.view == 0 && y == grid.y && x == cursor_x)
-                {
-                    std::mem::swap(&mut cell.style.fg, &mut cell.style.bg);
-                }
+                cell.style.reverse ^= cursor && self.view == 0 && y == grid.y && x == cursor_x;
                 cell
             };
             let mut start = 0;
@@ -582,9 +634,15 @@ impl Screen
                     end += 1;
                 }
                 let left = start as i16 * self.cell;
-                if style.bg != 0
+                let mut foreground = self.palette.resolve(style.fg, true);
+                let mut background = self.palette.resolve(style.bg, false);
+                if style.reverse
                 {
-                    port.colors(style.bg, 0)?;
+                    std::mem::swap(&mut foreground, &mut background);
+                }
+                if background != self.palette.background
+                {
+                    port.colors(background, self.palette.background)?;
                     port.paint_rect(Rect::new(left,
                                               top,
                                               end as i16 * self.cell,
@@ -596,7 +654,7 @@ impl Screen
                               Point { h: left,
                                       v: top + 12 },
                               text.trim_end_matches(' '),
-                              style.fg)?;
+                              foreground)?;
                 }
                 start = end;
             }

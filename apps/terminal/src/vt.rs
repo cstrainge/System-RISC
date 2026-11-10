@@ -4,7 +4,8 @@ use std::collections::VecDeque;
 use mac_toolbox::Error;
 use vte::{Params, Parser, Perform};
 
-use crate::{input,
+use crate::{color::{self, Color, rgb},
+            input,
             screen::{Screen, Style},
             sixel};
 
@@ -76,11 +77,13 @@ impl Target<'_>
                 7 | 27 => self.style.reverse = code == 7,
                 30..=37 | 90..=97 =>
                 {
-                    self.style.fg = palette(if code < 40 { code - 30 } else { code - 82 })
+                    self.style.fg =
+                        Color::indexed((if code < 40 { code - 30 } else { code - 82 }) as u8)
                 }
                 40..=47 | 100..=107 =>
                 {
-                    self.style.bg = palette(if code < 50 { code - 40 } else { code - 92 })
+                    self.style.bg =
+                        Color::indexed((if code < 50 { code - 40 } else { code - 92 }) as u8)
                 }
                 39 => self.style.fg = self.default.fg,
                 49 => self.style.bg = self.default.bg,
@@ -91,7 +94,10 @@ impl Target<'_>
                     let mut next = || inline.next().or_else(|| values.next().map(|g| g[0]));
                     let color = match mode
                     {
-                        Some(5) => next().filter(|v| *v <= 255).map(palette),
+                        Some(5) =>
+                        {
+                            next().filter(|v| *v <= 255).map(|value| Color::indexed(value as u8))
+                        }
                         Some(2) =>
                         {
                             if group.len() == 6
@@ -102,7 +108,7 @@ impl Target<'_>
                             {
                                 (Some(r), Some(g), Some(b)) if r <= 255 && g <= 255 && b <= 255 =>
                                 {
-                                    Some(rgb(r as u32, g as u32, b as u32))
+                                    Some(Color::rgb(rgb(r as u32, g as u32, b as u32)))
                                 }
                                 _ => None
                             }
@@ -247,6 +253,94 @@ impl Perform for Target<'_>
         }
     }
 
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool)
+    {
+        fn number(bytes: &[u8]) -> Option<u8>
+        {
+            if bytes.is_empty()
+            {
+                return None;
+            }
+            let mut value = 0u8;
+            for &byte in bytes
+            {
+                if !byte.is_ascii_digit()
+                {
+                    return None;
+                }
+                value = value.checked_mul(10)?.checked_add(byte - b'0')?;
+            }
+            Some(value)
+        }
+        let Some(&operation) = params.first()
+        else
+        {
+            return;
+        };
+        let terminator = if bell_terminated { "\x07" } else { "\x1b\\" };
+        match operation
+        {
+            b"4" =>
+            {
+                for pair in params[1..].chunks_exact(2)
+                {
+                    let Some(index) = number(pair[0])
+                    else
+                    {
+                        continue;
+                    };
+                    if pair[1] == b"?"
+                    {
+                        let value = self.screen.palette_color(index);
+                        self.reply(format!("\x1b]4;{index};rgb:{:04x}/{:04x}/{:04x}{terminator}",
+                                           ((value >> 16) & 255) * 257,
+                                           ((value >> 8) & 255) * 257,
+                                           (value & 255) * 257).as_bytes());
+                    }
+                    else if let Some(value) = color::parse(pair[1])
+                    {
+                        self.screen.set_palette_color(index, value);
+                    }
+                }
+            }
+            b"104" if params.len() == 1 => self.screen.reset_palette(),
+            b"104" =>
+            {
+                for parameter in &params[1..]
+                {
+                    if let Some(index) = number(parameter)
+                    {
+                        self.screen.set_palette_color(index, color::indexed(index));
+                    }
+                }
+            }
+            b"10" | b"11" =>
+            {
+                let start = if operation == b"10" { 10 } else { 11 };
+                for (offset, spec) in params[1..].iter().enumerate().take(12 - start)
+                {
+                    let code = start + offset;
+                    let foreground = code == 10;
+                    if *spec == b"?"
+                    {
+                        let value = self.screen.dynamic_color(foreground);
+                        self.reply(format!("\x1b]{code};rgb:{:04x}/{:04x}/{:04x}{terminator}",
+                                           ((value >> 16) & 255) * 257,
+                                           ((value >> 8) & 255) * 257,
+                                           (value & 255) * 257).as_bytes());
+                    }
+                    else if let Some(value) = color::parse(spec)
+                    {
+                        self.screen.set_dynamic_color(foreground, value);
+                    }
+                }
+            }
+            b"110" => self.screen.set_dynamic_color(true, color::FOREGROUND),
+            b"111" => self.screen.set_dynamic_color(false, color::BACKGROUND),
+            _ => ()
+        }
+    }
+
     fn hook(&mut self, _: &Params, intermediate: &[u8], ignore: bool, action: char)
     {
         *self.image = (!ignore && intermediate.is_empty() && action == 'q').then(Vec::new);
@@ -270,37 +364,10 @@ impl Perform for Target<'_>
     fn unhook(&mut self)
     {
         if let Some(payload) = self.image.take()
-           && let Some(image) = sixel::decode(&payload, self.style.bg)
+           && let Some(image) =
+               sixel::decode(&payload, self.screen.resolve_color(self.style.bg, false))
         {
             self.screen.image(image, *self.style);
         }
-    }
-}
-
-fn rgb(r: u32, g: u32, b: u32) -> u32
-{
-    (r << 16) | (g << 8) | b
-}
-
-pub fn palette(index: u16) -> u32
-{
-    const BASIC: [u32; 16] = [0, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd,
-                              0xe5e5e5, 0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff,
-                              0xff00ff, 0x00ffff, 0xffffff];
-    match index
-    {
-        0..=15 => BASIC[index as usize],
-        16..=231 =>
-        {
-            let n = u32::from(index - 16);
-            let level = |v| if v == 0 { 0 } else { 55 + 40 * v };
-            rgb(level(n / 36), level(n / 6 % 6), level(n % 6))
-        }
-        232..=255 =>
-        {
-            let level = 8 + 10 * u32::from(index - 232);
-            rgb(level, level, level)
-        }
-        _ => 0
     }
 }

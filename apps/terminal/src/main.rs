@@ -18,6 +18,7 @@ use mac_toolbox::{Error, Event, PointerPosition, Rect, ResourceScope, System, Ty
 use sr_event_async::{CHILD, Engine, ScopeOwner, Source as ReadySource, TIMER};
 use sr_event_dispatch::{Handler, Router};
 
+mod color;
 mod input;
 mod screen;
 mod sixel;

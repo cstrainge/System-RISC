@@ -29,7 +29,7 @@ pub fn decode(mut bytes: &[u8], background: u32) -> Option<Raster>
     let mut pixels = Vec::new();
     pixels.try_reserve_exact(width * height).ok()?;
     pixels.resize(width * height, background);
-    let mut colors = std::array::from_fn::<_, 256, _>(|i| crate::vt::palette(i as u16));
+    let mut colors = std::array::from_fn::<_, 256, _>(|i| crate::color::indexed(i as u8));
     let (mut x, mut y, mut color) = (0usize, 0usize, 0usize);
     while let Some((&byte, rest)) = bytes.split_first()
     {
