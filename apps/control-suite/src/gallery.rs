@@ -70,6 +70,52 @@ impl<'a> Gallery<'a>
             })*};
         }
         model::control_suite_inventory!(populate);
+        // One real Tab control with tabs in it, since the inventory row above
+        // has none. Reflow mode, so it owns its selection and draws its box.
+        grid.set_row(row, size(90, Some(90), Fill::None)?)?;
+        let label =
+            system.controls()
+                  .create_static_text_with(id,
+                                           StaticTextSpec { bounds:    Rect::new(0, 0, 180, 20),
+                                                            text:      "Tab, with tabs",
+                                                            font:      Default::default(),
+                                                            alignment: TextAlignment::Left,
+                                                            layout:    TextLayout::Ellipsis,
+                                                            reflow:    Reflow::Yes })?;
+        grid.set_child(Cell { row,
+                              column: 0 },
+                       label.into_control())
+            .map_err(|e| e.cause)?;
+        let model_error = |e| {
+            match e
+            {
+                model::Error::NoMemory => mac_toolbox::Error::NoMemory,
+                model::Error::BadArgument => mac_toolbox::Error::BadArgument
+            }
+        };
+        let properties = Properties::<model::TabModel>::defaults().map_err(model_error)?;
+        let tabs = system.controls().create_tab(id,
+                                                Rect::new(0, 0, 320, 90),
+                                                &properties,
+                                                Reflow::Yes)?;
+        let titles = [model::TabItem { key:   1,
+                                       title: "General",
+                                       view:  model::Child::empty() },
+                      model::TabItem { key:   2,
+                                       title: "Sharing",
+                                       view:  model::Child::empty() },
+                      model::TabItem { key:   3,
+                                       title: "Memory",
+                                       view:  model::Child::empty() }];
+        let list = mac_toolbox::controls::suite::owned::ListBuffer::from_slice(&titles)
+            .map_err(model_error)?;
+        tabs.set_tabs(list.view().map_err(model_error)?)?;
+        tabs.set_selection(Some(1))?;
+        grid.set_child(Cell { row,
+                              column: 1 },
+                       tabs.into_control())
+            .map_err(|e| e.cause)?;
+        row += 1;
         let _ = row;
         table.control().set_window_border(BorderOffsets::new(12,12,12,12).map_err(|e|mac_toolbox::Error::from_status(e.status()))?)?;
         table.control().set_anchors(Anchors::ALL)?;

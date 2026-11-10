@@ -1224,6 +1224,67 @@ impl State
         self.spec.set_highlight(part as u32);
     }
 
+    /// Make the tab at `position` the selected one. In reflow mode a tab
+    /// control owns its selection: a press on a tab selects it here, by the
+    /// same property an application would set, and the application is told
+    /// the part was activated as it is for a button. Returns whether the
+    /// selection changed. Anything that is not a tab control, or a position
+    /// past the last tab, changes nothing.
+    fn select_tab(&mut self, position: usize) -> Result<bool, Status>
+    {
+        use mac_control_model::{Record as _, Sink as _};
+        let Spec::Standard { procedure,
+                             .. } = self.spec
+        else
+        {
+            return Ok(false);
+        };
+        if procedure >> 4 != CDEF_TAB
+        {
+            return Ok(false);
+        }
+        let failure = |error| {
+            match error
+            {
+                mac_control_model::Error::BadArgument => BAD_ARGUMENT,
+                mac_control_model::Error::NoMemory => NO_MEMORY
+            }
+        };
+        let title = self.title.as_ref().ok_or(BAD_ABI)?;
+        let defaults;
+        let data = match title.properties.as_deref()
+        {
+            Some(data) => data,
+            None =>
+            {
+                defaults = mac_control_state::State::defaults(CDEF_TAB).map_err(failure)?;
+                &defaults
+            }
+        };
+        let view = mac_control_model::Tab::read(data.as_bytes()).map_err(failure)?;
+        let Some(tab) = view.tabs.iter().nth(position)
+        else
+        {
+            return Ok(false);
+        };
+        if view.selection == Some(tab.key)
+        {
+            return Ok(false);
+        }
+        let index = mac_control_model::field_names(CDEF_TAB).ok_or(BAD_ABI)?
+                                                            .iter()
+                                                            .position(|name| *name == "selection")
+                                                            .ok_or(BAD_ABI)?;
+        let mut field = mac_control_state::Buffer::new();
+        mac_control_model::field(&Some(tab.key), &mut field).map_err(failure)?;
+        let replaced = data.replaced(index, field.as_slice()).map_err(failure)?;
+        let revision = title.revision.checked_add(1).ok_or(NO_MEMORY)?;
+        let properties = Arc::try_new(replaced).map_err(|_| NO_MEMORY)?;
+        let next = super::snapshot::Title::with_properties(title, properties, revision);
+        self.title = Some(Arc::try_new(next).map_err(|_| NO_MEMORY)?);
+        Ok(true)
+    }
+
     async fn hit_with(&self, point: Point, entry: DefinitionRef, author: &super::effects::Author)
                       -> Result<i16, Status>
     {

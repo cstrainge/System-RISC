@@ -803,7 +803,16 @@ impl RequestSnapshot
                     action = match transition.action
                     {
                         Action::None => false,
-                        Action::Activate => true,
+                        Action::Activate =>
+                        {
+                            // In reflow mode a tab control owns its selection:
+                            // the press that activates a tab selects it.
+                            if part >= TAB_PART && o.layout.is_some()
+                            {
+                                o.select_tab((part - TAB_PART) as usize)?;
+                            }
+                            true
+                        }
                         Action::Step(part) => o.spec.step(part),
                         Action::Value(value) => o.spec.set_value(value)
                     };
