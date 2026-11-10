@@ -1484,8 +1484,14 @@ pub(crate) enum InternalEvent {
     #[cfg(any(unix, target_os = "systemrisc"))]
     KeyboardEnhancementFlags(KeyboardEnhancementFlags),
     /// Attributes and architectural class of the terminal.
-    #[cfg(any(unix, target_os = "systemrisc"))]
+    #[cfg(unix)]
     PrimaryDeviceAttributes,
+    /// Whether the frontend's device attributes include sixel graphics.
+    #[cfg(target_os = "systemrisc")]
+    SixelSupport(bool),
+    /// The frontend's character cell in pixels (`width`, `height`).
+    #[cfg(target_os = "systemrisc")]
+    CellSize(u16, u16),
 }
 
 #[cfg(test)]

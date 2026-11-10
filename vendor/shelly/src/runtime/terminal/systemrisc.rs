@@ -41,6 +41,18 @@ pub(crate) fn cursor_position(_input: &mut Vec<Event>) -> Option<(u16, u16)>
 pub fn detect_capabilities() -> TerminalCapabilities
 {
     let screen_size = startup_size();
-    TerminalCapabilities { screen_size,
+    // Ask only an attached frontend. Device attributes report sixel support,
+    // and a frontend that draws sixel also reports its cell size in pixels.
+    let (sixel, cell_size) = if screen_size.is_some()
+        {
+            terminal::sixel_support().unwrap_or((false, None))
+        }
+        else
+        {
+            (false, None)
+        };
+    TerminalCapabilities { sixel,
+                           cell_size,
+                           screen_size,
                            ..TerminalCapabilities::default() }
 }

@@ -1,12 +1,34 @@
 
+#[cfg(not(target_os = "systemrisc"))]
 use std::{ collections::BTreeMap, fmt::Write };
 
+#[cfg(not(target_os = "systemrisc"))]
 use color_quant::NeuQuant;
 
-use super::{ banner::{ compose, image }, terminal::TerminalCapabilities };
+#[cfg(not(target_os = "systemrisc"))]
+use super::banner::image;
+use super::{ banner::compose, terminal::TerminalCapabilities };
+
+/// Place the prepared logo beside the welcome text using the frontend's cell size.
+/// Decoding and resampling the source image costs too much at guest startup.
+#[cfg(target_os = "systemrisc")]
+pub fn banner(capabilities: &TerminalCapabilities) -> Option<String>
+{
+    const PREPARED: &str = include_str!("../../banner_sixel.txt");
+    let start = PREPARED.find("\x1bP")?;
+    let end = start + PREPARED[start..].find("\x1b\\")? + 2;
+    let graphics = &PREPARED[start..end];
+    // Raster attributes follow the introducer: "aspect;aspect;width;height.
+    let raster = &graphics[graphics.find('"')? + 1..];
+    let mut values = raster.split(|c: char| !c.is_ascii_digit()).skip(2);
+    let width = values.next()?.parse::<u32>().ok()?;
+    let height = values.next()?.parse::<u32>().ok()?;
+    Some(compose(capabilities, width, height, graphics))
+}
 
 /// Resize actual source pixels to a terminal-cell bounding box before encoding.
 /// Cell dimensions are cached by startup detection; 8x16 is the fallback.
+#[cfg(not(target_os = "systemrisc"))]
 pub fn banner(capabilities: &TerminalCapabilities) -> Option<String>
 {
     let mut image = image(capabilities)?;
@@ -62,6 +84,7 @@ pub fn banner(capabilities: &TerminalCapabilities) -> Option<String>
     Some(compose(capabilities, width, height, &sixel))
 }
 
+#[cfg(not(target_os = "systemrisc"))]
 fn append_runs(output: &mut String, values: &[u8])
 {
     let mut start = 0;

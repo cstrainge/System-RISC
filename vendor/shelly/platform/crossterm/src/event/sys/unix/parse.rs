@@ -207,11 +207,16 @@ pub(crate) fn parse_csi(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
                             let text = std::str::from_utf8(&buffer[2..buffer.len() - 1])
                                 .map_err(|_| could_not_parse_event_error())?;
                             let mut values = text.split(';');
-                            if values.next() != Some("8") { return Err(could_not_parse_event_error()); }
+                            // 8 reports the screen in cells, 6 one cell in pixels.
+                            let report = values.next();
+                            if !matches!(report, Some("8" | "6")) { return Err(could_not_parse_event_error()); }
                             let rows = next_parsed::<u16>(&mut values)?;
                             let cols = next_parsed::<u16>(&mut values)?;
                             if rows == 0 || cols == 0 || values.next().is_some() {
                                 return Err(could_not_parse_event_error());
+                            }
+                            if report == Some("6") {
+                                return Ok(Some(InternalEvent::CellSize(cols, rows)));
                             }
                             return Ok(Some(InternalEvent::WindowSize(cols, rows)));
                         }
@@ -310,7 +315,17 @@ fn parse_csi_primary_device_attributes(buffer: &[u8]) -> io::Result<Option<Inter
     // exposed in the crossterm API so we don't need to parse the individual attributes yet.
     // See <https://vt100.net/docs/vt510-rm/DA1.html>
 
-    Ok(Some(InternalEvent::PrimaryDeviceAttributes))
+    #[cfg(unix)]
+    return Ok(Some(InternalEvent::PrimaryDeviceAttributes));
+
+    // The first value is the conformance class. Attribute 4 is sixel graphics.
+    #[cfg(target_os = "systemrisc")]
+    {
+        let text = std::str::from_utf8(&buffer[3..buffer.len() - 1])
+            .map_err(|_| could_not_parse_event_error())?;
+        let sixel = text.split(';').skip(1).any(|value| value == "4");
+        Ok(Some(InternalEvent::SixelSupport(sixel)))
+    }
 }
 
 fn parse_modifiers(mask: u8) -> KeyModifiers {

@@ -32,3 +32,5 @@ mod systemrisc;
 pub(crate) use self::systemrisc::{disable_raw_mode, enable_raw_mode, is_raw_mode_enabled, size, window_size};
 #[cfg(all(target_os = "systemrisc", feature = "events"))]
 pub use self::systemrisc::supports_keyboard_enhancement;
+#[cfg(target_os = "systemrisc")]
+pub use self::systemrisc::sixel_support;

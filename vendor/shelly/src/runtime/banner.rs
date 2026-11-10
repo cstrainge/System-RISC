@@ -67,6 +67,9 @@ pub(super) fn compose(capabilities: &TerminalCapabilities, width: u32, height: u
     if image_offset != 0 { let _ = write!(output, "\x1b[{image_offset}B"); }
     output.push_str(graphics);
     output.push_str("\x1b8");
+    // A long value must not wrap onto the next row, where it would run under
+    // the logo. Autowrap is off for the text block and restored after it.
+    output.push_str("\x1b[?7l");
     let text_offset = (total_rows - text.len()) / 2;
     let text_column = width.div_ceil(u32::from(cell_width)) + GAP;
     for row in 0..total_rows
@@ -76,5 +79,6 @@ pub(super) fn compose(capabilities: &TerminalCapabilities, width: u32, height: u
         { let _ = write!(output, "\x1b[{text_column}C{line}"); }
         output.push_str("\r\n");
     }
+    output.push_str("\x1b[?7h");
     output
 }

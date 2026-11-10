@@ -75,11 +75,8 @@ use crate::{
 
 const MAIN_SCOPE: &str = "main";
 
-#[cfg(not(target_os = "systemrisc"))]
 const BANNER_TRUECOLOR: &str = include_str!("../../../banner_truecolor.txt");
-#[cfg(not(target_os = "systemrisc"))]
 const BANNER_256: &str = include_str!("../../../banner_256.txt");
-#[cfg(not(target_os = "systemrisc"))]
 const BANNER_MONO: &str = include_str!("../../../banner_mono.txt");
 const BANNER_SIXEL: &str = include_str!("../../../banner_sixel.txt");
 
@@ -895,6 +892,14 @@ impl Interpreter
 
                             Ok(Value::from_string(name))
                         }) as ReadFunction
+                ),
+                #[cfg(target_os = "systemrisc")]
+                (
+                    "$HOSTNAME",
+                    Rc::new(|_interpreter: &Interpreter|
+                        {
+                            Ok(Value::from_string("system-risc".to_string()))
+                        }) as ReadFunction
                 )
             ]);
 
@@ -956,6 +961,11 @@ impl Interpreter
         {
             self.set_variable("$HOME", Value::from_string(home.display().to_string()));
         }
+        #[cfg(target_os = "systemrisc")]
+        if self.variable_binding("$USER").is_none()
+        {
+            self.set_variable("$USER", Value::from_string("user".to_string()));
+        }
 
         let graphics = if    matches!(interactive, Interactive::Yes)
                       && color_mode != TtyColorMode::TtyMonochrome
@@ -973,10 +983,6 @@ impl Interpreter
             {
                 None
             };
-        #[cfg(target_os = "systemrisc")]
-        let banner = graphics.unwrap_or_else(|| format!("Shelly {} on System RISC",
-                                                       env!("CARGO_PKG_VERSION")));
-        #[cfg(not(target_os = "systemrisc"))]
         let banner = if let Some(graphics) = graphics
             {
                 graphics

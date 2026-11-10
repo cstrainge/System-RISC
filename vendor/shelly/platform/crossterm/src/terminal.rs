@@ -100,6 +100,8 @@ pub(crate) mod sys;
 
 #[cfg(feature = "events")]
 pub use sys::supports_keyboard_enhancement;
+#[cfg(target_os = "systemrisc")]
+pub use sys::sixel_support;
 
 /// Tells whether the raw mode is enabled.
 ///

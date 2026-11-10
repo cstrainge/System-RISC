@@ -64,6 +64,45 @@ pub(crate) fn window_size() -> io::Result<WindowSize> {
     Err(io::ErrorKind::TimedOut.into())
 }
 
+struct SixelFilter;
+impl Filter for SixelFilter {
+    fn eval(&self, event: &InternalEvent) -> bool {
+        matches!(event, InternalEvent::SixelSupport(..))
+    }
+}
+
+struct CellFilter;
+impl Filter for CellFilter {
+    fn eval(&self, event: &InternalEvent) -> bool {
+        matches!(event, InternalEvent::CellSize(..))
+    }
+}
+
+fn ask<F: Filter>(query: &[u8], filter: &F) -> io::Result<Option<InternalEvent>> {
+    {
+        let mut out = io::stdout().lock();
+        out.write_all(query)?;
+        out.flush()?;
+    }
+    if poll_internal(Some(Duration::from_secs(2)), filter)? {
+        return read_internal(filter).map(Some);
+    }
+    Ok(None)
+}
+
+/// Ask the frontend whether it draws sixel graphics and, if it does, for its
+/// character cell in pixels (`width`, `height`). No reply means no support.
+pub fn sixel_support() -> io::Result<(bool, Option<(u16, u16)>)> {
+    let Some(InternalEvent::SixelSupport(true)) = ask(b"\x1b[c", &SixelFilter)? else {
+        return Ok((false, None));
+    };
+    let cell = match ask(b"\x1b[16t", &CellFilter)? {
+        Some(InternalEvent::CellSize(width, height)) => Some((width, height)),
+        _ => None,
+    };
+    Ok((true, cell))
+}
+
 pub(crate) fn size() -> io::Result<(u16, u16)> {
     let size = window_size()?;
     Ok((size.columns, size.rows))
