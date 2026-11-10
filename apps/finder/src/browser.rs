@@ -1586,18 +1586,22 @@ impl Browser
                          .position(|saved| saved.is_some_and(|s| s.location == location));
         let saved = queued.and_then(|at| self.closed_states[at].map(|s| s.state)).or(persisted);
         let desktop = desktop::desktop_bounds(system)?;
+        // A saved rectangle may come from a larger screen or a zoomed window.
+        // Fit it inside the area the Window Manager admits for a document
+        // window: one pixel in from the left, two from the right and bottom,
+        // below the menu bar and title. Looser limits here are refused there.
+        let (left, top) = (1, 42);
+        let (right, bottom) = (desktop.right - 2, desktop.bottom - 2);
         let bounds =
             saved.map(|state| {
-                     let w =
-                         (i32::from(state.bounds.right) - i32::from(state.bounds.left)).clamp(180,
-                                                                                              i32::from(desktop.right))
-                         as i16;
-                     let h =
-                         (i32::from(state.bounds.bottom) - i32::from(state.bounds.top)).clamp(100,
-                                                                                              i32::from(desktop.bottom) - 42)
-                         as i16;
-                     let x = state.bounds.left.clamp(0, desktop.right - w);
-                     let y = state.bounds.top.clamp(42, desktop.bottom - h);
+                     let w = (i32::from(state.bounds.right) - i32::from(state.bounds.left))
+                         .max(180)
+                         .min(i32::from(right - left)) as i16;
+                     let h = (i32::from(state.bounds.bottom) - i32::from(state.bounds.top))
+                         .max(100)
+                         .min(i32::from(bottom - top)) as i16;
+                     let x = state.bounds.left.min(right - w).max(left);
+                     let y = state.bounds.top.min(bottom - h).max(top);
                      Rect::new(x, y, x + w, y + h)
                  })
                  .unwrap_or(Rect::new(8 + offset, 46 + offset, 412 + offset, 234 + offset));
