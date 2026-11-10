@@ -66,7 +66,7 @@ volume, filename and CNID. `Fonts::revision` exposes availability changes.
 Text Edit caches resident enumeration and refreshes an open options picker without
 discarding its existing selection.
 
-The loader admits at most 128 nonempty sources, 8 MiB per source and 32 MiB of
+The loader admits at most 128 nonempty sources, 32 MiB per source and 64 MiB of
 source bytes per scan. Catalog retention has separate limits documented alongside
 the implementation. A malformed or unsupported source is logged and skipped;
 allocation or aggregate-budget failure retains the previous published catalog.

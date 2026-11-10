@@ -6,11 +6,11 @@ use mac_formats::resource::Resource;
 use super::{Association, BOLD, FaceValidity, FontFamily, FontManager, ITALIC, catalog_name, word};
 
 pub const MAX_INSTALLED_SOURCES: usize = 128;
-pub const MAX_INSTALLED_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_INSTALLED_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SOURCES: usize = MAX_INSTALLED_SOURCES;
 const MAX_RETAINED_SOURCES: usize = 256;
 const MAX_SOURCE_BYTES: usize = MAX_INSTALLED_SOURCE_BYTES;
-const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_RETAINED_BYTES: usize = 128 * 1024 * 1024;
 const MAX_RESOURCES: usize = 1024;
 const MAX_FAMILIES: usize = 4096;
 const MAX_ASSOCIATIONS: usize = 4096;
@@ -976,7 +976,8 @@ fn validate_truetype(data: &[u8], glyph_records: &mut usize) -> Result<(), FontI
         return Err(FontInstallFailure::Unsupported);
     }
     let glyphs = usize::from(word(maxp, 4).ok_or(FontInstallFailure::Malformed)?);
-    if glyphs == 0 || glyphs > 16384
+    // The count is a 16-bit field, so the format's own maximum is the bound.
+    if glyphs == 0
     {
         return Err(FontInstallFailure::SourceLimit);
     }

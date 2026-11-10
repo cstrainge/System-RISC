@@ -67,7 +67,7 @@ to the caller, not to the renderer. The caller pins the prior immutable manager:
 convenience form returning the first rejection, not the scheduler-maintenance
 integration. The incremental caller reports source errors and continues only
 when the classification allows it; no diagnostics are silently swallowed.
-One admission can still decode and hash up to 8 MiB: bounded work does not
+One admission can still decode and hash up to 32 MiB: bounded work does not
 establish a target latency guarantee.
 
 Nonterminal source rejections are `SourceLimit`, `DuplicateResource`,
@@ -122,11 +122,11 @@ resource. Unreferenced records remain inert; classic suitcases can contain short
 legacy `FONT` family records that are not bitmap strikes. Every linked face
 still undergoes the same bitmap/TrueType validation before enumeration.
 
-Admission limits are 128 current sources, 256 retained source revisions, 8 MiB
-per source, 64 MiB retained font payload/name bytes including bundled data,
+Admission limits are 128 current sources, 256 retained source revisions, 32 MiB
+per source, 128 MiB retained font payload/name bytes including bundled data,
 1,024 resources per suitcase, 4,096 retained families, 4,096 newly parsed FOND
 associations and 262,144 newly examined glyph-location entries per transaction.
-Metadata counts, table count (128), glyph count (16,384 per face), names and maxp
+Metadata counts, table count (128), glyph count (65,535 per face, the format maximum), names and maxp
 capacities are also bounded. Allocations are fallible. Retention exhaustion
 refuses refresh; it does not reclaim payloads beneath live selections.
 

@@ -10,8 +10,8 @@ use crate::toolbox::quickdraw::fonts::{FontManager, FontSourceKey, InstalledFont
                                        InstalledFontSnapshot, InstalledFontSource};
 
 const MAX_FILES: usize = 128;
-const MAX_FORK_BYTES: usize = 8 * 1024 * 1024;
-const MAX_SCAN_BYTES: usize = 32 * 1024 * 1024;
+const MAX_FORK_BYTES: usize = 32 * 1024 * 1024;
+const MAX_SCAN_BYTES: usize = 64 * 1024 * 1024;
 const READ_BYTES: usize = 32 * 1024;
 
 struct Source
