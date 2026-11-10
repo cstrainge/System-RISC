@@ -1,11 +1,15 @@
 //! Which applications are on each mounted volume, so the System can say which
 //! one owns a creator code.
 //!
-//! The index is in memory only. Each block volume is walked once after it
-//! mounts and again after its catalogue has changed and then gone quiet; the
-//! walk advances a bounded number of scan steps per maintenance turn and reads
+//! The index is in memory only. Each volume is walked once after it mounts
+//! and again after its catalogue has changed and then gone quiet; the walk
+//! advances a bounded number of scan steps per maintenance turn and reads
 //! catalogue records only, never a fork. Until a walk finishes, the previous
 //! answer for that volume stands. Unmounting drops the volume's entries.
+//!
+//! A provider volume (a host folder, a mounted archive) is walked too. It
+//! answers a scan step later, through a job, and the System asks as itself:
+//! no application is behind the question.
 //!
 //! After a walk, each application's declared document types are read from its
 //! `open` resources, one application per maintenance turn, with the same
@@ -17,7 +21,7 @@ use alloc::{sync::Arc, vec::Vec};
 use mac_abi::{files::*, *};
 use mac_object_table::shared::InvocationGate as _;
 
-use super::{Manager, Mounted, application::Selection};
+use super::{Manager, Mounted, ResidentReply, ResidentRequest, application::Selection};
 
 /// Applications remembered per volume. A volume with more is indexed up to
 /// this many and the walk's report says so.
@@ -72,12 +76,18 @@ struct Walk
     started:     u64,
     steps:       u64,
     directories: u32,
-    truncated:   bool
+    truncated:   bool,
+    /// The System's own authority to read a provider volume; none for a block
+    /// volume, which the System reads directly.
+    system:      Option<crate::drivers::jobs::subjects::Subject>,
+    /// The provider scan step that has been asked and not yet answered.
+    request:     Option<ResidentRequest>
 }
 
 struct Volume
 {
     id:           u32,
+    provider:     bool,
     /// Catalogue revision the published entries were read at; zero before the
     /// first walk finishes.
     built:        u64,
@@ -250,20 +260,31 @@ fn publish(state: &mut State)
     state.announced = Some(published);
 }
 
-/// Block volumes that can be scanned right now, with their catalogue revision.
-fn mounted() -> Result<Vec<(u32, u64)>, Status>
+/// Volumes that can be scanned right now, with their catalogue revision and
+/// whether a provider serves them.
+fn mounted() -> Result<Vec<(u32, u64, bool)>, Status>
 {
     files(|manager| {
         let mut list = Vec::new();
         for (id, mounted) in manager.volumes.iter()
         {
-            if let Mounted::Block(block) = mounted
+            let found = match mounted
             {
-                if block.scanner.is_some() && !block.poisoned
+                Mounted::Block(block) if block.scanner.is_some() && !block.poisoned =>
                 {
-                    list.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                    list.push((id, block.catalog_revision));
+                    Some((block.catalog_revision, false))
                 }
+                Mounted::Provider(provider)
+                    if matches!(provider.phase, super::provider::Phase::Live) =>
+                {
+                    Some((provider.revision, true))
+                }
+                _ => None
+            };
+            if let Some((revision, provider)) = found
+            {
+                list.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                list.push((id, revision, provider));
             }
         }
         Ok(list)
@@ -272,8 +293,16 @@ fn mounted() -> Result<Vec<(u32, u64)>, Status>
 
 impl Walk
 {
-    fn new(revision: u64) -> Result<Self, Status>
+    fn new(revision: u64, provider: bool) -> Result<Self, Status>
     {
+        let system = if provider
+        {
+            Some(super::provider::runtime::system_subject()?)
+        }
+        else
+        {
+            None
+        };
         let mut pending = Vec::new();
         pending.try_reserve(1).map_err(|_| NO_MEMORY)?;
         pending.push(ROOT_ID);
@@ -285,7 +314,9 @@ impl Walk
                   started: crate::platform::ticks(),
                   steps: 0,
                   directories: 0,
-                  truncated: false })
+                  truncated: false,
+                  system,
+                  request: None })
     }
 
     /// One scan step. `Ok(true)` when the whole catalogue has been read.
@@ -307,7 +338,36 @@ impl Walk
                                          directory: self.directory,
                                          cursor: self.cursor,
                                          ..Default::default() };
-        files(|manager| manager.scan_request(&mut request))?;
+        let request = match &self.system
+        {
+            None =>
+            {
+                files(|manager| manager.scan_request(&mut request))?;
+                request
+            }
+            Some(system) =>
+            {
+                let asked = match self.request.as_mut()
+                {
+                    Some(asked) => asked,
+                    None => self.request.insert(ResidentRequest::scan(system, request)?)
+                };
+                // A refused poll keeps its request, and dropping the request
+                // hands its cleanup to the System, so every way out below
+                // lets go of it.
+                let answer = asked.poll();
+                if !matches!(answer, Ok(None))
+                {
+                    self.request = None;
+                }
+                match answer?
+                {
+                    None => return Ok(false),
+                    Some(ResidentReply::Scan(reply)) => reply,
+                    Some(_) => return Err(BAD_ABI)
+                }
+            }
+        };
         self.cursor = request.cursor;
         self.steps = self.steps.saturating_add(1);
         match request.step
@@ -382,7 +442,7 @@ impl Volume
             {
                 return self.probe();
             }
-            match Walk::new(revision)
+            match Walk::new(revision, self.provider)
             {
                 Ok(walk) => self.walk = Some(walk),
                 Err(status) =>
@@ -510,6 +570,9 @@ impl Volume
             Err(SERVICE_BUSY) => return false,
             // No resource fork, or no longer an application.
             Err(NOT_FOUND | BAD_ARGUMENT) => Vec::new(),
+            // A provider volume: its applications are known and own their
+            // creators, but nothing reads their declarations yet.
+            Err(NOT_SUPPORTED) => Vec::new(),
             Err(status) =>
             {
                 serial!("APPLICATION_CLAIMS_REFUSED volume={volume} cnid={cnid} status={status}");
@@ -555,14 +618,15 @@ pub(crate) fn pump()
     if let Ok(mounted) = mounted()
     {
         let before = state.volumes.len();
-        state.volumes.retain(|volume| mounted.iter().any(|(id, _)| *id == volume.id));
+        state.volumes.retain(|volume| mounted.iter().any(|(id, ..)| *id == volume.id));
         changed |= state.volumes.len() != before;
-        for (id, _) in &mounted
+        for (id, _, provider) in &mounted
         {
             if !state.volumes.iter().any(|volume| volume.id == *id)
                && state.volumes.try_reserve(1).is_ok()
             {
                 state.volumes.push(Volume { id:           *id,
+                                            provider:     *provider,
                                             built:        0,
                                             seen:         0,
                                             quiet:        0,
@@ -577,7 +641,7 @@ pub(crate) fn pump()
             let at = state.next;
             state.next = state.next.wrapping_add(1);
             let id = state.volumes[at].id;
-            if let Some((_, revision)) = mounted.iter().find(|(mounted, _)| *mounted == id)
+            if let Some((_, revision, _)) = mounted.iter().find(|(mounted, ..)| *mounted == id)
             {
                 changed |= state.volumes[at].advance(*revision);
             }

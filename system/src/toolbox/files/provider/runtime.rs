@@ -17,6 +17,15 @@ fn io_subject(owner: super::super::subject::Access<'_>) -> Result<IoSubject, Sta
 {
     crate::drivers::jobs::subjects::resident()?.admit_current(&owner.authority()?)
 }
+/// The System reading a provider volume as itself, with no application behind
+/// the request. The System owns the base layer of every mount whoever asked
+/// for it (Chloë's ruling, 10 November 2026). Reserved for the System's own
+/// read-only bookkeeping, such as the application index; nothing an
+/// application asks for is ever served under it.
+pub(crate) fn system_subject() -> Result<IoSubject, Status>
+{
+    io_subject(0u64.into())
+}
 mod forks;
 mod paths;
 mod mounts;
