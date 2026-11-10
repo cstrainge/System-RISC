@@ -83,6 +83,15 @@ pub const CURRENT_EXECUTABLE_PATH: u32 = 50;
 /// `NOT_FOUND`; an identity that is not a live named pipe is `BAD_ARGUMENT`.
 /// The generic `OPEN` keeps refusing these items.
 pub const OPEN_PIPE: u32 = 51;
+/// Which application opens a document. `index` carries the document's creator
+/// as a big-endian code and `file_type` its type; no volume is named, because
+/// the answer does not depend on where the document is. `entry` returns the
+/// application's catalogue record. `NOT_FOUND` means no application claims the
+/// type; `SERVICE_BUSY` means the index of applications is still being built.
+pub const RESOLVE_HANDLER: u32 = 52;
+/// The newest application whose creator is the code in `index` (big-endian).
+/// `entry` returns its catalogue record. Statuses as for `RESOLVE_HANDLER`.
+pub const APPLICATION_FOR_CREATOR: u32 = 53;
 /// Item name of the named-pipe folder under the volume's blessed folder. One
 /// spelling shared by the image builder, which creates it, and the resident
 /// File Manager, which enumerates it and records its identity.

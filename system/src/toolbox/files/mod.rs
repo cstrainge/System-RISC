@@ -1681,6 +1681,23 @@ impl Manager
                 call.volume_info =
                     self.volumes.get(call.volume).and_then(Mounted::info).ok_or(NOT_FOUND)?
             }
+            #[cfg(systemrisc)]
+            RESOLVE_HANDLER | APPLICATION_FOR_CREATOR =>
+            {
+                let creator = call.index.to_be_bytes();
+                let application = if call.operation == RESOLVE_HANDLER
+                {
+                    applications::handler(creator, call.file_type)?
+                }
+                else
+                {
+                    applications::owner(creator)?
+                };
+                // The index answers from memory; the catalogue confirms the
+                // application is still there before it is named to a caller.
+                call.entry = metadata(application.volume,
+                                      &self.catalog_entry(application.volume, application.cnid)?)
+            }
             CATALOG =>
             {
                 call.entry = metadata(call.volume, &self.catalog_entry(call.volume, call.cnid)?)

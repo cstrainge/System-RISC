@@ -112,8 +112,8 @@ fn toolbox<T>(action: impl FnOnce(&mut crate::toolbox::runtime::Toolbox) -> Resu
 {
     crate::kernel::with_toolbox(action).map_err(crate::state::AccessError::status)?
 }
-fn declarations(creator: [u8; 4], resources: &[mac_formats::resource::Resource])
-                -> Result<Vec<[u8; 4]>, Status>
+pub(crate) fn declarations(creator: [u8; 4], resources: &[mac_formats::resource::Resource])
+                           -> Result<Vec<[u8; 4]>, Status>
 {
     let mut types = Vec::new();
     for resource in resources.iter().filter(|r| r.kind == *b"open")

@@ -525,6 +525,35 @@ impl<'a> Files<'a>
     }
 
     /// Find Desktop (`desk`), Trash (`trsh`), or the blessed System Folder's Fonts (`font`).
+    /// The application that opens a document of this creator and type.
+    ///
+    /// The System decides: among the applications declaring the type, one whose
+    /// own creator is the document's wins, then the most specific, then the
+    /// newest. `NotFound` means nothing claims the type. `ServiceBusy` means the
+    /// System is still indexing applications; ask again shortly.
+    pub fn handler_for(self, creator: TypeCode, file_type: TypeCode) -> Result<CatalogInfo>
+    {
+        self.call(FileCall { operation: RESOLVE_HANDLER,
+                             index: u32::from_be_bytes(creator.bytes()),
+                             file_type: file_type.bytes(),
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
+    }
+
+    /// The newest application whose creator is `creator`, on any indexed
+    /// volume. Statuses as for [`Self::handler_for`].
+    pub fn application_for_creator(self, creator: TypeCode) -> Result<CatalogInfo>
+    {
+        self.call(FileCall { operation: APPLICATION_FOR_CREATOR,
+                             index: u32::from_be_bytes(creator.bytes()),
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
+    }
+
     /// Volume zero selects the startup volume. Lookup without creation never
     /// mutates the volume; children use ordinary directory enumeration.
     pub fn find_folder(self, volume: VolumeId, folder_type: TypeCode, create: bool)
