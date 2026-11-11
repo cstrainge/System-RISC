@@ -14,6 +14,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use crate::{Result, error};
 
 pub mod device;
+pub mod volumes;
 
 /// What a flash would do. Built before anything is written, so the operator sees
 /// the sizes and the existing layout first.
@@ -89,10 +90,37 @@ impl Plan
     }
 }
 
+/// One write/read chunk: a whole-sector multiple, so the raw-device
+/// `NO_BUFFERING` path keeps its alignment (the payload is already padded
+/// to a sector multiple, and 1 MiB is a multiple of 512).
+const CHUNK_BYTES: usize = 1 << 20;
+
+/// Progress for the current phase, on one line: percent and MiB done.
+/// A carriage return rewrites the line; the caller ends it with a newline
+/// when the phase finishes (or fails, so the error lands on its own line).
+fn report_progress(label: &str, done: u64, total: u64)
+{
+    let percent = if total == 0 { 100 } else { done * 100 / total };
+    print!("\r{label} {percent}% ({} / {} MiB)", done >> 20, total >> 20);
+    let _ = std::io::stdout().flush();
+}
+
 /// Writes the whole image from the start of the sink.
 pub fn write_image(sink: &mut impl Write, image: &[u8]) -> Result<()>
 {
-    sink.write_all(image).map_err(|cause| error(format!("writing the image failed: {cause}")))?;
+    let total = image.len() as u64;
+    let mut written: u64 = 0;
+    for chunk in image.chunks(CHUNK_BYTES)
+    {
+        if let Err(cause) = sink.write_all(chunk)
+        {
+            println!();
+            return Err(error(format!("writing the image failed: {cause}")));
+        }
+        written += chunk.len() as u64;
+        report_progress("writing", written, total);
+    }
+    println!();
     sink.flush().map_err(|cause| error(format!("flushing the image failed: {cause}")))?;
     Ok(())
 }
@@ -107,8 +135,19 @@ pub fn verify(sink: &mut (impl Read + Seek), image: &[u8]) -> Result<()>
     sink.seek(SeekFrom::Start(0))
         .map_err(|cause| error(format!("seeking to verify failed: {cause}")))?;
     let mut buffer = vec![0u8; image.len()];
-    sink.read_exact(&mut buffer)
-        .map_err(|cause| error(format!("reading back {} bytes failed: {cause}", image.len())))?;
+    let total = image.len() as u64;
+    let mut read: u64 = 0;
+    for chunk in buffer.chunks_mut(CHUNK_BYTES)
+    {
+        if let Err(cause) = sink.read_exact(chunk)
+        {
+            println!();
+            return Err(error(format!("reading back {} bytes failed: {cause}", image.len())));
+        }
+        read += chunk.len() as u64;
+        report_progress("verifying", read, total);
+    }
+    println!();
     if buffer != image
     {
         let offset = buffer.iter()
@@ -129,18 +168,27 @@ pub fn flash(sink: &mut (impl Read + Write + Seek), image: &[u8]) -> Result<()>
 }
 
 
-/// Resolves the image this platform declares, then writes it to the target the
-/// operator named.
+/// Builds the platform image, then writes it to the target the operator
+/// named.
 ///
 /// The image never comes from an argument: it is whatever `hardware.boot_image`
 /// names, resolved through the same path the emulator uses. A platform that
 /// declares no boot image cannot be flashed, which is the correct outcome rather
 /// than a tool that writes something arbitrary.
+///
+/// The build runs first and unconditionally, the same shape as `run` and `boot`:
+/// the ninja graph is incremental, so a fresh image costs a stamp check rather
+/// than a rebuild, and a stale one is rebuilt rather than refused. The
+/// missing-image and stale-image refusals below stay as the safety net behind
+/// the build: a build that produces no image, or an image the build did not
+/// refresh, is still refused before anything is written.
 pub fn run(workspace: &crate::workspace::Workspace, target: &str, yes: bool) -> Result<()>
 {
     let platform = mac_build::platform::current();
     // Refuse a platform with no card before anything else, so the message names
-    // what that platform actually boots from rather than a missing image.
+    // what that platform actually boots from rather than a missing image. This
+    // gate stays ahead of the build: a platform that cannot be flashed must not
+    // pay for a build first, and the default platform is not a card machine.
     removable_media(platform)?;
     let hardware = platform.hardware.as_ref().ok_or_else(|| {
                                                 error(format!("platform '{}' declares no \
@@ -154,11 +202,12 @@ pub fn run(workspace: &crate::workspace::Workspace, target: &str, yes: bool) -> 
                                                                          there is nothing to flash",
                                                                         platform.name))
                                                       })?;
+    crate::build::build(workspace)?;
     let image_path = crate::boot::media(platform, &workspace.dist, image_name)?;
     if !image_path.exists()
     {
-        return Err(error(format!("the image {} does not exist; build it first with 'cargo xtask \
-                                  build'",
+        return Err(error(format!("the image {} does not exist after building; the build \
+                                  produced no image at the platform's declared path",
                                  image_path.display())));
     }
     // Refuse an image that no longer matches the artifacts it claims to contain.
@@ -180,6 +229,27 @@ pub fn run(workspace: &crate::workspace::Workspace, target: &str, yes: bool) -> 
         return Err(error("nothing was written: this would erase the target. Re-run with --yes to \
                           write it"));
     }
+
+    // On Windows the card's volumes are usually mounted, and a mounted volume
+    // can refuse a raw write to its disk even from an elevated shell. Lock and
+    // dismount the target disk's volumes first; the guard keeps them locked
+    // until the write and verify are done, and closing a handle releases its
+    // lock, so there is no remount step — the card's old filesystem is gone
+    // once the image is written. This runs only here, after the `--yes` gate:
+    // a dry run never dismounts anything.
+    let _volume_locks =
+        if device::is_raw_device(target) { volumes::dismount_volumes(target)? } else { None };
+
+    // A volume lock covers the volume object that exists when it is taken.
+    // The image's new partition table creates new volume objects mid-write,
+    // and Windows mounts them as soon as their boot sectors land — which is
+    // what denied the write at 8 MiB with nothing held on the torn card.
+    // Taking the disk offline deletes its partition device objects, so no
+    // filesystem can mount on it for the whole write and verify; the guard
+    // brings it back online when it drops (before the volume locks release,
+    // since it is declared after them).
+    let _disk_offline =
+        if device::is_raw_device(target) { Some(device::DiskOffline::take(target)?) } else { None };
 
     // An unbuffered raw device requires whole-sector writes, so the last sector
     // is zero-padded. The padding extends the write, never the image.

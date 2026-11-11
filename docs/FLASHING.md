@@ -3,8 +3,8 @@
 ## Before anything: the firmware the card needs
 
 A bootable card needs the board's own firmware, and the build will not produce an
-image without it. Copy the four files into a `firmware/` directory at the
-repository root, keeping the names as published:
+image without it. Copy these files into a `firmware/` directory at the
+repository root, keeping the names and the `overlays/` folder as published:
 
 | File | What it is |
 | --- | --- |
@@ -12,8 +12,9 @@ repository root, keeping the names as published:
 | `start.elf` | second stage: initialises the board and loads the kernel and the tree |
 | `fixup.dat` | relocates `start.elf`'s sections so it can run |
 | a board device tree, e.g. `bcm2710-rpi-3-b.dtb` | the firmware's own description of this board variant during bring-up |
+| `overlays/disable-bt.dtbo` | the overlay `config.txt` asks for: it takes the PL011 off the Bluetooth chip and puts it on header pins 8 and 10, which is the console. Without the file the `dtoverlay=disable-bt` line does nothing and the boot is silent on serial |
 
-All four come from the firmware distribution's `boot/` directory. **The board
+All of them come from the firmware distribution's `boot/` directory, and they must be one release: the set verified on a Pi 3 Model B V1.2 is the Raspberry Pi reference image of 2026-10-06. **The board
 device tree is not hardcoded**: `platforms/raspi3b.json` names it in
 `hardware.board_device_tree`, because the correct file differs between a 3B and a
 3B+ and a build that inferred it would ship a tree for the wrong board.
@@ -48,40 +49,46 @@ Our own kernel does not use the firmware's tree: `hardware.device_tree` says
 its tree before any of our code runs, so it is required regardless — the two are
 separate and neither replaces the other.
 
-`cargo xtask flash TARGET --yes` writes this platform's declared storage image to
-a card. **It erases the card.** Everything currently on the target is destroyed.
+`cargo xtask flash TARGET --yes` builds this platform's image and writes it to
+a card, in one command. **It erases the card.** Everything currently on the
+target is destroyed. There is no separate build step: the flash command builds
+first, the same shape as `run` and `boot`, and the build is incremental, so a
+fresh image costs a stamp check rather than a rebuild.
 
 ## The rules the tool enforces
 
 - **You name the target.** The tool never chooses a device, never looks for "the
   only removable disk", and never guesses. If you do not name one, it refuses.
-- **Nothing is written without `--yes`.** Without it the command still runs: it
-  resolves the image, reads the target's size and prints both plus what is about
-  to be erased, then exits non-zero having written nothing.
+- **Nothing is written to the target without `--yes`.** Without it the command
+  still runs: it builds the image, resolves it, reads the target's size and
+  prints both plus what is about to be erased, then exits non-zero having
+  written nothing to the target. A dry run builds when the image is stale, so
+  it writes build artifacts; it never writes the card.
 - **The image comes from the platform record.** It is whatever
   `hardware.boot_image` names, resolved the same way the emulator resolves its
   media. There is no path argument, so the tool cannot be pointed at an arbitrary
   file to write to a card.
-- **Pre-flight before the first byte.** It refuses if the image is missing, if
-  the image is empty, and if the image is larger than the target.
+- **Pre-flight before the first byte.** The build runs first; behind it, the
+  refusals stay as the safety net: it refuses if the build produced no image,
+  if the image is stale against the artifacts it claims to contain, if the
+  image is empty, and if the image is larger than the target.
 - **Verify by default.** After writing it re-reads the region and compares it
   byte for byte, so a truncated or failed write is reported rather than assumed
   good.
 
 ## Procedure
 
-1. Build the image: `cargo xtask build`. The image lands in
-   `dist/<platform>/<hardware.boot_image output>`.
-2. Identify the card. On Windows this is `\\.\PhysicalDriveN`; check the number
+1. Identify the card. On Windows this is `\\.\PhysicalDriveN`; check the number
    with `Get-Disk` before trusting it. **The number is not stable across
    replugging.**
-3. Dry run it:
+2. Dry run it — this builds the image first, then describes what would be
+   written:
    ```
    cargo xtask flash '\\.\PhysicalDrive2'
    ```
    Read the reported capacity and the existing contents. If the capacity is not
    the card you are holding, stop.
-4. Write it, from an **elevated** shell:
+3. Write it, from an **elevated** shell:
    ```
    cargo xtask flash '\\.\PhysicalDrive2' --yes
    ```
@@ -109,8 +116,10 @@ because the raw OS error for this case does not say that.
 
 ## Testing
 
-`tools/xtask/src/flash.rs` carries host tests for the write-and-verify round trip
-against a temporary file, a truncated write, a differing medium, an oversized
-image, an empty image, and the plan's report of existing contents. A flash tool
-that has never written anything is not a working flash tool, so the round trip is
-the test that matters.
+There is no host test suite for this tool: the host suite was removed under
+the project's testing law, and a flash tool is not proven by a host pass in any
+case. The write-and-verify path is exercised by flashing to a file target (a
+file path is accepted in place of a device), which runs the whole path — build,
+plan, write, read-back — without hardware. A flash tool that has never written
+anything is not a working flash tool, so the round trip is the check that
+matters, and it is a real write to a file rather than a test double.

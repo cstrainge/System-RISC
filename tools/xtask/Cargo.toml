@@ -21,3 +21,6 @@ sha2.workspace = true
 toml = "0.9"
 mac-hfs-b = { path = "../../crates/mac-hfs-b" }
 hfs-b = { path = "../hfs-b" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Storage_FileSystem", "Win32_Security"] }
