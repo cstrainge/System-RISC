@@ -53,6 +53,9 @@ pub enum Error
     Strings,
     /// A cell-count declaration or a `reg` is not decodable as declared.
     Cells,
+    /// An address is not covered by any entry of its parent's `ranges`, so
+    /// there is no address for it in the parent's parent's space.
+    Ranges,
     /// A CPU node is not admissible: missing device_type, wrong reg width, or a
     /// container that does not declare one or two address cells and zero size
     /// cells.
@@ -107,6 +110,10 @@ impl core::fmt::Display for Error
             Error::Cells =>
             {
                 "device tree cell declaration or reg is not decodable as declared"
+            }
+            Error::Ranges =>
+            {
+                "device tree address is not covered by its parent's ranges"
             }
             Error::Cpu =>
             {
@@ -210,18 +217,26 @@ pub struct Node<'a>
 
 impl Node<'_>
 {
-    /// The first two-cell address/size pair of `reg`, when it has one.
+    /// The first address/size pair of `reg`, decoded as the parent's cell
+    /// declarations say it is.
+    ///
+    /// The address is in the parent's address space, not the CPU's: a bus
+    /// that remaps its children needs `Tree::window`, which translates
+    /// through the ancestors' `ranges`. A `reg` whose cell widths are not
+    /// one or two has no pair here rather than a guessed one.
     pub fn window(&self) -> Option<(u64, u64)>
     {
         let reg = self.reg?;
-        if reg.len() < 16
+        let address = self.address_cells.unwrap_or(2);
+        let size = self.size_cells.unwrap_or(1);
+        let stride = (address as usize + size as usize) * 4;
+        if stride == 0 || reg.len() < stride
         {
             return None;
         }
-        let cell = |index: usize| -> u64 {
-            u32::from_be_bytes(reg[index * 4..index * 4 + 4].try_into().unwrap()) as u64
-        };
-        Some(((cell(0) << 32) | cell(1), (cell(2) << 32) | cell(3)))
+        let base = cells(reg, address).ok()?;
+        let length = cells(&reg[address as usize * 4..], size).ok()?;
+        Some((base, length))
     }
 
     /// The single-cell value of `reg`, which is how a CPU states its hart id.
@@ -609,10 +624,81 @@ impl<'a> Tree<'a>
     /// A `compatible` property is a list of NUL-separated strings, most specific
     /// first, and a machine's own tree uses the standard vocabulary -
     /// `arm,pl011` rather than a record's `pl011` - so any entry matches rather
-    /// than only the first.
+    /// than only the first. The address is translated to the CPU's address
+    /// space through the ancestors' `ranges`; a node under a bus that remaps
+    /// its children resolves to where the CPU actually finds it.
     pub fn window(&self, compatible: &str) -> Result<Option<(u64, u64)>, Error>
     {
-        Ok(self.find_compatible(compatible)?.and_then(|node| node.window()))
+        match self.find_compatible(compatible)?
+        {
+            Some(node) => self.window_of(node),
+            None => Ok(None)
+        }
+    }
+
+    /// The first `reg` window of the node whose `compatible` names `compatible`,
+    /// whether or not the node is enabled.
+    ///
+    /// The one place a consumer goes when the node it needs is disabled in the
+    /// tree for a reason that does not apply to it: the bootrom reading its own
+    /// boot device is not a Linux driver-binding question, so a `status` of
+    /// `disabled` on that node must not hide the device the machine boots from.
+    /// `find_compatible` keeps its enabled-only meaning for every other
+    /// consumer; this exception is explicit and local to the call.
+    pub fn window_including_disabled(&self, compatible: &str) -> Result<Option<(u64, u64)>, Error>
+    {
+        match self.find_compatible_including_disabled(compatible)?
+        {
+            Some(node) => self.window_of(node),
+            None => Ok(None)
+        }
+    }
+
+    /// The first node whose `compatible` list names `compatible`, whether or
+    /// not it is enabled.
+    ///
+    /// `find_compatible` answers "the device the machine offers"; this answers
+    /// "the device the machine describes", which is the question when a node's
+    /// `status` speaks about driver binding rather than about the hardware's
+    /// existence.
+    pub fn find_compatible_including_disabled(&self, compatible: &str)
+                                              -> Result<Option<Node<'a>>, Error>
+    {
+        self.find(|node| names(node, compatible))
+    }
+
+    /// The first `reg` window of `node`, translated to the CPU's address space.
+    fn window_of(&self, node: Node<'a>) -> Result<Option<(u64, u64)>, Error>
+    {
+        let Some((base, bytes)) = node.window()
+        else
+        {
+            return Ok(None);
+        };
+        Ok(Some((self.translate(&node, base)?, bytes)))
+    }
+
+    /// Translates `address`, which names a window in `node`'s parent's address
+    /// space, up to the CPU's address space by walking the ancestors and
+    /// applying each one's `ranges`.
+    ///
+    /// The walk is one `find` per level, which is a full pass over the tree
+    /// each time; a bootloader resolves a handful of windows once, so the
+    /// passes are cheaper than the bookkeeping a single-pass chain would need.
+    fn translate(&self, node: &Node<'a>, mut address: u64) -> Result<u64, Error>
+    {
+        let mut current = *node;
+        while let Some(parent_index) = current.parent_index
+        {
+            let Some(parent) = self.find(|candidate| candidate.index == parent_index)?
+            else
+            {
+                return Err(Error::Structure);
+            };
+            address = apply_ranges(&parent, address)?;
+            current = parent;
+        }
+        Ok(address)
     }
 
     /// The first enabled node whose `compatible` list names `compatible`.
@@ -1010,6 +1096,53 @@ fn cells(bytes: &[u8], count: u32) -> Result<u64, Error>
         2 => wide(bytes, 0),
         _ => Err(Error::Cells)
     }
+}
+
+/// Applies one ancestor's `ranges` to an address in that ancestor's space.
+///
+/// A `ranges` entry is (child address, parent address, length), where the
+/// child address is as wide as the ancestor's own `#address-cells`, the
+/// parent address as wide as the address cells the ancestor inherited, and
+/// the length as wide as the ancestor's own `#size-cells`. An absent or empty
+/// `ranges` is the identity: the child and parent share one address space.
+/// An address no entry covers is refused rather than passed through
+/// untranslated, because an untranslated bus address would be probed as if
+/// it were a CPU address.
+fn apply_ranges(ancestor: &Node<'_>, address: u64) -> Result<u64, Error>
+{
+    let Some(ranges) = ancestor.ranges
+    else
+    {
+        return Ok(address);
+    };
+    if ranges.is_empty()
+    {
+        return Ok(address);
+    }
+    let child_cells = ancestor.own_address_cells.or(ancestor.address_cells).unwrap_or(2);
+    let parent_cells = ancestor.address_cells.unwrap_or(2);
+    let size_cells = ancestor.own_size_cells.or(ancestor.size_cells).unwrap_or(1);
+    let stride = (child_cells as usize + parent_cells as usize + size_cells as usize) * 4;
+    if stride == 0 || ranges.len() % stride != 0
+    {
+        return Err(Error::Cells);
+    }
+    let mut at = 0usize;
+    while at < ranges.len()
+    {
+        let entry = &ranges[at..at + stride];
+        let child = cells(entry, child_cells)?;
+        let parent = cells(&entry[child_cells as usize * 4..], parent_cells)?;
+        let length =
+            cells(&entry[(child_cells as usize + parent_cells as usize) * 4..], size_cells)?;
+        if let Some(offset) = address.checked_sub(child)
+           && offset < length
+        {
+            return parent.checked_add(offset).ok_or(Error::Cells);
+        }
+        at += stride;
+    }
+    Err(Error::Ranges)
 }
 
 /// The first NUL-terminated string of a string list, which is the most specific

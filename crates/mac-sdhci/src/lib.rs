@@ -1,10 +1,12 @@
-//! SDHCI host controller: card identification and single-block PIO reads.
+//! SDHCI host controller: card identification and single-block PIO transfers.
 //!
 //! This is the reference reader for the Arasan controller the BCM2837-class
 //! platform declares. It is shared by the bootrom, which needs the medium
 //! before any module can load, and by the hardware self-test, which reads sector
-//! zero and nothing else. Write support and partitioning stay above it; this
-//! crate only brings the card up and moves one 512-byte block at a time.
+//! zero and nothing else. A write path moves one 512-byte block at a time in
+//! the other direction, so the bootrom can append its log to the card;
+//! partitioning stays above it, and this crate only brings the card up and
+//! moves one block at a time.
 //!
 //! Register offsets and bit positions follow the SD Host Controller Simplified
 //! Specification. All register access is little-endian MMIO into the window the
@@ -20,7 +22,7 @@
 use core::ptr::{read_volatile, write_volatile};
 
 #[cfg(feature = "block-device")]
-use mac_block::{BlockDevice, Error};
+use mac_block::{BlockDevice, Error, WritableBlockDevice};
 
 /// Bytes in one block. The same value as `mac_block::SECTOR_SIZE`, restated
 /// here so the reader can be built without that crate.
@@ -44,6 +46,7 @@ const CAPABILITIES: usize = 0x40;
 
 const INT_COMMAND_COMPLETE: u16 = 1 << 0;
 const INT_TRANSFER_COMPLETE: u16 = 1 << 1;
+const INT_BUFFER_WRITE_READY: u16 = 1 << 4;
 const INT_BUFFER_READ_READY: u16 = 1 << 5;
 const INT_ERROR: u16 = 1 << 15;
 const ERROR_ALL: u16 = 0xffff;
@@ -55,6 +58,11 @@ const PRESENT_DAT_INHIBIT: u32 = 1 << 1;
 /// "Data Transfer Active", set for the whole transfer — so draining on it reads
 /// words before the card has sent them and yields an all-zero block.
 const PRESENT_BUFFER_READ: u32 = 1 << 11;
+/// Present State bit 10, "Data Buffer Write Enable": the buffer accepts a
+/// word. The write mirror of `PRESENT_BUFFER_READ`, and the same trap applies:
+/// bit 9 is transfer-active, not buffer-ready, so filling on it writes words
+/// the controller is not ready to take.
+const PRESENT_BUFFER_WRITE: u32 = 1 << 10;
 
 const CLOCK_INTERNAL_ENABLE: u32 = 1 << 0;
 const CLOCK_INTERNAL_STABLE: u32 = 1 << 1;
@@ -78,6 +86,7 @@ const CMD_SEND_IF_COND: u32 = 8;
 const CMD_SEND_CSD: u32 = 9;
 const CMD_SET_BLOCK_LENGTH: u32 = 16;
 const CMD_READ_SINGLE_BLOCK: u32 = 17;
+const CMD_WRITE_SINGLE_BLOCK: u32 = 24;
 const CMD_APP_COMMAND: u32 = 55;
 const CMD_APP_SEND_OP_COND: u32 = 41;
 
@@ -138,6 +147,18 @@ impl core::fmt::Display for Failure
     }
 }
 
+/// Whether a command carries a data phase, and in which direction. The
+/// transfer-mode register's direction bit (bit 4) is read for a read and
+/// clear for a write; a command with no data phase leaves the block-size
+/// and block-count registers alone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Transfer
+{
+    None,
+    Read,
+    Write
+}
+
 /// The controller and the one card in it.
 pub struct Disk
 {
@@ -174,9 +195,15 @@ impl Disk
         disk.write8(POWER_CONTROL, POWER_3V3);
         disk.write8(TIMEOUT_CONTROL, TIMEOUT_MAXIMUM);
         // A status bit is only latched when its enable bit is set, so polling
-        // Command Complete needs this mask.
+        // Command Complete needs this mask. Buffer Write Ready is enabled
+        // beside Buffer Read Ready: a write fills the buffer through the same
+        // status register, and a bit that never latches reads as a card that
+        // never accepts a word.
         disk.write16(NORMAL_INT_ENABLE,
-                     INT_COMMAND_COMPLETE | INT_TRANSFER_COMPLETE | INT_BUFFER_READ_READY);
+                     INT_COMMAND_COMPLETE
+                     | INT_TRANSFER_COMPLETE
+                     | INT_BUFFER_READ_READY
+                     | INT_BUFFER_WRITE_READY);
         disk.write16(ERROR_INT_ENABLE, ERROR_ALL);
         // A card needs at least 74 clocks with the command line idle before it
         // will answer anything. The clock is running by now, so hold still long
@@ -311,7 +338,7 @@ impl Disk
     /// an error the card never made. QEMU validates neither, so only real
     /// hardware shows the difference.
     fn command(&mut self, index: u32, argument: u32, response: u16, crc: bool, index_check: bool,
-               data: bool)
+               transfer: Transfer)
                -> core::result::Result<[u32; 4], Failure>
     {
         self.wait_inhibit()?;
@@ -321,14 +348,17 @@ impl Disk
         // means the flag was already asserted and the clear did not take, so
         // the failure below belongs to an earlier command rather than this one.
         let before = self.read16(NORMAL_INT_STATUS);
-        let mut transfer = 0u16;
-        if data
+        let mut direction = 0u16;
+        if transfer != Transfer::None
         {
-            // Read direction only. CMD17 is a single-block command, so the
-            // multi-block bit stays clear: setting it tells the controller to
-            // expect further blocks and, with Auto CMD12 disabled, leaves the
-            // card mid-transfer once the one block has gone.
-            transfer = 1 << 4;
+            if transfer == Transfer::Read
+            {
+                // Read direction only. CMD17 is a single-block command, so the
+                // multi-block bit stays clear: setting it tells the controller to
+                // expect further blocks and, with Auto CMD12 disabled, leaves the
+                // card mid-transfer once the one block has gone.
+                direction = 1 << 4;
+            }
             self.write16(BLOCK_SIZE, SECTOR_SIZE as u16);
             self.write16(BLOCK_COUNT, 1);
         }
@@ -342,11 +372,11 @@ impl Disk
         {
             flags |= 1 << 4;
         }
-        if data
+        if transfer != Transfer::None
         {
             flags |= 1 << 5;
         }
-        self.write32(TRANSFER_MODE, (flags << 16) | u32::from(transfer));
+        self.write32(TRANSFER_MODE, (flags << 16) | u32::from(direction));
         for _ in 0..TRANSFER_POLLS
         {
             let status = self.read16(NORMAL_INT_STATUS);
@@ -386,16 +416,20 @@ impl Disk
     fn identify(&mut self, stage: &mut u8) -> core::result::Result<(), Failure>
     {
         *stage = 5;
-        self.command(CMD_GO_IDLE, 0, RESPONSE_NONE, false, false, false)?;
+        self.command(CMD_GO_IDLE, 0, RESPONSE_NONE, false, false, Transfer::None)?;
         *stage = 6;
-        self.command(CMD_SEND_IF_COND, 0x1aa, RESPONSE_48, true, true, false)?;
+        self.command(CMD_SEND_IF_COND, 0x1aa, RESPONSE_48, true, true, Transfer::None)?;
         let mut ready = false;
         for _ in 0..INITIALISE_POLLS
         {
-            self.command(CMD_APP_COMMAND, 0, RESPONSE_48, true, true, false)?;
+            self.command(CMD_APP_COMMAND, 0, RESPONSE_48, true, true, Transfer::None)?;
             // R3: the OCR reply carries neither a CRC nor a command index.
-            let response =
-                self.command(CMD_APP_SEND_OP_COND, 0x40ff_8000, RESPONSE_48, false, false, false)?;
+            let response = self.command(CMD_APP_SEND_OP_COND,
+                                        0x40ff_8000,
+                                        RESPONSE_48,
+                                        false,
+                                        false,
+                                        Transfer::None)?;
             if response[0] & 0x8000_0000 != 0
             {
                 self.high_capacity = response[0] & 0x4000_0000 != 0;
@@ -409,8 +443,9 @@ impl Disk
         }
         *stage = 7;
         // R2: 136-bit CID, CRC present, no command index in the reply.
-        self.command(CMD_ALL_SEND_CID, 0, RESPONSE_136, true, false, false)?;
-        let relative = self.command(CMD_SEND_RELATIVE_ADDRESS, 0, RESPONSE_48, true, true, false)?;
+        self.command(CMD_ALL_SEND_CID, 0, RESPONSE_136, true, false, Transfer::None)?;
+        let relative =
+            self.command(CMD_SEND_RELATIVE_ADDRESS, 0, RESPONSE_48, true, true, Transfer::None)?;
         self.relative = (relative[0] >> 16) as u16;
         // The card description is readable in the stand-by state; asking for it
         // after SELECT_CARD times out on this controller.
@@ -419,25 +454,76 @@ impl Disk
                                         RESPONSE_136,
                                         true,
                                         false,
-                                        false)?;
+                                        Transfer::None)?;
         // SDHCI presents a 136-bit response most-significant word last, so the
-        // card description reads from RESP3 down to RESP0.
-        let csd = [csd_response[3], csd_response[2], csd_response[1], csd_response[0]];
+        // card description reads from RESP3 down to RESP0. The controller also
+        // strips the response's trailing CRC byte, so the registers hold bits
+        // 127:8 of the description in their bits 119:0: every field sits eight
+        // bits lower than the card specification numbers it. Shifting the whole
+        // value up by eight puts each field back where `capacity_sectors`
+        // expects it. Without this a version 2.0 card reads as version 1.0 and
+        // its size is nonsense: observed on a BCM2837 with a 7.35 GB card,
+        // which reported 0x80200 sectors (256 MiB).
+        let raw = [csd_response[3], csd_response[2], csd_response[1], csd_response[0]];
+        let csd = [(raw[0] << 8) | (raw[1] >> 24),
+                   (raw[1] << 8) | (raw[2] >> 24),
+                   (raw[2] << 8) | (raw[3] >> 24),
+                   raw[3] << 8];
         self.command(CMD_SELECT_CARD,
                      u32::from(self.relative) << 16,
                      RESPONSE_48_BUSY,
                      true,
                      true,
-                     false)?;
-        self.command(CMD_SET_BLOCK_LENGTH, SECTOR_SIZE as u32, RESPONSE_48, true, true, false)?;
+                     Transfer::None)?;
+        self.command(CMD_SET_BLOCK_LENGTH,
+                     SECTOR_SIZE as u32,
+                     RESPONSE_48,
+                     true,
+                     true,
+                     Transfer::None)?;
         self.sectors = capacity_sectors(csd)?;
         Ok(())
     }
 
     /// Reads one block through the controller's buffer port.
+    /// Waits for the controller to declare a drained read finished, then
+    /// clears the read's status bits so none of them can be mistaken for the
+    /// next command's.
+    fn finish_read(&mut self) -> core::result::Result<(), Failure>
+    {
+        for _ in 0..TRANSFER_POLLS
+        {
+            let status = self.read16(NORMAL_INT_STATUS);
+            if status & INT_ERROR != 0
+            {
+                return Err(Failure { what:      "read-failed-after-data",
+                                     command:   CMD_READ_SINGLE_BLOCK as u8,
+                                     normal:    status,
+                                     error:     self.read16(ERROR_INT_STATUS),
+                                     caps:      self.read32(CAPABILITIES),
+                                     before:    0,
+                                     completed: true,
+                                     resp:      0 });
+            }
+            if status & INT_TRANSFER_COMPLETE != 0
+            {
+                self.write16(NORMAL_INT_STATUS, INT_TRANSFER_COMPLETE | INT_BUFFER_READ_READY);
+                return Ok(());
+            }
+        }
+        Err(Failure { what:      "read-never-completed",
+                      command:   CMD_READ_SINGLE_BLOCK as u8,
+                      normal:    self.read16(NORMAL_INT_STATUS),
+                      error:     self.read16(ERROR_INT_STATUS),
+                      caps:      self.read32(CAPABILITIES),
+                      before:    0,
+                      completed: true,
+                      resp:      0 })
+    }
+
     fn transfer(&mut self, argument: u32) -> core::result::Result<[u8; SECTOR_SIZE], Failure>
     {
-        self.command(CMD_READ_SINGLE_BLOCK, argument, RESPONSE_48, true, true, true)?;
+        self.command(CMD_READ_SINGLE_BLOCK, argument, RESPONSE_48, true, true, Transfer::Read)?;
         let mut bytes = [0u8; SECTOR_SIZE];
         let mut words = 0usize;
         let mut saw_ready = false;
@@ -472,6 +558,14 @@ impl Disk
             }
             if words == SECTOR_SIZE / 4
             {
+                // The data is in hand, but the transfer is not over until the
+                // controller raises Transfer Complete. Returning before that
+                // lets the completion of this read land inside the next one,
+                // which then sees "complete" with no data and leaves the
+                // controller busy. Observed on a BCM2837: the first read of
+                // sector 0 succeeded and the second reported no-buffer-ready.
+                // An emulator completes instantly, so only hardware shows it.
+                self.finish_read()?;
                 self.state_after = self.read32(PRESENT_STATE);
                 self.normal_after = self.read16(NORMAL_INT_STATUS);
                 self.error_after = self.read16(ERROR_INT_STATUS);
@@ -508,6 +602,100 @@ impl Disk
                       resp:      0 })
     }
 
+    /// Writes one block through the controller's buffer port. The mirror of
+    /// `transfer`, with one difference that matters: a read is done when its
+    /// last word is drained, but a write is not done when its last word is
+    /// accepted — the block is only on the card once the transfer completes,
+    /// so this returns only after Transfer Complete, not after the buffer
+    /// fills. A caller that returns early on a filled buffer reports a write
+    /// that may still be in flight.
+    fn transfer_write(&mut self, argument: u32, data: &[u8; SECTOR_SIZE])
+                      -> core::result::Result<(), Failure>
+    {
+        self.command(CMD_WRITE_SINGLE_BLOCK, argument, RESPONSE_48, true, true, Transfer::Write)?;
+        let mut words = 0usize;
+        let mut saw_ready = false;
+        for _ in 0..TRANSFER_POLLS
+        {
+            let status = self.read16(NORMAL_INT_STATUS);
+            if status & INT_ERROR != 0
+            {
+                return Err(Failure { what:      "write-failed",
+                                     command:   CMD_WRITE_SINGLE_BLOCK as u8,
+                                     normal:    status,
+                                     error:     self.read16(ERROR_INT_STATUS),
+                                     caps:      self.read32(CAPABILITIES),
+                                     before:    0,
+                                     completed: false,
+                                     resp:      0 });
+            }
+            // Fill only while there is actually room to take a word. Either
+            // signal will do: the Buffer Write Ready interrupt, or the polled
+            // data-available bit in PRESENT_STATE. Bit 9 is transfer-active,
+            // not buffer-ready, so filling on it writes words the controller
+            // is not ready to take.
+            if status & INT_BUFFER_WRITE_READY != 0
+               || self.read32(PRESENT_STATE) & PRESENT_BUFFER_WRITE != 0
+            {
+                saw_ready = true;
+                while words < SECTOR_SIZE / 4
+                      && self.read32(PRESENT_STATE) & PRESENT_BUFFER_WRITE != 0
+                {
+                    let at = words * 4;
+                    let word =
+                        u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+                    self.write32(BUFFER_DATA, word);
+                    words += 1;
+                }
+            }
+            if words == SECTOR_SIZE / 4 && status & INT_TRANSFER_COMPLETE != 0
+            {
+                return Ok(());
+            }
+            if status & INT_TRANSFER_COMPLETE != 0 && words < SECTOR_SIZE / 4
+            {
+                // Not having seen Buffer Write Ready at all is a different fault
+                // from filling a block that then came up short.
+                return Err(Failure { what:      if saw_ready
+                                     {
+                                         "write-short"
+                                     }
+                                     else
+                                     {
+                                         "no-buffer-write-ready"
+                                     },
+                                     command:   CMD_WRITE_SINGLE_BLOCK as u8,
+                                     normal:    status,
+                                     error:     self.read16(ERROR_INT_STATUS),
+                                     caps:      self.read32(CAPABILITIES),
+                                     before:    0,
+                                     completed: true,
+                                     resp:      0 });
+            }
+        }
+        Err(Failure { what:      "write-timeout",
+                      command:   CMD_WRITE_SINGLE_BLOCK as u8,
+                      normal:    self.read16(NORMAL_INT_STATUS),
+                      error:     self.read16(ERROR_INT_STATUS),
+                      caps:      self.read32(CAPABILITIES),
+                      before:    0,
+                      completed: false,
+                      resp:      0 })
+    }
+
+    /// Writes one block. The sector must be inside the card; a write past the
+    /// end is refused rather than wrapped.
+    pub fn write_block(&mut self, sector: u64, data: &[u8; SECTOR_SIZE])
+                       -> core::result::Result<(), Failure>
+    {
+        if sector >= self.sectors
+        {
+            return Err(Failure::plain("outside-card"));
+        }
+        let argument = if self.high_capacity { sector as u32 } else { (sector * 512) as u32 };
+        self.transfer_write(argument, data)
+    }
+
     /// Reads one block and returns the controller state on refusal. The
     /// `BlockDevice` implementation discards that state; a diagnostic caller
     /// keeps it.
@@ -534,6 +722,28 @@ impl BlockDevice for Disk
                    -> mac_block::Result<()>
     {
         *output = self.read_block(sector).map_err(|failure| Error::Malformed(failure.what))?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "block-device")]
+impl WritableBlockDevice for Disk
+{
+    fn is_read_only(&self) -> bool
+    {
+        false
+    }
+
+    fn write_sector(&mut self, sector: u64, input: &[u8; SECTOR_SIZE]) -> mac_block::Result<()>
+    {
+        self.write_block(sector, input).map_err(|failure| Error::Malformed(failure.what))?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> mac_block::Result<()>
+    {
+        // No write cache sits between this driver and the card: a block is on
+        // the card when `write_block` returns, so there is nothing to flush.
         Ok(())
     }
 }

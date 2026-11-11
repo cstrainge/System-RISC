@@ -40,12 +40,12 @@
   "memory": {
     "page_bytes": 4096,
     "ram_base": "0x0",
-    "minimum_ram_bytes": "0x3f000000",
+    "minimum_ram_bytes": "0x3b400000",
     "boot": {
       "base": "0x80000",
       "bytes": "0xb0000"
     },
-    "firmware_code_bytes": "0x1c000",
+    "firmware_code_bytes": "0x30000",
     "firmware_heap": {
       "base": "0x130000",
       "bytes": "0x800000"
@@ -161,6 +161,15 @@
       "address": "0x3f201000",
       "bytes": 4096,
       "interrupt": 57,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-gpio",
+      "bus": "MMIO",
+      "key": "6272636d2c6770696f00000000000000",
+      "address": "0x3f200000",
+      "bytes": 4096,
+      "interrupt": null,
       "flags": 2
     },
     {
@@ -302,7 +311,7 @@
           },
           "size": {
             "kind": "bytes",
-            "bytes": "0x80000000"
+            "bytes": "0x1f400000"
           },
           "partitions": [
             {
@@ -310,7 +319,7 @@
               "label": "BOOT",
               "size": {
                 "kind": "bytes",
-                "bytes": "0x10000000"
+                "bytes": "0x4000000"
               },
               "files": [
                 {
@@ -343,6 +352,13 @@
                 {
                   "source": {
                     "kind": "file",
+                    "file": "firmware/overlays/disable-bt.dtbo"
+                  },
+                  "path": "overlays/disable-bt.dtbo"
+                },
+                {
+                  "source": {
+                    "kind": "file",
                     "file": "firmware/LICENCE.broadcom"
                   },
                   "path": "LICENCE.broadcom"
@@ -366,6 +382,14 @@
                       {
                         "key": "uart_2ndstage",
                         "value": "1"
+                      },
+                      {
+                        "key": "dtoverlay",
+                        "value": "disable-bt"
+                      },
+                      {
+                        "key": "gpu_mem",
+                        "value": "76"
                       }
                     ]
                   },
@@ -434,6 +458,14 @@
         "base": "0x3f300000",
         "bytes": "0x1000",
         "interrupt": 62
+      },
+      {
+        "kind": "gpio",
+        "model": "bcm2835-gpio",
+        "compatible": "brcm,bcm2835-gpio",
+        "note": "The main GPIO controller. The green ACT LED is GPIO 47 on this block, active-low; the bootloader blinks it as a progress diagnostic when there is no serial cable.",
+        "base": "0x3f200000",
+        "bytes": "0x1000"
       },
       {
         "kind": "gpio-mailbox",

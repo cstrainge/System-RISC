@@ -12,6 +12,9 @@ use core::panic::PanicInfo;
 use linked_list_allocator::LockedHeap;
 use mac_sdhci::Disk;
 
+mod cache;
+mod display;
+mod led;
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -25,9 +28,7 @@ fn init_heap()
     // SAFETY: the bootrom is single-threaded on the primary CPU, this runs once
     // before any allocation, the MMU is already on, and the window is RAM the
     // record reserves for exactly this purpose. No reference to it escapes.
-    unsafe {
-        HEAP.lock().init(FIRMWARE_HEAP_BASE as *mut u8, FIRMWARE_HEAP_BYTES as usize)
-    };
+    unsafe { HEAP.lock().init(FIRMWARE_HEAP_BASE as *mut u8, FIRMWARE_HEAP_BYTES as usize) };
 }
 
 #[alloc_error_handler]
@@ -66,9 +67,8 @@ fn firmware_tree(address: usize) -> Option<&'static [u8]>
     {
         return None;
     }
-    let total = u32::from_be(unsafe {
-                      core::ptr::read_volatile(header.add(4) as *const u32)
-                  }) as usize;
+    let total =
+        u32::from_be(unsafe { core::ptr::read_volatile(header.add(4) as *const u32) }) as usize;
     if total < 40 || total as u64 > FDT_TAIL_BYTES
     {
         return None;
@@ -98,8 +98,7 @@ fn firmware_tree(address: usize) -> Option<&'static [u8]>
 // same reason: `link.ld` asserts that `.data` begins at the declared boundary,
 // so the page tables and the assertion read one value rather than two copies of
 // it that can disagree.
-unsafe extern "C"
-{
+unsafe extern "C" {
     // The script's own symbol; its address is the table base.
     static __tables_start: u8;
     static __platform_BOOT_START: u8;
@@ -136,7 +135,7 @@ const DEVICE: u64 = 0x405 | NEVER_EXECUTE;
 // 39-bit VA at both halves, 4 KiB granule at both halves, 32-bit physical.
 const TCR: u64 = 0x8019_0019;
 // MAIR[0] normal write-back, MAIR[1] Device-nGnRnE.
-const MAIR: u64 = 0xFF;
+const MAIR: u64 = 0xff;
 const KERNEL_HALF: u64 = 0xffff_ff80_0000_0000;
 
 unsafe fn clear(table: u64)
@@ -160,9 +159,20 @@ pub extern "C" fn mmu_init()
 {
     let ram_blocks = (PHYSICAL_RAM_BYTES / BLOCK) as usize;
     let physmap_index = ((PHYSMAP_BASE - KERNEL_HALF) / (1 << 30)) as usize;
-    // The device aperture begins where RAM ends, so the mapping needs the RAM
-    // extent rather than any individual peripheral address.
+    // Three spans, not two. RAM the ARM owns ends at the record's figure; the
+    // peripheral registers begin at the record's lowest MMIO window; and the
+    // memory between them belongs to the VideoCore, which is where the
+    // firmware allocates the framebuffer. That middle span is mapped as
+    // ordinary non-executable memory in the identity map so the boot screen
+    // can be drawn with ordinary stores - a Device mapping there would fault
+    // on the unaligned and vector accesses a fill or copy is free to use. It
+    // is not aliased in the physmap, which describes the ARM's RAM only.
     assert!(PHYSICAL_RAM_BYTES % BLOCK == 0, "RAM must end on a block boundary");
+    assert!(DEVICE_APERTURE_BASE % BLOCK == 0
+            && DEVICE_APERTURE_BASE >= PHYSICAL_RAM_BASE + PHYSICAL_RAM_BYTES
+            && DEVICE_APERTURE_BASE < 1 << 30,
+            "the peripheral aperture must be block aligned, above RAM, and inside the first gigabyte");
+    let device_blocks = (DEVICE_APERTURE_BASE / BLOCK) as usize;
     assert!(physmap_index < 512, "the physmap must sit inside the kernel half");
     // The boot window holds code and data, and one permission cannot be right
     // for both: code must be read-only and executable, data writable and not
@@ -200,8 +210,7 @@ pub extern "C" fn mmu_init()
     let l1_high = l1_low + 2 * TABLE_BYTES;
     let l2_physmap = l1_low + 3 * TABLE_BYTES;
     let l3_boot = l1_low + 4 * TABLE_BYTES;
-    unsafe
-    {
+    unsafe {
         for table in [l1_low, l2_low, l1_high, l2_physmap, l3_boot]
         {
             clear(table);
@@ -212,14 +221,8 @@ pub extern "C" fn mmu_init()
         // non-executable.
         for index in 0..512
         {
-            let permission = if index >= boot_page && index < boot_page + code_pages
-            {
-                CODE
-            }
-            else
-            {
-                DATA
-            };
+            let permission =
+                if index >= boot_page && index < boot_page + code_pages { CODE } else { DATA };
             entry(l3_boot, index, PHYSICAL_RAM_BASE + index as u64 * PAGE | permission);
         }
         // One page table serves both roots: the identity map and the physmap
@@ -227,11 +230,11 @@ pub extern "C" fn mmu_init()
         // second copy of it would be a second thing to keep in agreement.
         entry(l1_low, 0, l2_low | TABLE);
         entry(l2_low, 0, l3_boot | TABLE);
-        for index in 1..ram_blocks
+        for index in 1..device_blocks
         {
-            entry(l2_low, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | DATA_BLOCK);
+            entry(l2_low, index, index as u64 * BLOCK | DATA_BLOCK);
         }
-        for index in ram_blocks..512
+        for index in device_blocks..512
         {
             entry(l2_low, index, index as u64 * BLOCK | DEVICE);
         }
@@ -276,11 +279,25 @@ pub extern "C" fn physmap_check() -> u64
     u64::from(identity == aliased)
 }
 
-fn putc(byte: u8)
+/// One byte to the console, waiting for room in the transmit FIFO.
+fn transmit(byte: u8)
 {
     while unsafe { core::ptr::read_volatile((PL011_BASE + 0x18) as *const u32) } & 0x20 != 0
     {}
     unsafe { core::ptr::write_volatile(PL011_BASE as *mut u32, u32::from(byte)) };
+}
+
+/// A line feed alone moves a terminal down without returning it to the left
+/// margin, so every marker after the first started where the last one ended.
+/// The carriage return is added here, once, so no marker has to carry it; the
+/// entry code's `uart_putc` does the same.
+fn putc(byte: u8)
+{
+    if byte == b'\n'
+    {
+        transmit(b'\r');
+    }
+    transmit(byte);
 }
 
 fn puts(text: &str)
@@ -337,6 +354,8 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
         puts("BOOT_AARCH64_DT_REFUSED: the machine supplied no usable device tree\n");
         halt_probe();
     };
+    // One blink per stage passed; the count is the last stage reached.
+    led::led_blink();
     let tree = match mac_devicetree::Tree::new(bytes)
     {
         Ok(tree) => tree,
@@ -346,9 +365,50 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
             halt_probe();
         }
     };
+    led::led_blink();
+    // The translation tables were built from the record's RAM figure before the
+    // tree could be read. The firmware decides the real one - it keeps part of
+    // the board's memory for the VideoCore - so the tree's answer is compared
+    // with the record's rather than assumed to match it. A machine with less
+    // than the record states is refused: everything placed above the real end
+    // of RAM would land in memory the firmware owns.
+    let mut banks = 0u64;
+    let mut ram_base = 0u64;
+    let mut ram_bytes = 0u64;
+    if tree.memory(|base, bytes| {
+               if banks == 0
+               {
+                   ram_base = base;
+                   ram_bytes = bytes;
+               }
+               banks += 1;
+           })
+           .is_err()
+    {
+        puts("BOOT_AARCH64_DT_REFUSED: the machine's tree is malformed while reading RAM\n");
+        halt_probe();
+    }
+    puts("BOOT_AARCH64_RAM: banks=");
+    puthex(banks);
+    puts(" base=");
+    puthex(ram_base);
+    puts(" bytes=");
+    puthex(ram_bytes);
+    puts(" record=");
+    puthex(PHYSICAL_RAM_BYTES);
+    puts("\n");
+    if banks == 0 || ram_base != PHYSICAL_RAM_BASE || ram_bytes < PHYSICAL_RAM_BYTES
+    {
+        puts("BOOT_AARCH64_RAM_REFUSED: the machine's RAM is absent or below the platform \
+              minimum\n");
+        halt_probe();
+    }
     // Looked up by the tree's own `compatible`, which is the device tree's
-    // vocabulary rather than this platform's inventory name for the part.
-    let sdhci = match tree.window("brcm,bcm2835-mmc")
+    // vocabulary rather than this platform's inventory name for the part. The
+    // lookup ignores `status`: the base tree disables this node because the SD
+    // slot belongs to the SDHOST controller in Linux's driver assignment, but
+    // the bootrom reading its own boot device is not a driver-binding question.
+    let sdhci = match tree.window_including_disabled("brcm,bcm2835-mmc")
     {
         Ok(Some((base, bytes))) =>
         {
@@ -365,6 +425,7 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
             halt_probe();
         }
     };
+    led::led_blink();
     match tree.window("arm,pl011")
     {
         Ok(Some((base, _))) =>
@@ -379,7 +440,7 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
             if base != PL011_BASE
             {
                 puts("BOOT_AARCH64_DT_MISMATCH: the tree's pl011 is not the console in use\n");
-            halt_probe();
+                halt_probe();
             }
         }
         _ =>
@@ -388,6 +449,38 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
             halt_probe();
         }
     }
+    led::led_blink();
+    // The display comes up before the card is probed, so a failure here is
+    // visible on the screen while the rest of the boot proceeds. A display
+    // that refuses does not stop the boot: the kernel's driver is the
+    // authoritative display path and may succeed where this one did not.
+    match display::init(&tree)
+    {
+        Ok(framebuffer) =>
+        {
+            puts("BOOT_AARCH64_DISPLAY_READY: ");
+            puthex(u64::from(framebuffer.width));
+            puts("x");
+            puthex(u64::from(framebuffer.height));
+            puts(" pitch=");
+            puthex(u64::from(framebuffer.pitch));
+            puts(" base=");
+            puthex(u64::from(framebuffer.base));
+            puts("\n");
+        }
+        Err(error) =>
+        {
+            puts("BOOT_AARCH64_DISPLAY_REFUSED: ");
+            for byte in alloc::format!("{error}").bytes()
+            {
+                putc(byte);
+            }
+            puts("\n");
+        }
+    }
+    // The display init returned either way; the blink marks that, not that
+    // it succeeded.
+    led::led_blink();
     let mut stage = 0u8;
     let mut disk = match Disk::probe(sdhci, &mut stage)
     {
@@ -408,6 +501,7 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
             halt_probe();
         }
     };
+    led::led_blink();
     puts("BOOT_AARCH64_SD_READY: sectors=");
     puthex(disk.sector_count());
     puts("\n");
@@ -415,7 +509,7 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
     if disk.read_sector(0, &mut sector).is_err()
     {
         puts("BOOT_AARCH64_SD_READ_FAILED: sector 0\n");
-            halt_probe();
+        halt_probe();
     }
     let signature = u16::from_le_bytes([sector[510], sector[511]]);
     puts("BOOT_AARCH64_SD_MBR: signature=");
@@ -429,10 +523,16 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
     // this platform writes; `find_system` says the volume and the blessed System
     // were actually reachable. Returning the signature alone meant a card with a
     // valid table and no System printed the ready marker.
-    if signature != 0xAA55 || !find_system(&mut disk)
+    if signature != 0xaa55
     {
         halt_probe();
     }
+    led::led_blink();
+    if !find_system(&mut disk)
+    {
+        halt_probe();
+    }
+    led::led_blink();
     1
 }
 
@@ -521,7 +621,8 @@ fn find_system(disk: &mut Disk) -> bool
         puts("BOOT_AARCH64_BLESSED: cnid=");
         puthex(u64::from(folder.id));
         puts(" name=");
-        let folder_end = folder.name.iter().position(|byte| *byte == 0).unwrap_or(folder.name.len());
+        let folder_end =
+            folder.name.iter().position(|byte| *byte == 0).unwrap_or(folder.name.len());
         for byte in &folder.name[..folder_end]
         {
             putc(*byte);

@@ -14,7 +14,12 @@ SECTIONS {
     . = ORIGIN(ram);
     .text : { KEEP(*(.text.entry)) *(.text .text.*) } > ram
     .rodata : ALIGN(4096) { *(.rodata .rodata.* .srodata .srodata.*) } > ram
-    .data : ALIGN(4096) { *(.data .data.* .sdata .sdata.* .got .got.*) } > ram
+    __code_end = .;
+    /* .data is placed at the record's declared boundary rather than wherever
+     * the code happens to end, so `firmware_code_bytes` is a budget: the build
+     * breaks only when code and read-only data outgrow it, not every time they
+     * cross a page. */
+    .data (ORIGIN(ram) + __platform_FIRMWARE_CODE_BYTES) : { *(.data .data.* .sdata .sdata.* .got .got.*) } > ram
     .bss (NOLOAD) : ALIGN(4096) {
         __bss_start = .; *(.bss .bss.* .sbss .sbss.*) *(COMMON)
         . = ALIGN(16); __bss_end = .;
@@ -52,5 +57,7 @@ ASSERT(__tables_start < ORIGIN(ram) + LENGTH(ram),
  * Without this, growing the payload past the declared extent would leave the
  * tail of .text inside the writable region - silently, and only a boot would
  * show it. */
+ASSERT(__code_end <= ORIGIN(ram) + __platform_FIRMWARE_CODE_BYTES,
+       "BOOT_CODE_BUDGET_EXCEEDED: code and read-only data run past the record's firmware_code_bytes; raise it in the platform record")
 ASSERT(ADDR(.data) == ORIGIN(ram) + __platform_FIRMWARE_CODE_BYTES,
        "BOOT_CODE_BOUNDARY_STALE: .data does not begin at the record's firmware_code_bytes; the code/data split would put code in the writable region or data in the executable one")

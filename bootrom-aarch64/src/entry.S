@@ -8,10 +8,33 @@
 .section .text.entry
 .global _start
 _start:
+    // A 'B' on the serial line proves _start runs, even if the LED code
+    // faults on its first GPIO write. The firmware configures the UART
+    // (enable_uart=1), so a direct data-register write transmits without
+    // calling uart_init. Only registers are touched — no stack exists yet —
+    // and x0 (the device-tree address) and x19 are preserved; x1/x2/x3
+    // are the scratch. Label 9 is free in this file, so the poll loop
+    // cannot resolve to another label.
+    ldr x1, =PL011_BASE
+    mov w2, #0x42              // 'B'
+9:  ldr w3, [x1, #PL011_FR]
+    tbnz w3, #5, 9b            // TXFF: wait until the transmit FIFO is not full
+    str w2, [x1, #PL011_DR]
     // The machine's device tree arrives in x0. It is captured before anything
     // else runs, because the very next instruction reuses x0, and x19 is
     // callee-saved so it survives every call below.
     mov x19, x0
+    // The LED is initialised before the first blink, while x19 already holds
+    // the tree address; led_init is a leaf that touches no stack, so the
+    // stack not being set up yet does not matter.
+    bl led_init
+    // Blink 0: the bootrom entered _start and the LED is initialised. A
+    // blink here means the kernel image was loaded and started at all —
+    // the solid blink seen first on the board is the firmware's power-on
+    // LED, not this one; this one only fires once the bootrom itself
+    // runs. led_blink is a leaf like led_init (no stack), so calling it
+    // before the stack exists is safe. The count is the last stage reached.
+    bl led_blink
     mrs x0, mpidr_el1
     and x0, x0, #0xff
     cbnz x0, parked
@@ -50,6 +73,10 @@ el1_entry:
     mov x0, #(3 << 20)
     msr cpacr_el1, x0
     isb
+    // One blink per stage passed; the count is the last stage reached.
+    // Stages in entry.S: 0 _start entered, 1 EL1 reached, 2 UART output
+    // done, 3 MMU on, 4 physmap checked.
+    bl led_blink
     bl uart_init
     // Reported before anything can depend on it: a machine that supplies no
     // tree is a named fact at entry, not a mystery later.
@@ -64,7 +91,11 @@ el1_entry:
     b.ne el_bad
     adr x0, el1_marker
     bl uart_puts
+    // Blink 2: the EL1 marker printed, so the UART path works; the next
+    // blink only fires once mmu_init has returned.
+    bl led_blink
     bl mmu_init
+    bl led_blink
     adr x0, mmu_marker
     bl uart_puts
     bl physmap_check
@@ -79,6 +110,7 @@ physmap_bad:
 physmap_done:
     // The tree captured at entry is the probe's only source of peripheral
     // addresses; nothing about it is trusted, so the probe checks it.
+    bl led_blink
     mov x0, x19
     bl sdhci_probe
     cbz x0, sdhci_bad
@@ -121,7 +153,16 @@ uart_init:
     ret
 
 uart_putc:
+    // A line feed alone leaves a terminal's cursor where the last line ended,
+    // so a carriage return goes out ahead of each one. `putc` in main.rs does
+    // the same. Only x1 and x3 are free to this function.
     ldr x1, =PL011_BASE
+    cmp w0, #10
+    b.ne 2f
+1:  ldr w3, [x1, #PL011_FR]
+    tbnz w3, #5, 1b
+    mov w3, #13
+    str w3, [x1, #PL011_DR]
 2:  ldr w3, [x1, #PL011_FR]
     tbnz w3, #5, 2b
     str w0, [x1, #PL011_DR]

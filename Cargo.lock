@@ -140,11 +140,13 @@ version = "0.1.0"
 dependencies = [
  "linked_list_allocator",
  "mac-block",
+ "mac-boot-screen",
  "mac-build",
  "mac-devicetree",
  "mac-filesystem",
  "mac-hfs",
  "mac-sdhci",
+ "mac-videocore-fb",
  "serde_json",
 ]
 

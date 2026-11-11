@@ -264,6 +264,10 @@ pub enum PeripheralKind
     Uart,
     Storage,
     GpioMailbox,
+    /// A general-purpose I/O controller: its pins are individually
+    /// configurable as inputs or outputs, and are how a board exposes a
+    /// status LED or a button to software.
+    Gpio,
     Network,
     Pcie,
     Timer,
@@ -308,6 +312,7 @@ impl PeripheralKind
             PeripheralKind::Uart => "uart",
             PeripheralKind::Storage => "storage",
             PeripheralKind::GpioMailbox => "gpio-mailbox",
+            PeripheralKind::Gpio => "gpio",
             PeripheralKind::Network => "network",
             PeripheralKind::Pcie => "pcie",
             PeripheralKind::Timer => "timer",
