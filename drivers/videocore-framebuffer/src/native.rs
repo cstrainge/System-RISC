@@ -2,12 +2,13 @@
 //! allocations, the CPU view of the firmware buffer and the cache instructions.
 //! Everything above it is safe code that the host tests drive.
 #![allow(unsafe_code)]
-use core::{arch::asm, ptr::copy_nonoverlapping};
+use core::ptr::copy_nonoverlapping;
 
 use mac_driver::{Client, Completion, Error, Phase, Result as DriverResult,
                  devices::{DeviceService, interface}};
 use mac_video_interface::Size;
-use mac_videocore_fb::{Channel, Error as MailboxError, Message, WORDS, registers::Mailbox};
+use mac_videocore_fb::{Channel, Error as MailboxError, Message, WORDS,
+                       registers::{Mailbox, WINDOW_BYTES}};
 
 use crate::{Bounds, Device, Engine, Refusal, library_mode,
             scanout::{Allocation, Frame, Plan, Platform}};
@@ -114,21 +115,15 @@ impl Machine
                   mailbox: None })
     }
 
-    /// Find the mailbox the platform record declares, claim it and map the
-    /// message buffer. The register window comes from the record; the claim
-    /// covers the page that must contain it, and that containment is checked
-    /// rather than assumed.
+    /// Find the mailbox in the machine's inventory, claim it and map the
+    /// message buffer. The register window is the one the claim states, which
+    /// is the machine's tree speaking: this module is compiled with no device
+    /// address and adds no offset of its own.
     fn discover(&mut self) -> DriverResult<()>
     {
         if self.mailbox.is_some()
         {
             return Ok(());
-        }
-        if !PLATFORM_DECLARES_MAILBOX
-        {
-            // The build script found no `bcm2835-mailbox` window in the selected
-            // platform record, so there is no address this driver may touch.
-            return Err(Error(mac_abi::NOT_SUPPORTED));
         }
         let slots = self.service.count()?;
         for ordinal in 0..slots
@@ -145,18 +140,10 @@ impl Machine
             {
                 continue;
             }
-            // The record's register window must sit inside the page the
-            // inventory claims. That agreement is what makes the two record
-            // entries describe one device instead of two.
-            let page_start = description.registers & !0xfff;
-            let page_end = description.registers
-                                      .checked_add(description.register_bytes)
-                                      .and_then(|end| end.checked_next_multiple_of(0x1000))
-                                      .ok_or(Error(mac_abi::BAD_ABI))?;
-            let window_start = MAILBOX_BASE as u64;
-            let window_end =
-                window_start.checked_add(MAILBOX_BYTES as u64).ok_or(Error(mac_abi::BAD_ABI))?;
-            if window_start < page_start || window_end > page_end
+            // The tree must state at least the registers this driver reaches.
+            // A shorter window is some other description of the part, and
+            // reading past what the machine stated is not this driver's call.
+            if description.register_bytes < WINDOW_BYTES as u64
             {
                 return Err(Error(mac_abi::BAD_ABI));
             }
@@ -174,9 +161,10 @@ impl Machine
             let mapping =
                 self.service.map(self.claim, storage as u64, (WORDS * size_of::<u32>()) as u64)?;
             self.message = u32::try_from(mapping.address).map_err(|_| Error(mac_abi::BAD_ABI))?;
-            // SAFETY: the platform record's window, checked above to lie inside
-            // the page this module exclusively claims.
-            self.mailbox = Some(Coherent { mailbox: unsafe { Mailbox::new(MAILBOX_BASE) } });
+            let base = usize::try_from(claim.registers).map_err(|_| Error(mac_abi::BAD_ABI))?;
+            // SAFETY: the window this module exclusively claims, at the address
+            // the claim states and long enough for every mailbox register.
+            self.mailbox = Some(Coherent { mailbox: unsafe { Mailbox::new(base) } });
             return Ok(());
         }
         Err(Error(mac_abi::NOT_FOUND))
