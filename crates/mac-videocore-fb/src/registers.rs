@@ -25,9 +25,15 @@ pub const STATUS_FULL: u32 = 1 << 31;
 /// Response FIFO is empty.
 pub const STATUS_EMPTY: u32 = 1 << 30;
 
-/// Bounded polls. The firmware answers in microseconds; a mailbox that never
-/// drains is a defect, not a wait to extend.
-const POLL_LIMIT: u32 = 100_000;
+/// Bounded polls. Most requests are answered in microseconds, but not all:
+/// seen on a board, setting a 1920x1080 mode and powering the USB controller
+/// both took longer than the hundred thousand polls this used to allow, and
+/// each was reported as a mailbox that never answered while the firmware was
+/// still working. The bound is a refusal threshold for a mailbox that is
+/// dead, so it is set well past the slowest honest answer - seconds, not
+/// milliseconds. It is a count and not a time because this crate has no
+/// clock; a caller that has one should bound the exchange itself.
+const POLL_LIMIT: u32 = 20_000_000;
 
 /// The word written to [`WRITE`]: the message's 16-byte aligned bus address in
 /// bits 31:4 and the channel in bits 3:0.
