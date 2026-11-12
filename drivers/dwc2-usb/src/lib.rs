@@ -5,9 +5,11 @@
 //! talks to what is on it with control transfers: it reads the device's
 //! descriptor, gives it an address, and - where it is a hub, as it is on the
 //! board this was written against - configures it, powers its ports and reads
-//! what each one sees. Nothing is done with the devices behind the hub yet:
-//! reaching a low- or full-speed one takes split transactions, which are not
-//! here.
+//! what each one sees, resets the occupied ones and gives the device behind
+//! each an address. A high-speed device is spoken to directly; a low- or
+//! full-speed one through the hub, by split transactions. Control transfers
+//! are all there is: no interrupt endpoint is polled, so no device does
+//! anything useful yet.
 //!
 //! The registers and their bits are from the Synopsys core's programming
 //! model. Three facts shape the code:
@@ -102,6 +104,31 @@ pub const TRANSFER_SIZE_MASK: u32 = 0x7_ffff;
 pub const TRANSFER_COMPLETE: u32 = 1 << 0;
 pub const CHANNEL_HALTED: u32 = 1 << 1;
 pub const NAK: u32 = 1 << 4;
+pub const ACK: u32 = 1 << 5;
+/// The hub's "not yet" to a complete-split: the downstream transaction has
+/// not finished.
+pub const NYET: u32 = 1 << 6;
+/// `HCCHAR`: the device is low-speed.
+pub const CHANNEL_LOW_SPEED: u32 = 1 << 17;
+/// `HCSPLT`: this is a split transaction, through the hub at the address in
+/// bits 13:7 and its port in bits 6:0, carrying the whole packet at once.
+pub const SPLIT_ENABLE: u32 = 1 << 31;
+pub const SPLIT_COMPLETE: u32 = 1 << 16;
+pub const SPLIT_WHOLE_PACKET: u32 = 0b11 << 14;
+pub const SPLIT_HUB_SHIFT: u32 = 7;
+pub const PID_DATA0: u32 = 0;
+/// The control packet size every low- and full-speed device accepts before
+/// it has stated its own.
+pub const SLOW_DEFAULT_PACKET: u32 = 8;
+/// How many times a split is started again after the device said "not yet",
+/// and how many times its completion is asked for after the hub did.
+pub const SPLIT_RESTARTS: u32 = 200;
+pub const SPLIT_COMPLETIONS: u32 = 40;
+/// The pause before asking a hub for a split's completion, and after a
+/// device's "not yet". A split completes a microframe or more after it
+/// starts; these are comfortably beyond that.
+pub const SPLIT_COMPLETION_MICROSECONDS: u64 = 500;
+pub const SPLIT_RESTART_MICROSECONDS: u64 = 2_000;
 
 /// The packet size every device accepts on its control endpoint before it has
 /// said otherwise; a high-speed device's is exactly this.
@@ -733,6 +760,211 @@ pub fn start_hub(registers: &mut impl Registers, clock: &mut impl Clock,
                                 u16::from_le_bytes([words[2], words[3]]));
     }
     Ok(hub)
+}
+
+/// How a low- or full-speed device is reached: through which hub and port.
+#[derive(Clone, Copy, Debug)]
+pub struct Route
+{
+    pub hub:       u8,
+    pub port:      u8,
+    pub low_speed: bool
+}
+
+/// Run one channel activation and return the channel's status word once it
+/// has halted.
+fn activate(registers: &mut impl Registers, clock: &mut impl Clock, stage: Stage,
+            characteristics: u32, split: u32, size: u32, address: u32)
+            -> Result<u32, Refusal>
+{
+    registers.write(HCINT, u32::MAX);
+    registers.write(HCSPLT, split);
+    registers.write(HCTSIZ, size);
+    registers.write(HCDMA, address);
+    registers.write(HCCHAR, characteristics | CHANNEL_ENABLE);
+    if !wait(registers, clock, STAGE_MICROSECONDS, |read| read(HCINT) & CHANNEL_HALTED != 0)?
+    {
+        let status = registers.read(HCINT);
+        registers.write(HCCHAR, characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
+        let _ = wait(registers, clock, STAGE_MICROSECONDS, |read| {
+            read(HCINT) & CHANNEL_HALTED != 0
+        })?;
+        return Err(Refusal::StageTimeout { stage,
+                                           status });
+    }
+    Ok(registers.read(HCINT))
+}
+
+/// One packet to or from a device behind a hub, as a split transaction: the
+/// hub is told to start it, and then asked, until it answers, how it went.
+/// Returns the bytes left untransferred.
+///
+/// A device's "not yet" restarts the split from its start. A hub's "not yet"
+/// to the completion repeats only the completion.
+#[allow(clippy::too_many_arguments)]
+fn split_stage(registers: &mut impl Registers, clock: &mut impl Clock, stage: Stage,
+               route: Route, device: u8, packet: u32, address: u32, bytes: u32, inward: bool,
+               pid: u32)
+               -> Result<u32, Refusal>
+{
+    let characteristics = packet
+                          | if inward { CHANNEL_DIRECTION_IN } else { 0 }
+                          | if route.low_speed { CHANNEL_LOW_SPEED } else { 0 }
+                          | CHANNEL_ONE_TRANSACTION
+                          | u32::from(device & 0x7f) << CHANNEL_ADDRESS_SHIFT;
+    let split = SPLIT_ENABLE
+                | SPLIT_WHOLE_PACKET
+                | u32::from(route.hub & 0x7f) << SPLIT_HUB_SHIFT
+                | u32::from(route.port & 0x7f);
+    let size = bytes | 1 << PACKET_COUNT_SHIFT | pid << PID_SHIFT;
+    let mut last = 0;
+    for _ in 0..SPLIT_RESTARTS
+    {
+        let started = activate(registers, clock, stage, characteristics, split, size, address)?;
+        last = started;
+        if started & NAK != 0
+        {
+            pause(registers, clock, SPLIT_RESTART_MICROSECONDS)?;
+            continue;
+        }
+        if started & ACK == 0
+        {
+            return Err(Refusal::StageFailed { stage,
+                                              status: started });
+        }
+        let mut restart = false;
+        for _ in 0..SPLIT_COMPLETIONS
+        {
+            pause(registers, clock, SPLIT_COMPLETION_MICROSECONDS)?;
+            let completed = activate(registers,
+                                     clock,
+                                     stage,
+                                     characteristics,
+                                     split | SPLIT_COMPLETE,
+                                     size,
+                                     address)?;
+            last = completed;
+            if completed & TRANSFER_COMPLETE != 0
+            {
+                return Ok(registers.read(HCTSIZ) & TRANSFER_SIZE_MASK);
+            }
+            if !inward && completed & ACK != 0
+            {
+                return Ok(0);
+            }
+            if completed & NYET != 0
+            {
+                continue;
+            }
+            if completed & NAK != 0
+            {
+                restart = true;
+                break;
+            }
+            return Err(Refusal::StageFailed { stage,
+                                              status: completed });
+        }
+        if !restart
+        {
+            // The hub never finished it. Starting over is the only recourse.
+        }
+        pause(registers, clock, SPLIT_RESTART_MICROSECONDS)?;
+    }
+    Err(Refusal::StageFailed { stage,
+                               status: last })
+}
+
+/// [`control`], to a low- or full-speed device behind a hub. Each packet is
+/// its own split transaction, so the data stage is run a packet at a time
+/// with this side keeping the data toggle.
+#[allow(clippy::too_many_arguments)]
+pub fn split_control(registers: &mut impl Registers, clock: &mut impl Clock,
+                     buffer: &mut impl TransferBuffer, route: Route, device: u8, packet: u32,
+                     setup: [u8; 8], reply: &mut [u8])
+                     -> Result<usize, Refusal>
+{
+    let address = buffer.address();
+    buffer.fill(&setup);
+    split_stage(registers, clock, Stage::Setup, route, device, packet, address, 8, false,
+                PID_SETUP)?;
+    if reply.is_empty()
+    {
+        split_stage(registers, clock, Stage::Status, route, device, packet, address, 0, true,
+                    PID_DATA1)?;
+        return Ok(0);
+    }
+    let mut received = 0;
+    let mut pid = PID_DATA1;
+    while received < reply.len()
+    {
+        let left = split_stage(registers, clock, Stage::Data, route, device, packet, address,
+                               packet, true, pid)?;
+        let got = packet.saturating_sub(left) as usize;
+        let keep = got.min(reply.len() - received);
+        // Every packet lands at the start of the buffer.
+        buffer.copy_out(&mut reply[received..received + keep]);
+        received += keep;
+        pid = if pid == PID_DATA1 { PID_DATA0 } else { PID_DATA1 };
+        if got < packet as usize
+        {
+            break;
+        }
+    }
+    split_stage(registers, clock, Stage::Status, route, device, packet, address, 0, false,
+                PID_DATA1)?;
+    Ok(received)
+}
+
+/// Bring a freshly reset low- or full-speed device from the default address
+/// to `address` and read its device descriptor.
+///
+/// The first eight bytes are read at the smallest packet size, because the
+/// eighth states the size the device really uses; everything after uses that.
+pub fn address_slow_device(registers: &mut impl Registers, clock: &mut impl Clock,
+                           buffer: &mut impl TransferBuffer, route: Route, address: u8)
+                           -> Result<[u8; DEVICE_DESCRIPTOR_BYTES], Refusal>
+{
+    let mut head = [0u8; 8];
+    let received = split_control(registers,
+                                 clock,
+                                 buffer,
+                                 route,
+                                 0,
+                                 SLOW_DEFAULT_PACKET,
+                                 [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 8, 0x00],
+                                 &mut head)?;
+    if received < 8
+    {
+        return Err(Refusal::ShortDescriptor { bytes: received });
+    }
+    let packet = match head[7]
+    {
+        size @ (8 | 16 | 32 | 64) => u32::from(size),
+        _ => return Err(Refusal::ShortDescriptor { bytes: received })
+    };
+    split_control(registers,
+                  clock,
+                  buffer,
+                  route,
+                  0,
+                  packet,
+                  [0x00, 0x05, address & 0x7f, 0, 0, 0, 0, 0],
+                  &mut [])?;
+    pause(registers, clock, ADDRESS_SETTLE_MICROSECONDS)?;
+    let mut descriptor = [0; DEVICE_DESCRIPTOR_BYTES];
+    let received = split_control(registers,
+                                 clock,
+                                 buffer,
+                                 route,
+                                 address,
+                                 packet,
+                                 GET_DEVICE_DESCRIPTOR,
+                                 &mut descriptor)?;
+    if received < DEVICE_DESCRIPTOR_BYTES
+    {
+        return Err(Refusal::ShortDescriptor { bytes: received });
+    }
+    Ok(descriptor)
 }
 
 #[cfg(target_os = "none")]

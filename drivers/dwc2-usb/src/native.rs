@@ -347,17 +347,41 @@ impl Machine
                     {
                         continue;
                     }
+                    let address = crate::ROOT_DEVICE_ADDRESS + port;
                     if !high
                     {
-                        // Reaching it takes split transactions through the
-                        // hub, which this driver does not perform yet. It is
-                        // left enabled and unaddressed, where no high-speed
-                        // transfer can reach it.
-                        report(format_args!("USB_PORT_DEVICE port={port} speed={speed}: not \
-                                             reachable until split transactions exist\n"));
+                        // Behind a high-speed hub, a slower device is reached
+                        // through the hub by split transactions.
+                        let route = crate::Route { hub: crate::ROOT_DEVICE_ADDRESS,
+                                                   port,
+                                                   low_speed: status
+                                                              & crate::HUB_PORT_LOW_SPEED
+                                                              != 0 };
+                        match crate::address_slow_device(&mut registers,
+                                                         &mut clock,
+                                                         &mut page,
+                                                         route,
+                                                         address)
+                        {
+                            Ok(d) =>
+                            {
+                                report(format_args!("USB_PORT_DEVICE port={port} \
+                                                     address={address} speed={speed} \
+                                                     usb={:x}.{:02x} class={:02x} \
+                                                     subclass={:02x} protocol={:02x} \
+                                                     max_packet={} vendor={:02x}{:02x} \
+                                                     product={:02x}{:02x}\n",
+                                                    d[3], d[2], d[4], d[5], d[6], d[7], d[9],
+                                                    d[8], d[11], d[10]));
+                            }
+                            Err(refusal) =>
+                            {
+                                report(format_args!("USB_PORT_DEVICE_REFUSED port={port} \
+                                                     speed={speed}: {refusal}\n"));
+                            }
+                        }
                         continue;
                     }
-                    let address = crate::ROOT_DEVICE_ADDRESS + port;
                     let d = match crate::device_descriptor(&mut registers,
                                                            &mut clock,
                                                            &mut page,
