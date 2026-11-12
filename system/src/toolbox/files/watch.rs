@@ -224,6 +224,32 @@ impl Manager
     pub(crate) fn watch_request(&mut self, caller: &Caller, call: &mut FileCall)
                                 -> Result<(), Status>
     {
+        // What the request carried on entry: a refusal is decided by these
+        // fields and by who is asking, and the status alone says neither.
+        let asked = (call.operation, call.handle, call.volume, call.cnid, call.index,
+                     call.position);
+        let result = self.watch_request_checked(caller, call);
+        if let Err(status) = result
+           && status != SERVICE_BUSY
+        {
+            serial!("FILE_WATCH_REFUSED status={} operation={} handle={} volume={} cnid={} \
+                     index={} position={} caller={} holder={:?}",
+                    status,
+                    asked.0,
+                    asked.1,
+                    asked.2,
+                    asked.3,
+                    asked.4,
+                    asked.5,
+                    caller.owner.owner().incarnation(),
+                    self.watches.owner(asked.1));
+        }
+        result
+    }
+
+    fn watch_request_checked(&mut self, caller: &Caller, call: &mut FileCall)
+                             -> Result<(), Status>
+    {
         if call.index != 0
            || call.position != 0
            || call.length != 0

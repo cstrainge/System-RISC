@@ -916,6 +916,10 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
         let Some(caller) = watch
         else
         {
+            serial!("FILE_WATCH_REFUSED status={} operation={}: the request reached Files \
+                     with no caller",
+                    ACCESS_DENIED,
+                    call.operation);
             return ACCESS_DENIED as i64;
         };
         manager.watch_request(caller, call).map_or_else(i64::from, |()| OK as i64)
