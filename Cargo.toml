@@ -36,6 +36,7 @@ members = [
     "crates/mac-wave-interface",
     "crates/mac-pool-interface",
     "crates/mac-entropy-interface",
+    "crates/mac-input-interface",
     "crates/mac-filesystem-interface",
     "crates/mac-file-source-interface",
     "crates/mac-sit",
@@ -103,6 +104,7 @@ mac-video-interface = { path = "crates/mac-video-interface" }
 mac-wave-interface = { path = "crates/mac-wave-interface" }
 mac-pool-interface = { path = "crates/mac-pool-interface" }
 mac-entropy-interface = { path = "crates/mac-entropy-interface" }
+mac-input-interface = { path = "crates/mac-input-interface" }
 mac-filesystem-interface = { path = "crates/mac-filesystem-interface" }
 mac-file-source-interface = { path = "crates/mac-file-source-interface" }
 mac-sit = { path = "crates/mac-sit" }

@@ -2,8 +2,8 @@
   "identity": "7731a0000000000000000000000000e0",
   "stack_bytes": 16384,
   "interfaces": [
-    { "class": "USBH", "version": 1, "request_schema": 1, "reply_schema": 1,
-      "max_request": 0, "max_reply": 64, "serialized": true }
+    { "class": "INPT", "version": 1, "request_schema": 1, "reply_schema": 1,
+      "max_request": 0, "max_reply": 256, "serialized": true }
   ],
   "services": [ { "class": "VDEV", "version": 1 } ],
   "matches": [

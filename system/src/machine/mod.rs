@@ -24,6 +24,7 @@ pub(crate) mod platform_devices;
 pub(crate) mod power_shutdown;
 pub(crate) mod smp;
 pub(crate) use smp::eligible_harts;
+pub(crate) mod input_class;
 pub(crate) mod video;
 
 // The scheduler, trap dispatch, pager and monitor are one implementation for

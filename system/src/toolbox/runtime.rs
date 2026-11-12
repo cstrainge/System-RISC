@@ -190,7 +190,7 @@ pub struct Toolbox
     pointer:                             Pointer,
     /// Reported main-screen bounds (`qd.screenBits.bounds`); changed only by `display_changed`.
     pub(in crate::toolbox) screen:       Rect,
-    decoders:                            [Decoder; 2],
+    decoders:                            [Decoder; 3],
     pub revision:                        u32,
     pub updates:                         u32,
     last_key:                            u8,
@@ -659,7 +659,7 @@ impl Toolbox
                           super::drag::Manager::new(sessions, receivers)? },
                   textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
                   presentation: Presentation { content: Vec::new(), pending_content: Vec::new(), content_cache: Default::default(), ordinary_underlay: Default::default(), menu_cache: Default::default(), pending_video_mode: None, video_mode_wait: false, redraw: true, content_damage, presentation_damage, presentation_copy_full:false, feedback_dirty: false, feedback: Default::default(), tracking_grow, outline_clip: Default::default(), highlight_clip: Default::default(), cursor_dirty: true, frame_incomplete: false, cursor_bounds: Rect::ZERO, presentations: 0, compositions: 0, },
-                  decoders: [Decoder::new(), Decoder::new()],
+                  decoders: [Decoder::new(), Decoder::new(), Decoder::new()],
                   revision: 0,
                   updates: 0,
                   last_key: 0,
@@ -3130,6 +3130,18 @@ impl Toolbox
                                          count += 1;
                                      }
                                  })
+        });
+        // Input a driver found, through the input class. It has a decoder of its
+        // own, after the two the built-in source uses, so a pointer there and a
+        // pointer here do not share a position mid-report.
+        crate::machine::input_class::poll(|kind, code, value| {
+            self.decoders[2].feed(kind, code, value, |input| {
+                                if count < pending.len()
+                                {
+                                    pending[count] = Some(input);
+                                    count += 1;
+                                }
+                            })
         });
         let resized = self.service_video();
         // Idle polling must not copy every application's menus and event queues

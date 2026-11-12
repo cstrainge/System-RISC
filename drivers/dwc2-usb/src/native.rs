@@ -6,6 +6,7 @@ use core::ptr::{copy_nonoverlapping, read_volatile, write_volatile};
 
 use mac_driver::{Client, Completion, Driver, Error, Phase, Request, Result as DriverResult,
                  devices::DeviceService, runtime::report};
+use mac_input_interface as input;
 use spinning_top::Spinlock;
 
 use crate::{Clock, Port, REQUIRED_BYTES, Registers, TRANSFER_BUFFER_BYTES, TransferBuffer};
@@ -22,8 +23,29 @@ struct Machine
 {
     service: DeviceService,
     claim:   u64,
-    base:    usize
+    base:    usize,
+    host:    Option<Client>,
+    page:    Option<Page>,
+    mouse:   Option<Mouse>,
+    /// When the mouse was last asked for a report.
+    asked:   u64
 }
+
+/// A boot-protocol mouse behind the hub, and what reading it needs kept.
+struct Mouse
+{
+    route:    crate::Route,
+    address:  u8,
+    endpoint: u8,
+    packet:   u32,
+    /// The data toggle the next report is expected under.
+    pid:      u32,
+    buttons:  u8,
+    refused:  bool
+}
+
+/// A mouse is asked for a report no more often than this.
+const REPORT_INTERVAL_MICROSECONDS: u64 = 8_000;
 
 struct MachineRegisters
 {
@@ -49,6 +71,7 @@ impl Registers for MachineRegisters
 
 /// The transfer buffer: one page System allocated for the controller to read
 /// and write, which on this board is memory no cache holds.
+#[derive(Clone, Copy)]
 struct Page
 {
     cpu:    usize,
@@ -231,6 +254,8 @@ impl Machine
                 return;
             }
         };
+        self.page = Some(Page { cpu:    page.cpu,
+                                device: page.device });
         if let Err(refusal) = crate::prepare_transfers(&mut registers, &mut clock, &identity)
         {
             report(format_args!("USB_TRANSFERS_REFUSED: {refusal}\n"));
@@ -365,6 +390,36 @@ impl Machine
                         {
                             Ok(d) =>
                             {
+                                match crate::start_boot_mouse(&mut registers,
+                                                              &mut clock,
+                                                              &mut page,
+                                                              route,
+                                                              address,
+                                                              u32::from(d[7]))
+                                {
+                                    Ok(found) if self.mouse.is_none() =>
+                                    {
+                                        report(format_args!("USB_MOUSE port={port} \
+                                                             address={address} interface={} \
+                                                             endpoint={} packet={}\n",
+                                                            found.interface,
+                                                            found.endpoint,
+                                                            found.packet));
+                                        self.mouse = Some(Mouse { route,
+                                                                  address,
+                                                                  endpoint: found.endpoint,
+                                                                  packet: found.packet.max(1),
+                                                                  pid: crate::PID_DATA0,
+                                                                  buttons: 0,
+                                                                  refused: false });
+                                    }
+                                    Ok(_) => (),
+                                    Err(refusal) =>
+                                    {
+                                        report(format_args!("USB_MOUSE_REFUSED port={port}: \
+                                                             {refusal}\n"));
+                                    }
+                                }
                                 report(format_args!("USB_PORT_DEVICE port={port} \
                                                      address={address} speed={speed} \
                                                      usb={:x}.{:02x} class={:02x} \
@@ -413,6 +468,110 @@ impl Machine
     }
 }
 
+impl Machine
+{
+    /// POLL of the input class: ask the mouse for one report and translate
+    /// it. Bounded: one split read, which a mouse with nothing to say ends at
+    /// its first answer.
+    fn poll(&mut self, request: Request<'_>, output: &mut [u8]) -> DriverResult<Completion>
+    {
+        if request.class != input::CLASS || request.operation != input::POLL
+        {
+            return Err(Error(mac_abi::NOT_SUPPORTED));
+        }
+        if request.phase == Phase::Cancel
+        {
+            return Ok(Completion::Complete(0));
+        }
+        if !request.input.is_empty()
+        {
+            return Err(Error(mac_abi::BAD_ARGUMENT));
+        }
+        let (Some(mouse), Some(mut page), Some(host)) = (self.mouse.as_mut(), self.page, self.host)
+        else
+        {
+            return Ok(Completion::Complete(0));
+        };
+        let mut clock = HostClock(host);
+        let now = clock.microseconds().unwrap_or(0);
+        if now.saturating_sub(self.asked) < REPORT_INTERVAL_MICROSECONDS
+        {
+            return Ok(Completion::Complete(0));
+        }
+        self.asked = now;
+        let mut registers = MachineRegisters { base: self.base };
+        let received = match crate::split_read(&mut registers,
+                                               &mut clock,
+                                               &mut page,
+                                               mouse.route,
+                                               mouse.address,
+                                               mouse.endpoint,
+                                               mouse.packet,
+                                               mouse.pid)
+        {
+            Ok(Some(received)) => received,
+            Ok(None) => return Ok(Completion::Complete(0)),
+            Err(refusal) =>
+            {
+                // Said once. A wrong data toggle is the likeliest cause, and
+                // trying the other one is the remedy either way.
+                if !mouse.refused
+                {
+                    mouse.refused = true;
+                    report(format_args!("USB_MOUSE_READ_REFUSED: {refusal}\n"));
+                }
+                mouse.pid = if mouse.pid == crate::PID_DATA0 { crate::PID_DATA1 } else { crate::PID_DATA0 };
+                return Ok(Completion::Complete(0));
+            }
+        };
+        mouse.pid = if mouse.pid == crate::PID_DATA0 { crate::PID_DATA1 } else { crate::PID_DATA0 };
+        if received < 3
+        {
+            return Ok(Completion::Complete(0));
+        }
+        // The boot report: buttons, then how far it moved across and down.
+        let mut bytes = [0u8; 3];
+        page.copy_out(&mut bytes);
+        let mut events = [input::Event::synchronize(); 6];
+        let mut count = 0;
+        for (bit, code) in [(1u8, input::BUTTON_LEFT),
+                            (2, input::BUTTON_RIGHT),
+                            (4, input::BUTTON_MIDDLE)]
+        {
+            if (bytes[0] ^ mouse.buttons) & bit != 0
+            {
+                events[count] = input::Event::key(code, bytes[0] & bit != 0);
+                count += 1;
+            }
+        }
+        mouse.buttons = bytes[0] & 0b111;
+        for (code, delta) in [(input::RELATIVE_X, bytes[1] as i8), (input::RELATIVE_Y, bytes[2] as i8)]
+        {
+            if delta != 0
+            {
+                events[count] = input::Event::relative(code, i32::from(delta));
+                count += 1;
+            }
+        }
+        if count == 0
+        {
+            return Ok(Completion::Complete(0));
+        }
+        events[count] = input::Event::synchronize();
+        count += 1;
+        let needed = count * input::EVENT_BYTES;
+        if output.len() < needed
+        {
+            return Err(Error(mac_abi::BAD_ARGUMENT));
+        }
+        for (slot, event) in output.chunks_exact_mut(input::EVENT_BYTES).zip(&events[..count])
+        {
+            slot.copy_from_slice(&event.encode());
+        }
+        Ok(Completion::Complete(needed))
+    }
+}
+
 impl Driver for Usb
 {
     fn initialize(&self, host: Client) -> DriverResult<()>
@@ -424,7 +583,11 @@ impl Driver for Usb
         }
         let mut machine = Machine { service: DeviceService::new(host)?,
                                     claim:   0,
-                                    base:    0 };
+                                    base:    0,
+                                    host:    Some(host),
+                                    page:    None,
+                                    mouse:   None,
+                                    asked:   0 };
         // Nothing consumes this driver's class yet, so no request would ever
         // start it; bring-up runs here, bounded, and reports. A controller
         // that refuses is reported and left alone, and the module still
@@ -438,10 +601,13 @@ impl Driver for Usb
         Ok(())
     }
 
-    fn request(&self, _request: Request<'_>, _output: &mut [u8]) -> DriverResult<Completion>
+    fn request(&self, request: Request<'_>, output: &mut [u8]) -> DriverResult<Completion>
     {
-        // No operation of the host class exists yet.
-        Err(Error(mac_abi::NOT_SUPPORTED))
+        DEVICE.try_lock()
+              .ok_or(Error(mac_abi::SERVICE_BUSY))?
+              .as_mut()
+              .ok_or(Error(mac_abi::NOT_FOUND))?
+              .poll(request, output)
     }
 
     fn quiesce(&self) -> DriverResult<()>

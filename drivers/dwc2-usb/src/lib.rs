@@ -8,8 +8,8 @@
 //! what each one sees, resets the occupied ones and gives the device behind
 //! each an address. A high-speed device is spoken to directly; a low- or
 //! full-speed one through the hub, by split transactions. Control transfers
-//! are all there is: no interrupt endpoint is polled, so no device does
-//! anything useful yet.
+//! and, for a boot-protocol mouse behind the hub, reads of its report
+//! endpoint, which the adapter turns into input events for System.
 //!
 //! The registers and their bits are from the Synopsys core's programming
 //! model. Three facts shape the code:
@@ -288,6 +288,8 @@ pub enum Refusal
         stage:  Stage,
         status: u32
     },
+    /// The device's configuration describes no boot-protocol mouse.
+    NoBootMouse,
     /// The data stage completed with fewer bytes than a device descriptor.
     ShortDescriptor
     {
@@ -341,6 +343,10 @@ impl fmt::Display for Refusal
                                 status } =>
             {
                 write!(f, "the {stage:?} stage halted without completing (HCINT={status:#010x})")
+            }
+            Self::NoBootMouse =>
+            {
+                write!(f, "the device's configuration describes no boot-protocol mouse")
             }
             Self::ShortDescriptor { bytes } =>
             {
@@ -965,6 +971,199 @@ pub fn address_slow_device(registers: &mut impl Registers, clock: &mut impl Cloc
         return Err(Refusal::ShortDescriptor { bytes: received });
     }
     Ok(descriptor)
+}
+
+/// `HCCHAR`: the endpoint's transfer type, and the code for bulk.
+pub const CHANNEL_TYPE_SHIFT: u32 = 18;
+pub const ENDPOINT_BULK: u32 = 2;
+
+/// One attempt to read a packet from an endpoint of a slow device behind a
+/// hub. `Ok(None)` is the device saying it has nothing, which for a mouse
+/// that has not moved is the usual answer.
+///
+/// **A simplification, and a known one.** A report endpoint is an interrupt
+/// endpoint, and a host schedules those against the bus's frame clock. This
+/// asks the hub to run the read through its non-periodic path instead, as if
+/// the endpoint were bulk. On the wire to the device the two are the same
+/// token and the same answer, so the report arrives; what is lost is the
+/// guaranteed polling interval, which a mouse polled every few milliseconds
+/// does not miss. A real periodic schedule replaces this when the driver
+/// takes the controller's interrupt.
+#[allow(clippy::too_many_arguments)]
+pub fn split_read(registers: &mut impl Registers, clock: &mut impl Clock,
+                  buffer: &mut impl TransferBuffer, route: Route, device: u8, endpoint: u8,
+                  packet: u32, pid: u32)
+                  -> Result<Option<usize>, Refusal>
+{
+    let characteristics = packet
+                          | CHANNEL_DIRECTION_IN
+                          | if route.low_speed { CHANNEL_LOW_SPEED } else { 0 }
+                          | CHANNEL_ONE_TRANSACTION
+                          | ENDPOINT_BULK << CHANNEL_TYPE_SHIFT
+                          | u32::from(endpoint & 0x0f) << CHANNEL_ENDPOINT_SHIFT
+                          | u32::from(device & 0x7f) << CHANNEL_ADDRESS_SHIFT;
+    let split = SPLIT_ENABLE
+                | SPLIT_WHOLE_PACKET
+                | u32::from(route.hub & 0x7f) << SPLIT_HUB_SHIFT
+                | u32::from(route.port & 0x7f);
+    let size = packet | 1 << PACKET_COUNT_SHIFT | pid << PID_SHIFT;
+    let address = buffer.address();
+    let started =
+        activate(registers, clock, Stage::Data, characteristics, split, size, address)?;
+    if started & NAK != 0
+    {
+        return Ok(None);
+    }
+    if started & ACK == 0
+    {
+        return Err(Refusal::StageFailed { stage:  Stage::Data,
+                                          status: started });
+    }
+    for _ in 0..SPLIT_COMPLETIONS
+    {
+        pause(registers, clock, SPLIT_COMPLETION_MICROSECONDS)?;
+        let completed = activate(registers,
+                                 clock,
+                                 Stage::Data,
+                                 characteristics,
+                                 split | SPLIT_COMPLETE,
+                                 size,
+                                 address)?;
+        if completed & TRANSFER_COMPLETE != 0
+        {
+            let left = registers.read(HCTSIZ) & TRANSFER_SIZE_MASK;
+            return Ok(Some(packet.saturating_sub(left) as usize));
+        }
+        if completed & NYET != 0
+        {
+            continue;
+        }
+        if completed & NAK != 0
+        {
+            return Ok(None);
+        }
+        return Err(Refusal::StageFailed { stage:  Stage::Data,
+                                          status: completed });
+    }
+    Ok(None)
+}
+
+/// Where a boot-protocol mouse's reports come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BootMouse
+{
+    pub configuration: u8,
+    pub interface:     u8,
+    pub endpoint:      u8,
+    pub packet:        u32
+}
+
+/// Find, in a configuration descriptor, the first interface that declares
+/// itself a boot-protocol mouse (class 3, subclass 1, protocol 2) and the
+/// interrupt endpoint it reports on. A device may carry several interfaces -
+/// a wireless receiver usually does - so every one is looked at.
+pub fn find_boot_mouse(configuration: &[u8]) -> Option<BootMouse>
+{
+    let value = *configuration.get(5)?;
+    let mut at = 0;
+    let mut interface = None;
+    while at + 2 <= configuration.len()
+    {
+        let length = usize::from(configuration[at]);
+        if length < 2 || at + length > configuration.len()
+        {
+            break;
+        }
+        let descriptor = &configuration[at..at + length];
+        match descriptor[1]
+        {
+            4 if length >= 9 =>
+            {
+                interface = (descriptor[5] == 3 && descriptor[6] == 1 && descriptor[7] == 2)
+                    .then_some(descriptor[2]);
+            }
+            5 if length >= 7 =>
+            {
+                if let Some(interface) = interface
+                   && descriptor[2] & 0x80 != 0
+                   && descriptor[3] & 0b11 == 0b11
+                {
+                    let packet = u32::from(u16::from_le_bytes([descriptor[4], descriptor[5]]))
+                                 & 0x7ff;
+                    return Some(BootMouse { configuration: value,
+                                            interface,
+                                            endpoint: descriptor[2] & 0x0f,
+                                            packet });
+                }
+            }
+            _ => ()
+        }
+        at += length;
+    }
+    None
+}
+
+/// Configure an addressed slow device as a boot-protocol mouse: read its
+/// configuration, select it, and ask for the fixed three-byte report every
+/// such mouse can produce, so no report descriptor has to be parsed.
+pub fn start_boot_mouse(registers: &mut impl Registers, clock: &mut impl Clock,
+                        buffer: &mut impl TransferBuffer, route: Route, device: u8,
+                        packet: u32)
+                        -> Result<BootMouse, Refusal>
+{
+    let mut head = [0u8; 9];
+    let received = split_control(registers,
+                                 clock,
+                                 buffer,
+                                 route,
+                                 device,
+                                 packet,
+                                 [0x80, 0x06, 0x00, 0x02, 0, 0, 9, 0],
+                                 &mut head)?;
+    if received < 9
+    {
+        return Err(Refusal::ShortDescriptor { bytes: received });
+    }
+    let total = usize::from(u16::from_le_bytes([head[2], head[3]])).min(255);
+    let mut configuration = [0u8; 255];
+    let received = split_control(registers,
+                                 clock,
+                                 buffer,
+                                 route,
+                                 device,
+                                 packet,
+                                 [0x80, 0x06, 0x00, 0x02, 0, 0, total as u8, 0],
+                                 &mut configuration[..total])?;
+    let mouse = find_boot_mouse(&configuration[..received]).ok_or(Refusal::NoBootMouse)?;
+    // SET_CONFIGURATION.
+    split_control(registers,
+                  clock,
+                  buffer,
+                  route,
+                  device,
+                  packet,
+                  [0x00, 0x09, mouse.configuration, 0, 0, 0, 0, 0],
+                  &mut [])?;
+    // SET_PROTOCOL(boot) on the mouse's interface.
+    split_control(registers,
+                  clock,
+                  buffer,
+                  route,
+                  device,
+                  packet,
+                  [0x21, 0x0b, 0, 0, mouse.interface, 0, 0, 0],
+                  &mut [])?;
+    // SET_IDLE(0): report only on change. A device may decline it, and a
+    // mouse that reports regardless is still a mouse.
+    let _ = split_control(registers,
+                          clock,
+                          buffer,
+                          route,
+                          device,
+                          packet,
+                          [0x21, 0x0a, 0, 0, mouse.interface, 0, 0, 0],
+                          &mut []);
+    Ok(mouse)
 }
 
 #[cfg(target_os = "none")]

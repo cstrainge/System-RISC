@@ -99,6 +99,16 @@ impl Decoder
             {
                 self.pending.v = absolute_pixel(value, crate::display::height());
             }
+            // Relative movement: a mouse reports how far it moved, as a signed
+            // count, and the pointer stays on the screen.
+            (2, 0) =>
+            {
+                self.pending.h = relative_pixel(self.pending.h, value, crate::display::width());
+            }
+            (2, 1) =>
+            {
+                self.pending.v = relative_pixel(self.pending.v, value, crate::display::height());
+            }
             (1, 0x110) => self.button = Some(value != 0),
             (0, 0) =>
             {
@@ -177,6 +187,12 @@ impl Decoder
             {}
         }
     }
+}
+
+fn relative_pixel(position: i16, delta: u32, extent: usize) -> i16
+{
+    let limit = extent.saturating_sub(1).min(i16::MAX as usize) as i32;
+    (i32::from(position) + delta as i32).clamp(0, limit) as i16
 }
 
 fn absolute_pixel(value: u32, extent: usize) -> i16

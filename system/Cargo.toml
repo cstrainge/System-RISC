@@ -33,6 +33,7 @@ mac-device-interface.workspace = true
 mac-power-interface.workspace = true
 mac-video-interface.workspace = true
 mac-entropy-interface.workspace = true
+mac-input-interface.workspace = true
 mac-object-table.workspace = true
 mac-kernel-model.workspace = true
 spinning_top = "=0.2.5"
