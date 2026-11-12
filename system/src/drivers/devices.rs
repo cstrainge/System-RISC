@@ -130,10 +130,14 @@ impl<B: Bus> Devices<B>
         {
             return Err(BAD_ARGUMENT);
         }
-        if physical.description.flags & mac_device_interface::COHERENT_DMA == 0
-        {
-            return Err(mac_abi::NOT_SUPPORTED);
-        }
+        // A device the machine does not state as cache-coherent may still be
+        // given memory: what it lacks is the promise that the device and the
+        // CPU see the same bytes without help, and the claim's flags tell the
+        // driver so. Keeping the two views in step is then the driver's work,
+        // done with the shared cache-maintenance calls, and a driver that
+        // skips it reads stale replies on a board. Refusing the mapping here
+        // refused every DMA device on a machine whose tree is honest about
+        // its caches.
         let bus_address = self.bus.dma_address(address, length)?;
         if bus_address.checked_add(length).is_none()
         {
@@ -167,10 +171,8 @@ impl<B: Bus> Devices<B>
         {
             return Err(SERVICE_BUSY);
         }
-        if physical.description.flags & mac_device_interface::COHERENT_DMA == 0
-        {
-            return Err(mac_abi::NOT_SUPPORTED);
-        }
+        // Coherence is the driver's to maintain where the machine does not state
+        // it; see `map`.
         let count = claim.maps.get().checked_add(1).ok_or(NO_MEMORY)?;
         let receipt = claim.receipt.get().ok_or(BAD_ABI)?;
         let buffer = Arc::try_new(crate::machine::dma::Buffer::new(bytes)?).map_err(|_| NO_MEMORY)?;
