@@ -1321,8 +1321,36 @@ pub fn find_boot_interface(configuration: &[u8], protocol: u8) -> Option<BootInt
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BootInputs
 {
-    pub mouse:    Option<BootInterface>,
-    pub keyboard: Option<BootInterface>
+    pub mouse:      Option<BootInterface>,
+    pub keyboard:   Option<BootInterface>,
+    /// Every interface the configuration declares, up to the first eight:
+    /// its number, class, subclass and protocol.
+    pub interfaces: [[u8; 4]; 8],
+    pub count:      usize
+}
+
+/// Lists the interfaces a configuration descriptor declares.
+pub fn interfaces(configuration: &[u8]) -> ([[u8; 4]; 8], usize)
+{
+    let mut found = [[0u8; 4]; 8];
+    let mut count = 0;
+    let mut at = 0;
+    while at + 2 <= configuration.len()
+    {
+        let length = usize::from(configuration[at]);
+        if length < 2 || at + length > configuration.len()
+        {
+            break;
+        }
+        let descriptor = &configuration[at..at + length];
+        if descriptor[1] == 4 && length >= 9 && count < found.len()
+        {
+            found[count] = [descriptor[2], descriptor[5], descriptor[6], descriptor[7]];
+            count += 1;
+        }
+        at += length;
+    }
+    (found, count)
 }
 
 /// The interface protocol a boot keyboard declares, and a boot mouse.
@@ -1361,14 +1389,19 @@ pub fn start_boot_inputs(registers: &mut impl Registers, clock: &mut impl Clock,
                                  packet,
                                  [0x80, 0x06, 0x00, 0x02, 0, 0, total as u8, 0],
                                  &mut configuration[..total])?;
-    let found = BootInputs { mouse:    find_boot_interface(&configuration[..received],
-                                                           PROTOCOL_MOUSE),
+    let (listed, count) = interfaces(&configuration[..received]);
+    let found = BootInputs { mouse: find_boot_interface(&configuration[..received],
+                                                        PROTOCOL_MOUSE),
                              keyboard: find_boot_interface(&configuration[..received],
-                                                           PROTOCOL_KEYBOARD) };
+                                                           PROTOCOL_KEYBOARD),
+                             interfaces: listed,
+                             count };
+    // A device with neither is not an error: what it does declare is handed
+    // back so it can be said, and nothing on it is configured.
     let Some(first) = found.mouse.or(found.keyboard)
     else
     {
-        return Err(Refusal::NoBootMouse);
+        return Ok(found);
     };
     // SET_CONFIGURATION.
     split_control(registers,

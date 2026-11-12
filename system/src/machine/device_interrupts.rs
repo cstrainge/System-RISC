@@ -291,7 +291,14 @@ fn storming(slot: &Slot) -> bool
 /// Delivers every pending line. Runs on an ordinary scheduler turn.
 pub(crate) fn pump()
 {
+    // Lines first: a device that has answered is heard before a driver's
+    // alarm asks whether it ever will.
+    pump_lines();
     pump_alarms();
+}
+
+fn pump_lines()
+{
     if !ANY_PENDING.swap(false, Ordering::AcqRel)
     {
         return;

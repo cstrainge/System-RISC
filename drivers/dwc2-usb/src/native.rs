@@ -48,8 +48,16 @@ struct Keyboard
     endpoint: u8,
     packet:   u32,
     /// The last report that said anything: the keys held.
-    last:     [u8; 8]
+    last:     [u8; 8],
+    /// The key that repeats while it is held, and when it next does, in
+    /// microseconds; 0 for none. The last key to go down is the one.
+    repeat:   u16,
+    repeats:  u64
 }
+
+/// How long a key is held before it repeats, and how often it then does.
+const REPEAT_DELAY_MICROSECONDS: u64 = 500_000;
+const REPEAT_INTERVAL_MICROSECONDS: u64 = 40_000;
 
 /// The channel each device is read on, which is also the part of the
 /// transfer page its reports land in.
@@ -551,6 +559,17 @@ impl Machine
                                 {
                                     Ok(inputs) =>
                                     {
+                                        for interface in &inputs.interfaces[..inputs.count]
+                                        {
+                                            report(format_args!("USB_INTERFACE port={port} \
+                                                                 number={} class={:02x} \
+                                                                 subclass={:02x} \
+                                                                 protocol={:02x}\n",
+                                                                interface[0],
+                                                                interface[1],
+                                                                interface[2],
+                                                                interface[3]));
+                                        }
                                         if let Some(found) = inputs.mouse
                                            && self.mouse.is_none()
                                         {
@@ -585,7 +604,9 @@ impl Machine
                                                                 address,
                                                                 endpoint: found.endpoint,
                                                                 packet: found.packet.max(1),
-                                                                last: [0; 8] });
+                                                                last: [0; 8],
+                                                                repeat: 0,
+                                                                repeats: 0 });
                                         }
                                     }
                                     Err(refusal) =>
@@ -728,6 +749,9 @@ impl Machine
         let due = [self.mouse_reader.as_ref(), self.keyboard_reader.as_ref()].into_iter()
                                                                              .flatten()
                                                                              .map(|reader| reader.due)
+                                                                             .chain(self.keyboard
+                                                                                        .as_ref()
+                                                                                        .map(|k| k.repeats))
                                                                              .filter(|&due| due != 0)
                                                                              .min();
         match due
@@ -780,13 +804,35 @@ impl Machine
             reader.page.copy_out(&mut report);
             let mut events = [input::Event::synchronize(); 15];
             let mut count = 0;
+            let (mut pressed, mut released) = (0u16, false);
+            let held = keyboard.repeat;
             let said = crate::keyboard_changes(&keyboard.last, &report, |key, down| {
                 if count < 14
                 {
                     events[count] = input::Event::key(key, down);
                     count += 1;
                 }
+                if down && !crate::MODIFIER_KEYS.contains(&key)
+                {
+                    pressed = key;
+                }
+                else if !down && key == held
+                {
+                    released = true;
+                }
             });
+            // The last key to go down is the one that repeats; letting it up
+            // stops that, and so does any other key going down.
+            if pressed != 0
+            {
+                keyboard.repeat = pressed;
+                keyboard.repeats = now.saturating_add(REPEAT_DELAY_MICROSECONDS).max(1);
+            }
+            else if released
+            {
+                keyboard.repeat = 0;
+                keyboard.repeats = 0;
+            }
             if said
             {
                 keyboard.last = report;
@@ -796,6 +842,20 @@ impl Machine
                 count += 1;
                 self.enqueue(&events[..count]);
             }
+        }
+        // A held key says so again: the input class's "repeat" is a key event
+        // whose value is 2, which System turns into an auto-key.
+        if !halted
+           && let Some(keyboard) = self.keyboard.as_mut()
+           && keyboard.repeats != 0
+           && keyboard.repeats <= now
+        {
+            keyboard.repeats = now.saturating_add(REPEAT_INTERVAL_MICROSECONDS);
+            let events = [input::Event { kind:  input::KEY,
+                                         code:  keyboard.repeat,
+                                         value: 2 },
+                          input::Event::synchronize()];
+            self.enqueue(&events);
         }
         self.rearm(now);
     }
