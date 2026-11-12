@@ -111,6 +111,10 @@ pub(crate) fn interrupts_enabled(status: usize) -> bool
 /// any other page.
 pub(crate) const DEVICE_MEMORY: bool = false;
 
+/// Whether a page entry can say "memory, but do not cache it". Where it
+/// cannot, a pool for devices outside the CPU's caches cannot be honoured.
+pub(crate) const UNCACHED_MEMORY: bool = false;
+
 /// The ISA profile this kernel requires the bootstrap to have sealed.
 ///
 /// Written out here rather than imported from the shared contract. The bootstrap

@@ -428,7 +428,7 @@ impl Entry
                                        ownership });
         }
         let permissions =
-            Permissions { device:  false,
+            Permissions { uncached: false, device:  false,
                           read:    bits & READ != 0,
                           write:   bits & WRITE != 0,
                           execute: bits & EXECUTE != 0,

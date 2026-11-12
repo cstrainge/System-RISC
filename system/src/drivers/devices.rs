@@ -165,7 +165,8 @@ impl<B: Bus> Devices<B>
     }
 
     #[cfg(systemrisc)]
-    pub(crate) fn start_allocate(&mut self, owner: &OwnerRef, device: u64, bytes: u64, ticket: u64)
+    pub(crate) fn start_allocate(&mut self, owner: &OwnerRef, device: u64, bytes: u64, ticket: u64,
+                                 device_accessed: bool)
                                  -> Result<(), Status>
     {
         let (physical, claim) = self.claims.get(owner, device).map_err(alias_status)?;
@@ -177,11 +178,24 @@ impl<B: Bus> Devices<B>
         {
             return Err(SERVICE_BUSY);
         }
-        // Coherence is the driver's to maintain where the machine does not state
-        // it; see `map`.
+        // What the device itself addresses must not sit behind a cache the
+        // device does not share. Where the machine does not state coherence,
+        // such a buffer comes from the uncached pool, and there is then nothing
+        // for the driver to keep in step. A buffer only the CPU touches stays
+        // ordinary cached memory on any device.
+        let uncached =
+            device_accessed && physical.description.flags & mac_device_interface::COHERENT_DMA == 0;
         let count = claim.maps.get().checked_add(1).ok_or(NO_MEMORY)?;
         let receipt = claim.receipt.get().ok_or(BAD_ABI)?;
-        let buffer = Arc::try_new(crate::machine::dma::Buffer::new(bytes)?).map_err(|_| NO_MEMORY)?;
+        let buffer = if uncached
+        {
+            crate::machine::dma::Buffer::new_uncached(bytes)?
+        }
+        else
+        {
+            crate::machine::dma::Buffer::new(bytes)?
+        };
+        let buffer = Arc::try_new(buffer).map_err(|_| NO_MEMORY)?;
         // Prove the actual resident heap bus alias before storing any handle.
         buffer.device_address()?;
         let publication = self.maps
@@ -248,6 +262,7 @@ impl<B: Bus> Devices<B>
         {
             return Ok(None);
         }
+        let uncached = buffer.uncached();
         let device_address =
             self.bus.device_address(physical.ordinal, buffer.device_address()?, buffer.length())?;
         let result = mac_device_interface::Allocation { handle: id,
@@ -255,12 +270,14 @@ impl<B: Bus> Devices<B>
                                                         device_address,
                                                         length: buffer.length() };
         claim.allocation.set(None);
-        serial!("DEVICE_DMA_ALLOCATED owner={} allocation={} bytes={} cpu=0x{:x} bus=0x{:x}",
+        serial!("DEVICE_DMA_ALLOCATED owner={} allocation={} bytes={} cpu=0x{:x} bus=0x{:x} \
+                 memory={}",
                 owner.owner().incarnation(),
                 id,
                 result.length,
                 result.cpu_address,
-                result.device_address);
+                result.device_address,
+                if uncached { "uncached" } else { "cached" });
         Ok(Some(result))
     }
 

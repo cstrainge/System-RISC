@@ -184,7 +184,7 @@ impl<'a> Prepared<'a>
             let (mapped, _) = mapper.map_range(bank.virtual_address.0,
                                                bank.physical,
                                                bank.bytes,
-                                               Permissions { device:  false,
+                                               Permissions { uncached: false, device:  false,
                                                              read:    true,
                                                              write:   true,
                                                              execute: false,

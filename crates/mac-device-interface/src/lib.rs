@@ -26,6 +26,18 @@ pub const FREE_COMPLETED: u32 = 8;
 /// driver decides whether it implements the conduit, and a machine that declares
 /// none reports `NONE` rather than failing this call.
 pub const CONDUIT: u32 = 9;
+/// ALLOCATE flag: the device itself will read or write this buffer.
+///
+/// ALLOCATE's request is the claim and the byte count, then optionally one
+/// word of flags; a request without the word asks for none. With this flag a
+/// device the machine does not state as cache-coherent gets storage no cache
+/// holds a copy of, so neither side can read the other's stale bytes and the
+/// driver has nothing to synchronize. Without it the storage is ordinary
+/// cached memory, which is right for a buffer only the CPU touches and wrong
+/// for anything such a device addresses. On a coherent device the flag
+/// changes nothing. Uncached storage is scarce and slow: it is for control
+/// structures, and a machine that declares none refuses the request.
+pub const ALLOCATE_DEVICE_ACCESSED: u64 = 1;
 pub const ALLOCATION_BYTES: usize = 32;
 pub const DESCRIPTION_BYTES: usize = 52;
 pub const MAPPING_BYTES: usize = 24;

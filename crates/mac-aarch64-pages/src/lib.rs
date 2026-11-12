@@ -28,6 +28,8 @@ const SH_INNER: u64 = 0b11 << 8;
 const ATTR_NORMAL: u64 = 0;
 /// Attribute index 1 in `MAIR_EL1`: Device-nGnRnE, in `AttrIndx` (bits 4:2).
 const ATTR_DEVICE: u64 = 1 << 2;
+/// Attribute index 2 in `MAIR_EL1`: normal memory, non-cacheable.
+const ATTR_UNCACHED: u64 = 2 << 2;
 /// The `AttrIndx` field.
 const ATTR_MASK: u64 = 0b111 << 2;
 /// Privileged execute-never.
@@ -235,6 +237,7 @@ fn permissions_from(bits: u64) -> Permissions
     // `AP[1]` (bit 6) grants EL0 access when set; `AP[2]` (bit 7) is the
     // read-only bit. A page executes only when both `PXN` and `UXN` are clear.
     Permissions { device:  bits & ATTR_MASK == ATTR_DEVICE,
+                  uncached: bits & ATTR_MASK == ATTR_UNCACHED,
                   read:    true,
                   write:   bits & (1 << 7) == 0,
                   execute: bits & (PXN | UXN) == 0,
@@ -304,7 +307,15 @@ impl Entry
         // mapping anything.
         let leaf = if size == LeafSize::Page { LEAF } else { 0 };
         // Registers are never cached, merged or reordered; memory is.
-        let attribute = if permissions.device { ATTR_DEVICE } else { ATTR_NORMAL };
+        let attribute = match (permissions.device, permissions.uncached)
+        {
+            (true, false) => ATTR_DEVICE,
+            (false, true) => ATTR_UNCACHED,
+            (false, false) => ATTR_NORMAL,
+            // A mapping is one memory type. Asking for two is a caller that
+            // has not decided what it is mapping.
+            (true, true) => return Err(Error::Permissions)
+        };
         Ok(Self(output_bits(address, size.bytes())?
                  | VALID
                  | leaf
@@ -328,9 +339,10 @@ impl Entry
         // decoder does not understand, and it is refused rather than accepted.
         let known = OUTPUT_MASK | SOFTWARE_MASK | VALID | LEAF | AF | SH_INNER | (3 << 6)
                     | (1 << 11) | PXN | UXN
-                    // The one memory type besides normal that this port writes. Any
+                    // The memory types besides normal that this port writes. Any
                     // other attribute index is still a descriptor nobody encoded.
-                    | ATTR_DEVICE;
+                    | ATTR_DEVICE
+                    | ATTR_UNCACHED;
         let reserved = bits & !known;
         if reserved != 0
         {

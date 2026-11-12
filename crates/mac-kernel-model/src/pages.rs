@@ -84,7 +84,14 @@ pub struct Permissions
     /// silicon and not under emulation: registers mapped as ordinary cacheable
     /// memory are read and written through the cache, so a store may never
     /// reach the device and a load may never ask it.
-    pub device:  bool
+    pub device:  bool,
+    /// The mapping is memory the CPU must not cache, because a device that
+    /// does not share the CPU's caches reads and writes it too.
+    ///
+    /// Like `device`, an architecture with a memory-type field encodes it and
+    /// one without decodes `false`. It is not `device`: this is still memory,
+    /// free to be read and written at any width and alignment.
+    pub uncached: bool
 }
 /// Pure geometry/address checks shared by build tooling and firmware; no fake
 /// CPU frame or invocation gate is needed just to validate a layout.

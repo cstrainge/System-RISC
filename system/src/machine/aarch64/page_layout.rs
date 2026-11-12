@@ -59,6 +59,10 @@ pub(crate) const NAME: &str = "aarch64-39";
 /// device memory. The bootstrap programs `MAIR_EL1` index 1 as Device-nGnRnE.
 pub(crate) const DEVICE_MEMORY: bool = true;
 
+/// Whether a page entry can say "memory, but do not cache it". Where it
+/// cannot, a pool for devices outside the CPU's caches cannot be honoured.
+pub(crate) const UNCACHED_MEMORY: bool = true;
+
 /// This format as the shared `PageLayout` trait, so the geometry arithmetic is
 /// reached through one interface rather than re-derived here.
 struct Aarch64Layout;

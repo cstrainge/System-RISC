@@ -175,8 +175,10 @@ const TCR: u64 = 0x2_b519_3519;
 /// ceiling rather than a derived length: `enter_system` refuses a plan larger
 /// than the window. `link.ld` reserves the pages.
 const IMAGE_TABLES: usize = 16;
-// MAIR[0] normal write-back, MAIR[1] Device-nGnRnE.
-const MAIR: u64 = 0xff;
+// MAIR[0] normal write-back, MAIR[1] Device-nGnRnE, MAIR[2] normal
+// non-cacheable, which the System maps its pool for devices outside the
+// CPU's caches with.
+const MAIR: u64 = 0x44_00_ff;
 const KERNEL_HALF: u64 = 0xffff_ff80_0000_0000;
 
 unsafe fn clear(table: u64)

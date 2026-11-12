@@ -252,15 +252,30 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
     {
         if call.phase == abi::START
         {
-            if call.input.len() != 16 || output.len() < wire::ALLOCATION_BYTES
+            if !matches!(call.input.len(), 16 | 24) || output.len() < wire::ALLOCATION_BYTES
             {
                 return Err(BAD_ARGUMENT);
             }
             let device = token(&call.input[..8])?;
-            let bytes = token(&call.input[8..])?;
+            let bytes = token(&call.input[8..16])?;
+            // The flags word is optional; a request without it asks for none.
+            // A flag this System does not know is refused, not ignored: the
+            // driver asked for a property of the memory it will not get.
+            let flags = match call.input.get(16..24)
+            {
+                Some(word) => u64::from_le_bytes(word.try_into().map_err(|_| BAD_ARGUMENT)?),
+                None => 0
+            };
+            if flags & !wire::ALLOCATE_DEVICE_ACCESSED != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let device_accessed = flags & wire::ALLOCATE_DEVICE_ACCESSED != 0;
             let account = drivers::module_allocation(call.caller)?;
             crate::allocation::with_kernel_allocation(account, || {
-                with(|devices| devices.start_allocate(&owner, device, bytes, call.ticket))
+                with(|devices| {
+                    devices.start_allocate(&owner, device, bytes, call.ticket, device_accessed)
+                })
             })??;
         }
         else if !matches!(call.phase, abi::POLL | abi::CANCEL) || !call.input.is_empty()

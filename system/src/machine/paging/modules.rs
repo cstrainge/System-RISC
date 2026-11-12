@@ -1733,7 +1733,7 @@ impl Plan
                         table
                     }
                 };
-                let permissions = Permissions { device: false,
+                let permissions = Permissions { uncached: false, device: false,
                                                 read: segment.flags & image::READ != 0,
                                                 write: segment.flags & image::WRITE != 0,
                                                 execute: segment.flags & image::EXECUTE != 0,
@@ -2155,7 +2155,7 @@ fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin], entri
                     physical = child;
                 }
                 let cpu = table_in_space(space, physical).ok_or(Error::State)?;
-                let permissions = Permissions { device:  false,
+                let permissions = Permissions { uncached: false, device:  false,
                                                 read:    segment.flags & image::READ != 0,
                                                 write:   segment.flags & image::WRITE != 0,
                                                 execute: segment.flags & image::EXECUTE != 0,

@@ -88,6 +88,7 @@
     "fdt_tail_bytes": "0x200000",
     "boot_stack_bytes": "0x40000",
     "monitor_stack_bytes": "0x1000",
+    "dma_pool_bytes": "0x200000",
     "system_heap_bytes": "0x10000000",
     "system_recovery_bytes": "0x2000000",
     "stacks": {

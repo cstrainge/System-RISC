@@ -101,9 +101,27 @@ impl DeviceService
     pub fn allocate(self, device: u64, bytes: u64, ticket: &mut u64, phase: Phase)
                     -> Result<(Completion, Option<wire::Allocation>)>
     {
-        let mut input = [0; 16];
+        self.allocate_with(device, bytes, 0, ticket, phase)
+    }
+
+    /// As [`Self::allocate`], for storage the device itself reads or writes: a
+    /// message it is handed the address of, a descriptor ring, a transfer
+    /// buffer. On a device outside the CPU's caches System returns memory no
+    /// cache holds, so the driver performs no cache maintenance on it. Keep
+    /// such buffers small.
+    pub fn allocate_device_accessed(self, device: u64, bytes: u64, ticket: &mut u64, phase: Phase)
+                                    -> Result<(Completion, Option<wire::Allocation>)>
+    {
+        self.allocate_with(device, bytes, wire::ALLOCATE_DEVICE_ACCESSED, ticket, phase)
+    }
+
+    fn allocate_with(self, device: u64, bytes: u64, flags: u64, ticket: &mut u64, phase: Phase)
+                     -> Result<(Completion, Option<wire::Allocation>)>
+    {
+        let mut input = [0; 24];
         input[..8].copy_from_slice(&device.to_le_bytes());
-        input[8..].copy_from_slice(&bytes.to_le_bytes());
+        input[8..16].copy_from_slice(&bytes.to_le_bytes());
+        input[16..].copy_from_slice(&flags.to_le_bytes());
         let mut output = [0; wire::ALLOCATION_BYTES];
         let completion = self.provider.invoke(ticket,
                                                phase,

@@ -638,6 +638,9 @@ struct Spaces
     firmware:      Space,
     stacks:        OwnedArray<Foundation<Stack>>,
     heap:          HeapPartition,
+    /// Owned for the life of the system: the pages stay out of the page bank
+    /// and both roots map them uncached.
+    dma_pool:      Option<Backing>,
     distinct_tags: bool
 }
 /// Validate the complete reserved window before allocating any stack backing.
@@ -751,7 +754,7 @@ fn system_stack_containing(base: u64) -> Option<&'static Stack>
 }
 fn permissions(flags: u32, global: bool) -> Permissions
 {
-    Permissions { device: false,
+    Permissions { uncached: false, device: false,
                   read: flags & READ != 0,
                   write: flags & WRITE != 0,
                   execute: flags & EXECUTE != 0,
@@ -787,8 +790,22 @@ fn map_device(mapper: &mut Mapper<Frames>, base: u64, bytes: u64) -> Result<u64,
           .map(|(_, changed)| changed)
           .map_err(Error::Tables)
 }
+/// Maps memory a device outside the CPU's caches shares, at its direct-map
+/// address and nowhere else, so no cached view of it exists to disagree with.
+fn map_uncached(mapper: &mut Mapper<Frames>, virtual_base: u64, physical: u64, bytes: u64)
+                -> Result<u64, Error>
+{
+    mapper.map_range(virtual_base,
+                     PhysicalAddress(physical),
+                     bytes,
+                     Permissions { uncached: super::page_layout::UNCACHED_MEMORY,
+                                   ..permissions(READ | WRITE, true) },
+                     PageOwnership::Manual)
+          .map(|(_, changed)| changed)
+          .map_err(Error::Tables)
+}
 fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
-                 heap: PhysicalAddress, tag: usize)
+                 heap: PhysicalAddress, pool: Option<(u64, u64)>, tag: usize)
                  -> Result<Space, Error>
 {
     let mut mapper =
@@ -799,12 +816,44 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     let mut leaves = 0;
     for bank in boot.ram.banks()
     {
-        leaves += map(&mut mapper,
-                      bank.virtual_address.0,
-                      bank.physical.0,
-                      bank.bytes,
-                      READ | WRITE,
-                      true)?;
+        let start = bank.physical.0;
+        let end = start.saturating_add(bank.bytes);
+        // The device pool is RAM like any other, taken from this bank, but it
+        // is mapped without caching and it is mapped once. So the bank is
+        // mapped around it rather than over it: a cached leaf for the same
+        // pages would be a second view of them with a different memory type.
+        match pool.filter(|&(base, bytes)| base >= start && base.saturating_add(bytes) <= end)
+        {
+            None =>
+            {
+                leaves += map(&mut mapper,
+                              bank.virtual_address.0,
+                              start,
+                              bank.bytes,
+                              READ | WRITE,
+                              true)?;
+            }
+            Some((base, bytes)) =>
+            {
+                let before = base - start;
+                let after = end - (base + bytes);
+                if before != 0
+                {
+                    leaves +=
+                        map(&mut mapper, bank.virtual_address.0, start, before, READ | WRITE, true)?;
+                }
+                leaves += map_uncached(&mut mapper, bank.virtual_address.0 + before, base, bytes)?;
+                if after != 0
+                {
+                    leaves += map(&mut mapper,
+                                  bank.virtual_address.0 + before + bytes,
+                                  base + bytes,
+                                  after,
+                                  READ | WRITE,
+                                  true)?;
+                }
+            }
+        }
     }
     // Memory the board's firmware owns but shares with the CPU, where the
     // record declares any. It is in no RAM bank, so the loop above never reaches
@@ -931,6 +980,23 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
                                           cause }
                })?;
     let heap = HeapPartition::new(heap).map_err(Error::HeapPartition)?;
+    // The pool for devices outside the CPU's caches, where the record declares
+    // one. It is taken before either root exists so both can map it uncached
+    // from the start; nothing has touched these pages through a cached view
+    // since the page bank handed them out, and nothing will.
+    let pool_bytes = usize::try_from(super::memory::DMA_POOL_BYTES).unwrap_or(0);
+    let dma_pool = if pool_bytes != 0 && super::page_layout::UNCACHED_MEMORY
+    {
+        Some(Backing::reserve_uninitialized(pool_bytes).map_err(|cause| {
+                 Error::HeapAdmission { requested: pool_bytes,
+                                        cause }
+             })?)
+    }
+    else
+    {
+        None
+    };
+    let pool = dma_pool.as_ref().map(|pool| (pool.physical().0, pool.bytes()));
     let stack_bytes =
         usize::try_from(SYSTEM_STACK_BYTES).map_err(|_| Error::StackSlots { count: cpus.len() })?;
     let mut stacks = OwnedArray::try_new(cpus.len(), |_| {
@@ -938,8 +1004,13 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
                      }).map_err(Error::StackStorage)?;
     let distinct_tags = boot.tag_mask & 1 != 0;
     let kernel =
-        prepare_space(boot, false, stacks.as_slice(), heap.physical(), usize::from(distinct_tags))?;
-    let firmware = prepare_space(boot, true, stacks.as_slice(), heap.physical(), 0)?;
+        prepare_space(boot,
+                      false,
+                      stacks.as_slice(),
+                      heap.physical(),
+                      pool,
+                      usize::from(distinct_tags))?;
+    let firmware = prepare_space(boot, true, stacks.as_slice(), heap.physical(), pool, 0)?;
     for (ordinal, stack) in stacks.as_mut_slice().iter_mut().enumerate()
     {
         let base =
@@ -961,6 +1032,7 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
                                     firmware,
                                     stacks,
                                     heap,
+                                    dma_pool,
                                     distinct_tags }
                        });
     // Every post-activation refusal must return under the permanently owned
@@ -997,7 +1069,20 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
             spaces.heap.bytes(),
             spaces.heap.ordinary_range().1,
             SYSTEM_RECOVERY_BYTES);
+    if let Some(pool) = spaces.dma_pool.as_ref()
+    {
+        serial!("DMA_POOL_READY base={:#x} bytes={} physical={:#x} mapping=uncached roots=2",
+                pool.cpu_base(),
+                pool.bytes(),
+                pool.physical().0);
+    }
     Ok(call(&spaces.stacks.as_slice()[primary]))
+}
+/// The uncached pool's CPU address and length, where this machine has one.
+pub(crate) fn dma_pool() -> Option<(usize, usize)>
+{
+    let pool = SPACES.get()?.dma_pool.as_ref()?;
+    Some((pool.cpu_base(), usize::try_from(pool.bytes()).ok()?))
 }
 /// The allocation range is valid only once both permanent roots own the exact
 /// mapping and its physical lease. Numeric facts confer no independent owner.

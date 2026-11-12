@@ -109,6 +109,12 @@ pub(super) struct Definition
     /// whose firmware shares nothing this way.
     #[serde(default)]
     firmware_memory:             Option<Region>,
+    /// Bytes of RAM System sets aside, mapped without caching, for buffers a
+    /// device reads or writes behind the CPU's caches. A machine whose devices
+    /// all share the caches declares none. It holds control structures, not
+    /// bulk data, so it is small.
+    #[serde(default)]
+    dma_pool_bytes:              Option<String>,
     boot:                        Region,
     firmware_heap:               Region,
     images:                      Region,
@@ -151,6 +157,7 @@ pub struct Checked
     pub(super) fw_cfg:                      Option<Range<u64>>,
     bootstrap_io:                           Option<io::Checked>,
     firmware_memory:                        Option<Range<u64>>,
+    dma_pool_bytes:                         u64,
     pub(super) boot:                        Range<u64>,
     pub(super) firmware_heap:               Range<u64>,
     pub(super) images:                      Range<u64>,
@@ -402,6 +409,17 @@ impl Definition
         let application_heap = self.application_heap.check(page)?;
         let tls = self.tls.check()?;
         let process_accounts = self.process_accounts.check(page, stacks.application_default())?;
+        let dma_pool_bytes = match &self.dma_pool_bytes
+        {
+            Some(text) => address("dma_pool_bytes", text)?,
+            None => 0
+        };
+        if !dma_pool_bytes.is_multiple_of(page)
+           || (dma_pool_bytes != 0 && !dma_pool_bytes.is_power_of_two())
+        {
+            return Err(error("platform memory dma_pool_bytes must be a power of two number of \
+                              pages; it is taken as one block"));
+        }
         let module_accounts = self.module_accounts.check(page)?;
         Ok(Checked { page_bytes: page,
                      ram,
@@ -409,6 +427,7 @@ impl Definition
                      fw_cfg,
                      bootstrap_io,
                      firmware_memory,
+                     dma_pool_bytes,
                      boot,
                      firmware_heap,
                      images,
@@ -622,6 +641,7 @@ impl Checked
                      self.firmware_memory.as_ref().map_or(0, |memory| memory.start)));
         values.push(("FIRMWARE_MEMORY_BYTES",
                      self.firmware_memory.as_ref().map_or(0, |memory| memory.end - memory.start)));
+        values.push(("DMA_POOL_BYTES", self.dma_pool_bytes));
         values.extend([("IMAGE_BASE", self.images.start),
                        ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
                        ("DISPLAY_SCRATCH_BYTES",
