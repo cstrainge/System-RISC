@@ -23,6 +23,23 @@ fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info
     info.update_menus(system)
 }
 
+/// Where an action that failed was asked for, as `file:line`.
+///
+/// The alert a person sees names a kind of action and a status. Neither says
+/// which of the Finder's many requests was refused, and two different faults
+/// have already been chased from that alert alone. The log line carries the
+/// place, so the trace answers the question the alert cannot.
+fn place(location: &core::panic::Location<'_>) -> browser::Text<64>
+{
+    use core::fmt::Write;
+    let mut text = browser::Text::<64>::default();
+    let file = location.file();
+    let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    let _ = write!(&mut text, "{name}:{}", location.line());
+    text
+}
+
+#[track_caller]
 fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: Result<T, Error>)
                      -> Result<Option<T>, Error>
 {
@@ -31,12 +48,13 @@ fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: R
         Ok(value) => Ok(Some(value)),
         Err(status) =>
         {
-            action_error(system, alerts, status, None)?;
+            action_error_at(system, alerts, status, None, core::panic::Location::caller())?;
             Ok(None)
         }
     }
 }
 
+#[track_caller]
 fn try_folder_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
                             result: Result<T, Error>, retry: Option<browser::FailedFolder>)
                             -> Result<Option<T>, Error>
@@ -49,10 +67,11 @@ fn try_folder_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
             Err(status) =>
             {
                 use core::fmt::Write;
-                let mut message = browser::Text::<80>::default();
+                let mut message = browser::Text::<160>::default();
                 let _ = writeln!(&mut message,
-                                 "FINDER_ACTION_FAILED status={} error={status:?}",
-                                 status.status());
+                                 "FINDER_ACTION_FAILED status={} error={status:?} at={}",
+                                 status.status(),
+                                 place(core::panic::Location::caller()).as_str());
                 let _ = system.log(message.as_str());
                 if let Err(error) = alerts.folder_error(system, status, failed)
                 {
@@ -260,14 +279,24 @@ fn try_document_open<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
     }
 }
 
+#[track_caller]
 fn action_error<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, status: Error,
                     document: Option<&str>)
                     -> Result<(), Error>
 {
+    action_error_at(system, alerts, status, document, core::panic::Location::caller())
+}
+
+fn action_error_at<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, status: Error,
+                       document: Option<&str>, location: &core::panic::Location<'_>)
+                       -> Result<(), Error>
+{
     use core::fmt::Write;
-    let mut message = browser::Text::<80>::default();
-    let _ =
-        writeln!(&mut message, "FINDER_ACTION_FAILED status={} error={status:?}", status.status());
+    let mut message = browser::Text::<160>::default();
+    let _ = writeln!(&mut message,
+                     "FINDER_ACTION_FAILED status={} error={status:?} at={}",
+                     status.status(),
+                     place(location).as_str());
     system.log(message.as_str())?;
     let shown = if let Some(subject) = document
     {
