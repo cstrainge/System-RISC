@@ -29,6 +29,10 @@ pub const CLASS: ClassId = ClassId(*b"INTR");
 pub const VERSION: u32 = 1;
 pub const SERVICE: u32 = 1;
 pub const REQUEST_BYTES: usize = 4;
+/// Carried in place of a line when SERVICE is the driver's alarm falling due
+/// (the device service's `ALARM`) and not its device interrupting. No line was
+/// masked for it and none is unmasked after.
+pub const ALARM: u32 = u32::MAX;
 
 /// The line a SERVICE request names.
 pub fn line(request: &[u8]) -> Option<u32>

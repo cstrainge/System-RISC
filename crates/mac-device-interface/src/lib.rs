@@ -54,6 +54,15 @@ pub const SHARED: u32 = 11;
 /// enabled at the machine's controller before the call returns. Releasing the
 /// claim gives the line back.
 pub const INTERRUPT: u32 = 12;
+/// Asks to be called once, a number of microseconds from now, through the
+/// interrupt class: SERVICE arrives carrying `mac_interrupt_interface::ALARM`
+/// in place of a line. The request is the claim and the delay, eight bytes
+/// each; a delay of zero cancels. A claim has one alarm, and setting it
+/// replaces the one before. It needs the claim's interrupt line taken, which
+/// is what gives System somewhere to call. This is how a driver waits without
+/// spinning and without being asked again: a transfer that must be retried
+/// after an interval, a device that needs time to settle.
+pub const ALARM: u32 = 13;
 pub const INTERRUPT_RELEASE: u64 = 0;
 pub const INTERRUPT_TAKE: u64 = 1;
 pub const SYNC_FOR_DEVICE: u64 = 1;
@@ -136,7 +145,8 @@ pub const fn synchronous(operation: u32) -> bool
              | CONDUIT
              | SYNC
              | SHARED
-             | INTERRUPT)
+             | INTERRUPT
+             | ALARM)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -568,6 +568,7 @@ dependencies = [
  "mac-build",
  "mac-driver",
  "mac-input-interface",
+ "mac-interrupt-interface",
  "spinning_top",
 ]
 

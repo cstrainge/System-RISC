@@ -17,7 +17,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use mac_abi::{ACCESS_DENIED, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, SERVICE_BUSY, Status};
-use mac_interrupt_interface::{CLASS, SERVICE, VERSION};
+use mac_interrupt_interface::{ALARM, CLASS, SERVICE, VERSION};
 
 const SLOTS: usize = 32;
 const FREE: u32 = u32::MAX;
@@ -39,6 +39,8 @@ struct Slot
     /// Left masked after a storm or a delivery that cannot succeed.
     parked:   AtomicBool,
     waiting:  AtomicBool,
+    /// When the owner's alarm falls due, in `platform::ticks`, or 0 for none.
+    alarm:    AtomicU64,
     window:   AtomicU64,
     count:    AtomicU32,
     serviced: AtomicU64
@@ -53,6 +55,7 @@ impl Slot
                pending:  AtomicBool::new(false),
                parked:   AtomicBool::new(false),
                waiting:  AtomicBool::new(false),
+               alarm:    AtomicU64::new(0),
                window:   AtomicU64::new(0),
                count:    AtomicU32::new(0),
                serviced: AtomicU64::new(0) }
@@ -61,6 +64,11 @@ impl Slot
 static TABLE: [Slot; SLOTS] = [const { Slot::new() }; SLOTS];
 static ANY_PENDING: AtomicBool = AtomicBool::new(false);
 static STRAY_REPORTED: AtomicBool = AtomicBool::new(false);
+/// Whether any slot has an alarm set. Alarms are set and delivered on
+/// scheduler turns only, never from a trap.
+static ANY_ALARM: AtomicBool = AtomicBool::new(false);
+/// `platform::ticks` per microsecond.
+const TICKS_PER_MICROSECOND: u64 = 10;
 
 fn slot_of(line: u32) -> Option<&'static Slot>
 {
@@ -109,6 +117,7 @@ fn take(line: u32, module: u64, handler: usize) -> Result<(), Status>
         slot.pending.store(false, Ordering::Release);
         slot.parked.store(false, Ordering::Release);
         slot.waiting.store(false, Ordering::Release);
+        slot.alarm.store(0, Ordering::Release);
         slot.count.store(0, Ordering::Release);
         slot.serviced.store(0, Ordering::Release);
         slot.line.store(line, Ordering::Release);
@@ -144,6 +153,73 @@ fn free(slot: &Slot)
     super::interrupts::mask_line(line);
     slot.line.store(FREE, Ordering::Release);
     slot.pending.store(false, Ordering::Release);
+    slot.alarm.store(0, Ordering::Release);
+}
+
+/// Sets, replaces or (with zero) cancels the alarm of the module holding
+/// `line`. It is delivered from [`pump`], on the first scheduler turn at or
+/// after the time asked for.
+pub(crate) fn set_alarm(line: u32, module: u64, microseconds: u64) -> Result<(), Status>
+{
+    let slot = slot_of(line).ok_or(NOT_FOUND)?;
+    if slot.module.load(Ordering::Acquire) != module
+    {
+        return Err(ACCESS_DENIED);
+    }
+    if microseconds == 0
+    {
+        slot.alarm.store(0, Ordering::Release);
+        return Ok(());
+    }
+    let due = crate::platform::ticks()
+              .saturating_add(microseconds.saturating_mul(TICKS_PER_MICROSECOND))
+              .max(1);
+    slot.alarm.store(due, Ordering::Release);
+    ANY_ALARM.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Delivers every alarm that has fallen due.
+fn pump_alarms()
+{
+    if !ANY_ALARM.load(Ordering::Acquire)
+    {
+        return;
+    }
+    let now = crate::platform::ticks();
+    for slot in &TABLE
+    {
+        let due = slot.alarm.load(Ordering::Acquire);
+        let line = slot.line.load(Ordering::Acquire);
+        if due == 0 || line == FREE || now < due
+        {
+            continue;
+        }
+        slot.alarm.store(0, Ordering::Release);
+        let module = slot.module.load(Ordering::Acquire);
+        match call_module(module, ALARM)
+        {
+            Ok(()) => (),
+            // In another call: it is due, so it is offered again next turn,
+            // unless the driver set a new one in the meantime.
+            Err(SERVICE_BUSY) | Err(NOT_FOUND) =>
+            {
+                if slot.alarm.load(Ordering::Acquire) == 0
+                {
+                    slot.alarm.store(now.max(1), Ordering::Release);
+                }
+            }
+            Err(status) =>
+            {
+                serial!("DEVICE_ALARM_REFUSED line={line} module={module} status={status}: the \
+                         module's interrupt class refused its alarm; it is dropped");
+            }
+        }
+    }
+    // A driver sets its next alarm from inside the call, so what is left is
+    // read after every delivery has returned.
+    ANY_ALARM.store(TABLE.iter().any(|slot| slot.alarm.load(Ordering::Acquire) != 0),
+                    Ordering::Release);
 }
 
 /// A module gives one line back.
@@ -215,6 +291,7 @@ fn storming(slot: &Slot) -> bool
 /// Delivers every pending line. Runs on an ordinary scheduler turn.
 pub(crate) fn pump()
 {
+    pump_alarms();
     if !ANY_PENDING.swap(false, Ordering::AcqRel)
     {
         return;

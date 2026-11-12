@@ -502,6 +502,19 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
             output[..4].copy_from_slice(&line.to_le_bytes());
             Ok(4)
         }
+        wire::ALARM =>
+        {
+            if input.len() != 16 || !output.is_empty()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let device = token(&input[..8])?;
+            let microseconds =
+                u64::from_le_bytes(input[8..16].try_into().map_err(|_| BAD_ARGUMENT)?);
+            let line = with(|devices| devices.interrupt_line(&owner, device))?;
+            super::device_interrupts::set_alarm(line, caller, microseconds)?;
+            Ok(0)
+        }
         wire::SHARED =>
         {
             if input.len() != 24 || output.len() < wire::MAPPING_BYTES

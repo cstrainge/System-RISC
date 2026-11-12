@@ -136,6 +136,18 @@ impl DeviceService
         self.interrupt(device, wire::INTERRUPT_RELEASE).map(|_| ())
     }
 
+    /// Asks for one SERVICE call on this module's interrupt class,
+    /// `microseconds` from now, carrying `mac_interrupt_interface::ALARM`.
+    /// Zero cancels. The claim's interrupt must be taken first.
+    pub fn set_alarm(self, device: u64, microseconds: u64) -> Result<()>
+    {
+        let mut input = [0; 16];
+        input[..8].copy_from_slice(&device.to_le_bytes());
+        input[8..].copy_from_slice(&microseconds.to_le_bytes());
+        self.synchronous(wire::ALARM, &input, &mut [])?;
+        Ok(())
+    }
+
     fn sync(self, handle: u64, offset: u64, length: u64, direction: u64) -> Result<()>
     {
         let mut input = [0; 32];
