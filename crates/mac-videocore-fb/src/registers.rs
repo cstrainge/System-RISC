@@ -110,6 +110,12 @@ impl Channel for Mailbox
                 return Err(Error::MailboxFull);
             }
         }
+        // A response nobody collected - a requester that gave up waiting before
+        // the firmware answered - is still in the FIFO, and would be read below
+        // as the answer to this request. Discard it first. Observed on a board:
+        // a slow power request timed out in the boot stage, and the display
+        // driver's first exchange, seconds later, read its reply.
+        self.drain();
         // Order the message stores before the device write. DMB (SeqCst fence)
         // orders normal memory against the Device window on AArch64.
         fence(Ordering::SeqCst);

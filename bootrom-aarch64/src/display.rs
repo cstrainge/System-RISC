@@ -115,14 +115,22 @@ pub fn init(tree: &Tree) -> Result<Framebuffer, Error>
 
 /// What the firmware answered when asked to power the USB controller: bit 0
 /// set is on, bit 1 set is "no such device". `u32::MAX` when it was not asked
-/// or gave no answer.
+/// or the answer was malformed, and one less when the request went out and the
+/// answer came late or not at all.
 pub static USB_POWER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
 
 /// The firmware's power-state property, and its name for the USB controller.
 const TAG_SET_POWER_STATE: u32 = 0x0002_8001;
 const POWER_DEVICE_USB: u32 = 3;
-/// Turn it on, and answer only once it is stable.
-const POWER_ON_AND_WAIT: u32 = 0b11;
+/// Turn it on. The "wait until stable" bit is deliberately not set: with it
+/// the firmware answers after the controller's supply has settled, which is
+/// far longer than a mailbox exchange waits, and the exchange gave up with
+/// the answer still to come. Nothing here needs the controller yet; the
+/// System's driver reaches it seconds later.
+const POWER_ON: u32 = 0b01;
+/// How many times a late answer is looked for before it is left to the next
+/// exchange to discard.
+const LATE_ANSWER_POLLS: u32 = 5_000_000;
 
 /// Ask the firmware to power the USB controller.
 ///
@@ -134,10 +142,28 @@ const POWER_ON_AND_WAIT: u32 = 0b11;
 fn power_usb(channel: &mut Coherent, message: &mut Message) -> u32
 {
     message.reset();
-    if message.request(TAG_SET_POWER_STATE, &[POWER_DEVICE_USB, POWER_ON_AND_WAIT]).is_err()
+    if message.request(TAG_SET_POWER_STATE, &[POWER_DEVICE_USB, POWER_ON]).is_err()
        || message.finish().is_err()
-       || message.transact(channel).is_err()
-       || message.check().is_err()
+    {
+        return u32::MAX;
+    }
+    if message.transact(channel).is_err()
+    {
+        // The request went out and no answer came in time. Collect the answer
+        // if it arrives, so it is not left for the System's display driver to
+        // trip over; what it said is not read, because the reply was written
+        // after this side stopped looking.
+        for _ in 0..LATE_ANSWER_POLLS
+        {
+            if channel.mailbox.drain() != 0
+            {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        return u32::MAX - 1;
+    }
+    if message.check().is_err()
     {
         return u32::MAX;
     }
