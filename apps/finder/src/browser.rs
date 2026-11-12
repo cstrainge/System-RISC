@@ -2088,27 +2088,52 @@ impl Browser
             self.queue_position_save(slot);
         }
         let volume = cache::with(slot, |folder| folder.volume.unwrap());
-        system.windows().set_grow_icon_clip(id, Some(grow_icon_clip(width, height)))?;
-        system.begin_update(id)?;
+        // A folder draw crosses five services, and they share a handful of
+        // statuses. The stage that refused goes on the console with the status,
+        // because the alert can only say what the user was doing.
+        let stage = Cell::new("grow clip");
+        let refused = |error: Error| {
+            let mut line = Text::<160>::default();
+            let _ = writeln!(&mut line,
+                             "FINDER_FOLDER_DRAW_FAILED window={} stage={} status={} \
+                              error={error:?}",
+                             id,
+                             stage.get(),
+                             error.status());
+            let _ = system.log(line.as_str());
+            error
+        };
+        system.windows()
+              .set_grow_icon_clip(id, Some(grow_icon_clip(width, height)))
+              .map_err(refused)?;
+        stage.set("begin update");
+        system.begin_update(id).map_err(refused)?;
         let graphics = system.quickdraw().graphics(id);
         let result = (|| {
+            stage.set("reset port");
             graphics.reset()?;
             let mut draw = Port { system,
                                   graphics };
+            stage.set("fill");
             draw.fill(Rect::new(0, 0, width, height), 0xffffff)?;
             let active = !self.desktop_active && self.front == id;
             let count = cache::with(slot, |folder| folder.count);
+            stage.set("items");
             self.draw_items(system, slot, active, None)?;
+            stage.set("clip");
             graphics.clip_rect(Rect::new(0, 0, width, height))?;
+            stage.set("info band");
             info_band(system,
                       &mut draw,
                       width,
                       count as u32,
                       if window.location == Location::default() { None } else { Some(&volume) })?;
+            stage.set("chrome");
             self.refresh_chrome(system, slot, false, true, true)?;
             Ok(())
-        })();
-        let ended = system.end_update(id);
+        })().map_err(refused);
+        stage.set("end update");
+        let ended = system.end_update(id).map_err(refused);
         if let Err(error) = result.and(ended)
         {
             self.failures[slot].set(Some(error));
