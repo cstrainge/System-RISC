@@ -1476,15 +1476,12 @@ fn package_app(workspace: &Workspace, resources: &Path, binary: &str, executable
                                                    version: mac_entropy_interface::VERSION }],
         artifacts)?;
     let name = package["name"].as_str().ok_or_else(|| error("the package lacks its name"))?;
-    let receipt = json!({"state": "packaged-not-executed",
-                         "native_execution_observed": false,
-                         "binary": binary,
+    let receipt = json!({"binary": binary,
                          "resource_manifest": resources.to_string_lossy(),
                          "elf": executable.to_string_lossy(),
                          "package": package});
 
     crate::write_json(&workspace.dist().join(format!("{name}.sdk.json")), &receipt)?;
-    println!("Packaged std application {name}. Native execution has not been observed.");
 
     Ok(package)
 }
