@@ -102,6 +102,9 @@ fn native_error(e: mac_hfs_b::Error) -> Error
         mac_hfs_b::Error::Stale => Error::Malformed("stale HFS-B object")
     }
 }
+/// The master boot record type for an HFS-family partition.
+const MBR_HFS: u8 = 0xaf;
+
 pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
 {
     let mut b = [0; 512];
@@ -116,7 +119,35 @@ pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
                                           sectors: disk.sector_count() }]);
     }
     let mut out = Vec::new();
-    for entry in mac_block::apple_partitions(disk)?
+    let entries = match mac_block::apple_partitions(disk)
+    {
+        Ok(entries) => entries,
+        Err(apple) =>
+        {
+            // Not an Apple map. A card that boots through a PC-style firmware
+            // carries a master boot record instead, with the firmware's FAT
+            // partition first and this system's volume after it, so that table
+            // is read before the medium is refused. Only the HFS type is
+            // offered: the FAT partition is the firmware's, and mounting it
+            // would only report that it is not a volume this reader knows.
+            let Ok(table) = mac_block::mbr_partitions(disk)
+            else
+            {
+                return Err(apple.into());
+            };
+            for entry in table
+            {
+                if entry.kind == MBR_HFS
+                {
+                    out.try_reserve(1)
+                       .map_err(|_| Error::AllocationFailed("partition allocation failed"))?;
+                    out.push(entry.range);
+                }
+            }
+            return Ok(out);
+        }
+    };
+    for entry in entries
     {
         let kind = entry.kind.split(|&b| b == 0).next().unwrap_or_default();
         if kind == b"Apple_HFS" || kind == b"System_RISC_HFS_B"

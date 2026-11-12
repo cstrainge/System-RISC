@@ -72,6 +72,17 @@ const RESET_ALL: u8 = 1;
 const POWER_3V3: u8 = 0x0f;
 const TIMEOUT_MAXIMUM: u8 = 0x0e;
 const INITIAL_HZ: u32 = 400_000;
+/// The rate asked for once the card is selected.
+///
+/// Identification must run slowly; transfers need not, and a card left at the
+/// identification rate reads a multi-megabyte System at tens of kilobytes a
+/// second. The figure is deliberately modest because `base_hz` falls back to
+/// 50 MHz when the capabilities register states no base clock, which is what
+/// the BCM2835 controller does, and that board's real base clock can be up to
+/// five times the fallback: a divider of five keeps the card at or below the
+/// 25 MHz default-speed limit either way. Asking the firmware for the real
+/// base clock would allow the full rate.
+const TRANSFER_HZ: u32 = 5_000_000;
 
 const RESPONSE_NONE: u16 = 0;
 const RESPONSE_136: u16 = 1;
@@ -98,6 +109,9 @@ const INITIALISE_POLLS: usize = 1_000_000;
 /// so this spin is comfortably longer than required and costs nothing at boot.
 const STARTUP_CLOCKS: u32 = 100_000;
 const TRANSFER_POLLS: usize = 1_000_000;
+/// How long a written block is given to be programmed by the card. See
+/// `transfer_write`.
+const WRITE_COMPLETE_POLLS: usize = 64 * TRANSFER_POLLS;
 
 /// Why a step refused, with enough state to tell the possibilities apart on
 /// real hardware: which command stopped it, and what the two interrupt status
@@ -481,6 +495,10 @@ impl Disk
                      true,
                      true,
                      Transfer::None)?;
+        self.set_clock(TRANSFER_HZ)?;
+        // The clock is programmed with a write of the whole register word, and
+        // the data timeout shares that word, so it is stated again.
+        self.write8(TIMEOUT_CONTROL, TIMEOUT_MAXIMUM);
         self.sectors = capacity_sectors(csd)?;
         Ok(())
     }
@@ -620,23 +638,32 @@ impl Disk
             let status = self.read16(NORMAL_INT_STATUS);
             if status & INT_ERROR != 0
             {
-                return Err(Failure { what:      "write-failed",
-                                     command:   CMD_WRITE_SINGLE_BLOCK as u8,
-                                     normal:    status,
-                                     error:     self.read16(ERROR_INT_STATUS),
-                                     caps:      self.read32(CAPABILITIES),
-                                     before:    0,
-                                     completed: false,
-                                     resp:      0 });
+                return Err(self.write_failure("write-failed", status, false));
             }
-            // Fill only while there is actually room to take a word. Either
-            // signal will do: the Buffer Write Ready interrupt, or the polled
-            // data-available bit in PRESENT_STATE. Bit 9 is transfer-active,
-            // not buffer-ready, so filling on it writes words the controller
-            // is not ready to take.
             if status & INT_BUFFER_WRITE_READY != 0
-               || self.read32(PRESENT_STATE) & PRESENT_BUFFER_WRITE != 0
             {
+                // Buffer Write Ready means the buffer has room for the whole
+                // block, so the block is written in one go and the latched
+                // status is cleared first. The polled per-word bit in
+                // PRESENT_STATE is not consulted on this path: the interrupt is
+                // the specification's statement that a block fits, and a fill
+                // gated on a bit that reads clear would never advance.
+                saw_ready = true;
+                self.write16(NORMAL_INT_STATUS, INT_BUFFER_WRITE_READY);
+                while words < SECTOR_SIZE / 4
+                {
+                    let at = words * 4;
+                    let word =
+                        u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+                    self.write32(BUFFER_DATA, word);
+                    words += 1;
+                }
+            }
+            else if self.read32(PRESENT_STATE) & PRESENT_BUFFER_WRITE != 0
+            {
+                // A controller that reports room without latching the
+                // interrupt is filled a word at a time, for as long as it says
+                // there is room.
                 saw_ready = true;
                 while words < SECTOR_SIZE / 4
                       && self.read32(PRESENT_STATE) & PRESENT_BUFFER_WRITE != 0
@@ -648,39 +675,65 @@ impl Disk
                     words += 1;
                 }
             }
-            if words == SECTOR_SIZE / 4 && status & INT_TRANSFER_COMPLETE != 0
+            if words == SECTOR_SIZE / 4
             {
-                return Ok(());
+                break;
             }
-            if status & INT_TRANSFER_COMPLETE != 0 && words < SECTOR_SIZE / 4
+            if status & INT_TRANSFER_COMPLETE != 0
             {
                 // Not having seen Buffer Write Ready at all is a different fault
                 // from filling a block that then came up short.
-                return Err(Failure { what:      if saw_ready
-                                     {
-                                         "write-short"
-                                     }
-                                     else
-                                     {
-                                         "no-buffer-write-ready"
-                                     },
-                                     command:   CMD_WRITE_SINGLE_BLOCK as u8,
-                                     normal:    status,
-                                     error:     self.read16(ERROR_INT_STATUS),
-                                     caps:      self.read32(CAPABILITIES),
-                                     before:    0,
-                                     completed: true,
-                                     resp:      0 });
+                return Err(self.write_failure(if saw_ready
+                                              {
+                                                  "write-short"
+                                              }
+                                              else
+                                              {
+                                                  "no-buffer-write-ready"
+                                              },
+                                              status,
+                                              true));
             }
         }
-        Err(Failure { what:      "write-timeout",
-                      command:   CMD_WRITE_SINGLE_BLOCK as u8,
-                      normal:    self.read16(NORMAL_INT_STATUS),
-                      error:     self.read16(ERROR_INT_STATUS),
-                      caps:      self.read32(CAPABILITIES),
-                      before:    0,
-                      completed: false,
-                      resp:      0 })
+        if words < SECTOR_SIZE / 4
+        {
+            let status = self.read16(NORMAL_INT_STATUS);
+            return Err(self.write_failure("write-never-ready", status, false));
+        }
+        // The block is in the controller; now the card has to program it, and
+        // that is the slow part - the specification allows a card a quarter of
+        // a second and more, where a read is over in a few milliseconds. The
+        // wait is a poll count, not a clock, so it is given a budget far past
+        // the one a read needs: the same budget here is what made a healthy
+        // card look like a write that never finished.
+        for _ in 0..WRITE_COMPLETE_POLLS
+        {
+            let status = self.read16(NORMAL_INT_STATUS);
+            if status & INT_ERROR != 0
+            {
+                return Err(self.write_failure("write-failed-after-data", status, false));
+            }
+            if status & INT_TRANSFER_COMPLETE != 0
+            {
+                self.write16(NORMAL_INT_STATUS, INT_TRANSFER_COMPLETE | INT_BUFFER_WRITE_READY);
+                return Ok(());
+            }
+        }
+        let status = self.read16(NORMAL_INT_STATUS);
+        Err(self.write_failure("write-never-completed", status, false))
+    }
+
+    /// The controller's state at a refused write.
+    fn write_failure(&self, what: &'static str, normal: u16, completed: bool) -> Failure
+    {
+        Failure { what,
+                  command: CMD_WRITE_SINGLE_BLOCK as u8,
+                  normal,
+                  error: self.read16(ERROR_INT_STATUS),
+                  caps: self.read32(CAPABILITIES),
+                  before: 0,
+                  completed,
+                  resp: 0 }
     }
 
     /// Writes one block. The sector must be inside the card; a write past the
