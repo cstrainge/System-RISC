@@ -25,6 +25,7 @@ const GICD_CTLR: u64 = 0x000;
 const GICD_TYPER: u64 = 0x004;
 const GICD_IGROUPR0: u64 = 0x080;
 const GICD_ISENABLER0: u64 = 0x100;
+const GICD_ICENABLER0: u64 = 0x180;
 const GICD_IPRIORITYR: u64 = 0x400;
 const GICD_ITARGETSR: u64 = 0x800;
 
@@ -56,6 +57,8 @@ pub(crate) const SGI_COUNT: u32 = 16;
 /// two as one number enables an interrupt nobody raises, and nothing reports it:
 /// the boot simply waits for a tick that cannot arrive.
 pub(crate) const PPI_BASE: u32 = SGI_COUNT;
+/// The first shared peripheral interrupt: the lines devices raise.
+pub(crate) const SPI_BASE: u32 = 32;
 /// The number the acknowledge register reports when nothing is pending.
 pub(crate) const SPURIOUS: u32 = 1023;
 
@@ -214,6 +217,13 @@ pub(crate) fn service() -> Interrupt
     {
         crate::machine::cpu::disable_timer_interrupt();
     }
+    else if number >= SPI_BASE
+    {
+        // Masked at the distributor before it is completed, so a level the
+        // device still holds cannot be delivered again until it is unmasked.
+        write(admitted.distributor + GICD_ICENABLER0 + u64::from(number / 32) * 4,
+              1 << (number % 32));
+    }
     write(admitted.cpu_interface + GICC_EOIR, number);
     if number == admitted.timer
     {
@@ -223,8 +233,57 @@ pub(crate) fn service() -> Interrupt
     {
         Interrupt::Wake
     }
+    else if number >= SPI_BASE
+    {
+        // A device's line. It was masked before the end-of-interrupt above
+        // could let it fire again; its driver unmasks it by returning.
+        Interrupt::Device { line: number }
+    }
     else
     {
         Interrupt::Unhandled { number }
+    }
+}
+
+/// Whether `line` is a shared peripheral interrupt this distributor has.
+fn device_line(admitted: &Admitted, line: u32) -> bool
+{
+    let lines = ((read(admitted.distributor + GICD_TYPER) & TYPER_LINES) + 1) * 32;
+    line >= SPI_BASE && line < lines.min(SPURIOUS)
+}
+
+/// Routes a device's line to this CPU and enables it.
+pub(crate) fn enable_line(line: u32) -> bool
+{
+    let Some(admitted) = ADMITTED.get()
+    else
+    {
+        return false;
+    };
+    if !device_line(admitted, line)
+    {
+        return false;
+    }
+    write_byte(admitted.distributor + GICD_IPRIORITYR + u64::from(line), PRIORITY);
+    write_byte(admitted.distributor + GICD_ITARGETSR + u64::from(line), TARGET_PRIMARY);
+    unmask_line(line);
+    true
+}
+
+pub(crate) fn mask_line(line: u32)
+{
+    if let Some(admitted) = ADMITTED.get()
+       && device_line(admitted, line)
+    {
+        write(admitted.distributor + GICD_ICENABLER0 + u64::from(line / 32) * 4, 1 << (line % 32));
+    }
+}
+
+pub(crate) fn unmask_line(line: u32)
+{
+    if let Some(admitted) = ADMITTED.get()
+       && device_line(admitted, line)
+    {
+        write(admitted.distributor + GICD_ISENABLER0 + u64::from(line / 32) * 4, 1 << (line % 32));
     }
 }

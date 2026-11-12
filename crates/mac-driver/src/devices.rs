@@ -109,6 +109,33 @@ impl DeviceService
         Mapping::decode(&output[..length]).ok_or(Error(BAD_ABI))
     }
 
+    fn interrupt(self, device: u64, action: u64) -> Result<u32>
+    {
+        let mut input = [0; 16];
+        input[..8].copy_from_slice(&device.to_le_bytes());
+        input[8..].copy_from_slice(&action.to_le_bytes());
+        let mut output = [0; 4];
+        if self.synchronous(wire::INTERRUPT, &input, &mut output)? != 4
+        {
+            return Err(Error(BAD_ABI));
+        }
+        Ok(u32::from_le_bytes(output))
+    }
+
+    /// Takes the claimed device's interrupt line and returns it. From here on
+    /// System calls this module's interrupt class when the device raises it.
+    /// Quiet the device first: the line is live when this returns.
+    pub fn take_interrupt(self, device: u64) -> Result<u32>
+    {
+        self.interrupt(device, wire::INTERRUPT_TAKE)
+    }
+
+    /// Gives the line back; System masks it. Releasing the claim does this too.
+    pub fn release_interrupt(self, device: u64) -> Result<()>
+    {
+        self.interrupt(device, wire::INTERRUPT_RELEASE).map(|_| ())
+    }
+
     fn sync(self, handle: u64, offset: u64, length: u64, direction: u64) -> Result<()>
     {
         let mut input = [0; 32];

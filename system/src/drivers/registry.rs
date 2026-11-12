@@ -1203,6 +1203,20 @@ impl Registry
         if mismatch { Err(Error::Contract(mac_module::Error::Version)) } else { Ok(None) }
     }
 
+    /// The interface of `class` that `module` itself publishes, once it is
+    /// ready to be called.
+    pub fn interface_of(&self, module: u64, class: ClassId) -> Option<u64>
+    {
+        if self.modules.get(module).is_none_or(|record| record.state != State::Ready)
+        {
+            return None;
+        }
+        self.interfaces
+            .iter()
+            .find(|(_, interface)| interface.module == module && interface.offer.class == class)
+            .map(|(id, _)| id)
+    }
+
     pub fn resolve(&self, caller: u64, class: ClassId, version: u32) -> Result<u64>
     {
         if class.0 == *b"SCHD"

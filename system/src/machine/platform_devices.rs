@@ -640,8 +640,44 @@ fn interrupt_of<'a>(tree: &Tree<'a>, node: &Node<'a>) -> Result<Option<u32>, ()>
     {
         return Err(());
     }
-    // The last cell is the trigger type and flags, and a one-cell controller
-    // carries only the number itself.
-    let start = cells.saturating_sub(2) * 4;
-    Ok(Some(u32::from_be_bytes(specifier[start..start + 4].try_into().map_err(|_| ())?)))
+    let cell = |index: usize| -> Result<u32, ()> {
+        Ok(u32::from_be_bytes(specifier.get(index * 4..index * 4 + 4)
+                                       .ok_or(())?
+                                       .try_into()
+                                       .map_err(|_| ())?))
+    };
+    // What is reported is the line: the number the controller's backend
+    // enables, masks and reports, which is each controller's own reading of
+    // its specifier and not a fixed cell of it.
+    if GIC_CONTROLLERS.iter().any(|name| controller.names(name))
+    {
+        // Type, number, flags. Shared peripheral interrupts start at 32 and
+        // private ones at 16 in the distributor's numbering.
+        if cells < 3
+        {
+            return Err(());
+        }
+        return match cell(0)?
+        {
+            0 => Ok(Some(cell(1)?.checked_add(32).ok_or(())?)),
+            1 => Ok(Some(cell(1)?.checked_add(16).ok_or(())?)),
+            _ => Err(())
+        };
+    }
+    if controller.names(BCM2836_PERIPHERAL_CONTROLLER)
+    {
+        // Bank, bit: bank 0 is the ARM-side sources, 1 and 2 the VideoCore's.
+        let (bank, bit) = (cell(0)?, cell(1)?);
+        if cells != 2 || bank > 2 || bit > 31
+        {
+            return Err(());
+        }
+        return Ok(Some(bank * 32 + bit));
+    }
+    // Every other controller: the last cell is the trigger type and flags, and
+    // a one-cell controller carries only the number itself.
+    Ok(Some(cell(cells.saturating_sub(2))?))
 }
+
+const GIC_CONTROLLERS: &[&str] = &["arm,cortex-a15-gic", "arm,gic-400"];
+const BCM2836_PERIPHERAL_CONTROLLER: &str = "brcm,bcm2836-armctrl-ic";

@@ -1682,6 +1682,9 @@ pub(super) fn schedule(capture: crate::machine::traps::OuterCapture) -> *mut Tra
             crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
                 // Device input and cursor publication precede all ordinary maintenance.
                 // Never enable nested preemption while a resident manager owns its guards.
+                // Before input is looked for: a device that interrupted is why
+                // there may be any.
+                crate::machine::device_interrupts::pump();
                 let fresh_input = crate::kernel::poll_waiting_events();
                 if INPUT_PRIORITY.background_allowed(fresh_input)
                 {

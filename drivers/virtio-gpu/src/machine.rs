@@ -196,6 +196,8 @@ pub(super) struct Device
     registers:             usize,
     control_dma:           u64,
     running:               bool,
+    /// The device's interrupt line is taken.
+    interrupt:             bool,
     wedged:                bool,
     offered:               u16,
     consumed:              u16,
@@ -209,6 +211,7 @@ impl Device
         Ok(Self { host,
                   service: DeviceService::new(host)?,
                   claim: 0,
+                  interrupt: false,
                   control_map: 0,
                   invocation_generation: 0,
                   allocation_ticket: 0,
@@ -392,7 +395,35 @@ impl Device
         {
             return Err(Error(IO_ERROR));
         }
+        // The queue is empty, so the device is quiet: take its line. With it,
+        // the device is asked to interrupt for used buffers and for display
+        // changes. Commands still wait for their own response where they are
+        // submitted; what the line changes today is that the device's status
+        // is acknowledged when it is raised and not when someone next looks.
+        self.interrupt = self.service.take_interrupt(self.claim).is_ok();
+        if self.interrupt
+        {
+            // SAFETY: the available ring is this module's own page.
+            unsafe {
+                write_volatile(addr_of_mut!((*CONTROL.0.get()).available.flags), 0u16.to_le())
+            };
+            mac_driver::arch::barrier();
+        }
         Ok(())
+    }
+
+    /// The device raised its line: acknowledge what it reports.
+    pub(super) fn interrupted(&self)
+    {
+        if !self.running
+        {
+            return;
+        }
+        let interrupts = self.read(0x60) & 3;
+        if interrupts != 0
+        {
+            self.write(0x64, interrupts);
+        }
     }
 
     /// Submit one command and wait for its response type. A timed-out command

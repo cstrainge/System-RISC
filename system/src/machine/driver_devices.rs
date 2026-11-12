@@ -476,6 +476,32 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
             with(|devices| devices.sync(&owner, mapping, word(8)?, word(16)?, for_device))?;
             Ok(0)
         }
+        wire::INTERRUPT =>
+        {
+            if input.len() != 16 || output.len() < 4
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let device = token(&input[..8])?;
+            let action = u64::from_le_bytes(input[8..16].try_into().map_err(|_| BAD_ARGUMENT)?);
+            let line = with(|devices| devices.interrupt_line(&owner, device))?;
+            let result = match action
+            {
+                wire::INTERRUPT_TAKE => super::device_interrupts::take_for_module(line, caller),
+                wire::INTERRUPT_RELEASE => super::device_interrupts::release(line, caller),
+                _ => return Err(BAD_ARGUMENT)
+            };
+            if let Err(status) = result
+            {
+                // A driver that is refused carries on without its line, so the
+                // refusal is said here or it is said nowhere.
+                serial!("DEVICE_INTERRUPT_NOT_TAKEN line={line} module={caller} action={action} \
+                         status={status}");
+                return Err(status);
+            }
+            output[..4].copy_from_slice(&line.to_le_bytes());
+            Ok(4)
+        }
         wire::SHARED =>
         {
             if input.len() != 24 || output.len() < wire::MAPPING_BYTES
@@ -507,7 +533,12 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
         wire::RELEASE =>
         {
             let id = token(input)?;
+            let line = with(|devices| devices.interrupt_line(&owner, id)).ok();
             with(|devices| devices.release(&owner, id))?;
+            if let Some(line) = line
+            {
+                super::device_interrupts::release_line(line);
+            }
             Ok(0)
         }
         _ => Err(NOT_SUPPORTED)

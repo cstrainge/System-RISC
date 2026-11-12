@@ -12,6 +12,7 @@ use mac_abi::{BAD_ABI, BAD_ARGUMENT, IO_ERROR, NOT_FOUND, NOT_SUPPORTED, SERVICE
 use mac_driver::{Client, Completion, Error, Phase, Request, Result,
                  devices::{DeviceService, interface}};
 use mac_entropy_interface as entropy;
+use mac_interrupt_interface as interrupt;
 
 // A source that never completes must enter the real reset/ACK path instead of
 // keeping application admission pending forever. Cleanup itself still requires
@@ -157,7 +158,9 @@ struct Hardware
     device_owns:    bool,
     offered:        u16,
     consumed:       u16,
-    capacity:       usize
+    capacity:       usize,
+    /// The device's interrupt line is taken, so it is asked to interrupt.
+    interrupt:      bool
 }
 impl Hardware
 {
@@ -308,7 +311,31 @@ impl Hardware
         {
             return Err(Error(IO_ERROR));
         }
+        // The queue is empty and the device has nothing to say, which is the
+        // moment to take its line. A machine that cannot give one leaves the
+        // device told not to interrupt, and the request is asked again as
+        // before.
+        self.interrupt = service.take_interrupt(self.claim).is_ok();
+        if self.interrupt
+        {
+            // SAFETY: the available ring is this module's own memory.
+            unsafe {
+                write_volatile(addr_of_mut!((*ARENA.0.get()).available.flags), 0u16.to_le())
+            };
+            mac_driver::arch::barrier();
+        }
         Ok(true)
+    }
+
+    /// The device raised its line: acknowledge what it reports. The buffer it
+    /// returned is collected by the request that posted it.
+    fn interrupted(&self)
+    {
+        let interrupts = self.read(0x60) & 3;
+        if interrupts != 0
+        {
+            self.write(0x64, interrupts);
+        }
     }
 
     fn post(&mut self, capacity: usize) -> Result<()>
@@ -481,6 +508,7 @@ impl Device
                                         dma: 0,
                                         running: false,
                                         device_owns: false,
+                                        interrupt: false,
                                         offered: 0,
                                         consumed: 0,
                                         capacity: 0 });
@@ -558,6 +586,19 @@ impl Device
     pub(super) fn request(&mut self, request: Request<'_>, output: &mut [u8])
                           -> Result<Completion>
     {
+        if request.class == interrupt::CLASS
+        {
+            if request.operation != interrupt::SERVICE || !output.is_empty()
+            {
+                return Err(Error(NOT_SUPPORTED));
+            }
+            if request.phase != Phase::Cancel
+               && let Some(hardware) = self.hardware.as_ref().filter(|hardware| hardware.running)
+            {
+                hardware.interrupted();
+            }
+            return Ok(Completion::Complete(0));
+        }
         if request.class != entropy::CLASS
            || !matches!(request.operation, entropy::READY | entropy::FILL | entropy::ERROR_TEXT)
         {

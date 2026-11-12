@@ -34,6 +34,19 @@ const PMU_ROUTING_CLEAR: u64 = 0x14;
 /// window its node states. Writing ones masks the sources; zeros do nothing.
 const PERIPHERAL_DISABLE: [u64; 3] = [0x1c, 0x20, 0x24];
 
+/// The peripheral controller's pending, enable and disable registers, indexed
+/// by bank: 0 is the eight ARM-side sources, 1 and 2 the VideoCore's sixty-four.
+/// A device's tree specifier is a bank and a bit, and its line here is
+/// `bank * 32 + bit`.
+const PERIPHERAL_PENDING: [u64; 3] = [0x00, 0x04, 0x08];
+const PERIPHERAL_ENABLE: [u64; 3] = [0x18, 0x10, 0x14];
+const PERIPHERAL_DISABLE_BANK: [u64; 3] = [0x24, 0x1c, 0x20];
+/// Bank 0's pending word carries summary and shortcut bits above its own
+/// eight sources; only these are lines.
+const BASIC_SOURCES: u32 = 0xff;
+/// The core's source bit for the peripheral controller's output.
+const SOURCE_PERIPHERAL: u32 = 1 << 8;
+
 const SOURCE_MAILBOXES: u32 = 0xf << 4;
 /// The mailbox this kernel uses as its inter-core source.
 const WAKE_MAILBOX: u32 = 0;
@@ -43,9 +56,11 @@ const SPURIOUS: u32 = 1023;
 
 struct Admitted
 {
-    base:  u64,
+    base:       u64,
     /// The source bit of the timer the scheduler arms.
-    timer: u32
+    timer:      u32,
+    /// The peripheral controller's window, when the machine describes one.
+    peripheral: Option<u64>
 }
 static ADMITTED: spin::Once<Admitted> = spin::Once::new();
 
@@ -96,7 +111,8 @@ pub(crate) fn admit(base: u64, timer: u32, peripheral: Option<u64>)
     write(base + TIMER_CONTROL + 4 * core, 1 << timer);
     write(base + MAILBOX_CONTROL + 4 * core, 0);
     ADMITTED.call_once(|| Admitted { base,
-                                     timer });
+                                     timer,
+                                     peripheral });
     crate::machine::cpu::barrier();
     // What the machine reports after the writes, for the reason the GIC module
     // gives: a register that did not take looks exactly like a source that
@@ -156,9 +172,75 @@ pub(crate) fn service() -> Interrupt
         }
         return Interrupt::Wake;
     }
+    if pending & SOURCE_PERIPHERAL != 0
+       && let Some(peripheral) = admitted.peripheral
+    {
+        // One line per entry, lowest bank first. It is masked here, which is
+        // the only completion this controller has: its output drops when no
+        // enabled source is asserted.
+        for bank in 0..3u32
+        {
+            let mut asserted = read(peripheral + PERIPHERAL_PENDING[bank as usize]);
+            if bank == 0
+            {
+                asserted &= BASIC_SOURCES;
+            }
+            if asserted != 0
+            {
+                let bit = asserted.trailing_zeros();
+                write(peripheral + PERIPHERAL_DISABLE_BANK[bank as usize], 1 << bit);
+                return Interrupt::Device { line: bank * 32 + bit };
+            }
+        }
+        // The summary bit with nothing behind it: a source that dropped
+        // between the two reads.
+        return Interrupt::Unhandled { number: SPURIOUS };
+    }
     if pending == 0
     {
         return Interrupt::Unhandled { number: SPURIOUS };
     }
     Interrupt::Unhandled { number: pending.trailing_zeros() }
+}
+
+/// A line's bank and bit, when it names a source this controller has.
+fn peripheral_line(line: u32) -> Option<(u64, usize, u32)>
+{
+    let peripheral = ADMITTED.get()?.peripheral?;
+    let (bank, bit) = ((line / 32) as usize, line % 32);
+    if bank >= 3 || bank == 0 && bit >= 8
+    {
+        return None;
+    }
+    Some((peripheral, bank, bit))
+}
+
+/// Enables a device's line at the peripheral controller. Its output already
+/// reaches core 0 as an IRQ, which is the reset routing and the only core this
+/// kernel runs devices on.
+pub(crate) fn enable_line(line: u32) -> bool
+{
+    let Some((peripheral, bank, bit)) = peripheral_line(line)
+    else
+    {
+        return false;
+    };
+    write(peripheral + PERIPHERAL_ENABLE[bank], 1 << bit);
+    true
+}
+
+pub(crate) fn mask_line(line: u32)
+{
+    if let Some((peripheral, bank, bit)) = peripheral_line(line)
+    {
+        write(peripheral + PERIPHERAL_DISABLE_BANK[bank], 1 << bit);
+    }
+}
+
+pub(crate) fn unmask_line(line: u32)
+{
+    if let Some((peripheral, bank, bit)) = peripheral_line(line)
+    {
+        write(peripheral + PERIPHERAL_ENABLE[bank], 1 << bit);
+    }
 }

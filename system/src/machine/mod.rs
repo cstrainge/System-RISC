@@ -12,6 +12,7 @@
 
 // Machine-neutral adapters: they use only the generated platform constants and
 // the selected implementation, so they are written once for every architecture.
+pub(crate) mod device_interrupts;
 pub(crate) mod display;
 pub(crate) mod dma;
 pub(crate) mod driver_devices;

@@ -989,6 +989,13 @@ pub(crate) fn execution_handlers() -> Result<alloc::vec::Vec<u64>, Status>
            .map_err(crate::state::AccessError::status)?
 }
 
+/// The provider id of the interface of `class` that `module` publishes.
+pub(crate) fn module_interface(module: u64, class: ClassId) -> Result<u64, Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.interface_of(module, class).ok_or(NOT_FOUND))
+           .map_err(crate::state::AccessError::status)?
+}
+
 pub(crate) fn find_kernel_provider(class: ClassId, version: u32, capabilities: u64)
                                    -> Result<u64, Status>
 {

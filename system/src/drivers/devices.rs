@@ -425,6 +425,17 @@ impl<B: Bus> Devices<B>
         self.bus.synchronize(base + offset, length, for_device)
     }
 
+    /// The interrupt line the machine states for a device this owner claims.
+    pub(crate) fn interrupt_line(&self, owner: &OwnerRef, device: u64) -> Result<u32, Status>
+    {
+        let (physical, claim) = self.claims.get(owner, device).map_err(alias_status)?;
+        if claim.reset.get().is_some() || claim.cleanup.get()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        physical.description.interrupt.ok_or(mac_abi::NOT_SUPPORTED)
+    }
+
     /// Publishes a view of firmware-owned memory as a mapping of this claim.
     pub(crate) fn shared(&mut self, owner: &OwnerRef, device: u64, address: u64, length: u64)
                          -> Result<mac_device_interface::View, Status>
@@ -534,6 +545,13 @@ impl<B: Bus> Devices<B>
                     return Err(Failure::registration_mismatch(ticket));
                 };
                 let ordinal = physical.ordinal;
+                // The claim is going whether or not its module said goodbye: a
+                // line it took is masked before anything else is undone.
+                #[cfg(systemrisc)]
+                if let Some(line) = physical.description.interrupt
+                {
+                    crate::machine::device_interrupts::release_line(line);
+                }
                 #[cfg(systemrisc)]
                 let _execution = match claim.frame.exclude_execution()
                 {

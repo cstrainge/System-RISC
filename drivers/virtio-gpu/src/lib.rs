@@ -408,6 +408,15 @@ mod native
         {
             let mut slot = DEVICE.try_lock().ok_or(Error(mac_abi::SERVICE_BUSY))?;
             let (device, engine) = slot.as_mut().ok_or(Error(mac_abi::NOT_FOUND))?;
+            if request.class == mac_interrupt_interface::CLASS
+            {
+                if request.operation != mac_interrupt_interface::SERVICE || !output.is_empty()
+                {
+                    return Err(Error(mac_abi::NOT_SUPPORTED));
+                }
+                device.interrupted();
+                return Ok(Completion::Complete(0));
+            }
             engine.request(device, request, output)
         }
 

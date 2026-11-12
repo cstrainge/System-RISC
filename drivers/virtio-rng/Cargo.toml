@@ -18,6 +18,7 @@ bench = false
 mac-abi.workspace = true
 mac-driver = { path = "../../crates/mac-driver" }
 mac-entropy-interface.workspace = true
+mac-interrupt-interface.workspace = true
 
 [target.'cfg(target_os = "none")'.dependencies]
 spinning_top = "=0.2.5"

@@ -296,6 +296,12 @@ pub(crate) enum Interrupt
     Preempt,
     /// Another hart asked this one to look at the scheduler.
     Wake,
+    /// A device's line, already masked at the controller by the backend that
+    /// reports it. Its driver runs later, from the scheduler's turn.
+    Device
+    {
+        line: u32
+    },
     /// A source nothing in the resident path enabled. It is completed and
     /// reported, and it is neither a tick nor a fault.
     Unhandled
@@ -322,6 +328,13 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         {
             #[cfg(feature = "event-trace")]
             hart::observe_entry(frame as *mut TrapFrame as usize);
+            return Dispatch::Schedule;
+        }
+        Some(Interrupt::Device { line }) =>
+        {
+            // Marked pending and nothing more: the driver is called from the
+            // scheduler's turn, which this asks for.
+            crate::machine::device_interrupts::raised(line);
             return Dispatch::Schedule;
         }
         Some(Interrupt::Unhandled { number }) =>

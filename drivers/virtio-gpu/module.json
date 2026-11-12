@@ -4,7 +4,9 @@
   "interfaces": [
     { "class": "VIDO", "version": 1, "request_schema": 1, "reply_schema": 1,
       "max_request": 512, "max_reply": 48, "exclusive": true, "serialized": true,
-      "capabilities": 1 }
+      "capabilities": 1 },
+    { "class": "INTR", "version": 1, "request_schema": 1, "reply_schema": 1,
+      "max_request": 4, "max_reply": 0, "serialized": true }
   ],
   "services": [ { "class": "VDEV", "version": 1 } ],
   "matches": [

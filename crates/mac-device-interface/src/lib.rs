@@ -45,6 +45,17 @@ pub const SYNC: u32 = 10;
 /// record declares as the firmware's. The view is a mapping: it is
 /// synchronized with SYNC and given back with UNMAP.
 pub const SHARED: u32 = 11;
+/// Takes or gives back the claimed device's interrupt line. The request is
+/// the claim and one of `INTERRUPT_TAKE` / `INTERRUPT_RELEASE`, eight bytes
+/// each; the reply is the line, four bytes. Taking it needs a device whose
+/// description states an interrupt, and a module that publishes the
+/// interrupt class (`mac-interrupt-interface`), which is how System tells the
+/// driver the line was raised. Take it once the device is quiet: the line is
+/// enabled at the machine's controller before the call returns. Releasing the
+/// claim gives the line back.
+pub const INTERRUPT: u32 = 12;
+pub const INTERRUPT_RELEASE: u64 = 0;
+pub const INTERRUPT_TAKE: u64 = 1;
 pub const SYNC_FOR_DEVICE: u64 = 1;
 pub const SYNC_FOR_CPU: u64 = 2;
 /// MAP flag: the driver synchronizes this mapping with SYNC.
@@ -115,7 +126,17 @@ pub fn virtio_identity(register_bytes: u64, read: impl Fn(usize) -> u32) -> Opti
 pub const fn synchronous(operation: u32) -> bool
 {
     matches!(operation,
-             PROBE | CLAIM | MAP | UNMAP | RELEASE | COUNT | FREE_COMPLETED | CONDUIT | SYNC | SHARED)
+             PROBE
+             | CLAIM
+             | MAP
+             | UNMAP
+             | RELEASE
+             | COUNT
+             | FREE_COMPLETED
+             | CONDUIT
+             | SYNC
+             | SHARED
+             | INTERRUPT)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

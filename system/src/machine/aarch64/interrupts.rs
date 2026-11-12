@@ -397,6 +397,44 @@ pub(crate) fn service() -> crate::machine::traps::Interrupt
 }
 
 /// Makes the inter-core source deliverable on whichever controller was admitted.
+/// Enables a device's line at whichever controller this machine has. False
+/// when the controller has no such line or nothing here can program it.
+pub(crate) fn enable_line(line: u32) -> bool
+{
+    if super::local_intc::admitted()
+    {
+        super::local_intc::enable_line(line)
+    }
+    else
+    {
+        super::gic::enable_line(line)
+    }
+}
+
+pub(crate) fn mask_line(line: u32)
+{
+    if super::local_intc::admitted()
+    {
+        super::local_intc::mask_line(line);
+    }
+    else
+    {
+        super::gic::mask_line(line);
+    }
+}
+
+pub(crate) fn unmask_line(line: u32)
+{
+    if super::local_intc::admitted()
+    {
+        super::local_intc::unmask_line(line);
+    }
+    else
+    {
+        super::gic::unmask_line(line);
+    }
+}
+
 pub(crate) fn admit_wake_source()
 {
     if super::local_intc::admitted()
