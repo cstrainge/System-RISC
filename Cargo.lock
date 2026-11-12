@@ -139,11 +139,14 @@ name = "bootrom-aarch64"
 version = "0.1.0"
 dependencies = [
  "linked_list_allocator",
+ "mac-abi",
  "mac-block",
  "mac-boot-screen",
+ "mac-bootloader",
  "mac-build",
  "mac-devicetree",
  "mac-filesystem",
+ "mac-formats",
  "mac-hfs",
  "mac-sdhci",
  "mac-videocore-fb",

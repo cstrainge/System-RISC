@@ -10,11 +10,14 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 use linked_list_allocator::LockedHeap;
+use mac_bootloader::report;
 use mac_sdhci::Disk;
 
 mod cache;
 mod display;
 mod led;
+mod memory;
+mod monitor;
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -32,16 +35,33 @@ fn init_heap()
 }
 
 #[alloc_error_handler]
-fn allocation_failed(_: core::alloc::Layout) -> !
+fn allocation_failed(layout: core::alloc::Layout) -> !
 {
-    loop
-    {}
+    // Said rather than spun on: an exhausted firmware heap in the middle of
+    // reading System is otherwise a boot that stops with nothing on the line.
+    puts("BOOT_AARCH64_HEAP_EXHAUSTED: bytes=");
+    puthex(layout.size() as u64);
+    puts("\n");
+    halt()
 }
 
 core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/platform-hardware.inc")),
                         include_str!("entry.S"));
 
 include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
+include!(concat!(env!("OUT_DIR"), "/platform-handoff.rs"));
+include!(concat!(env!("OUT_DIR"), "/platform-virtual.rs"));
+
+/// The bounded resource read a startup companion gets.
+///
+/// The payload is retained only for as long as the check runs, so the bound is
+/// what the firmware heap can pay for at that moment; the larger System image is
+/// read after the check returns and drops it.
+fn startup_resource_budget() -> mac_formats::resource::stream::Budget
+{
+    mac_formats::resource::stream::Budget { payload_bytes: HEAP.lock().free(),
+                                            ..Default::default() }
+}
 
 /// The machine's device tree, as a checked slice.
 ///
@@ -132,8 +152,29 @@ const DATA: u64 = NORMAL | PAGE_TYPE | NEVER_EXECUTE;
 const DATA_BLOCK: u64 = NORMAL | BLOCK_TYPE | NEVER_EXECUTE;
 // Valid block, AttrIndx 1 (Device-nGnRnE), AF, never executable.
 const DEVICE: u64 = 0x405 | NEVER_EXECUTE;
-// 39-bit VA at both halves, 4 KiB granule at both halves, 32-bit physical.
-const TCR: u64 = 0x8019_0019;
+// A level-3 leaf in the System's image window: writable and executable at EL1,
+// because the image's code and data share the window until the kernel installs
+// its own tables. This is why SCTLR_EL1.WXN is left clear below.
+const PAGE_NORMAL: u64 = NORMAL | PAGE_TYPE;
+// T0SZ/T1SZ 25 (39-bit halves), IRGN0/ORGN0 write-back, SH0 inner shareable,
+// TG0 0b00 and TG1 0b10 for a 4 KiB granule, IPS 0b010 for 40-bit physical
+// addresses. The same value the virt bootstrap programs, so the System is
+// entered under one regime on both machines.
+//
+// Both halves walk their tables through the cache (IRGN/ORGN write-back, inner
+// shareable). The upper half used to be left at zero, which is a non-cacheable
+// walk: correct for the tables this bootstrap writes with the cache off, and
+// wrong for the ones System builds later with it on. System writes its root
+// through a cacheable mapping and then switches to it, and a walker that reads
+// around the cache finds whatever was in RAM before - on a board, not the
+// tables. An emulator has no cache, so it never showed.
+const TCR: u64 = 0x2_b519_3519;
+/// Level-3 tables the image window is given, so the window is 32 MiB.
+///
+/// The mapping is installed before the image is decoded, so this is a declared
+/// ceiling rather than a derived length: `enter_system` refuses a plan larger
+/// than the window. `link.ld` reserves the pages.
+const IMAGE_TABLES: usize = 16;
 // MAIR[0] normal write-back, MAIR[1] Device-nGnRnE.
 const MAIR: u64 = 0xff;
 const KERNEL_HALF: u64 = 0xffff_ff80_0000_0000;
@@ -210,8 +251,17 @@ pub extern "C" fn mmu_init()
     let l1_high = l1_low + 2 * TABLE_BYTES;
     let l2_physmap = l1_low + 3 * TABLE_BYTES;
     let l3_boot = l1_low + 4 * TABLE_BYTES;
+    let l2_image = l1_low + 5 * TABLE_BYTES;
+    let l3_image = l1_low + 6 * TABLE_BYTES;
+    // The System's image window in the kernel half. Its virtual and physical
+    // bases are not congruent modulo a block, so it is mapped in pages.
+    let image_l1 = ((VM_SYSTEM_IMAGE_BASE - KERNEL_HALF) / (1 << 30)) as usize;
+    let image_first = ((VM_SYSTEM_IMAGE_BASE & 0x3fff_ffff) / BLOCK) as usize;
+    assert!(image_l1 < 512 && image_l1 != physmap_index,
+            "the image window must sit inside the kernel half, clear of the physmap");
+    assert!(image_first + IMAGE_TABLES <= 512, "the image window must fit one level-2 table");
     unsafe {
-        for table in [l1_low, l2_low, l1_high, l2_physmap, l3_boot]
+        for table in [l1_low, l2_low, l1_high, l2_physmap, l3_boot, l2_image]
         {
             clear(table);
         }
@@ -238,11 +288,29 @@ pub extern "C" fn mmu_init()
         {
             entry(l2_low, index, index as u64 * BLOCK | DEVICE);
         }
+        // The second gigabyte holds no RAM on this board, only the per-core
+        // interrupt controller at its base. System reads that controller from
+        // its trap path, and a trap can arrive while this root is the active
+        // one - during a storage callback, say - so it is mapped here too, as
+        // one device block.
+        entry(l1_low, 1, (1 << 30) | DEVICE);
         entry(l1_high, physmap_index, l2_physmap | TABLE);
         entry(l2_physmap, 0, l3_boot | TABLE);
         for index in 1..ram_blocks
         {
             entry(l2_physmap, index, PHYSICAL_RAM_BASE + index as u64 * BLOCK | DATA_BLOCK);
+        }
+        entry(l1_high, image_l1, l2_image | TABLE);
+        for k in 0..IMAGE_TABLES
+        {
+            let table = l3_image + (k as u64) * TABLE_BYTES;
+            clear(table);
+            entry(l2_image, image_first + k, table | TABLE);
+            for j in 0..512u64
+            {
+                let offset = (k as u64) * BLOCK + j * PAGE;
+                entry(table, j as usize, IMAGE_BASE + offset | PAGE_NORMAL);
+            }
         }
         core::arch::asm!(
             "dsb sy",
@@ -259,7 +327,8 @@ pub extern "C" fn mmu_init()
         );
         core::arch::asm!(
             "mrs {sctlr}, sctlr_el1",
-            "orr {sctlr}, {sctlr}, #0x80000",
+            // WXN clear: the image window above is writable and executable.
+            "bic {sctlr}, {sctlr}, #0x80000",
             "orr {sctlr}, {sctlr}, #1",
             "orr {sctlr}, {sctlr}, #4",
             "orr {sctlr}, {sctlr}, #4096",
@@ -403,6 +472,44 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
               minimum\n");
         halt_probe();
     }
+    // The firmware leaves the tree in the middle of RAM, where it splits the
+    // largest free extent this board has: with it there, no aligned block big
+    // enough for the System heap exists. The firmware cannot be told to put it
+    // elsewhere - `device_tree_address` makes it fail to load the blob at all,
+    // observed on this board - so the bootstrap moves it to the tail the record
+    // reserves for it, now that RAM is known to reach that far, and everything
+    // from here on reads the moved copy. The old bytes become ordinary RAM.
+    let tail = PHYSICAL_RAM_BASE + PHYSICAL_RAM_BYTES - FDT_TAIL_BYTES;
+    let (tree_address, bytes, tree) = if tree_address as u64 + bytes.len() as u64 <= tail
+                                         && bytes.len() as u64 <= FDT_TAIL_BYTES
+    {
+        // SAFETY: the destination is RAM the tree just confirmed exists, the
+        // boot translation maps it writable, nothing else has been placed
+        // there, and the source ends below it so the two cannot overlap.
+        let moved = unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), tail as *mut u8, bytes.len());
+            core::slice::from_raw_parts(tail as *const u8, bytes.len())
+        };
+        match mac_devicetree::Tree::new(moved)
+        {
+            Ok(tree) =>
+            {
+                puts("BOOT_AARCH64_DT_MOVED: to=");
+                puthex(tail);
+                puts("\n");
+                (tail as usize, moved, tree)
+            }
+            Err(_) =>
+            {
+                puts("BOOT_AARCH64_DT_REFUSED: the moved tree does not read back\n");
+                halt_probe();
+            }
+        }
+    }
+    else
+    {
+        (tree_address, bytes, tree)
+    };
     // Looked up by the tree's own `compatible`, which is the device tree's
     // vocabulary rather than this platform's inventory name for the part. The
     // lookup ignores `status`: the base tree disables this node because the SD
@@ -481,6 +588,150 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
     // The display init returned either way; the blink marks that, not that
     // it succeeded.
     led::led_blink();
+    mac_bootloader::install_log(console);
+    // AArch64 states its counter frequency in a system register rather than in
+    // the tree, which is why the machine's tree has no timebase-frequency and
+    // the 24 MHz clock it does declare belongs to the peripheral bus. Reading
+    // the register is the authoritative answer and needs no record field; a
+    // machine that leaves it zero is refused rather than given a guessed rate.
+    let counter: u64;
+    // SAFETY: reading an identification register has no side effects.
+    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) counter, options(nomem, nostack)) };
+    puts("BOOT_AARCH64_COUNTER: hz=");
+    puthex(counter);
+    puts("\n");
+    let mut harts = 0u64;
+    let mut primary_hart = 0u64;
+    let counted = tree.cpus(|hart| {
+                          if harts == 0
+                          {
+                              primary_hart = hart;
+                          }
+                          harts += 1;
+                      });
+    if counted.is_err()
+    {
+        puts("BOOT_AARCH64_DT_REFUSED: the machine's tree is malformed while reading CPUs\n");
+        halt_probe();
+    }
+    puts("BOOT_AARCH64_CPUS: count=");
+    puthex(harts);
+    puts(" first=");
+    puthex(primary_hart);
+    puts("\n");
+    if harts == 0
+    {
+        puts("BOOT_AARCH64_CPUS_REFUSED: the machine's tree describes no CPU\n");
+        halt_probe();
+    }
+    // The account the kernel will validate: the machine's banks, and every
+    // extent this boot occupies. The tree itself is reserved where the machine
+    // put it, which on this machine is part way into RAM rather than in a tail.
+    let total = bytes.len() as u64;
+    let account = match memory::Memory::discover(&tree, tree_address as u64, total)
+    {
+        Ok(account) => account,
+        Err(cause) =>
+        {
+            puts("BOOT_AARCH64_MEMORY_REFUSED: ");
+            puts(match cause
+                 {
+                     memory::Error::NoRam => "the machine describes no RAM",
+                     memory::Error::Unaligned => "a RAM bank is not page aligned",
+                     memory::Error::Overlap => "two RAM banks overlap",
+                     memory::Error::Reservation =>
+                     {
+                         "a reservation is empty, unaligned or outside RAM"
+                     }
+                     memory::Error::Duplicate => "two reservations overlap",
+                     memory::Error::TreeOutsideRam => "the tree lies outside the RAM it describes",
+                     memory::Error::Allocation => "allocation failed",
+                     memory::Error::TreeUnreadable => "the machine's tree could not be walked"
+                 });
+            puts("\n");
+            halt_probe();
+        }
+    };
+    match account.checked(memory::PAGE_BYTES)
+    {
+        Ok(_) =>
+        {}
+        Err(_) =>
+        {
+            puts("BOOT_AARCH64_MEMORY_REFUSED: the account does not satisfy the kernel's checks\n");
+            halt_probe();
+        }
+    }
+    puts("BOOT_AARCH64_MEMORY_ACCOUNT: banks=");
+    puthex(account.ram.len() as u64);
+    puts(" reservations=");
+    puthex(account.reserved.len() as u64);
+    puts("\n");
+    // This board has no GIC: its interrupt controller is the BCM2836 local
+    // controller, which is also what releases the other cores.
+    // The interrupt controller the monitor signals through, from the machine's
+    // tree. A machine that declares none cannot be admitted: the kernel needs a
+    // route it can publish and check, and inventing one would be a claim about
+    // hardware this platform may not have.
+    let mut controller = (0u64, 0u64);
+    let _ = tree.for_each_node(|node| {
+                    if controller.1 == 0
+                       && node.compatible == Some("brcm,bcm2836-l1-intc")
+                       && let Ok(Some((base, bytes))) = tree.cpu_window(node)
+                    {
+                        controller = (base, bytes);
+                    }
+                });
+    puts("BOOT_AARCH64_CONTROLLER: base=");
+    puthex(controller.0);
+    puts(" bytes=");
+    puthex(controller.1);
+    puts("\n");
+    // Sorted enabled harts, as the kernel's topology check requires.
+    let mut cpus: alloc::vec::Vec<mac_abi::boot::topology::Cpu> = alloc::vec::Vec::new();
+    let _ = tree.cpus(|hart| cpus.push(mac_abi::boot::topology::Cpu { hart }));
+    cpus.sort_unstable_by_key(|cpu| cpu.hart);
+    if mac_abi::boot::topology::Topology::checked(&cpus, primary_hart).is_err()
+    {
+        puts("BOOT_AARCH64_CPUS_REFUSED: the machine's topology is not admissible\n");
+        halt_probe();
+    }
+    let monitor = match monitor::prepare(&account,
+                                         &cpus,
+                                         mac_abi::BootMemoryRange { base:   controller.0,
+                                                                    length: controller.1 },
+                                         counter,
+                                         primary_hart)
+    {
+        Ok(monitor) => monitor,
+        Err(cause) =>
+        {
+            puts("BOOT_AARCH64_MONITOR_REFUSED: ");
+            puts(match cause
+                 {
+                     monitor::Error::NoController => "the machine declares no interrupt controller",
+                     monitor::Error::Allocation => "monitor storage could not be allocated",
+                     monitor::Error::Directory =>
+                     {
+                         "the directory fails the kernel's admission checks"
+                     }
+                 });
+            puts("\n");
+            halt_probe();
+        }
+    };
+    puts("BOOT_AARCH64_MONITOR_READY: harts=");
+    puthex(monitor.directory.count as u64);
+    puts(" stack=");
+    puthex(monitor.directory.stack_bytes);
+    puts(" timebase=");
+    puthex(monitor.directory.timebase_hz);
+    puts("\n");
+    if counter == 0
+    {
+        puts("BOOT_AARCH64_COUNTER_REFUSED: the machine reports no counter frequency\n");
+        halt_probe();
+    }
     let mut stage = 0u8;
     let mut disk = match Disk::probe(sdhci, &mut stage)
     {
@@ -528,12 +779,33 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
         halt_probe();
     }
     led::led_blink();
-    if !find_system(&mut disk)
+    let Some(loaded) = find_system(&mut disk)
+    else
     {
+        puts(&alloc::format!("{}\n", report::no_system(1)));
         halt_probe();
+    };
+    // The storage contract is expressed over trait objects because the ABI
+    // names no device type; the handoff takes ownership of the card.
+    let mut storage: alloc::vec::Vec<alloc::boxed::Box<dyn mac_block::WritableBlockDevice>> =
+        alloc::vec::Vec::new();
+    storage.push(alloc::boxed::Box::new(disk));
+    enter_system(&account, &cpus, &monitor, &mut storage, &tree, tree_address as u64, &loaded)
+}
+
+/// The shared bootstrap code's console: this machine's serial line.
+fn console(arguments: core::fmt::Arguments<'_>)
+{
+    struct Line;
+    impl core::fmt::Write for Line
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            puts(text);
+            Ok(())
+        }
     }
-    led::led_blink();
-    1
+    let _ = core::fmt::Write::write_fmt(&mut Line, arguments);
 }
 
 /// Locates the blessed System Folder on the card. The partition table, the
@@ -541,7 +813,7 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
 /// this exercises the same code the kernel uses rather than a bootloader-only
 /// reader. The kernel gains no FAT32 or SD knowledge from it: the bootloader
 /// hands on a loaded image.
-fn find_system(disk: &mut Disk) -> bool
+fn find_system(disk: &mut Disk) -> Option<Loaded>
 {
     use mac_block::BlockDevice;
     use mac_filesystem::{Format, Partition, Volume};
@@ -615,7 +887,7 @@ fn find_system(disk: &mut Disk) -> bool
             Err(_) =>
             {
                 puts("BOOT_AARCH64_SYSTEM_REFUSED: no blessed System Folder\n");
-                return false;
+                return None;
             }
         };
         puts("BOOT_AARCH64_BLESSED: cnid=");
@@ -644,22 +916,615 @@ fn find_system(disk: &mut Disk) -> bool
                 puts(" resource=");
                 puthex(file.resources.length);
                 puts("\n");
-                true
+                // A bootable installation includes a compatible Finder, and
+                // the shared admission decides it before System is entered.
+                puts("BOOT_AARCH64_FINDER: checking\n");
+                if let Err(error) =
+                    mac_bootloader::finder::admit(&mut volume,
+                                                  folder.id,
+                                                  startup_resource_budget(),
+                                                  mac_bootloader::finder::Application {
+                                                      image_base: VM_APPLICATION_IMAGE_BASE,
+                                                      end:        VM_APPLICATION_END,
+                                                      page_bytes: memory::PAGE_BYTES })
+                {
+                    puts(&alloc::format!("{}\n", report::refused(error)));
+                    return None;
+                }
+                puts("BOOT_AARCH64_LOADING: reading System\n");
+                load_system(&mut volume, file).map(|mut loaded| {
+                                                  loaded.partition_start = candidate.start;
+                                                  loaded
+                                              })
             }
             Err(_) =>
             {
                 puts("BOOT_AARCH64_SYSTEM_REFUSED: no System file in the blessed folder\n");
-                false
+                None
             }
         };
     }
     puts("BOOT_AARCH64_SYSTEM_REFUSED: no mountable volume\n");
-    false
+    None
+}
+
+
+/// Reads System's code and ABI resources and builds the load plan the kernel
+/// will be admitted with.
+///
+/// The plan is the shared one the RISC-V loader uses: the code resource is
+/// decoded with the native image format rather than an ELF reader, and the
+/// relocation records come from the same crate. Nothing here is aarch64-specific
+/// beyond the container it finds, so a defect in the plan is a defect on both
+/// platforms.
+fn load_system<D: mac_filesystem::BlockDevice>(volume: &mut mac_filesystem::Volume<D>,
+                                               file: mac_filesystem::File)
+                                               -> Option<Loaded>
+{
+    use mac_formats::{native::{Descriptor, Role, image},
+                      resource};
+    let mut fork = file.resources;
+    let budget = resource::stream::Budget { payload_bytes: 256 * 1024 * 1024,
+                                            ..Default::default() };
+    let resources =
+        match resource::stream::read_selected(fork.length,
+                                              budget,
+                                              |kind, id| {
+                                                  id == 0
+                                                  && matches!(&kind, b"NABI" | b"RV64" | b"RLOC")
+                                              },
+                                              |offset, output| {
+                                                  let n = volume.read(&mut fork, offset, output)?;
+                                                  if n == output.len()
+                                                  {
+                                                      Ok(())
+                                                  }
+                                                  else
+                                                  {
+                                                      Err(mac_formats::Error::Malformed("short \
+                                                                                         System \
+                                                                                         resource \
+                                                                                         read"))
+                                                  }
+                                              })
+        {
+            Ok(resources) => resources,
+            Err(error) =>
+            {
+                // The cause comes from the shared reader, so the same unreadable
+                // fork reads the same on either bootstrap.
+                puts(&alloc::format!("{}\n", report::refused(error)));
+                return None;
+            }
+        };
+    let find = |kind: [u8; 4]| resources.iter().find(|row| row.kind == kind && row.id == 0);
+    let Some(abi) = find(*b"NABI")
+    else
+    {
+        puts(&alloc::format!("{}\n", report::refused(report::NO_NATIVE_ABI)));
+        return None;
+    };
+    let descriptor = match Descriptor::decode(&abi.data)
+    {
+        Ok(descriptor) => descriptor,
+        Err(error) =>
+        {
+            puts(&alloc::format!("{}\n", report::refused(error)));
+            return None;
+        }
+    };
+    if descriptor.role != Role::System || descriptor.abi_version != mac_abi::ABI_VERSION
+    {
+        puts(&alloc::format!("{}\n", report::refused(report::NOT_COMPATIBLE_SYSTEM)));
+        return None;
+    }
+    // The image must occupy the window this platform reserved for it; a System
+    // linked for another machine is refused here, in the shared words, before
+    // its code is read.
+    if let Err(error) =
+        mac_bootloader::reservation::system(&descriptor,
+                                            mac_bootloader::reservation::Window {
+                                                base:  VM_SYSTEM_IMAGE_BASE,
+                                                limit: VM_SYSTEM_IMAGE_LIMIT
+                                            })
+    {
+        puts(&alloc::format!("{}\n", report::refused(error)));
+        return None;
+    }
+    let Some(code) = find(*b"RV64")
+    else
+    {
+        puts(&alloc::format!("{}\n", report::refused(report::NO_CODE_RESOURCE)));
+        return None;
+    };
+    let plan = match image::LoadPlan::new(&code.data, &descriptor, None, descriptor.load_base)
+    {
+        Ok(plan) => plan,
+        Err(error) =>
+        {
+            puts(&alloc::format!("{}\n", report::refused(error)));
+            return None;
+        }
+    };
+    puts("BOOT_AARCH64_PLAN: entry=");
+    puthex(plan.entry());
+    puts(" length=");
+    puthex(plan.length() as u64);
+    puts(" load_base=");
+    puthex(descriptor.load_base);
+    puts(" load_limit=");
+    puthex(descriptor.load_limit);
+    puts("\n");
+    // The translation window `mmu_init` installed already points at
+    // `IMAGE_BASE`, so writing here is what makes that window resolve to System
+    // rather than to whatever the machine left in RAM. The window is mapped in
+    // 4 KiB pages because its virtual and physical bases are not congruent
+    // modulo a 2 MiB block, which no block descriptor can express.
+    //
+    // SAFETY: `IMAGE_BASE` names the reserved physical image window the record
+    // declares and the boot translation maps writable, `plan.length()` is the
+    // decoded extent that window was sized for, and no reference into this
+    // region exists yet.
+    let output = unsafe { core::slice::from_raw_parts_mut(IMAGE_BASE as *mut u8, plan.length()) };
+    if plan.write(output).is_err()
+    {
+        puts(&alloc::format!("{}\n", report::refused("the decoded plan does not fit its window")));
+        return None;
+    }
+    // The image was written through the identity map and will be fetched
+    // through the kernel-half window. Those are two names for the same bytes,
+    // and on hardware the instruction side does not see a store until the line
+    // has been cleaned and the instruction caches invalidated; an emulator
+    // without caches never shows the difference.
+    cache::clean(IMAGE_BASE as usize, plan.length());
+    // SAFETY: instruction-cache invalidation and barriers have no memory
+    // operands and change no architectural state the bootstrap depends on.
+    unsafe { core::arch::asm!("ic iallu", "dsb sy", "isb", options(nostack, preserves_flags)) };
+    // Read back through the window rather than trusting the write: the point of
+    // this step is that the *virtual* address resolves to the loaded image, and
+    // only a read at that address tests the translation rather than the copy.
+    let entry_word = unsafe { core::ptr::read_volatile(plan.entry() as *const u32) };
+    puts("BOOT_AARCH64_IMAGE_LOADED: bytes=");
+    puthex(plan.length() as u64);
+    puts(" entry_word=");
+    puthex(u64::from(entry_word));
+    puts("\n");
+    Some(Loaded { entry:           plan.entry(),
+                  load_base:       descriptor.load_base,
+                  load_limit:      descriptor.load_limit,
+                  extent:          plan.length() as u64,
+                  segments:        plan.segments().to_vec(),
+                  partition_start: 0,
+                  disk_index:      0 })
+}
+
+/// What the load produced, so the handoff runs where the memory account, the
+/// CPU identities and the monitor are all in scope rather than being threaded
+/// through the volume walk.
+struct Loaded
+{
+    entry:           u64,
+    load_base:       u64,
+    load_limit:      u64,
+    extent:          u64,
+    segments:        alloc::vec::Vec<mac_formats::native::image::Segment>,
+    partition_start: u64,
+    disk_index:      usize
+}
+
+/// The firmware power conduit the machine's tree declares.
+///
+/// PSCI defines two conduits, `hvc` and `smc`, and names them in the `/psci`
+/// node's `method` property. The answer is reported by name whatever it is, so a
+/// machine that declares something else is named rather than mistaken for one
+/// with no conduit at all, and a refusal further down can be read against what
+/// the machine actually said.
+fn power_conduit(tree: &mac_devicetree::Tree<'_>) -> u64
+{
+    use mac_abi::boot::conduit;
+    let node = match tree.find(|candidate| candidate.depth == 1 && candidate.name == "psci")
+    {
+        Ok(node) => node,
+        Err(_) =>
+        {
+            // The CPUs and the RAM were read out of this same blob, so a walk
+            // that fails here is reported rather than treated as a machine
+            // without a power interface.
+            puts("BOOT_AARCH64_PSCI_REFUSED: the machine's tree could not be read at /psci\n");
+            return conduit::NONE;
+        }
+    };
+    let Some(node) = node
+    else
+    {
+        puts("BOOT_AARCH64_PSCI: absent\n");
+        return conduit::NONE;
+    };
+    let Some(method) = node.method
+    else
+    {
+        puts("BOOT_AARCH64_PSCI_REFUSED: the machine's /psci node states no method, so no \
+              conduit is named\n");
+        return conduit::NONE;
+    };
+    puts("BOOT_AARCH64_PSCI: method=");
+    for byte in method.bytes()
+    {
+        putc(byte);
+    }
+    puts("\n");
+    match method
+    {
+        "hvc" => conduit::HVC,
+        "smc" => conduit::SMC,
+        _ =>
+        {
+            puts("BOOT_AARCH64_PSCI_REFUSED: the PSCI binding defines hvc and smc only\n");
+            conduit::OTHER
+        }
+    }
+}
+
+/// Builds the record System is admitted with and enters it at EL1.
+///
+/// Everything here is derived rather than declared: the mapping record comes
+/// from the decoded image, the CPU identities from the machine's tree, the
+/// monitor from its own admission checks, and the storage contract from the
+/// shared module. The only constants are the ones the record states, and each is
+/// checked by the kernel against the same value on the other side of the jump.
+fn enter_system(memory: &memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
+                monitor: &monitor::Published,
+                disks: &mut alloc::vec::Vec<alloc::boxed::Box<dyn mac_block::WritableBlockDevice>>,
+                tree: &mac_devicetree::Tree<'_>, tree_address: u64, loaded: &Loaded)
+                -> !
+{
+    use mac_abi::{BootInfo, BootMemoryRange, Header,
+                  boot::execution::{EXECUTE, Execution, FIRMWARE_ONLY, READ, Region, WRITE}};
+    let account = match memory.checked(memory::PAGE_BYTES)
+    {
+        Ok(account) => account,
+        Err(error) =>
+        {
+            puts(&alloc::format!("{}\n",
+                                 report::refused(alloc::format!("the memory account does not \
+                                                                 satisfy the kernel: {error}"))));
+            halt();
+        }
+    };
+    let physical_image = BootMemoryRange { base:   IMAGE_BASE,
+                                           length: loaded.extent }; // The window was mapped before the image was decoded, so the plan is checked
+    // against the ceiling rather than the ceiling being derived from the plan. A
+    // plan that outgrew the mapping would be written past the last table and
+    // fault on first instruction, which reads as a code defect rather than as a
+    // window that was too small.
+    if loaded.extent > IMAGE_TABLES as u64 * BLOCK
+    {
+        puts(&alloc::format!("{}\n",
+                             report::refused("the image is larger than the mapped window")));
+        halt();
+    }
+    let virtual_image = BootMemoryRange { base:   loaded.load_base,
+                                          length: loaded.extent };
+    // The image's own segments, converted by the shared record builder so this
+    // bootstrap and the RISC-V one cannot round an extent differently.
+    let mut regions: alloc::vec::Vec<Region> =
+        match mac_bootloader::image_regions::system_regions(&loaded.segments,
+                                                            loaded.load_base,
+                                                            loaded.load_limit,
+                                                            IMAGE_BASE,
+                                                            memory::PAGE_BYTES)
+        {
+            Ok(regions) => regions,
+            Err(error) =>
+            {
+                // The record builder names the region it rejected, so the cause
+                // is carried rather than replaced with "not admissible".
+                puts(&alloc::format!("{}\n", report::refused(error)));
+                halt();
+            }
+        };
+    // The firmware window is described as well, so the kernel knows which bytes
+    // of RAM are this bootstrap rather than free memory. `FIRMWARE_ONLY` is what
+    // says so: without it the kernel validates the region as part of the image,
+    // where an identity mapping at this address is not inside the image window.
+    // Its virtual base equals its physical base because the low half is an
+    // identity map, which is what a firmware-only region requires.
+    //
+    // `EXECUTE` because this window is code the kernel calls into: `kernel::log`
+    // hands bytes to the firmware callback through `with_firmware`, which
+    // switches to the firmware root for exactly that call. Declared without it,
+    // the call took a permission fault at level 3 - the memory was mapped, the
+    // fetch was not permitted - which is a fault the declaration caused rather
+    // than one the machine had.
+    // The firmware window holds code and data, and one permission cannot be
+    // right for both. Code is read-only and executable; data is writable and
+    // not executable. The boundary is the record's `firmware_code_bytes`, which
+    // is where the linker places .data, so it is declared rather than guessed
+    // from a section symbol at run time.
+    //
+    // This matters beyond hygiene: this core refuses to execute a page that is
+    // also writable, even with SCTLR_EL1.WXN clear. A single writable-and-
+    // executable window made every call into firmware take a permission fault
+    // on fetch, which is why the window is split here.
+    regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE,
+                                                          length: FIRMWARE_CODE_BYTES },
+                          virtual_base: BOOT_BASE,
+                          flags:        READ | EXECUTE | FIRMWARE_ONLY,
+                          reserved:     0 });
+    regions.push(Region { physical:     BootMemoryRange { base:   BOOT_BASE + FIRMWARE_CODE_BYTES,
+                                                   length: BOOT_BYTES - FIRMWARE_CODE_BYTES },
+                   virtual_base: BOOT_BASE + FIRMWARE_CODE_BYTES,
+                   flags:        READ | WRITE | FIRMWARE_ONLY,
+                   reserved:     0 });
+    // The firmware heap the record declares, identity mapped for the same
+    // reason the window above is: the bootstrap allocates from it by its own
+    // address, and the physmap alias is not where its allocator points.
+    regions.push(Region { physical:     BootMemoryRange { base:   FW_HEAP_BASE,
+                                                          length: FW_HEAP_BYTES },
+                          virtual_base: FW_HEAP_BASE,
+                          flags:        READ | WRITE | FIRMWARE_ONLY,
+                          reserved:     0 });
+    let execution = Execution { hart: 0,
+                                // TTBR0_EL1 is the root the kernel authenticates;
+                                // the kernel half is selected separately by the
+                                // layout, which is why it is not named here.
+                                root_physical: core::ptr::addr_of!(__tables_start) as u64,
+                                // Sixteen bits of address-space tag is what this
+                                // layout carries, and the kernel refuses a mask
+                                // that is not a power-of-two span.
+                                hardware_tag_mask: 0xffff,
+                                physical_image,
+                                virtual_image,
+                                regions: regions.as_ptr(),
+                                region_count: regions.len() };
+    let flash = BootMemoryRange { base:   BOOT_BASE,
+                                  length: BOOT_BYTES };
+    if let Err(cause) = execution.checked(account, &regions, physical_image, virtual_image, flash)
+    {
+        // Named rather than summarised: "the record is not admissible" would
+        // send a reader back to this function with no idea which field the
+        // kernel rejected.
+        puts(&alloc::format!("{}\n", report::refused(cause)));
+        halt();
+    }
+    let mut context = mac_bootloader::volume::BootVolume { disks:      disks.as_mut_ptr(),
+                                                           disk_count: disks.len() };
+    // A machine that powers off through firmware says so in the same tree that
+    // describes its peripherals, and this is the boot that reads it. The node
+    // has no register window, so nothing enumerates it as a device: its
+    // `method` property names the conduit instead. The bootstrap reports what
+    // the machine declared and hands the declaration on; whether this System can
+    // use it is the power driver's answer, so a conduit this build does not
+    // implement leaves the machine running rather than claiming a capability.
+    let declared_conduit = power_conduit(tree);
+    let info = BootInfo { header:                  Header::for_type::<BootInfo>(),
+                          ram_base:                memory.ram[0].base,
+                          ram_size:                memory.ram[0].length,
+                          log:                     Some(log),
+                          storage_context:
+                              (&mut context as *mut mac_bootloader::volume::BootVolume).cast(),
+                          disk_info:               Some(mac_bootloader::volume::disk_info),
+                          read_sectors:            Some(mac_bootloader::volume::read_sectors),
+                          write_sector:            Some(mac_bootloader::volume::write_sector),
+                          flush_disk:              Some(mac_bootloader::volume::flush_disk),
+                          startup_disk:            loaded.disk_index as u32,
+                          // Derived from the record's declared display, not
+                          // hardcoded: a machine that declares no display gets a
+                          // headless boot, and one that declares a virtio GPU
+                          // gets a graphical one. Whether the display path then
+                          // works is the driver's question, not this flag's.
+                          flags:                   BOOT_FLAGS,
+                          startup_partition_start: loaded.partition_start,
+                          ram_regions:             memory.ram.as_ptr(),
+                          ram_region_count:        memory.ram.len(),
+                          reservations:            memory.reserved.as_ptr(),
+                          reservation_count:       memory.reserved.len(),
+                          display_scratch:         BootMemoryRange { base:   DISPLAY_SCRATCH_BASE,
+                                                                     length: DISPLAY_SCRATCH_BYTES },
+                          execution:               &execution,
+                          cpus:                    cpus.as_ptr(),
+                          cpu_count:               cpus.len(),
+                          monitor:                 &monitor.directory,
+                          monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT,
+                          device_tree:             tree_address as *const u8,
+                          device_tree_bytes:       tree.total_size(),
+                          power_conduit:           declared_conduit };
+    // Seal the profile System checks against its own architecture adapter. The
+    // kernel compares this against a constant it holds rather than against
+    // anything this bootstrap said, so the two statements agreeing is the check:
+    // a loader built for a different profile is refused, not admitted on its own
+    // word. The seal is written last, because an unsealed profile is refused.
+    let vector = vector_address();
+    let image = monitor.image();
+    image.required_isa.store(REQUIRED_ISA, core::sync::atomic::Ordering::Release);
+    image.entry.store(loaded.entry, core::sync::atomic::Ordering::Release);
+    image.image_base.store(loaded.load_base, core::sync::atomic::Ordering::Release);
+    image.image_bytes.store(loaded.extent, core::sync::atomic::Ordering::Release);
+    let limit = physical_limit(memory, tree);
+    puts("BOOT_AARCH64_PHYSICAL_LIMIT: ");
+    puthex(limit);
+    puts("\n");
+    image.physical_limit.store(limit, core::sync::atomic::Ordering::Release);
+    image.vector_bytes.store(VECTOR_BYTES, core::sync::atomic::Ordering::Release);
+    image.hardware_tag_mask.store(0xffff, core::sync::atomic::Ordering::Release);
+    // Both stubs are this bootstrap's own trap vector: it receives a fault taken
+    // by System, and it is what an unexpected return lands on. The kernel
+    // requires only that they are instruction-aligned and inside firmware, which
+    // the boot window is declared to be.
+    image.fault_entry.store(vector, core::sync::atomic::Ordering::Release);
+    image.returned_entry.store(vector, core::sync::atomic::Ordering::Release);
+    image.sealed.store(1, core::sync::atomic::Ordering::Release);
+    // System reads the record through the physmap, not through the identity map:
+    // the kernel half is where its own address space lives, and the identity map
+    // is firmware's. Both aliases name the same bytes, and the record is left on
+    // this stack, which the kernel inherits rather than rebases.
+    let physical = |address: u64| -> u64 {
+        PHYSMAP_BASE + address.checked_sub(PHYSICAL_RAM_BASE).unwrap_or(0)
+    };
+    let info_virtual = physical((&info as *const BootInfo) as u64);
+    let stack: u64;
+    // SAFETY: reading the stack pointer has no side effects.
+    unsafe { core::arch::asm!("mov {}, sp", out(reg) stack, options(nomem, nostack)) };
+    let stack_virtual = physical(stack);
+    puts("BOOT_AARCH64_HANDOFF: entry=");
+    puthex(loaded.entry);
+    puts(" info=");
+    puthex(info_virtual);
+    puts(" stack=");
+    puthex(stack_virtual);
+    puts(" regions=");
+    puthex(regions.len() as u64);
+    puts("\n");
+    puts(report::ENTERING_SYSTEM);
+    puts(" at ");
+    puthex(loaded.entry);
+    puts(" privilege=EL1\n");
+    // The image must not inherit a return address from here. `br` does not set
+    // LR, so whatever the last `bl` in this bootstrap left in it survives into
+    // System - a bootrom address that the kernel space does not map for
+    // execution. A stray `ret` in the image would then branch straight back
+    // into firmware and take a permission fault there.
+    let link: u64;
+    // SAFETY: reading the link register has no side effects.
+    unsafe { core::arch::asm!("mov {}, x30", out(reg) link, options(nomem, nostack)) };
+    puts("BOOT_AARCH64_LINK: x30=");
+    puthex(link);
+    puts("\n");
+    // SAFETY: the image is loaded and mapped at `entry`, the record and its
+    // borrowed arrays stay pinned for the System lifetime, and this branch never
+    // returns. Interrupts are masked because the kernel installs its own vector
+    // table and expects to unmask on its own terms.
+    unsafe {
+        core::arch::asm!(
+            "msr daifset, #0xf",
+            "mov x0, {info}",
+            "mov x1, {bytes}",
+            "mov x2, {role}",
+            "mov sp, {stack}",
+            // The image's entry returns a services pointer, so it ends in `ret`.
+            // LR must therefore name somewhere valid: a halt loop here, so a
+            // returned entry stops in firmware instead of jumping to zero. This
+            // was previously zeroed, which made every boot fault at address 0.
+            "adr x30, 1f",
+            "br {entry}",
+            "1:",
+            "wfe",
+            "b 1b",
+            info = in(reg) info_virtual,
+            bytes = in(reg) core::mem::size_of::<BootInfo>() as u64,
+            role = in(reg) mac_abi::boot::monitor::ENTRY_PRIMARY,
+            stack = in(reg) stack_virtual,
+            entry = in(reg) loaded.entry,
+            options(noreturn)
+        );
+    }
+}
+
+/// System's console.
+///
+/// `serial!` inside System writes through `BootInfo.log` rather than to a UART of
+/// its own, so a bootstrap that passes `None` silently discards every diagnostic
+/// System emits - including the markers that say whether it booted. Passing a
+/// sink is not optional decoration; it is the only channel System has.
+unsafe extern "C" fn log(bytes: *const u8, length: usize) -> mac_abi::Status
+{
+    for index in 0..length
+    {
+        // SAFETY: the caller supplies a readable buffer of `length` bytes, and
+        // the console window is the one this bootstrap initialised.
+        let byte = unsafe { core::ptr::read_volatile(bytes.add(index)) };
+        putc(byte);
+    }
+    mac_abi::OK
+}
+
+/// The ISA profile this bootstrap states it provides.
+///
+/// Written here independently of the kernel's constant on purpose. The kernel
+/// compares the sealed value against its own architecture adapter's statement,
+/// so two independent statements agreeing is the check; reading one source on
+/// both sides would make the comparison vacuous and admit a loader built for a
+/// different profile.
+///
+/// AArch64 has no MISA. These bits state what System's code assumes: EL1 with a
+/// 4 KiB granule, the floating-point and NEON unit, and the generic timer.
+const REQUIRED_ISA: u64 = (1 << 0) | (1 << 1) | (1 << 2);
+
+/// The exception vector table: sixteen slots of 128 bytes.
+const VECTOR_BYTES: u64 = 2048;
+
+/// The address of this bootstrap's trap vector.
+fn vector_address() -> u64
+{
+    unsafe extern "C" {
+        fn vectors();
+    }
+    // SAFETY: taking the address of a defined symbol has no effect.
+    vectors as *const () as u64
+}
+
+/// The exclusive maximum of admitted RAM and every peripheral window this
+/// machine declares.
+///
+/// System computes the same quantity from the same inputs and compares, so a
+/// bootstrap that described a smaller machine than it mapped is refused rather
+/// than trusted. The windows come from the machine's tree rather than from a
+/// compiled list, and the walk takes the highest end over every node of each
+/// kind, so a machine that models one node per slot and one that models a single
+/// bank are both answered.
+fn physical_limit(memory: &memory::Memory, tree: &mac_devicetree::Tree<'_>) -> u64
+{
+    // The bootstrap windows the record declares for System, which System
+    // counts whether or not the tree repeats them.
+    let mut end = BOOTSTRAP_MMIO_LIMIT;
+    for bank in &memory.ram
+    {
+        end = end.max(bank.base.saturating_add(bank.length));
+    }
+    // Every peripheral the machine describes, not a list of the parts this
+    // bootstrap happens to know: the kernel derives the same limit from the same
+    // tree, and a limit that disagreed with it would refuse the boot. Naming
+    // parts here would make a machine with an unfamiliar peripheral fail its own
+    // seal.
+    let _ = tree.for_each_node(|node| {
+                    if !node.enabled()
+                    {
+                        return;
+                    }
+                    // The same nodes System's inventory admits, at the
+                    // addresses the CPU finds them: a part that names itself
+                    // and states a window some bus maps.
+                    if node.compatible.is_some()
+                       && let Ok(Some((base, bytes))) = tree.cpu_window(node)
+                       && base != 0
+                       && bytes != 0
+                    {
+                        end = end.max(base.saturating_add(bytes));
+                    }
+                });
+    end
+}
+
+fn halt() -> !
+{
+    loop
+    {
+        // SAFETY: nothing below can make progress; waiting is the only action.
+        unsafe { core::arch::asm!("wfi", options(nomem, nostack)) };
+    }
 }
 
 #[panic_handler]
-fn panic(_: &PanicInfo) -> !
+fn panic(info: &PanicInfo) -> !
 {
-    loop
-    {}
+    puts("BOOT_AARCH64_PANIC");
+    if let Some(location) = info.location()
+    {
+        puts(": ");
+        puts(location.file());
+        puts(" line=");
+        puthex(u64::from(location.line()));
+    }
+    puts("\n");
+    halt()
 }

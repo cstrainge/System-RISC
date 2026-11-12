@@ -114,7 +114,11 @@ const DEVICE: u64 = 0x405 | (1 << 54) | (1 << 53);
 // T0SZ/T1SZ 25 (39-bit halves), IRGN0/ORGN0 write-back, SH0 inner shareable,
 // TG0 0b00 and TG1 0b10 for a 4 KiB granule, IPS 0b010 for 40-bit physical
 // addresses. Cacheable walks are what the resident kernel expects.
-const TCR: u64 = 0x2_8019_3519;
+// The upper half's walk attributes (IRGN1/ORGN1 write-back, SH1 inner shareable)
+// match the lower half's. They were zero, a non-cacheable walk, which an
+// emulator cannot tell apart and a board can: System builds its tables with the
+// cache on, and a walker reading around the cache does not see them.
+const TCR: u64 = 0x2_b519_3519;
 // MAIR[0] normal write-back, MAIR[1] Device-nGnRnE.
 const MAIR: u64 = 0xff;
 const KERNEL_HALF: u64 = 0xffff_ff80_0000_0000;

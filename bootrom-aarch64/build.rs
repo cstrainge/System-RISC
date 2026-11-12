@@ -89,6 +89,74 @@ fn main()
                               .min()
                               .expect("the platform must declare at least one MMIO window")
         & !0x1f_ffff;
+    // What the handoff states to the System, each from the record: the boot
+    // window, the physical image window the System is loaded into, the display
+    // scratch, and whether this machine starts graphically. The graphical flag
+    // follows the rule the virt bootstrap uses - a record with no `emulation`
+    // display is headless - so the two cannot answer differently.
+    let boot_base = memory["boot"]["base"].as_str().expect("memory.boot.base");
+    let boot_bytes = memory["boot"]["bytes"].as_str().expect("memory.boot.bytes");
+    let image_base = memory["images"]["base"].as_str().expect("memory.images.base");
+    let image_bytes = memory["images"]["bytes"].as_str().expect("memory.images.bytes");
+    let scratch_base =
+        memory["display_scratch"]["base"].as_str().expect("memory.display_scratch.base");
+    let scratch_bytes =
+        memory["display_scratch"]["bytes"].as_str().expect("memory.display_scratch.bytes");
+    let code_bytes = memory["firmware_code_bytes"].as_str().expect("memory.firmware_code_bytes");
+    // A board is not emulated, so it has no `emulation` section to state a
+    // display in; it states one among its hardware instead. Either statement
+    // makes the boot graphical.
+    let board_display = record["hardware"]["devices"].as_array()
+                                                     .is_some_and(|devices| {
+                                                         devices.iter().any(|device| {
+                                                                           device["kind"]
+                                                                           == "display"
+                                                                       })
+                                                     });
+    let graphical = board_display
+                    || mac_build::platform::current().emulation()
+                                                     .and_then(|emulation| {
+                                                         emulation.display.as_ref()
+                                                     })
+                                                     .is_some();
+    let boot_flags = if graphical { "mac_abi::BOOT_GRAPHICAL" } else { "0" };
+    let virtual_constants =
+        mac_build::platform::current().virtual_memory()
+                                      .expect("checked virtual layout")
+                                      .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE",
+                                                            "VM_SYSTEM_IMAGE_LIMIT",
+                                                            "VM_APPLICATION_IMAGE_BASE",
+                                                            "VM_APPLICATION_END"])
+                                      .expect("checked bootstrap virtual symbols");
+    fs::write(out.join("platform-virtual.rs"), virtual_constants).expect("virtual constants");
+    // The highest end among the bootstrap windows the record declares for
+    // System. System counts them toward the physical limit whether or not the
+    // tree repeats them, so the bootstrap that seals that limit must too.
+    let hex = |text: &str| u64::from_str_radix(text.trim_start_matches("0x"), 16).expect("hex");
+    let mut bootstrap_limit = 0u64;
+    if let Some(io) = memory["bootstrap_io"].as_object()
+    {
+        for window in io.values()
+        {
+            if let (Some(base), Some(bytes)) = (window["base"].as_str(), window["bytes"].as_str())
+            {
+                bootstrap_limit = bootstrap_limit.max(hex(base) + hex(bytes));
+            }
+        }
+    }
+    fs::write(out.join("platform-handoff.rs"),
+              format!("pub const BOOT_BASE: u64 = {boot_base};\n\
+                       pub const BOOT_BYTES: u64 = {boot_bytes};\n\
+                       pub const IMAGE_BASE: u64 = {image_base};\n\
+                       pub const IMAGE_BYTES: u64 = {image_bytes};\n\
+                       pub const FW_HEAP_BASE: u64 = {firmware_heap_base};\n\
+                       pub const FW_HEAP_BYTES: u64 = {firmware_heap_bytes};\n\
+                       pub const DISPLAY_SCRATCH_BASE: u64 = {scratch_base};\n\
+                       pub const DISPLAY_SCRATCH_BYTES: u64 = {scratch_bytes};\n\
+                       pub const FIRMWARE_CODE_BYTES: u64 = {code_bytes};\n\
+                       pub const BOOT_FLAGS: u32 = {boot_flags};\n\
+                       pub const BOOTSTRAP_MMIO_LIMIT: u64 = {bootstrap_limit:#x};\n"))
+        .expect("handoff constants");
     fs::write(out.join("platform-memory.rs"),
               format!("pub const PHYSICAL_RAM_BASE: u64 = {ram_base};\n\
                        pub const DEVICE_APERTURE_BASE: u64 = {device_aperture_base:#x};\n\

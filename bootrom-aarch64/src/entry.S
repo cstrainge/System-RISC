@@ -53,6 +53,15 @@ _start:
     eret
 1:  cmp x1, #2
     b.ne el1_entry
+    // EL1 must be allowed the physical counter and timer before EL2 is left:
+    // with these two bits clear, the System's first timer access traps to an
+    // EL2 that has no vector table, and the boot stops without a word. The
+    // virtual offset is zeroed so the virtual and physical counts agree. A
+    // machine that enters at EL1 never runs this, so only hardware needs it.
+    mrs x0, cnthctl_el2
+    orr x0, x0, #3
+    msr cnthctl_el2, x0
+    msr cntvoff_el2, xzr
     mov x0, #0x80000000
     msr hcr_el2, x0
     mov x0, #0x3c5
@@ -196,6 +205,7 @@ uart_puthex:
     ret
 
 .balign 2048
+.global vectors
 vectors:
     .rept 16
     .balign 0x80

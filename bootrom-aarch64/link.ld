@@ -41,8 +41,10 @@ SECTIONS {
  * first deep call, and the fault then appears as a data abort inside whatever
  * function forced the walk. Both bounds are relative to symbols, so they move
  * with the image instead of pinning a build. */
-__tables_start = 0x110000;
-__tables_end = __tables_start + 0x5000;
+/* The last pages of the boot window, so the tables move with the record and
+ * the image has everything below them to grow into. */
+__tables_start = __platform_BOOT_END - 0x16000;
+__tables_end = __tables_start + 0x16000;
 ASSERT(__stack_top <= __tables_start,
        "BOOT_TABLES_OVERLAP_STACK: the translation tables sit inside the stack window")
 ASSERT(__tables_end <= __platform_FIRMWARE_HEAP_START,
