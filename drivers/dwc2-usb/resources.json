@@ -1,0 +1,10 @@
+{
+  "name": "DWC2 USB Host",
+  "binary_name": "Dwc2Usb",
+  "file_type": "DRVR",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 1,
+  "description": "The DesignWare USB 2.0 controller as a host: identifies the core, powers its root port and reports what is attached",
+  "resources": []
+}

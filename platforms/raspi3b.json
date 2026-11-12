@@ -25,7 +25,8 @@
       "mac-system",
       "videocore-framebuffer",
 
-      "bcm2835-rng"
+      "bcm2835-rng",
+      "dwc2-usb"
     ],
     "folders": {
       "applications": "Applications",

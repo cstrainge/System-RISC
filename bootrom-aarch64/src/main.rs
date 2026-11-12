@@ -576,6 +576,9 @@ pub extern "C" fn sdhci_probe(tree_address: usize) -> u64
             puts(" base=");
             puthex(u64::from(framebuffer.base));
             puts("\n");
+            puts("BOOT_AARCH64_USB_POWER: state=");
+            puthex(u64::from(display::USB_POWER.load(core::sync::atomic::Ordering::Relaxed)));
+            puts("\n");
         }
         Err(error) =>
         {

@@ -561,6 +561,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dwc2-usb"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "spinning_top",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

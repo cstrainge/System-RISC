@@ -108,7 +108,40 @@ pub fn init(tree: &Tree) -> Result<Framebuffer, Error>
     let framebuffer =
         mac_videocore_fb::acquire(&mut channel, &mut message, mode, 4096).map_err(Error::Mailbox)?;
     paint(&framebuffer);
+    USB_POWER.store(power_usb(&mut channel, &mut message),
+                    core::sync::atomic::Ordering::Relaxed);
     Ok(framebuffer)
+}
+
+/// What the firmware answered when asked to power the USB controller: bit 0
+/// set is on, bit 1 set is "no such device". `u32::MAX` when it was not asked
+/// or gave no answer.
+pub static USB_POWER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// The firmware's power-state property, and its name for the USB controller.
+const TAG_SET_POWER_STATE: u32 = 0x0002_8001;
+const POWER_DEVICE_USB: u32 = 3;
+/// Turn it on, and answer only once it is stable.
+const POWER_ON_AND_WAIT: u32 = 0b11;
+
+/// Ask the firmware to power the USB controller.
+///
+/// The controller's registers do not answer until its power domain is on, and
+/// the firmware owns that domain. This is asked here, while the boot stage
+/// holds the mailbox, because nothing in the System shares the mailbox yet:
+/// its one claimant is the display driver. It belongs in the System, behind a
+/// service a USB driver can ask, and should move there when one exists.
+fn power_usb(channel: &mut Coherent, message: &mut Message) -> u32
+{
+    message.reset();
+    if message.request(TAG_SET_POWER_STATE, &[POWER_DEVICE_USB, POWER_ON_AND_WAIT]).is_err()
+       || message.finish().is_err()
+       || message.transact(channel).is_err()
+       || message.check().is_err()
+    {
+        return u32::MAX;
+    }
+    message.reply(TAG_SET_POWER_STATE, 2).map_or(u32::MAX, |words| words[1])
 }
 
 /// The boot screen: the desktop pattern and the happy Mac, from the shared

@@ -1,0 +1,25 @@
+[package]
+name = "dwc2-usb"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+guest = []
+
+[[bin]]
+name = "Dwc2Usb"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+bench = false
+
+[dependencies]
+mac-abi.workspace = true
+mac-driver = { path = "../../crates/mac-driver" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+spinning_top = "=0.2.5"
+
+[build-dependencies]
+mac-build.workspace = true
