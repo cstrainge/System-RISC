@@ -54,6 +54,10 @@
         "stride": "0x1000",
         "slots": 8,
         "interrupt_base": 1
+      },
+      "interrupt_controller": {
+        "base": "0xc000000",
+        "bytes": "0x400000"
       }
     },
     "boot": {

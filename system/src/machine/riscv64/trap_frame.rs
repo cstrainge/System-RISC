@@ -24,6 +24,9 @@ const INTERRUPT_BIT: usize = 1 << 63;
 const CAUSE_SOFTWARE: usize = INTERRUPT_BIT | 1;
 /// Supervisor timer interrupt: the running quantum expired.
 const CAUSE_TIMER: usize = INTERRUPT_BIT | 5;
+/// A supervisor external interrupt: a device's line, through the
+/// platform-level interrupt controller.
+const CAUSE_EXTERNAL: usize = INTERRUPT_BIT | 9;
 
 /// `sstatus` bit 8 is `SPP`: set when the trap was taken from supervisor mode,
 /// clear from user mode.
@@ -87,6 +90,7 @@ pub(crate) fn interrupt(frame: &TrapFrame) -> Option<Interrupt>
             Some(Interrupt::Wake)
         }
         CAUSE_TIMER => Some(Interrupt::Preempt),
+        CAUSE_EXTERNAL => Some(super::interrupts::service()),
         _ => None
     }
 }

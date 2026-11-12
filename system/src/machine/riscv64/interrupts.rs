@@ -126,14 +126,15 @@ pub(crate) fn disable()
     }
 }
 
-/// Nothing on this machine has to be programmed before a deadline can be
-/// delivered: the timer is a supervisor CSR (`stimecmp`), its interrupt is a
-/// pending bit in `sip`, and both are taken through `stvec` without a separate
-/// controller in the path. Admission therefore has nothing to configure and
-/// nothing it could refuse.
+/// The timer needs nothing programmed before a deadline can be delivered: it
+/// is a supervisor CSR (`stimecmp`), its interrupt is a pending bit in `sip`,
+/// and both are taken through `stvec` without a controller in the path. So
+/// admission cannot refuse, and the type says so.
 ///
-/// The type is stated rather than the function omitted so the shared bring-up
-/// reads the same on every machine instead of testing which one it is on.
+/// Devices are a different matter: their lines reach the hart through the
+/// platform-level interrupt controller, which [`admit`] brings up when the
+/// machine's tree describes one. A machine without one still boots; its
+/// drivers are told no line can be taken and carry on being asked.
 pub(crate) enum Refusal
 {}
 impl core::fmt::Display for Refusal
@@ -145,8 +146,164 @@ impl core::fmt::Display for Refusal
     }
 }
 
-/// Nothing to bring up: see [`Refusal`].
-pub(crate) fn admit(_info: &mac_abi::BootInfo) -> Result<(), Refusal>
+const PLIC: &[&str] = &["sifive,plic-1.0.0", "riscv,plic0"];
+/// One priority word per source; zero means never interrupt.
+const PLIC_PRIORITY: u64 = 0x0;
+/// One bit per source, a block of words per context.
+const PLIC_ENABLE: u64 = 0x2000;
+const PLIC_ENABLE_STRIDE: u64 = 0x80;
+/// Per context: the priority threshold, then the claim/complete word.
+const PLIC_CONTEXT: u64 = 0x20_0000;
+const PLIC_CONTEXT_STRIDE: u64 = 0x1000;
+const PLIC_CLAIM: u64 = 4;
+/// The controller's architectural limit; source 0 does not exist.
+const PLIC_SOURCES: u32 = 1024;
+/// `sie` bit for supervisor external interrupts.
+const SEIE: usize = 1 << 9;
+
+struct Plic
 {
+    base:    u64,
+    /// The supervisor context of the hart that takes device interrupts.
+    context: u64
+}
+static ADMITTED: spin::Once<Plic> = spin::Once::new();
+
+fn read(address: u64) -> u32
+{
+    // SAFETY: the address is inside the controller's window, which the
+    // machine's tree states and the kernel root maps as device memory.
+    unsafe { core::ptr::read_volatile(address as *const u32) }
+}
+
+fn write(address: u64, value: u32)
+{
+    // SAFETY: as `read`; every register here is word-wide.
+    unsafe { core::ptr::write_volatile(address as *mut u32, value) };
+}
+
+/// Brings up the platform-level interrupt controller for this hart, with every
+/// source disabled.
+///
+/// A PLIC has one context per hart and privilege mode, in the order its
+/// `interrupts-extended` lists them. On the machines this kernel runs on that
+/// order is machine then supervisor for each hart in turn, so this hart's
+/// supervisor context is `2 * hart + 1`. That is read off the layout, not out
+/// of the property, and a machine that orders its contexts differently needs
+/// the property read here.
+pub(crate) fn admit(info: &mac_abi::BootInfo) -> Result<(), Refusal>
+{
+    // SAFETY: the boot stage states the tree's extent in the handoff.
+    let Ok(blob) = (unsafe {
+        crate::machine::memory::primary_slice(info, info.device_tree, info.device_tree_bytes)
+    })
+    else
+    {
+        return Ok(());
+    };
+    let Ok(tree) = mac_devicetree::Tree::new(blob)
+    else
+    {
+        return Ok(());
+    };
+    let Ok(Some(node)) = tree.find(|node| node.enabled() && PLIC.iter().any(|name| node.names(name)))
+    else
+    {
+        crate::machine::emergency::serial(format_args!("INTERRUPTS_READY: controller=none; the                                                         timer needs none, and no device line                                                         can be taken\n"));
+        return Ok(());
+    };
+    let Ok(Some((base, bytes))) = tree.cpu_window(&node)
+    else
+    {
+        return Ok(());
+    };
+    let context = 2 * (super::hart_id() as u64) + 1;
+    let control = base + PLIC_CONTEXT + PLIC_CONTEXT_STRIDE * context;
+    if control + 8 > base + bytes
+    {
+        return Ok(());
+    }
+    for word in 0..u64::from(PLIC_SOURCES / 32)
+    {
+        write(base + PLIC_ENABLE + PLIC_ENABLE_STRIDE * context + 4 * word, 0);
+    }
+    write(control, 0);
+    ADMITTED.call_once(|| Plic { base,
+                                 context });
+    // SAFETY: setting only this hart's supervisor external enable.
+    unsafe { asm!("csrs sie, {mask}", mask = in(reg) SEIE, options(nostack)) };
+    crate::machine::emergency::serial(format_args!("INTERRUPTS_READY: controller=plic                                                     base={base:#x} context={context}                                                     threshold={:#x} sources_enabled=0\n",
+                                                   read(control)));
     Ok(())
+}
+
+fn enable_word(plic: &Plic, line: u32) -> u64
+{
+    plic.base + PLIC_ENABLE + PLIC_ENABLE_STRIDE * plic.context + 4 * u64::from(line / 32)
+}
+
+fn device_line(line: u32) -> Option<&'static Plic>
+{
+    ADMITTED.get().filter(|_| line != 0 && line < PLIC_SOURCES)
+}
+
+/// The external interrupt's source: claimed, disabled for this context, and
+/// completed. Completing it at once is safe because it is disabled first: a
+/// level the device still holds becomes pending again and waits there until
+/// its driver has run and the line is enabled again.
+pub(crate) fn service() -> crate::machine::traps::Interrupt
+{
+    use crate::machine::traps::Interrupt;
+    let Some(plic) = ADMITTED.get()
+    else
+    {
+        return Interrupt::Unhandled { number: 0 };
+    };
+    let claim = plic.base + PLIC_CONTEXT + PLIC_CONTEXT_STRIDE * plic.context + PLIC_CLAIM;
+    let line = read(claim);
+    if line == 0 || line >= PLIC_SOURCES
+    {
+        return Interrupt::Unhandled { number: line };
+    }
+    let word = enable_word(plic, line);
+    write(word, read(word) & !(1 << (line % 32)));
+    write(claim, line);
+    Interrupt::Device { line }
+}
+
+/// Gives a device's line a priority above the threshold and enables it.
+pub(crate) fn enable_line(line: u32) -> bool
+{
+    let Some(plic) = device_line(line)
+    else
+    {
+        return false;
+    };
+    write(plic.base + PLIC_PRIORITY + 4 * u64::from(line), 1);
+    unmask_line(line);
+    true
+}
+
+pub(crate) fn mask_line(line: u32)
+{
+    if let Some(plic) = device_line(line)
+    {
+        // The enable word is shared with the trap path, which clears bits in
+        // it; the update is made with this hart's interrupts off.
+        with_masked(|| {
+            let word = enable_word(plic, line);
+            write(word, read(word) & !(1 << (line % 32)));
+        });
+    }
+}
+
+pub(crate) fn unmask_line(line: u32)
+{
+    if let Some(plic) = device_line(line)
+    {
+        with_masked(|| {
+            let word = enable_word(plic, line);
+            write(word, read(word) | 1 << (line % 32));
+        });
+    }
 }
