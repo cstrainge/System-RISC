@@ -440,7 +440,11 @@ pub(crate) fn count() -> usize
 /// leaves the positions between them empty, is described exactly as it is.
 fn transport_of(tree: &Tree<'_>, node: &Node<'_>) -> Result<Option<Transport>, Refusal>
 {
-    let Some((registers, register_bytes)) = node.window()
+    // Where the CPU finds the block, not the number the node wrote: under a
+    // remapping bus those differ, and a node on a bus with no mapping at all -
+    // a USB port, an I2C device - has no address to publish.
+    let Some((registers, register_bytes)) =
+        tree.cpu_window(node).map_err(|_| unreadable_tree())?
     else
     {
         return Ok(None);
@@ -494,7 +498,11 @@ pub(crate) fn transport(index: usize) -> Option<Transport>
 /// The peripheral a node describes, or `None` when it describes none.
 fn device_of(tree: &Tree<'_>, node: &Node<'_>) -> Result<Option<Device>, Refusal>
 {
-    let Some((registers, register_bytes)) = node.window()
+    // Where the CPU finds the block, not the number the node wrote: under a
+    // remapping bus those differ, and a node on a bus with no mapping at all -
+    // a USB port, an I2C device - has no address to publish.
+    let Some((registers, register_bytes)) =
+        tree.cpu_window(node).map_err(|_| unreadable_tree())?
     else
     {
         return Ok(None);
@@ -602,7 +610,11 @@ fn interrupt_of<'a>(tree: &Tree<'a>, node: &Node<'a>) -> Result<Option<u32>, ()>
                          .map_err(|_| ())?
                          .ok_or(())?;
     let cells = controller.interrupt_cells.ok_or(())? as usize;
-    if cells == 0 || specifier.len() != cells * 4
+    // A node may state several interrupts, each one specifier wide; a pin
+    // controller with four banks states four. The first is the one reported, as
+    // the summary above says, so the property must hold a whole number of
+    // specifiers rather than exactly one.
+    if cells == 0 || specifier.is_empty() || specifier.len() % (cells * 4) != 0
     {
         return Err(());
     }

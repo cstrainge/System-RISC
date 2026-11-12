@@ -678,6 +678,58 @@ impl<'a> Tree<'a>
         Ok(Some((self.translate(&node, base)?, bytes)))
     }
 
+    /// The first `reg` window of `node` as the CPU addresses it, or `None` when
+    /// the node is not memory mapped.
+    ///
+    /// A `reg` is an address in the parent bus's space, and only some buses are
+    /// windows onto the CPU's. Two things say a node is not one of those: its
+    /// parent gives `reg` no size (`#size-cells` of zero, which is how a CPU, an
+    /// I2C device or a USB port states a unit number), or some bus above it
+    /// states no `ranges`, which the specification defines as "no mapping to
+    /// the parent". Reading either as an address puts a USB port number at
+    /// physical address one. A bus that states `ranges` but does not cover the
+    /// address maps it nowhere, which is the same answer.
+    ///
+    /// The root is the CPU's address space and needs no `ranges`. A machine
+    /// whose peripherals all sit at the root therefore reads exactly as
+    /// [`Node::window`] does; only a machine with a remapping bus differs.
+    pub fn cpu_window(&self, node: &Node<'a>) -> Result<Option<(u64, u64)>, Error>
+    {
+        if node.size_cells == Some(0)
+        {
+            return Ok(None);
+        }
+        let Some((mut address, bytes)) = node.window()
+        else
+        {
+            return Ok(None);
+        };
+        let mut current = *node;
+        while let Some(parent_index) = current.parent_index
+        {
+            let Some(parent) = self.find(|candidate| candidate.index == parent_index)?
+            else
+            {
+                return Err(Error::Structure);
+            };
+            if parent.parent_index.is_some()
+            {
+                if parent.ranges.is_none()
+                {
+                    return Ok(None);
+                }
+                address = match apply_ranges(&parent, address)
+                {
+                    Ok(address) => address,
+                    Err(Error::Ranges) => return Ok(None),
+                    Err(error) => return Err(error)
+                };
+            }
+            current = parent;
+        }
+        Ok(Some((address, bytes)))
+    }
+
     /// Translates `address`, which names a window in `node`'s parent's address
     /// space, up to the CPU's address space by walking the ancestors and
     /// applying each one's `ranges`.
