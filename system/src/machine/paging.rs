@@ -1078,6 +1078,17 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
     }
     Ok(call(&spaces.stacks.as_slice()[primary]))
 }
+/// Where the CPU finds a span of the memory the record declares as the
+/// firmware's, or `None` for any span that is not wholly inside it.
+pub(crate) fn firmware_memory_view(physical: u64, bytes: u64) -> Option<u64>
+{
+    let base = super::memory::FIRMWARE_MEMORY_BASE;
+    let limit = base.checked_add(super::memory::FIRMWARE_MEMORY_BYTES)?;
+    let end = physical.checked_add(bytes)?;
+    (bytes != 0 && physical >= base && end <= limit).then(|| {
+        VM_PHYSMAP_START + (physical - VM_PHYSMAP_PHYSICAL_BASE)
+    })
+}
 /// The uncached pool's CPU address and length, where this machine has one.
 pub(crate) fn dma_pool() -> Option<(usize, usize)>
 {

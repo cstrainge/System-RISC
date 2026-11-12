@@ -13,6 +13,7 @@ pub(crate) fn hart_id() -> usize
 }
 
 pub(crate) mod boot_stack;
+pub(crate) mod cache;
 pub(crate) mod clock;
 pub(crate) mod cpu;
 pub(crate) mod gic;

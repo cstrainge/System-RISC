@@ -7,6 +7,7 @@
 //! switches to a prepared stack, and the private service gate.
 
 pub(crate) mod boot_stack;
+pub(crate) mod cache;
 pub(crate) mod clock;
 pub(crate) mod cpu;
 pub(crate) mod interrupts;

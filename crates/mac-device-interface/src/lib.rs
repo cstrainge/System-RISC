@@ -26,6 +26,35 @@ pub const FREE_COMPLETED: u32 = 8;
 /// driver decides whether it implements the conduit, and a machine that declares
 /// none reports `NONE` rather than failing this call.
 pub const CONDUIT: u32 = 9;
+/// Bring a mapping's two views into step: the request names a mapping or
+/// allocation, an offset and length inside it, and a direction.
+///
+/// A device outside the CPU's caches and the CPU each see their own copy of
+/// cached memory. `SYNC_FOR_DEVICE` writes the CPU's copy out, so call it
+/// after filling a buffer and before telling the device to read it - and
+/// before telling the device to write one, so no stale line is written back
+/// over what the device stores. `SYNC_FOR_CPU` discards the CPU's copy, so
+/// call it after the device has written and before reading. System performs
+/// the cache operations; a driver contains none. On a coherent device, and on
+/// storage no cache holds, both are accepted and do nothing, so a driver
+/// written for one kind of machine is correct on the other.
+pub const SYNC: u32 = 10;
+/// A CPU view of memory the machine's firmware owns and shares with this
+/// claimed device - a framebuffer it allocated, say. The request names the
+/// claim and the physical span; System answers only for memory the platform
+/// record declares as the firmware's. The view is a mapping: it is
+/// synchronized with SYNC and given back with UNMAP.
+pub const SHARED: u32 = 11;
+pub const SYNC_FOR_DEVICE: u64 = 1;
+pub const SYNC_FOR_CPU: u64 = 2;
+/// MAP flag: the driver synchronizes this mapping with SYNC.
+///
+/// MAP's request is the claim, the address and the length, then optionally one
+/// word of flags. A device the machine does not state as cache-coherent is
+/// only mapped with this flag: a driver that has not said it synchronizes
+/// would read and write stale bytes on hardware and work under emulation, so
+/// it is refused instead.
+pub const MAP_SYNCHRONIZED: u64 = 1;
 /// ALLOCATE flag: the device itself will read or write this buffer.
 ///
 /// ALLOCATE's request is the claim and the byte count, then optionally one
@@ -85,7 +114,8 @@ pub fn virtio_identity(register_bytes: u64, read: impl Fn(usize) -> u32) -> Opti
 /// its explicit request ticket until hardware acknowledges quiescence.
 pub const fn synchronous(operation: u32) -> bool
 {
-    matches!(operation, PROBE | CLAIM | MAP | UNMAP | RELEASE | COUNT | FREE_COMPLETED | CONDUIT)
+    matches!(operation,
+             PROBE | CLAIM | MAP | UNMAP | RELEASE | COUNT | FREE_COMPLETED | CONDUIT | SYNC | SHARED)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,6 +231,33 @@ impl Mapping
             return None;
         }
         Some(mapping)
+    }
+}
+
+/// SHARED's reply: where the CPU finds the firmware's memory. The layout is a
+/// mapping's, but the address is a CPU address and not a device's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct View
+{
+    pub handle:      u64,
+    pub cpu_address: u64,
+    pub length:      u64
+}
+impl View
+{
+    pub fn encode(self) -> [u8; MAPPING_BYTES]
+    {
+        Mapping { handle:  self.handle,
+                  address: self.cpu_address,
+                  length:  self.length }.encode()
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self>
+    {
+        let mapping = Mapping::decode(bytes)?;
+        (mapping.address != 0).then_some(Self { handle:      mapping.handle,
+                                                cpu_address: mapping.address,
+                                                length:      mapping.length })
     }
 }
 

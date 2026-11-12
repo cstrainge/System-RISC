@@ -80,17 +80,74 @@ impl DeviceService
     /// Mapping.address is a bus address and must never be dereferenced by Rust.
     pub fn map(self, device: u64, address: u64, length: u64) -> Result<Mapping>
     {
+        self.map_with(device, address, length, 0)
+    }
+
+    /// As [`Self::map`], by a driver that brings the mapping's two views into
+    /// step itself with [`Self::sync_for_device`] and [`Self::sync_for_cpu`].
+    /// A device outside the CPU's caches is mapped only this way. On a
+    /// coherent device the calls do nothing, so the same driver is correct on
+    /// both.
+    pub fn map_synchronized(self, device: u64, address: u64, length: u64) -> Result<Mapping>
+    {
+        self.map_with(device, address, length, wire::MAP_SYNCHRONIZED)
+    }
+
+    fn map_with(self, device: u64, address: u64, length: u64, flags: u64) -> Result<Mapping>
+    {
         if length == 0 || address.checked_add(length).is_none()
         {
             return Err(Error(BAD_ARGUMENT));
         }
-        let mut input = [0; 24];
+        let mut input = [0; 32];
         input[..8].copy_from_slice(&device.to_le_bytes());
         input[8..16].copy_from_slice(&address.to_le_bytes());
         input[16..24].copy_from_slice(&length.to_le_bytes());
+        input[24..].copy_from_slice(&flags.to_le_bytes());
         let mut output = [0; wire::MAPPING_BYTES];
         let length = self.synchronous(wire::MAP, &input, &mut output)?;
         Mapping::decode(&output[..length]).ok_or(Error(BAD_ABI))
+    }
+
+    fn sync(self, handle: u64, offset: u64, length: u64, direction: u64) -> Result<()>
+    {
+        let mut input = [0; 32];
+        input[..8].copy_from_slice(&handle.to_le_bytes());
+        input[8..16].copy_from_slice(&offset.to_le_bytes());
+        input[16..24].copy_from_slice(&length.to_le_bytes());
+        input[24..].copy_from_slice(&direction.to_le_bytes());
+        self.synchronous(wire::SYNC, &input, &mut [])?;
+        Ok(())
+    }
+
+    /// The CPU has written `length` bytes at `offset` of a mapping, view or
+    /// allocation and the device is about to read them - or is about to write
+    /// there. Call it before the device is told to go.
+    pub fn sync_for_device(self, handle: u64, offset: u64, length: u64) -> Result<()>
+    {
+        self.sync(handle, offset, length, wire::SYNC_FOR_DEVICE)
+    }
+
+    /// The device has written `length` bytes at `offset` and the CPU is about
+    /// to read them.
+    pub fn sync_for_cpu(self, handle: u64, offset: u64, length: u64) -> Result<()>
+    {
+        self.sync(handle, offset, length, wire::SYNC_FOR_CPU)
+    }
+
+    /// A CPU view of `length` bytes of memory at physical address `physical`
+    /// that the machine's firmware owns and shares with this device. Refused
+    /// for anything the platform does not declare as the firmware's. Give it
+    /// back with [`Self::unmap`].
+    pub fn shared(self, device: u64, physical: u64, length: u64) -> Result<wire::View>
+    {
+        let mut input = [0; 24];
+        input[..8].copy_from_slice(&device.to_le_bytes());
+        input[8..16].copy_from_slice(&physical.to_le_bytes());
+        input[16..].copy_from_slice(&length.to_le_bytes());
+        let mut output = [0; wire::MAPPING_BYTES];
+        let length = self.synchronous(wire::SHARED, &input, &mut output)?;
+        wire::View::decode(&output[..length]).ok_or(Error(BAD_ABI))
     }
 
     /// Allocate pinned module-owned DMA storage through the real request

@@ -20,16 +20,6 @@ fn main()
     let out = env::var("OUT_DIR").expect("cargo provides OUT_DIR");
     mac_build::write_if_changed(Path::new(&out).join("platform-display.rs"), generated)
         .expect("generated platform display constants");
-    // The machine adapter needs the physical map, so write the same constants
-    // `build_guest` would. Same list, same file, so the content is identical.
-    let virtual_map =
-        platform.virtual_memory()
-                .expect("checked virtual map")
-                .rust_constants_for(&["VM_PHYSMAP_START", "VM_PHYSMAP_END",
-                                      "VM_PHYSMAP_PHYSICAL_BASE"])
-                .expect("checked bootstrap virtual symbols");
-    mac_build::write_if_changed(Path::new(&out).join("platform-virtual.rs"), virtual_map)
-        .expect("generated platform virtual constants");
     if env::var("TARGET").as_deref() == Ok(platform.rust_target.as_str())
     {
         mac_build::build_guest().expect("VideoCore Framebuffer contract and relocatable image \

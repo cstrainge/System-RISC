@@ -124,6 +124,39 @@ impl Bus for PlatformBus
         }
     }
 
+    fn synchronize(&self, cpu_address: u64, bytes: u64, for_device: bool) -> Result<(), Status>
+    {
+        let address = usize::try_from(cpu_address).map_err(|_| BAD_ARGUMENT)?;
+        let bytes = usize::try_from(bytes).map_err(|_| BAD_ARGUMENT)?;
+        // SAFETY: the device manager passes only a span it recorded for a live
+        // mapping of the calling module, which is mapped in the space this
+        // synchronous call runs under. Discarding lines is the caller's stated
+        // intent: the device has written the span.
+        unsafe {
+            if for_device
+            {
+                crate::machine::cache::clean(address, bytes);
+            }
+            else
+            {
+                crate::machine::cache::invalidate(address, bytes);
+            }
+        }
+        Ok(())
+    }
+
+    fn shared_view(&self, ordinal: u32, physical: u64, bytes: u64) -> Result<u64, Status>
+    {
+        match slot(ordinal)?
+        {
+            Slot::Transport(_) => Err(NOT_SUPPORTED),
+            Slot::Board(_) =>
+            {
+                crate::machine::paging::firmware_memory_view(physical, bytes).ok_or(NOT_SUPPORTED)
+            }
+        }
+    }
+
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>
     {
         match slot(ordinal)?
@@ -236,7 +269,7 @@ pub(crate) fn initialize() -> Result<(), Status>
                                                   version:        wire::VERSION,
                                                   request_schema: 1,
                                                   reply_schema:   1,
-                                                  max_request:    24,
+                                                  max_request:    32,
                                                   max_reply:      wire::DESCRIPTION_BYTES as u32,
                                                   flags:          Offer::KERNEL_ONLY
                                                                   | Offer::EXCLUSIVE,
@@ -397,6 +430,54 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
         }
         wire::MAP =>
         {
+            if !matches!(input.len(), 24 | 32) || output.len() < wire::MAPPING_BYTES
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let device = token(&input[..8])?;
+            let address = u64::from_le_bytes(input[8..16].try_into().map_err(|_| BAD_ARGUMENT)?);
+            let length = u64::from_le_bytes(input[16..24].try_into().map_err(|_| BAD_ARGUMENT)?);
+            let flags = match input.get(24..32)
+            {
+                Some(word) => u64::from_le_bytes(word.try_into().map_err(|_| BAD_ARGUMENT)?),
+                None => 0
+            };
+            if flags & !wire::MAP_SYNCHRONIZED != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let synchronized = flags & wire::MAP_SYNCHRONIZED != 0;
+            drivers::owns_memory(caller, address, length)?;
+            // DMA metadata outlives the originating I/O operation and follows
+            // the same genuine module ownership as its admitted CPU storage.
+            let account = drivers::module_allocation(caller)?;
+            let mapping = crate::allocation::with_kernel_allocation(account, || {
+                with(|devices| devices.map(&owner, device, address, length, synchronized))
+            })??;
+            output[..wire::MAPPING_BYTES].copy_from_slice(&mapping.encode());
+            Ok(wire::MAPPING_BYTES)
+        }
+        wire::SYNC =>
+        {
+            if input.len() != 32 || !output.is_empty()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let word = |at: usize| -> Result<u64, Status> {
+                Ok(u64::from_le_bytes(input[at..at + 8].try_into().map_err(|_| BAD_ARGUMENT)?))
+            };
+            let mapping = token(&input[..8])?;
+            let for_device = match word(24)?
+            {
+                wire::SYNC_FOR_DEVICE => true,
+                wire::SYNC_FOR_CPU => false,
+                _ => return Err(BAD_ARGUMENT)
+            };
+            with(|devices| devices.sync(&owner, mapping, word(8)?, word(16)?, for_device))?;
+            Ok(0)
+        }
+        wire::SHARED =>
+        {
             if input.len() != 24 || output.len() < wire::MAPPING_BYTES
             {
                 return Err(BAD_ARGUMENT);
@@ -404,14 +485,11 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
             let device = token(&input[..8])?;
             let address = u64::from_le_bytes(input[8..16].try_into().map_err(|_| BAD_ARGUMENT)?);
             let length = u64::from_le_bytes(input[16..24].try_into().map_err(|_| BAD_ARGUMENT)?);
-            drivers::owns_memory(caller, address, length)?;
-            // DMA metadata outlives the originating I/O operation and follows
-            // the same genuine module ownership as its admitted CPU storage.
             let account = drivers::module_allocation(caller)?;
-            let mapping = crate::allocation::with_kernel_allocation(account, || {
-                with(|devices| devices.map(&owner, device, address, length))
+            let view = crate::allocation::with_kernel_allocation(account, || {
+                with(|devices| devices.shared(&owner, device, address, length))
             })??;
-            output[..wire::MAPPING_BYTES].copy_from_slice(&mapping.encode());
+            output[..wire::MAPPING_BYTES].copy_from_slice(&view.encode());
             Ok(wire::MAPPING_BYTES)
         }
         wire::FREE_COMPLETED =>

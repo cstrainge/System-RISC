@@ -26,6 +26,12 @@ pub trait Bus
     /// reach the span is refused rather than handed an address that is not
     /// its own.
     fn device_address(&self, ordinal: u32, physical: u64, bytes: u64) -> Result<u64, Status>;
+    /// Bring the CPU's cached copy of a span and memory into step, in the
+    /// direction named. Called only for a device outside the CPU's caches.
+    fn synchronize(&self, cpu_address: u64, bytes: u64, for_device: bool) -> Result<(), Status>;
+    /// Where the CPU finds memory the firmware owns and shares with the device
+    /// at `ordinal`. Refused for a span the machine does not declare as such.
+    fn shared_view(&self, ordinal: u32, physical: u64, bytes: u64) -> Result<u64, Status>;
     fn request_reset(&mut self, ordinal: u32) -> Result<(), Status>;
     fn stopped(&mut self, ordinal: u32) -> Result<bool, Status>;
 }
@@ -51,6 +57,9 @@ struct Claim
 struct Dma
 {
     claim:  CompletionKey,
+    /// The CPU span of a mapping or view, which SYNC works over. An
+    /// allocation has none: its span is its buffer's.
+    span:   Option<(u64, u64)>,
     #[cfg(systemrisc)]
     buffer: Option<Arc<crate::machine::dma::Buffer>>
 }
@@ -123,7 +132,8 @@ impl<B: Bus> Devices<B>
     /// native bus resolves its actual owned segment/PTEs and physical span.
     /// This DMA/claim ledger remains outside the image root kinds, preventing
     /// image retirement until device maps and positive stop/reset complete.
-    pub(crate) fn map(&mut self, owner: &OwnerRef, device: u64, address: u64, length: u64)
+    pub(crate) fn map(&mut self, owner: &OwnerRef, device: u64, address: u64, length: u64,
+                      synchronized: bool)
                       -> Result<Mapping, Status>
     {
         let (physical, claim) = self.claims.get(owner, device).map_err(alias_status)?;
@@ -135,14 +145,15 @@ impl<B: Bus> Devices<B>
         {
             return Err(BAD_ARGUMENT);
         }
-        // A device the machine does not state as cache-coherent may still be
-        // given memory: what it lacks is the promise that the device and the
-        // CPU see the same bytes without help, and the claim's flags tell the
-        // driver so. Keeping the two views in step is then the driver's work,
-        // done with the shared cache-maintenance calls, and a driver that
-        // skips it reads stale replies on a board. Refusing the mapping here
-        // refused every DMA device on a machine whose tree is honest about
-        // its caches.
+        // A device outside the CPU's caches is mapped only for a driver that
+        // has said it synchronizes the mapping. Without that the two would
+        // read each other's stale bytes on a board and agree under emulation,
+        // so the mapping is refused here rather than discovered there.
+        if !synchronized
+           && physical.description.flags & mac_device_interface::COHERENT_DMA == 0
+        {
+            return Err(mac_abi::NOT_SUPPORTED);
+        }
         let bus_address = self.bus.dma_address(address, length)?;
         let bus_address = self.bus.device_address(physical.ordinal, bus_address, length)?;
         if bus_address.checked_add(length).is_none()
@@ -154,6 +165,8 @@ impl<B: Bus> Devices<B>
         let publication = self.maps
                               .insert_with_receipt(owner, |_| {
                                   Dma { claim:                                  receipt,
+                                        span:                                   Some((address,
+                                                                                      length)),
                                         #[cfg(systemrisc)]
                                         buffer:                                 None }
                               })
@@ -201,6 +214,7 @@ impl<B: Bus> Devices<B>
         let publication = self.maps
                               .insert_with_receipt(owner, |_| {
                                   Dma { claim:  receipt,
+                                        span:   None,
                                         buffer: Some(buffer) }
                               })
                               .map_err(pool_status)?;
@@ -375,6 +389,71 @@ impl<B: Bus> Devices<B>
                                     })
                                     .ok_or(NOT_FOUND)?;
         Self::reset_ack(&mut self.bus, physical, claim)
+    }
+
+    /// Brings one mapping's two views into step. The span is checked against
+    /// the mapping System recorded, never taken from the caller, so a driver
+    /// cannot aim a cache operation at memory it did not map.
+    pub(crate) fn sync(&mut self, owner: &OwnerRef, mapping: u64, offset: u64, length: u64,
+                       for_device: bool)
+                       -> Result<(), Status>
+    {
+        let map = self.owned_map(owner, mapping)?;
+        let (physical, _) = self.claims.completing(&map.claim).ok_or(BAD_ABI)?;
+        let coherent = physical.description.flags & mac_device_interface::COHERENT_DMA != 0;
+        #[cfg(systemrisc)]
+        let (span, cached) = match map.buffer.as_ref()
+        {
+            Some(buffer) => (Some((buffer.address(), buffer.length())), !buffer.uncached()),
+            None => (map.span, true)
+        };
+        #[cfg(not(systemrisc))]
+        let (span, cached) = (map.span, true);
+        let (base, bytes) = span.ok_or(BAD_ARGUMENT)?;
+        let end = offset.checked_add(length).ok_or(BAD_ARGUMENT)?;
+        if length == 0 || end > bytes
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        // Nothing to do where the device shares the caches, or where no cache
+        // holds the storage. The call is still checked and accepted, so one
+        // driver is correct on both kinds of machine.
+        if coherent || !cached
+        {
+            return Ok(());
+        }
+        self.bus.synchronize(base + offset, length, for_device)
+    }
+
+    /// Publishes a view of firmware-owned memory as a mapping of this claim.
+    pub(crate) fn shared(&mut self, owner: &OwnerRef, device: u64, address: u64, length: u64)
+                         -> Result<mac_device_interface::View, Status>
+    {
+        let (physical, claim) = self.claims.get(owner, device).map_err(alias_status)?;
+        if claim.reset.get().is_some() || claim.cleanup.get()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if length == 0 || address.checked_add(length).is_none()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let cpu_address = self.bus.shared_view(physical.ordinal, address, length)?;
+        let count = claim.maps.get().checked_add(1).ok_or(NO_MEMORY)?;
+        let receipt = claim.receipt.get().ok_or(BAD_ABI)?;
+        let publication = self.maps
+                              .insert_with_receipt(owner, |_| {
+                                  Dma { claim:                                  receipt,
+                                        span:                                   Some((cpu_address,
+                                                                                      length)),
+                                        #[cfg(systemrisc)]
+                                        buffer:                                 None }
+                              })
+                              .map_err(pool_status)?;
+        claim.maps.set(count);
+        Ok(mac_device_interface::View { handle: publication.id(),
+                                        cpu_address,
+                                        length })
     }
 
     fn owned_map(&self, owner: &OwnerRef, id: u64) -> Result<&Dma, Status>
