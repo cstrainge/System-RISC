@@ -250,7 +250,10 @@ impl Machine
                              protocol={:02x} max_packet={} vendor={:02x}{:02x} \
                              product={:02x}{:02x} configurations={}\n",
                             d[3], d[2], d[4], d[5], d[6], d[7], d[9], d[8], d[11], d[10], d[17]));
-        if let Err(refusal) = crate::assign_address(&mut registers, &mut clock, &mut page)
+        if let Err(refusal) = crate::assign_address(&mut registers,
+                                                    &mut clock,
+                                                    &mut page,
+                                                    crate::ROOT_DEVICE_ADDRESS)
         {
             report(format_args!("USB_ADDRESS_REFUSED: {refusal}\n"));
             return;
@@ -292,11 +295,40 @@ impl Machine
                                     hub.power_good_ms));
                 for (index, (status, change)) in hub.status[..hub.ports].iter().enumerate()
                 {
-                    let speed = if status & crate::HUB_PORT_CONNECTED == 0
+                    report(format_args!("USB_HUB_PORT port={} connected={} powered={} \
+                                         status={:#06x} change={:#06x}\n",
+                                        index + 1,
+                                        status & crate::HUB_PORT_CONNECTED != 0,
+                                        status & crate::HUB_PORT_POWERED != 0,
+                                        status,
+                                        change));
+                }
+                // Reset each occupied port in turn. One device answers at the
+                // default address at a time, so a port's device is addressed
+                // before the next port is touched.
+                for index in 0..hub.ports
+                {
+                    if hub.status[index].0 & crate::HUB_PORT_CONNECTED == 0
                     {
-                        "none"
+                        continue;
                     }
-                    else if status & crate::HUB_PORT_HIGH_SPEED != 0
+                    let port = (index + 1) as u8;
+                    let (status, _) = match crate::reset_hub_port(&mut registers,
+                                                                  &mut clock,
+                                                                  &mut page,
+                                                                  crate::ROOT_DEVICE_ADDRESS,
+                                                                  port)
+                    {
+                        Ok(words) => words,
+                        Err(refusal) =>
+                        {
+                            report(format_args!("USB_HUB_PORT_RESET_REFUSED port={port}: \
+                                                 {refusal}\n"));
+                            continue;
+                        }
+                    };
+                    let high = status & crate::HUB_PORT_HIGH_SPEED != 0;
+                    let speed = if high
                     {
                         "high"
                     }
@@ -308,14 +340,48 @@ impl Machine
                     {
                         "full"
                     };
-                    report(format_args!("USB_HUB_PORT port={} connected={} powered={} speed={} \
-                                         status={:#06x} change={:#06x}\n",
-                                        index + 1,
-                                        status & crate::HUB_PORT_CONNECTED != 0,
-                                        status & crate::HUB_PORT_POWERED != 0,
-                                        speed,
-                                        status,
-                                        change));
+                    report(format_args!("USB_HUB_PORT_RESET port={port} enabled={} speed={speed} \
+                                         status={status:#06x}\n",
+                                        status & crate::HUB_PORT_ENABLED != 0));
+                    if status & crate::HUB_PORT_ENABLED == 0
+                    {
+                        continue;
+                    }
+                    if !high
+                    {
+                        // Reaching it takes split transactions through the
+                        // hub, which this driver does not perform yet. It is
+                        // left enabled and unaddressed, where no high-speed
+                        // transfer can reach it.
+                        report(format_args!("USB_PORT_DEVICE port={port} speed={speed}: not \
+                                             reachable until split transactions exist\n"));
+                        continue;
+                    }
+                    let address = crate::ROOT_DEVICE_ADDRESS + port;
+                    let d = match crate::device_descriptor(&mut registers,
+                                                           &mut clock,
+                                                           &mut page,
+                                                           0)
+                    {
+                        Ok(descriptor) => descriptor,
+                        Err(refusal) =>
+                        {
+                            report(format_args!("USB_PORT_DEVICE_REFUSED port={port}: \
+                                                 {refusal}\n"));
+                            continue;
+                        }
+                    };
+                    if let Err(refusal) =
+                        crate::assign_address(&mut registers, &mut clock, &mut page, address)
+                    {
+                        report(format_args!("USB_PORT_DEVICE_REFUSED port={port}: {refusal}\n"));
+                        continue;
+                    }
+                    report(format_args!("USB_PORT_DEVICE port={port} address={address} \
+                                         usb={:x}.{:02x} class={:02x} subclass={:02x} \
+                                         protocol={:02x} vendor={:02x}{:02x} \
+                                         product={:02x}{:02x}\n",
+                                        d[3], d[2], d[4], d[5], d[6], d[9], d[8], d[11], d[10]));
                 }
             }
             Err(refusal) => report(format_args!("USB_HUB_REFUSED: {refusal}\n"))

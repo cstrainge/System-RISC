@@ -607,18 +607,71 @@ pub struct Hub
     pub status:             [(u16, u16); HUB_PORTS]
 }
 
-/// Move the device on the root port from the default address to its own.
+/// Move the device answering at the default address to `address`. Only one
+/// device may be at the default address at a time, which is the caller's to
+/// arrange: one port is reset, and its device addressed, before the next.
 pub fn assign_address(registers: &mut impl Registers, clock: &mut impl Clock,
-                      buffer: &mut impl TransferBuffer)
+                      buffer: &mut impl TransferBuffer, address: u8)
                       -> Result<(), Refusal>
 {
-    control(registers,
-            clock,
-            buffer,
-            0,
-            [0x00, 0x05, ROOT_DEVICE_ADDRESS, 0, 0, 0, 0, 0],
-            &mut [])?;
+    control(registers, clock, buffer, 0, [0x00, 0x05, address & 0x7f, 0, 0, 0, 0, 0], &mut [])?;
     pause(registers, clock, ADDRESS_SETTLE_MICROSECONDS)
+}
+
+/// Hub port change bits, and the feature numbers that drive a port.
+pub const HUB_CHANGE_RESET: u16 = 1 << 4;
+const FEATURE_PORT_RESET: u8 = 4;
+const FEATURE_C_PORT_CONNECTION: u8 = 16;
+const FEATURE_C_PORT_RESET: u8 = 20;
+/// A hub is asked this often, and at most this many times, whether a port
+/// reset it was told to perform has finished.
+pub const HUB_RESET_POLL_MICROSECONDS: u64 = 20_000;
+pub const HUB_RESET_POLLS: u32 = 25;
+/// What a device is given after its port's reset before it is spoken to.
+pub const RESET_RECOVERY_MICROSECONDS: u64 = 20_000;
+
+/// One port's status and change words.
+pub fn hub_port_status(registers: &mut impl Registers, clock: &mut impl Clock,
+                       buffer: &mut impl TransferBuffer, hub: u8, port: u8)
+                       -> Result<(u16, u16), Refusal>
+{
+    let mut words = [0u8; 4];
+    let received =
+        control(registers, clock, buffer, hub, [0xa3, 0x00, 0, 0, port, 0, 4, 0], &mut words)?;
+    if received < 4
+    {
+        return Err(Refusal::ShortDescriptor { bytes: received });
+    }
+    Ok((u16::from_le_bytes([words[0], words[1]]), u16::from_le_bytes([words[2], words[3]])))
+}
+
+/// Have the hub reset one port and wait for it to say the reset is over.
+///
+/// A port's speed is only known after this: the hub works it out during the
+/// reset, and the speed bits in a status read before it mean nothing. The
+/// status returned is the one read after, with the change bits acknowledged.
+pub fn reset_hub_port(registers: &mut impl Registers, clock: &mut impl Clock,
+                      buffer: &mut impl TransferBuffer, hub: u8, port: u8)
+                      -> Result<(u16, u16), Refusal>
+{
+    let feature = |set: bool, feature: u8| {
+        [0x23, if set { 0x03 } else { 0x01 }, feature, 0, port, 0, 0, 0]
+    };
+    control(registers, clock, buffer, hub, feature(true, FEATURE_PORT_RESET), &mut [])?;
+    let mut last = (0, 0);
+    for _ in 0..HUB_RESET_POLLS
+    {
+        pause(registers, clock, HUB_RESET_POLL_MICROSECONDS)?;
+        last = hub_port_status(registers, clock, buffer, hub, port)?;
+        if last.1 & HUB_CHANGE_RESET != 0
+        {
+            break;
+        }
+    }
+    control(registers, clock, buffer, hub, feature(false, FEATURE_C_PORT_RESET), &mut [])?;
+    control(registers, clock, buffer, hub, feature(false, FEATURE_C_PORT_CONNECTION), &mut [])?;
+    pause(registers, clock, RESET_RECOVERY_MICROSECONDS)?;
+    Ok(last)
 }
 
 /// Configure the hub at `device`, power every port, and read each port's
