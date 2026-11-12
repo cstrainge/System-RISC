@@ -107,6 +107,23 @@ impl Bus for PlatformBus
         crate::kernel::module_dma_address(cpu_address, bytes)
     }
 
+    fn device_address(&self, ordinal: u32, physical: u64, bytes: u64) -> Result<u64, Status>
+    {
+        match slot(ordinal)?
+        {
+            // A virtio-MMIO transport sits at the root and sees memory as the
+            // CPU does.
+            Slot::Transport(_) => Ok(physical),
+            Slot::Board(index) =>
+            {
+                platform_devices::get(index).ok_or(NOT_FOUND)?
+                                            .dma
+                                            .bus_address(physical, bytes)
+                                            .ok_or(NOT_SUPPORTED)
+            }
+        }
+    }
+
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>
     {
         match slot(ordinal)?

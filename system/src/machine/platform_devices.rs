@@ -35,7 +35,10 @@ pub(crate) struct Device
     /// A driver that needs an interrupt refuses the device rather than vectoring
     /// a number the machine never stated.
     pub interrupt:      Option<u32>,
-    pub flags:          u32
+    pub flags:          u32,
+    /// How the device addresses memory, from its bus's `dma-ranges`. A driver
+    /// is handed device addresses through this, never a CPU address to adjust.
+    pub dma:            mac_devicetree::DmaView
 }
 
 /// The compatible string a virtio-MMIO transport declares.
@@ -77,6 +80,9 @@ pub(crate) enum Cause
     Missing,
     /// The node declares interrupts that cannot be attributed to a controller.
     NoInterruptParent,
+    /// The node sits under a bus whose `dma-ranges` this kernel cannot read as
+    /// one view of memory.
+    DmaView,
     /// A window the machine describes as a transport is also enumerated as a
     /// board peripheral, so one device would be offered to a driver twice.
     Overlap,
@@ -146,6 +152,13 @@ impl core::fmt::Display for Refusal
                 write!(out,
                        "`{}` declares interrupts but no interrupt controller can be resolved for \
                         it",
+                       self.name())
+            }
+            Cause::DmaView =>
+            {
+                write!(out,
+                       "`{}` sits under a bus whose dma-ranges cannot be read as one view of \
+                        memory",
                        self.name())
             }
             Cause::Overlap =>
@@ -530,12 +543,21 @@ fn device_of(tree: &Tree<'_>, node: &Node<'_>) -> Result<Option<Device>, Refusal
     {
         flags |= mac_device_interface::COHERENT_DMA;
     }
+    // A bus whose view of memory this kernel cannot read is not guessed at:
+    // the device is refused by the identity the machine wrote, because a
+    // driver given the wrong device address has the device write somewhere
+    // else.
+    let dma = tree.dma_view(node).map_err(|_| {
+                                     Refusal { key,
+                                               cause: Cause::DmaView }
+                                 })?;
     Ok(Some(Device { bus: *b"MMIO",
                      key,
                      registers,
                      register_bytes,
                      interrupt,
-                     flags }))
+                     flags,
+                     dma }))
 }
 
 /// The declared identity, as the fixed-width key the wire carries it in.

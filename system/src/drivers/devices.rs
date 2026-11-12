@@ -21,6 +21,11 @@ pub trait Bus
     /// pure address translation, not an allocation or hardware publication.
     /// CPU addresses must never be returned implicitly by manager policy.
     fn dma_address(&self, cpu_address: u64, bytes: u64) -> Result<u64, Status>;
+    /// The address the device at `ordinal` uses for memory the CPU finds at
+    /// `physical`. The machine states this per bus; a device that cannot
+    /// reach the span is refused rather than handed an address that is not
+    /// its own.
+    fn device_address(&self, ordinal: u32, physical: u64, bytes: u64) -> Result<u64, Status>;
     fn request_reset(&mut self, ordinal: u32) -> Result<(), Status>;
     fn stopped(&mut self, ordinal: u32) -> Result<bool, Status>;
 }
@@ -139,6 +144,7 @@ impl<B: Bus> Devices<B>
         // refused every DMA device on a machine whose tree is honest about
         // its caches.
         let bus_address = self.bus.dma_address(address, length)?;
+        let bus_address = self.bus.device_address(physical.ordinal, bus_address, length)?;
         if bus_address.checked_add(length).is_none()
         {
             return Err(BAD_ARGUMENT);
@@ -195,7 +201,7 @@ impl<B: Bus> Devices<B>
     {
         // Physical claim count is bounded by actual device inventory; no new
         // allocation-job registry or copied ownership token is introduced.
-        let Some((_, claim)) =
+        let Some((physical, claim)) =
             self.claims.retained().find(|(_, claim)| {
                                       claim.owner.owner() == owner.owner()
                                       && claim.allocation.get().is_some_and(|(t, _)| t == ticket)
@@ -242,10 +248,12 @@ impl<B: Bus> Devices<B>
         {
             return Ok(None);
         }
-        let result = mac_device_interface::Allocation { handle:         id,
-                                                        cpu_address:    buffer.address(),
-                                                        device_address: buffer.device_address()?,
-                                                        length:         buffer.length() };
+        let device_address =
+            self.bus.device_address(physical.ordinal, buffer.device_address()?, buffer.length())?;
+        let result = mac_device_interface::Allocation { handle: id,
+                                                        cpu_address: buffer.address(),
+                                                        device_address,
+                                                        length: buffer.length() };
         claim.allocation.set(None);
         serial!("DEVICE_DMA_ALLOCATED owner={} allocation={} bytes={} cpu=0x{:x} bus=0x{:x}",
                 owner.owner().incarnation(),

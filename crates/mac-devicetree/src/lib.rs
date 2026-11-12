@@ -184,6 +184,9 @@ pub struct Node<'a>
     /// The raw `ranges` property. Empty means an identity mapping, which is what
     /// a consumer that supports one translation only needs to know.
     pub ranges:       Option<&'a [u8]>,
+    /// The raw `dma-ranges` property: how devices below this bus see the
+    /// memory above it. Absent or empty means they see it as the CPU does.
+    pub dma_ranges:   Option<&'a [u8]>,
     /// The raw `interrupts-extended` property, absent when the node uses the
     /// phandle-based `interrupts` form instead.
     pub interrupts_extended: Option<&'a [u8]>,
@@ -400,6 +403,7 @@ impl<'a> Tree<'a>
             interrupts:   Option<&'a [u8]>,
             interrupts_extended: Option<&'a [u8]>,
             ranges:       Option<&'a [u8]>,
+            dma_ranges:   Option<&'a [u8]>,
             status:       Option<&'a str>,
             dma_coherent: bool,
             interrupt_controller: bool,
@@ -516,6 +520,7 @@ impl<'a> Tree<'a>
                                   own_address_cells: state.own_address_cells,
                                   own_size_cells: state.own_size_cells,
                                   ranges: state.ranges,
+                                  dma_ranges: state.dma_ranges,
                                   interrupts_extended: state.interrupts_extended,
                                   phandle: state.phandle,
                                   linux_phandle: state.linux_phandle,
@@ -565,6 +570,7 @@ impl<'a> Tree<'a>
                             "interrupts" => state.interrupts = Some(value),
                             "interrupts-extended" => state.interrupts_extended = Some(value),
                             "ranges" => state.ranges = Some(value),
+                            "dma-ranges" => state.dma_ranges = Some(value),
                             "dma-coherent" => state.dma_coherent = true,
                             "interrupt-controller" => state.interrupt_controller = true,
                             "phandle" => state.phandle = cell_count(value),
@@ -728,6 +734,58 @@ impl<'a> Tree<'a>
             current = parent;
         }
         Ok(Some((address, bytes)))
+    }
+
+    /// How `node` sees memory when it performs DMA.
+    ///
+    /// A device addresses memory in its bus's space, and a bus may place RAM
+    /// somewhere other than where the CPU finds it. `dma-ranges` on the bus is
+    /// the machine's statement of that placement, and it is the only source:
+    /// nothing here assumes an offset a machine did not write.
+    ///
+    /// One translating bus directly below the root is what this reads. A
+    /// second translating bus above it, or one whose own parent is not the
+    /// CPU's address space, would need the views composed; no machine this
+    /// project runs on states that, so it is refused by name rather than
+    /// half-read, because a wrong device address is a write to the wrong
+    /// memory.
+    pub fn dma_view(&self, node: &Node<'a>) -> Result<DmaView, Error>
+    {
+        let mut view = DmaView::IDENTITY;
+        let mut current = *node;
+        while let Some(parent_index) = current.parent_index
+        {
+            let Some(parent) = self.find(|candidate| candidate.index == parent_index)?
+            else
+            {
+                return Err(Error::Structure);
+            };
+            if let Some(ranges) = parent.dma_ranges
+               && !ranges.is_empty()
+            {
+                if !view.is_identity()
+                {
+                    return Err(Error::Ranges);
+                }
+                let Some(above) = parent.parent_index
+                else
+                {
+                    return Err(Error::Structure);
+                };
+                let Some(above) = self.find(|candidate| candidate.index == above)?
+                else
+                {
+                    return Err(Error::Structure);
+                };
+                if above.parent_index.is_some()
+                {
+                    return Err(Error::Ranges);
+                }
+                view = dma_regions(&parent, ranges)?;
+            }
+            current = parent;
+        }
+        Ok(view)
     }
 
     /// Translates `address`, which names a window in `node`'s parent's address
@@ -1148,6 +1206,120 @@ fn cells(bytes: &[u8], count: u32) -> Result<u64, Error>
         2 => wide(bytes, 0),
         _ => Err(Error::Cells)
     }
+}
+
+/// How many `dma-ranges` entries one bus may state. The board this was written
+/// against states two: its RAM and its own peripherals.
+pub const DMA_REGIONS: usize = 4;
+
+/// One stretch of memory as a bus's devices and the CPU each address it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DmaRegion
+{
+    pub bus:   u64,
+    pub cpu:   u64,
+    pub bytes: u64
+}
+
+/// A device's view of memory: the regions its bus states, or the identity when
+/// the bus states none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmaView
+{
+    regions: [DmaRegion; DMA_REGIONS],
+    count:   usize
+}
+
+impl DmaView
+{
+    /// The device sees memory exactly as the CPU does.
+    pub const IDENTITY: Self = Self { regions: [DmaRegion { bus:   0,
+                                                            cpu:   0,
+                                                            bytes: 0 }; DMA_REGIONS],
+                                      count:   0 };
+
+    pub const fn is_identity(&self) -> bool
+    {
+        self.count == 0
+    }
+
+    pub fn regions(&self) -> &[DmaRegion]
+    {
+        &self.regions[..self.count]
+    }
+
+    /// The address the device uses for `bytes` of memory the CPU finds at
+    /// `cpu`, or `None` when the device cannot reach all of it. A span that
+    /// straddles two regions is refused: the device would need two addresses.
+    pub fn bus_address(&self, cpu: u64, bytes: u64) -> Option<u64>
+    {
+        if bytes == 0
+        {
+            return None;
+        }
+        let end = cpu.checked_add(bytes)?;
+        if self.is_identity()
+        {
+            return Some(cpu);
+        }
+        self.regions().iter().find_map(|region| {
+                                 let offset = cpu.checked_sub(region.cpu)?;
+                                 let limit = region.cpu.checked_add(region.bytes)?;
+                                 (end <= limit).then(|| region.bus.checked_add(offset))?
+                             })
+    }
+
+    /// The reverse: where the CPU finds memory the device calls `bus`.
+    pub fn cpu_address(&self, bus: u64, bytes: u64) -> Option<u64>
+    {
+        if bytes == 0
+        {
+            return None;
+        }
+        let end = bus.checked_add(bytes)?;
+        if self.is_identity()
+        {
+            return Some(bus);
+        }
+        self.regions().iter().find_map(|region| {
+                                 let offset = bus.checked_sub(region.bus)?;
+                                 let limit = region.bus.checked_add(region.bytes)?;
+                                 (end <= limit).then(|| region.cpu.checked_add(offset))?
+                             })
+    }
+}
+
+/// Decodes one bus's `dma-ranges`. The entry layout is the same as `ranges`:
+/// (child address, parent address, length), with the same cell widths.
+fn dma_regions(bus: &Node<'_>, ranges: &[u8]) -> Result<DmaView, Error>
+{
+    let child_cells = bus.own_address_cells.or(bus.address_cells).unwrap_or(2);
+    let parent_cells = bus.address_cells.unwrap_or(2);
+    let size_cells = bus.own_size_cells.or(bus.size_cells).unwrap_or(1);
+    let stride = (child_cells as usize + parent_cells as usize + size_cells as usize) * 4;
+    if stride == 0 || ranges.len() % stride != 0 || ranges.len() / stride > DMA_REGIONS
+    {
+        return Err(Error::Cells);
+    }
+    let mut view = DmaView::IDENTITY;
+    for entry in ranges.chunks_exact(stride)
+    {
+        let bus_address = cells(entry, child_cells)?;
+        let cpu = cells(&entry[child_cells as usize * 4..], parent_cells)?;
+        let bytes =
+            cells(&entry[(child_cells as usize + parent_cells as usize) * 4..], size_cells)?;
+        if bytes == 0
+           || bus_address.checked_add(bytes).is_none()
+           || cpu.checked_add(bytes).is_none()
+        {
+            return Err(Error::Cells);
+        }
+        view.regions[view.count] = DmaRegion { bus: bus_address,
+                                               cpu,
+                                               bytes };
+        view.count += 1;
+    }
+    Ok(view)
 }
 
 /// Applies one ancestor's `ranges` to an address in that ancestor's space.
