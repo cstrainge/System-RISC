@@ -236,17 +236,89 @@ impl Machine
             report(format_args!("USB_TRANSFERS_REFUSED: {refusal}\n"));
             return;
         }
-        match crate::device_descriptor(&mut registers, &mut clock, &mut page)
+        let descriptor = match crate::device_descriptor(&mut registers, &mut clock, &mut page, 0)
         {
-            Ok(d) =>
+            Ok(descriptor) => descriptor,
+            Err(refusal) =>
             {
-                report(format_args!("USB_DEVICE address=0 usb={:x}.{:02x} class={:02x} \
-                                     subclass={:02x} protocol={:02x} max_packet={} \
-                                     vendor={:02x}{:02x} product={:02x}{:02x} configurations={}\n",
-                                    d[3], d[2], d[4], d[5], d[6], d[7], d[9], d[8], d[11], d[10],
-                                    d[17]));
+                report(format_args!("USB_DEVICE_REFUSED: {refusal}\n"));
+                return;
             }
-            Err(refusal) => report(format_args!("USB_DEVICE_REFUSED: {refusal}\n"))
+        };
+        let d = descriptor;
+        report(format_args!("USB_DEVICE address=0 usb={:x}.{:02x} class={:02x} subclass={:02x} \
+                             protocol={:02x} max_packet={} vendor={:02x}{:02x} \
+                             product={:02x}{:02x} configurations={}\n",
+                            d[3], d[2], d[4], d[5], d[6], d[7], d[9], d[8], d[11], d[10], d[17]));
+        if let Err(refusal) = crate::assign_address(&mut registers, &mut clock, &mut page)
+        {
+            report(format_args!("USB_ADDRESS_REFUSED: {refusal}\n"));
+            return;
+        }
+        // Prove the address took: the same device must answer at it.
+        match crate::device_descriptor(&mut registers,
+                                       &mut clock,
+                                       &mut page,
+                                       crate::ROOT_DEVICE_ADDRESS)
+        {
+            Ok(again) if again == descriptor =>
+            {
+                report(format_args!("USB_DEVICE_ADDRESSED address={}\n",
+                                    crate::ROOT_DEVICE_ADDRESS));
+            }
+            Ok(_) =>
+            {
+                report(format_args!("USB_ADDRESS_REFUSED: a different descriptor answered at \
+                                     the new address\n"));
+                return;
+            }
+            Err(refusal) =>
+            {
+                report(format_args!("USB_ADDRESS_REFUSED: {refusal}\n"));
+                return;
+            }
+        }
+        if descriptor[4] != crate::CLASS_HUB
+        {
+            return;
+        }
+        match crate::start_hub(&mut registers, &mut clock, &mut page, crate::ROOT_DEVICE_ADDRESS)
+        {
+            Ok(hub) =>
+            {
+                report(format_args!("USB_HUB address={} ports={} power_good_ms={}\n",
+                                    crate::ROOT_DEVICE_ADDRESS,
+                                    hub.ports,
+                                    hub.power_good_ms));
+                for (index, (status, change)) in hub.status[..hub.ports].iter().enumerate()
+                {
+                    let speed = if status & crate::HUB_PORT_CONNECTED == 0
+                    {
+                        "none"
+                    }
+                    else if status & crate::HUB_PORT_HIGH_SPEED != 0
+                    {
+                        "high"
+                    }
+                    else if status & crate::HUB_PORT_LOW_SPEED != 0
+                    {
+                        "low"
+                    }
+                    else
+                    {
+                        "full"
+                    };
+                    report(format_args!("USB_HUB_PORT port={} connected={} powered={} speed={} \
+                                         status={:#06x} change={:#06x}\n",
+                                        index + 1,
+                                        status & crate::HUB_PORT_CONNECTED != 0,
+                                        status & crate::HUB_PORT_POWERED != 0,
+                                        speed,
+                                        status,
+                                        change));
+                }
+            }
+            Err(refusal) => report(format_args!("USB_HUB_REFUSED: {refusal}\n"))
         }
     }
 }

@@ -2,10 +2,12 @@
 //!
 //! **This is the start of a host stack, not one.** It proves the controller is
 //! the core it is taken for, puts it in host mode, powers the root port, and
-//! performs one control transfer: it asks whatever is on the port, at the
-//! default address, for its device descriptor. There is no enumeration, no
-//! hub driver and no split transaction yet; each is built on what this
-//! observes on a board.
+//! talks to what is on it with control transfers: it reads the device's
+//! descriptor, gives it an address, and - where it is a hub, as it is on the
+//! board this was written against - configures it, powers its ports and reads
+//! what each one sees. Nothing is done with the devices behind the hub yet:
+//! reaching a low- or full-speed one takes split transactions, which are not
+//! here.
 //!
 //! The registers and their bits are from the Synopsys core's programming
 //! model. Three facts shape the code:
@@ -481,21 +483,26 @@ pub fn prepare_transfers(registers: &mut impl Registers, clock: &mut impl Clock,
     Ok(())
 }
 
-/// Run one stage on channel 0, to the device at address 0, endpoint 0.
+/// Run one stage on channel 0, to endpoint 0 of the device at `device`.
 /// Returns the bytes the stage left untransferred.
-fn stage(registers: &mut impl Registers, clock: &mut impl Clock, stage: Stage, address: u32,
-         bytes: u32, inward: bool, pid: u32)
+#[allow(clippy::too_many_arguments)]
+fn stage(registers: &mut impl Registers, clock: &mut impl Clock, stage: Stage, device: u8,
+         address: u32, bytes: u32, inward: bool, pid: u32)
          -> Result<u32, Refusal>
 {
     let direction = if inward { CHANNEL_DIRECTION_IN } else { 0 };
-    // Device address 0, endpoint 0, type control (zero), one transaction per
-    // microframe.
-    let characteristics = DEFAULT_PACKET | direction | CHANNEL_ONE_TRANSACTION;
+    // Endpoint 0, type control (zero), one transaction per microframe.
+    let characteristics = DEFAULT_PACKET
+                          | direction
+                          | CHANNEL_ONE_TRANSACTION
+                          | u32::from(device & 0x7f) << CHANNEL_ADDRESS_SHIFT;
+    // A stage is whole packets; a zero-length one is still one packet.
+    let packets = bytes.div_ceil(DEFAULT_PACKET).max(1);
     for _ in 0..NAK_LIMIT
     {
         registers.write(HCINT, u32::MAX);
         registers.write(HCSPLT, 0);
-        registers.write(HCTSIZ, bytes | 1 << PACKET_COUNT_SHIFT | pid << PID_SHIFT);
+        registers.write(HCTSIZ, bytes | packets << PACKET_COUNT_SHIFT | pid << PID_SHIFT);
         registers.write(HCDMA, address);
         registers.write(HCCHAR, characteristics | CHANNEL_ENABLE);
         // With its own DMA the core halts the channel when the stage ends,
@@ -527,39 +534,152 @@ fn stage(registers: &mut impl Registers, clock: &mut impl Clock, stage: Stage, a
                                status: NAK })
 }
 
-/// Ask the device at the default address for its device descriptor: SETUP,
-/// one packet of data in, a zero-length status out.
+/// One control transfer to endpoint 0 of the device at `device`: the SETUP
+/// packet, then `reply.len()` bytes in if any are asked for, then the status
+/// stage in the opposite direction. Returns how many bytes arrived.
+///
+/// Only requests that carry data toward the host, or none, are needed so far,
+/// so there is no data-out form.
+pub fn control(registers: &mut impl Registers, clock: &mut impl Clock,
+               buffer: &mut impl TransferBuffer, device: u8, setup: [u8; 8], reply: &mut [u8])
+               -> Result<usize, Refusal>
+{
+    debug_assert!(reply.len() <= buffer.capacity());
+    buffer.fill(&setup);
+    stage(registers, clock, Stage::Setup, device, buffer.address(), 8, false, PID_SETUP)?;
+    if reply.is_empty()
+    {
+        // No data: the device acknowledges with a zero-length packet in.
+        stage(registers, clock, Stage::Status, device, buffer.address(), 0, true, PID_DATA1)?;
+        return Ok(0);
+    }
+    // Whole packets are asked for; the device ends the stage early with a
+    // short one when it has less to say.
+    let asked = (reply.len() as u32).div_ceil(DEFAULT_PACKET) * DEFAULT_PACKET;
+    let left =
+        stage(registers, clock, Stage::Data, device, buffer.address(), asked, true, PID_DATA1)?;
+    let received = (asked.saturating_sub(left) as usize).min(reply.len());
+    buffer.copy_out(&mut reply[..received]);
+    stage(registers, clock, Stage::Status, device, buffer.address(), 0, false, PID_DATA1)?;
+    Ok(received)
+}
+
+/// Ask the device at `device` for its device descriptor.
 pub fn device_descriptor(registers: &mut impl Registers, clock: &mut impl Clock,
-                         buffer: &mut impl TransferBuffer)
+                         buffer: &mut impl TransferBuffer, device: u8)
                          -> Result<[u8; DEVICE_DESCRIPTOR_BYTES], Refusal>
 {
-    debug_assert!(buffer.capacity() >= DEFAULT_PACKET as usize);
-    buffer.fill(&GET_DEVICE_DESCRIPTOR);
-    stage(registers,
-          clock,
-          Stage::Setup,
-          buffer.address(),
-          GET_DEVICE_DESCRIPTOR.len() as u32,
-          false,
-          PID_SETUP)?;
-    // A whole packet is asked for; the device ends the stage with the short
-    // one that carries its eighteen bytes.
-    let left = stage(registers,
-                     clock,
-                     Stage::Data,
-                     buffer.address(),
-                     DEFAULT_PACKET,
-                     true,
-                     PID_DATA1)?;
-    let received = DEFAULT_PACKET.saturating_sub(left) as usize;
+    let mut descriptor = [0; DEVICE_DESCRIPTOR_BYTES];
+    let received =
+        control(registers, clock, buffer, device, GET_DEVICE_DESCRIPTOR, &mut descriptor)?;
     if received < DEVICE_DESCRIPTOR_BYTES
     {
         return Err(Refusal::ShortDescriptor { bytes: received });
     }
-    let mut descriptor = [0; DEVICE_DESCRIPTOR_BYTES];
-    buffer.copy_out(&mut descriptor);
-    stage(registers, clock, Stage::Status, buffer.address(), 0, false, PID_DATA1)?;
     Ok(descriptor)
+}
+
+/// The address this driver gives the one device on the root port.
+pub const ROOT_DEVICE_ADDRESS: u8 = 1;
+/// The device class code of a hub.
+pub const CLASS_HUB: u8 = 9;
+/// The most downstream ports this reads; a hub states its own count.
+pub const HUB_PORTS: usize = 8;
+/// A device is given this long to start answering at a new address, and a
+/// hub's ports this long beyond the hub's own figure to settle after power.
+pub const ADDRESS_SETTLE_MICROSECONDS: u64 = 10_000;
+pub const PORT_SETTLE_MICROSECONDS: u64 = 100_000;
+
+/// Hub port status bits, from the hub class.
+pub const HUB_PORT_CONNECTED: u16 = 1 << 0;
+pub const HUB_PORT_ENABLED: u16 = 1 << 1;
+pub const HUB_PORT_POWERED: u16 = 1 << 8;
+pub const HUB_PORT_LOW_SPEED: u16 = 1 << 9;
+pub const HUB_PORT_HIGH_SPEED: u16 = 1 << 10;
+
+/// What a hub said about itself and its ports.
+#[derive(Clone, Copy, Debug)]
+pub struct Hub
+{
+    pub ports:              usize,
+    pub power_good_ms:      u32,
+    /// Each port's status and change words, in port order from port 1.
+    pub status:             [(u16, u16); HUB_PORTS]
+}
+
+/// Move the device on the root port from the default address to its own.
+pub fn assign_address(registers: &mut impl Registers, clock: &mut impl Clock,
+                      buffer: &mut impl TransferBuffer)
+                      -> Result<(), Refusal>
+{
+    control(registers,
+            clock,
+            buffer,
+            0,
+            [0x00, 0x05, ROOT_DEVICE_ADDRESS, 0, 0, 0, 0, 0],
+            &mut [])?;
+    pause(registers, clock, ADDRESS_SETTLE_MICROSECONDS)
+}
+
+/// Configure the hub at `device`, power every port, and read each port's
+/// status once the hub's own power-good time has passed.
+///
+/// It selects configuration 1 without reading the configuration descriptor,
+/// which is the only one a hub has. It does not reset or enable any port:
+/// what is attached is reported, and left alone.
+pub fn start_hub(registers: &mut impl Registers, clock: &mut impl Clock,
+                 buffer: &mut impl TransferBuffer, device: u8)
+                 -> Result<Hub, Refusal>
+{
+    // SET_CONFIGURATION(1).
+    control(registers, clock, buffer, device, [0x00, 0x09, 1, 0, 0, 0, 0, 0], &mut [])?;
+    // GET_DESCRIPTOR(hub): port count in byte 2, power-on-to-power-good in
+    // byte 5, in units of two milliseconds.
+    let mut descriptor = [0u8; 9];
+    let received = control(registers,
+                           clock,
+                           buffer,
+                           device,
+                           [0xa0, 0x06, 0x00, 0x29, 0, 0, 9, 0],
+                           &mut descriptor)?;
+    if received < 7
+    {
+        return Err(Refusal::ShortDescriptor { bytes: received });
+    }
+    let ports = usize::from(descriptor[2]).min(HUB_PORTS);
+    let power_good_ms = u32::from(descriptor[5]) * 2;
+    for port in 1..=ports
+    {
+        // SET_FEATURE(PORT_POWER) on each port.
+        control(registers,
+                clock,
+                buffer,
+                device,
+                [0x23, 0x03, 8, 0, port as u8, 0, 0, 0],
+                &mut [])?;
+    }
+    pause(registers, clock, u64::from(power_good_ms) * 1000 + PORT_SETTLE_MICROSECONDS)?;
+    let mut hub = Hub { ports,
+                        power_good_ms,
+                        status: [(0, 0); HUB_PORTS] };
+    for port in 1..=ports
+    {
+        // GET_STATUS(port): two little-endian words, status then change.
+        let mut words = [0u8; 4];
+        let received = control(registers,
+                               clock,
+                               buffer,
+                               device,
+                               [0xa3, 0x00, 0, 0, port as u8, 0, 4, 0],
+                               &mut words)?;
+        if received < 4
+        {
+            return Err(Refusal::ShortDescriptor { bytes: received });
+        }
+        hub.status[port - 1] = (u16::from_le_bytes([words[0], words[1]]),
+                                u16::from_le_bytes([words[2], words[3]]));
+    }
+    Ok(hub)
 }
 
 #[cfg(target_os = "none")]
