@@ -57,6 +57,10 @@ pub const HCINT: usize = 0x508;
 pub const HCINTMSK: usize = 0x50c;
 /// Which channels may raise the host-channels interrupt, one bit each.
 pub const HAINTMSK: usize = 0x418;
+/// Which channels are asking, one bit each.
+pub const HAINT: usize = 0x414;
+/// Each channel has the same registers, this far apart.
+pub const CHANNEL_STRIDE: usize = 0x20;
 /// `GINTSTS` / `GINTMSK` bit 25: a host channel has something to report.
 pub const HOST_CHANNELS: u32 = 1 << 25;
 pub const HCTSIZ: usize = 0x510;
@@ -350,7 +354,7 @@ impl fmt::Display for Refusal
             }
             Self::NoBootMouse =>
             {
-                write!(f, "the device's configuration describes no boot-protocol mouse")
+                write!(f, "the device's configuration describes no boot-protocol mouse or keyboard")
             }
             Self::ShortDescriptor { bytes } =>
             {
@@ -1052,15 +1056,19 @@ pub fn split_read(registers: &mut impl Registers, clock: &mut impl Clock,
     Ok(None)
 }
 
-/// Lets channel 0's halt raise the core's interrupt line, and nothing else.
+/// Lets the halt of each of the first `channels` channels raise the core's
+/// interrupt line, and nothing else.
 ///
 /// Every other source stays masked, the root port's among them, so a device
 /// that is unplugged is noticed by its transfers failing and not by an event.
-pub fn listen_for_channel(registers: &mut impl Registers)
+pub fn listen_for_channels(registers: &mut impl Registers, channels: usize)
 {
-    registers.write(HCINT, u32::MAX);
-    registers.write(HCINTMSK, CHANNEL_HALTED);
-    registers.write(HAINTMSK, 1);
+    for channel in 0..channels
+    {
+        registers.write(HCINT + CHANNEL_STRIDE * channel, u32::MAX);
+        registers.write(HCINTMSK + CHANNEL_STRIDE * channel, CHANNEL_HALTED);
+    }
+    registers.write(HAINTMSK, (1 << channels) - 1);
     registers.write(GINTSTS, u32::MAX);
     registers.write(GINTMSK, HOST_CHANNELS);
     let bus = registers.read(GAHBCFG);
@@ -1116,14 +1124,20 @@ pub struct SplitRead
     address:         u32,
     size:            u32,
     phase:           ReadPhase,
-    completions:     u32
+    completions:     u32,
+    /// The channel's registers, as an offset from channel 0's.
+    channel:         usize
 }
 impl SplitRead
 {
-    pub fn new(buffer: &impl TransferBuffer, route: Route, device: u8, endpoint: u8, packet: u32)
+    /// A read on its own channel and into its own buffer: reads of different
+    /// devices run side by side.
+    pub fn new(channel: usize, buffer: &impl TransferBuffer, route: Route, device: u8,
+               endpoint: u8, packet: u32)
                -> Self
     {
-        Self { characteristics: packet
+        Self { channel: CHANNEL_STRIDE * channel,
+               characteristics: packet
                                 | CHANNEL_DIRECTION_IN
                                 | if route.low_speed { CHANNEL_LOW_SPEED } else { 0 }
                                 | CHANNEL_ONE_TRANSACTION
@@ -1148,11 +1162,11 @@ impl SplitRead
 
     fn issue(&mut self, registers: &mut impl Registers, split: u32)
     {
-        registers.write(HCINT, u32::MAX);
-        registers.write(HCSPLT, split);
-        registers.write(HCTSIZ, self.size);
-        registers.write(HCDMA, self.address);
-        registers.write(HCCHAR, self.characteristics | CHANNEL_ENABLE);
+        registers.write(HCINT + self.channel, u32::MAX);
+        registers.write(HCSPLT + self.channel, split);
+        registers.write(HCTSIZ + self.channel, self.size);
+        registers.write(HCDMA + self.channel, self.address);
+        registers.write(HCCHAR + self.channel, self.characteristics | CHANNEL_ENABLE);
     }
 
     /// Tells the hub to start a read under the data toggle `pid`.
@@ -1167,12 +1181,12 @@ impl SplitRead
     /// The controller interrupted: says what the channel's halt means.
     pub fn halted(&mut self, registers: &mut impl Registers) -> ReadStep
     {
-        let status = registers.read(HCINT);
+        let status = registers.read(HCINT + self.channel);
         if status & CHANNEL_HALTED == 0
         {
             return ReadStep::Stray;
         }
-        registers.write(HCINT, u32::MAX);
+        registers.write(HCINT + self.channel, u32::MAX);
         match self.phase
         {
             ReadPhase::Started =>
@@ -1190,7 +1204,7 @@ impl SplitRead
                 if status & TRANSFER_COMPLETE != 0
                 {
                     self.phase = ReadPhase::Idle;
-                    let left = registers.read(HCTSIZ) & TRANSFER_SIZE_MASK;
+                    let left = registers.read(HCTSIZ + self.channel) & TRANSFER_SIZE_MASK;
                     return ReadStep::Data(self.packet.saturating_sub(left) as usize);
                 }
                 if status & NYET != 0
@@ -1231,8 +1245,15 @@ impl SplitRead
             }
             ReadPhase::Started | ReadPhase::Completing =>
             {
-                let status = registers.read(HCINT);
-                registers.write(HCCHAR, self.characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
+                let status = registers.read(HCINT + self.channel);
+                // The channel did halt, and the call that says so has not
+                // arrived yet - the driver was busy, or not yet started. That
+                // is the transaction's answer, not a channel that hung.
+                if status & CHANNEL_HALTED != 0
+                {
+                    return self.halted(registers);
+                }
+                registers.write(HCCHAR + self.channel, self.characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
                 self.phase = ReadPhase::Idle;
                 ReadStep::Failed(status)
             }
@@ -1243,7 +1264,7 @@ impl SplitRead
 
 /// Where a boot-protocol mouse's reports come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BootMouse
+pub struct BootInterface
 {
     pub configuration: u8,
     pub interface:     u8,
@@ -1255,7 +1276,7 @@ pub struct BootMouse
 /// itself a boot-protocol mouse (class 3, subclass 1, protocol 2) and the
 /// interrupt endpoint it reports on. A device may carry several interfaces -
 /// a wireless receiver usually does - so every one is looked at.
-pub fn find_boot_mouse(configuration: &[u8]) -> Option<BootMouse>
+pub fn find_boot_interface(configuration: &[u8], protocol: u8) -> Option<BootInterface>
 {
     let value = *configuration.get(5)?;
     let mut at = 0;
@@ -1272,7 +1293,7 @@ pub fn find_boot_mouse(configuration: &[u8]) -> Option<BootMouse>
         {
             4 if length >= 9 =>
             {
-                interface = (descriptor[5] == 3 && descriptor[6] == 1 && descriptor[7] == 2)
+                interface = (descriptor[5] == 3 && descriptor[6] == 1 && descriptor[7] == protocol)
                     .then_some(descriptor[2]);
             }
             5 if length >= 7 =>
@@ -1283,7 +1304,7 @@ pub fn find_boot_mouse(configuration: &[u8]) -> Option<BootMouse>
                 {
                     let packet = u32::from(u16::from_le_bytes([descriptor[4], descriptor[5]]))
                                  & 0x7ff;
-                    return Some(BootMouse { configuration: value,
+                    return Some(BootInterface { configuration: value,
                                             interface,
                                             endpoint: descriptor[2] & 0x0f,
                                             packet });
@@ -1296,13 +1317,26 @@ pub fn find_boot_mouse(configuration: &[u8]) -> Option<BootMouse>
     None
 }
 
-/// Configure an addressed slow device as a boot-protocol mouse: read its
-/// configuration, select it, and ask for the fixed three-byte report every
-/// such mouse can produce, so no report descriptor has to be parsed.
-pub fn start_boot_mouse(registers: &mut impl Registers, clock: &mut impl Clock,
-                        buffer: &mut impl TransferBuffer, route: Route, device: u8,
-                        packet: u32)
-                        -> Result<BootMouse, Refusal>
+/// The boot-protocol interfaces a device carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BootInputs
+{
+    pub mouse:    Option<BootInterface>,
+    pub keyboard: Option<BootInterface>
+}
+
+/// The interface protocol a boot keyboard declares, and a boot mouse.
+pub const PROTOCOL_KEYBOARD: u8 = 1;
+pub const PROTOCOL_MOUSE: u8 = 2;
+
+/// Configure an addressed slow device as whatever boot-protocol input it
+/// carries: read its configuration, select it, and ask each mouse or keyboard
+/// interface for the fixed report every such device can produce, so no report
+/// descriptor has to be parsed. A wireless receiver often carries both.
+pub fn start_boot_inputs(registers: &mut impl Registers, clock: &mut impl Clock,
+                         buffer: &mut impl TransferBuffer, route: Route, device: u8,
+                         packet: u32)
+                         -> Result<BootInputs, Refusal>
 {
     let mut head = [0u8; 9];
     let received = split_control(registers,
@@ -1327,7 +1361,15 @@ pub fn start_boot_mouse(registers: &mut impl Registers, clock: &mut impl Clock,
                                  packet,
                                  [0x80, 0x06, 0x00, 0x02, 0, 0, total as u8, 0],
                                  &mut configuration[..total])?;
-    let mouse = find_boot_mouse(&configuration[..received]).ok_or(Refusal::NoBootMouse)?;
+    let found = BootInputs { mouse:    find_boot_interface(&configuration[..received],
+                                                           PROTOCOL_MOUSE),
+                             keyboard: find_boot_interface(&configuration[..received],
+                                                           PROTOCOL_KEYBOARD) };
+    let Some(first) = found.mouse.or(found.keyboard)
+    else
+    {
+        return Err(Refusal::NoBootMouse);
+    };
     // SET_CONFIGURATION.
     split_control(registers,
                   clock,
@@ -1335,28 +1377,101 @@ pub fn start_boot_mouse(registers: &mut impl Registers, clock: &mut impl Clock,
                   route,
                   device,
                   packet,
-                  [0x00, 0x09, mouse.configuration, 0, 0, 0, 0, 0],
+                  [0x00, 0x09, first.configuration, 0, 0, 0, 0, 0],
                   &mut [])?;
-    // SET_PROTOCOL(boot) on the mouse's interface.
-    split_control(registers,
-                  clock,
-                  buffer,
-                  route,
-                  device,
-                  packet,
-                  [0x21, 0x0b, 0, 0, mouse.interface, 0, 0, 0],
-                  &mut [])?;
-    // SET_IDLE(0): report only on change. A device may decline it, and a
-    // mouse that reports regardless is still a mouse.
-    let _ = split_control(registers,
-                          clock,
-                          buffer,
-                          route,
-                          device,
-                          packet,
-                          [0x21, 0x0a, 0, 0, mouse.interface, 0, 0, 0],
-                          &mut []);
-    Ok(mouse)
+    for interface in [found.mouse, found.keyboard].into_iter().flatten()
+    {
+        // SET_PROTOCOL(boot) on the interface.
+        split_control(registers,
+                      clock,
+                      buffer,
+                      route,
+                      device,
+                      packet,
+                      [0x21, 0x0b, 0, 0, interface.interface, 0, 0, 0],
+                      &mut [])?;
+        // SET_IDLE(0): report only on change. A device may decline it, and
+        // one that reports regardless is still usable.
+        let _ = split_control(registers,
+                              clock,
+                              buffer,
+                              route,
+                              device,
+                              packet,
+                              [0x21, 0x0a, 0, 0, interface.interface, 0, 0, 0],
+                              &mut []);
+    }
+    Ok(found)
+}
+
+/// The key a keyboard usage is, in the input class's vocabulary (the evdev
+/// codes), or `None` for a usage that is no key: the rollover and error
+/// markers, and everything past the application key.
+pub fn usage_key(usage: u8) -> Option<u16>
+{
+    const LETTERS: [u16; 26] = [30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25,
+                                16, 19, 31, 20, 22, 47, 17, 45, 21, 44];
+    // Enter to caps lock, the function keys, print screen to up arrow, the
+    // keypad, then the key beside left shift and the application key.
+    const FROM_ENTER: [u16; 62] =
+        [28, 1, 14, 15, 57, 12, 13, 26, 27, 43, 43, 39, 40, 41, 51, 52, 53, 58, 59, 60, 61, 62,
+         63, 64, 65, 66, 67, 68, 87, 88, 99, 70, 119, 110, 102, 104, 111, 107, 109, 106, 105,
+         108, 103, 69, 98, 55, 74, 78, 96, 79, 80, 81, 75, 76, 77, 71, 72, 73, 82, 83, 86, 127];
+    match usage
+    {
+        0x04..=0x1d => Some(LETTERS[usize::from(usage - 0x04)]),
+        0x1e..=0x26 => Some(2 + u16::from(usage - 0x1e)),
+        0x27 => Some(11),
+        0x28..=0x65 => Some(FROM_ENTER[usize::from(usage - 0x28)]),
+        _ => None
+    }
+}
+
+/// The modifier keys, in the order of the bits of a boot report's first byte:
+/// left control, shift, alt and command, then the same four on the right.
+pub const MODIFIER_KEYS: [u16; 8] = [29, 42, 56, 125, 97, 54, 100, 126];
+
+/// What changed between two boot keyboard reports, as keys going down and
+/// coming up. A report is the modifiers, a reserved byte, and up to six keys
+/// held; a key is down while it is listed. Releases are said before presses.
+///
+/// A keyboard that cannot tell which keys are held fills the report with the
+/// rollover marker; that report says nothing, and `false` is returned so the
+/// caller keeps the report before it.
+pub fn keyboard_changes(previous: &[u8; 8], report: &[u8; 8], mut emit: impl FnMut(u16, bool))
+                        -> bool
+{
+    if report[2..].iter().all(|&usage| usage == 1)
+    {
+        return false;
+    }
+    for (bit, &key) in MODIFIER_KEYS.iter().enumerate()
+    {
+        let (was, is) = (previous[0] >> bit & 1, report[0] >> bit & 1);
+        if was != is
+        {
+            emit(key, is != 0);
+        }
+    }
+    for &usage in &previous[2..]
+    {
+        if usage > 3
+           && !report[2..].contains(&usage)
+           && let Some(key) = usage_key(usage)
+        {
+            emit(key, false);
+        }
+    }
+    for &usage in &report[2..]
+    {
+        if usage > 3
+           && !previous[2..].contains(&usage)
+           && let Some(key) = usage_key(usage)
+        {
+            emit(key, true);
+        }
+    }
+    true
 }
 
 #[cfg(target_os = "none")]

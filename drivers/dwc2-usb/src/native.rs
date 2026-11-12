@@ -30,11 +30,106 @@ struct Machine
     mouse:   Option<Mouse>,
     /// When the mouse was last asked for a report.
     asked:   u64,
-    /// The mouse's read, in steps, once the controller's line is taken.
-    read:    Option<crate::SplitRead>,
+    keyboard: Option<Keyboard>,
+    /// The reads, in steps, once the controller's line is taken.
+    mouse_reader: Option<Reader>,
+    keyboard_reader: Option<Reader>,
+    listening: bool,
     /// Reports translated and waiting for System to ask for them.
     queue:   [input::Event; QUEUE_EVENTS],
     queued:  usize
+}
+
+/// A boot-protocol keyboard behind the hub.
+struct Keyboard
+{
+    route:    crate::Route,
+    address:  u8,
+    endpoint: u8,
+    packet:   u32,
+    /// The last report that said anything: the keys held.
+    last:     [u8; 8]
+}
+
+/// The channel each device is read on, which is also the part of the
+/// transfer page its reports land in.
+const MOUSE_CHANNEL: usize = 0;
+const KEYBOARD_CHANNEL: usize = 1;
+
+/// One device's read, and what stepping it needs kept.
+struct Reader
+{
+    read:    crate::SplitRead,
+    page:    Page,
+    /// The data toggle the next report is expected under.
+    pid:     u32,
+    /// When this read next wants the alarm, in microseconds, or 0.
+    due:      u64,
+    failures: u32,
+    heard:    bool,
+    name:     &'static str
+}
+
+/// How many failed reads a device is allowed to report.
+const FAILURES_SAID: u32 = 4;
+impl Reader
+{
+    /// Takes the read one step on: the channel halted, or its time came.
+    /// Returns the bytes of a report that arrived.
+    fn step(&mut self, registers: &mut MachineRegisters, now: u64, halted: bool) -> Option<usize>
+    {
+        let step = if halted
+        {
+            self.read.halted(registers)
+        }
+        else if self.read.idle()
+        {
+            self.read.start(registers, self.pid);
+            crate::ReadStep::Running
+        }
+        else
+        {
+            self.read.alarm(registers)
+        };
+        let (delay, received) = match step
+        {
+            crate::ReadStep::Stray => return None,
+            crate::ReadStep::Running => (WATCHDOG_MICROSECONDS, None),
+            crate::ReadStep::Wait(microseconds) => (microseconds, None),
+            crate::ReadStep::Nothing => (REPORT_INTERVAL_MICROSECONDS, None),
+            crate::ReadStep::Data(received) =>
+            {
+                // The toggle moves on only when a report was taken. After a
+                // failure the device either never sent, or sent and was
+                // acknowledged and discarded; in both cases its next report
+                // comes under the toggle already expected here.
+                self.pid =
+                    if self.pid == crate::PID_DATA0 { crate::PID_DATA1 } else { crate::PID_DATA0 };
+                if !self.heard
+                {
+                    self.heard = true;
+                    report(format_args!("USB_READ_FIRST device={} bytes={received}\n",
+                                        self.name));
+                }
+                (REPORT_INTERVAL_MICROSECONDS, Some(received))
+            }
+            crate::ReadStep::Failed(status) =>
+            {
+                // The first few are said, each with what the channel reported;
+                // a device that has been unplugged fails at every interval.
+                if self.failures < FAILURES_SAID
+                {
+                    self.failures += 1;
+                    report(format_args!("USB_READ_REFUSED device={}: the read halted without \
+                                         completing (HCINT={status:#010x})\n",
+                                        self.name));
+                }
+                (FAILED_RETRY_MICROSECONDS, None)
+            }
+        };
+        self.due = now.saturating_add(delay).max(1);
+        received
+    }
 }
 
 /// As many events as one POLL reply holds.
@@ -122,6 +217,17 @@ struct Page
 {
     cpu:    usize,
     device: u32
+}
+impl Page
+{
+    /// A part of the page for one channel's reports, far enough from the
+    /// next that the largest packet a slow device sends fits.
+    fn part(self, channel: usize) -> Self
+    {
+        let offset = channel * 256;
+        Self { cpu:    self.cpu + offset,
+               device: self.device + offset as u32 }
+    }
 }
 impl TransferBuffer for Page
 {
@@ -436,33 +542,55 @@ impl Machine
                         {
                             Ok(d) =>
                             {
-                                match crate::start_boot_mouse(&mut registers,
+                                match crate::start_boot_inputs(&mut registers,
                                                               &mut clock,
                                                               &mut page,
                                                               route,
                                                               address,
                                                               u32::from(d[7]))
                                 {
-                                    Ok(found) if self.mouse.is_none() =>
+                                    Ok(inputs) =>
                                     {
-                                        report(format_args!("USB_MOUSE port={port} \
-                                                             address={address} interface={} \
-                                                             endpoint={} packet={}\n",
-                                                            found.interface,
-                                                            found.endpoint,
-                                                            found.packet));
-                                        self.mouse = Some(Mouse { route,
-                                                                  address,
-                                                                  endpoint: found.endpoint,
-                                                                  packet: found.packet.max(1),
-                                                                  pid: crate::PID_DATA0,
-                                                                  buttons: 0,
-                                                                  refused: false });
+                                        if let Some(found) = inputs.mouse
+                                           && self.mouse.is_none()
+                                        {
+                                            report(format_args!("USB_MOUSE port={port} \
+                                                                 address={address} \
+                                                                 interface={} endpoint={} \
+                                                                 packet={}\n",
+                                                                found.interface,
+                                                                found.endpoint,
+                                                                found.packet));
+                                            self.mouse =
+                                                Some(Mouse { route,
+                                                             address,
+                                                             endpoint: found.endpoint,
+                                                             packet: found.packet.max(1),
+                                                             pid: crate::PID_DATA0,
+                                                             buttons: 0,
+                                                             refused: false });
+                                        }
+                                        if let Some(found) = inputs.keyboard
+                                           && self.keyboard.is_none()
+                                        {
+                                            report(format_args!("USB_KEYBOARD port={port} \
+                                                                 address={address} \
+                                                                 interface={} endpoint={} \
+                                                                 packet={}\n",
+                                                                found.interface,
+                                                                found.endpoint,
+                                                                found.packet));
+                                            self.keyboard =
+                                                Some(Keyboard { route,
+                                                                address,
+                                                                endpoint: found.endpoint,
+                                                                packet: found.packet.max(1),
+                                                                last: [0; 8] });
+                                        }
                                     }
-                                    Ok(_) => (),
                                     Err(refusal) =>
                                     {
-                                        report(format_args!("USB_MOUSE_REFUSED port={port}: \
+                                        report(format_args!("USB_INPUT_REFUSED port={port}: \
                                                              {refusal}\n"));
                                     }
                                 }
@@ -517,104 +645,159 @@ impl Machine
 impl Machine
 {
     /// Takes the controller's interrupt line, if the machine gives one, and
-    /// starts reading the mouse from it. Without the line the mouse is read
-    /// when System asks, as before.
+    /// starts reading the mouse and the keyboard from it. Without the line the
+    /// mouse is read when System asks, as before, and a keyboard is not read.
     fn listen(&mut self)
     {
-        let (Some(mouse), Some(page)) = (self.mouse.as_ref(), self.page)
+        let Some(page) = self.page
         else
         {
             return;
         };
+        if self.mouse.is_none() && self.keyboard.is_none()
+        {
+            return;
+        }
         let line = match self.service.take_interrupt(self.claim)
         {
             Ok(line) => line,
             Err(error) =>
             {
                 report(format_args!("USB_INTERRUPT_REFUSED status={}: the mouse is read when \
-                                     System asks\n",
+                                     System asks, and a keyboard is not read\n",
                                     error.0));
                 return;
             }
         };
+        let now = self.now();
         let mut registers = MachineRegisters { base: self.base };
-        let mut read =
-            crate::SplitRead::new(&page, mouse.route, mouse.address, mouse.endpoint, mouse.packet);
-        crate::listen_for_channel(&mut registers);
-        read.start(&mut registers, mouse.pid);
-        self.read = Some(read);
-        let alarm = self.service.set_alarm(self.claim, WATCHDOG_MICROSECONDS);
-        report(format_args!("USB_INTERRUPT line={line}: the mouse is read from the \
+        crate::listen_for_channels(&mut registers, 2);
+        if let Some(mouse) = self.mouse.as_ref()
+        {
+            let page = page.part(MOUSE_CHANNEL);
+            let mut reader = Reader { read: crate::SplitRead::new(MOUSE_CHANNEL,
+                                                                  &page,
+                                                                  mouse.route,
+                                                                  mouse.address,
+                                                                  mouse.endpoint,
+                                                                  mouse.packet),
+                                      page,
+                                      pid: mouse.pid,
+                                      due: 0,
+                                      failures: 0,
+                                      heard: false,
+                                      name: "mouse" };
+            reader.step(&mut registers, now, false);
+            self.mouse_reader = Some(reader);
+        }
+        if let Some(keyboard) = self.keyboard.as_ref()
+        {
+            let page = page.part(KEYBOARD_CHANNEL);
+            let mut reader = Reader { read: crate::SplitRead::new(KEYBOARD_CHANNEL,
+                                                                  &page,
+                                                                  keyboard.route,
+                                                                  keyboard.address,
+                                                                  keyboard.endpoint,
+                                                                  keyboard.packet),
+                                      page,
+                                      pid: crate::PID_DATA0,
+                                      due: 0,
+                                      failures: 0,
+                                      heard: false,
+                                      name: "keyboard" };
+            reader.step(&mut registers, now, false);
+            self.keyboard_reader = Some(reader);
+        }
+        self.listening = true;
+        let alarm = self.rearm(now);
+        report(format_args!("USB_INTERRUPT line={line}: mouse={} keyboard={} are read from the \
                              controller's interrupt (alarm={})\n",
-                            if alarm.is_ok() { "set" } else { "refused" }));
+                            self.mouse_reader.is_some(),
+                            self.keyboard_reader.is_some(),
+                            if alarm { "set" } else { "refused" }));
     }
 
-    /// The controller interrupted, or this driver's alarm fell due: take the
-    /// mouse's read one step on, and say when to be called next.
+    fn now(&self) -> u64
+    {
+        self.host.and_then(|host| host.monotonic_microseconds().ok()).unwrap_or(0)
+    }
+
+    /// Sets the one alarm this claim has for whichever read is due first.
+    fn rearm(&mut self, now: u64) -> bool
+    {
+        let due = [self.mouse_reader.as_ref(), self.keyboard_reader.as_ref()].into_iter()
+                                                                             .flatten()
+                                                                             .map(|reader| reader.due)
+                                                                             .filter(|&due| due != 0)
+                                                                             .min();
+        match due
+        {
+            Some(due) => self.service.set_alarm(self.claim, due.saturating_sub(now).max(1)).is_ok(),
+            None => true
+        }
+    }
+
+    fn enqueue(&mut self, events: &[input::Event])
+    {
+        // A full queue means System has stopped asking; the newest report is
+        // the one dropped.
+        if self.queued + events.len() <= QUEUE_EVENTS
+        {
+            self.queue[self.queued..self.queued + events.len()].copy_from_slice(events);
+            self.queued += events.len();
+        }
+    }
+
+    /// The controller interrupted, or this driver's alarm fell due: take each
+    /// read that is concerned one step on, and say when to be called next.
     fn interrupted(&mut self, line: u32)
     {
-        let (Some(read), Some(mouse), Some(page)) =
-            (self.read.as_mut(), self.mouse.as_mut(), self.page)
-        else
-        {
-            return;
-        };
+        let now = self.now();
         let mut registers = MachineRegisters { base: self.base };
-        let step = if line != interrupt::ALARM
-        {
-            read.halted(&mut registers)
-        }
-        else if read.idle()
-        {
-            read.start(&mut registers, mouse.pid);
-            crate::ReadStep::Running
-        }
-        else
-        {
-            read.alarm(&mut registers)
+        let halted = line != interrupt::ALARM;
+        let asking = if halted { registers.read(crate::HAINT) } else { 0 };
+        let concerned = |reader: &Reader, channel: usize| {
+            if halted { asking & 1 << channel != 0 } else { reader.due != 0 && reader.due <= now }
         };
-        let next = match step
+        if let Some(reader) = self.mouse_reader.as_mut()
+           && concerned(reader, MOUSE_CHANNEL)
+           && let Some(received) = reader.step(&mut registers, now, halted)
+           && received >= 3
+           && let Some(mouse) = self.mouse.as_mut()
         {
-            crate::ReadStep::Stray => return,
-            crate::ReadStep::Running => WATCHDOG_MICROSECONDS,
-            crate::ReadStep::Wait(microseconds) => microseconds,
-            crate::ReadStep::Nothing => REPORT_INTERVAL_MICROSECONDS,
-            crate::ReadStep::Data(received) =>
-            {
-                mouse.pid =
-                    if mouse.pid == crate::PID_DATA0 { crate::PID_DATA1 } else { crate::PID_DATA0 };
-                if received >= 3
+            let mut bytes = [0u8; 3];
+            reader.page.copy_out(&mut bytes);
+            let (events, count) = translate(mouse, bytes);
+            self.enqueue(&events[..count]);
+        }
+        if let Some(reader) = self.keyboard_reader.as_mut()
+           && concerned(reader, KEYBOARD_CHANNEL)
+           && let Some(received) = reader.step(&mut registers, now, halted)
+           && received >= 8
+           && let Some(keyboard) = self.keyboard.as_mut()
+        {
+            let mut report = [0u8; 8];
+            reader.page.copy_out(&mut report);
+            let mut events = [input::Event::synchronize(); 15];
+            let mut count = 0;
+            let said = crate::keyboard_changes(&keyboard.last, &report, |key, down| {
+                if count < 14
                 {
-                    let mut bytes = [0u8; 3];
-                    page.copy_out(&mut bytes);
-                    let (events, count) = translate(mouse, bytes);
-                    // A full queue means System has stopped asking; the
-                    // newest report is the one dropped.
-                    if self.queued + count <= QUEUE_EVENTS
-                    {
-                        self.queue[self.queued..self.queued + count]
-                            .copy_from_slice(&events[..count]);
-                        self.queued += count;
-                    }
+                    events[count] = input::Event::key(key, down);
+                    count += 1;
                 }
-                REPORT_INTERVAL_MICROSECONDS
-            }
-            crate::ReadStep::Failed(status) =>
+            });
+            if said
             {
-                // Said once. A wrong data toggle is the likeliest cause, and
-                // trying the other one is the remedy either way.
-                if !mouse.refused
-                {
-                    mouse.refused = true;
-                    report(format_args!("USB_MOUSE_READ_REFUSED: the read halted without \
-                                         completing (HCINT={status:#010x})\n"));
-                }
-                mouse.pid =
-                    if mouse.pid == crate::PID_DATA0 { crate::PID_DATA1 } else { crate::PID_DATA0 };
-                FAILED_RETRY_MICROSECONDS
+                keyboard.last = report;
             }
-        };
-        let _ = self.service.set_alarm(self.claim, next);
+            if count != 0
+            {
+                count += 1;
+                self.enqueue(&events[..count]);
+            }
+        }
+        self.rearm(now);
     }
 
     /// POLL of the input class: ask the mouse for one report and translate
@@ -646,7 +829,7 @@ impl Machine
         {
             return Err(Error(mac_abi::BAD_ARGUMENT));
         }
-        if self.read.is_some()
+        if self.listening
         {
             // The controller's interrupt reads the mouse; this hands over what
             // it has gathered and touches no hardware.
@@ -738,7 +921,10 @@ impl Driver for Usb
                                     page:    None,
                                     mouse:   None,
                                     asked:   0,
-                                    read:    None,
+                                    keyboard: None,
+                                    mouse_reader: None,
+                                    keyboard_reader: None,
+                                    listening: false,
                                     queue:   [input::Event::synchronize(); QUEUE_EVENTS],
                                     queued:  0 };
         // Nothing consumes this driver's class yet, so no request would ever
