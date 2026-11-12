@@ -1,10 +1,11 @@
 //! The DesignWare Hi-Speed USB 2.0 OTG controller ("DWC2"), driven as a host.
 //!
-//! **This is the first step of a host stack and does no transfers.** It proves
-//! the controller is the core it is taken for, puts it in host mode, powers the
-//! root port and reports what the port sees. Everything a transfer needs -
-//! channels, the FIFOs, split transactions through the board's hub - is built
-//! on what this step observes, and none of it is here yet.
+//! **This is the start of a host stack, not one.** It proves the controller is
+//! the core it is taken for, puts it in host mode, powers the root port, and
+//! performs one control transfer: it asks whatever is on the port, at the
+//! default address, for its device descriptor. There is no enumeration, no
+//! hub driver and no split transaction yet; each is built on what this
+//! observes on a board.
 //!
 //! The registers and their bits are from the Synopsys core's programming
 //! model. Three facts shape the code:
@@ -40,14 +41,77 @@ pub const GHWCFG1: usize = 0x044;
 pub const GHWCFG2: usize = 0x048;
 pub const GHWCFG3: usize = 0x04c;
 pub const GHWCFG4: usize = 0x050;
+pub const GRXFSIZ: usize = 0x024;
+pub const GNPTXFSIZ: usize = 0x028;
+pub const HPTXFSIZ: usize = 0x100;
 pub const HCFG: usize = 0x400;
+/// Host channel 0's registers. Each channel is 0x20 bytes; one is all a
+/// single control transfer needs.
+pub const HCCHAR: usize = 0x500;
+pub const HCSPLT: usize = 0x504;
+pub const HCINT: usize = 0x508;
+pub const HCINTMSK: usize = 0x50c;
+pub const HCTSIZ: usize = 0x510;
+pub const HCDMA: usize = 0x514;
 pub const HPRT: usize = 0x440;
 pub const PCGCCTL: usize = 0xe00;
 /// The extent this driver reaches: through the power and clock gating word.
 pub const REQUIRED_BYTES: u64 = 0xe04;
+/// One page is what the adapter asks System for as the transfer buffer.
+pub const TRANSFER_BUFFER_BYTES: usize = 4096;
 
 /// `GAHBCFG`: the core's one interrupt line is gated by bit 0.
 pub const GLOBAL_INTERRUPT: u32 = 1 << 0;
+/// `GAHBCFG`: let the core move transfer data itself, to and from memory.
+pub const DMA_ENABLE: u32 = 1 << 5;
+/// `GAHBCFG` bit 4 on this integration: finish every bus write before
+/// signalling completion. The board's vendor sets it; without it a completed
+/// transfer's last bytes may not be in memory yet.
+pub const AXI_WRITE_WAIT: u32 = 1 << 4;
+/// `GHWCFG2` bits 4:3: 2 is a core with its own DMA engine.
+pub const ARCHITECTURE_SHIFT: u32 = 3;
+pub const ARCHITECTURE_MASK: u32 = 0b11 << ARCHITECTURE_SHIFT;
+pub const ARCHITECTURE_INTERNAL_DMA: u32 = 2 << ARCHITECTURE_SHIFT;
+/// `GRSTCTL`: flush the receive FIFO, or the transmit FIFO numbered in bits
+/// 10:6 (0x10 is "all of them"). Both bits clear themselves.
+pub const RX_FIFO_FLUSH: u32 = 1 << 4;
+pub const TX_FIFO_FLUSH: u32 = 1 << 5;
+pub const TX_FIFO_ALL: u32 = 0x10 << 6;
+/// FIFO depths in 32-bit words. The core reports 4080 words of FIFO memory on
+/// the board this was written against; these three total 3072.
+pub const RX_FIFO_WORDS: u32 = 1024;
+pub const NON_PERIODIC_TX_FIFO_WORDS: u32 = 1024;
+pub const PERIODIC_TX_FIFO_WORDS: u32 = 1024;
+
+/// `HCCHAR` fields.
+pub const CHANNEL_ENABLE: u32 = 1 << 31;
+pub const CHANNEL_DISABLE: u32 = 1 << 30;
+pub const CHANNEL_ADDRESS_SHIFT: u32 = 22;
+pub const CHANNEL_ONE_TRANSACTION: u32 = 1 << 20;
+pub const CHANNEL_DIRECTION_IN: u32 = 1 << 15;
+pub const CHANNEL_ENDPOINT_SHIFT: u32 = 11;
+/// `HCTSIZ` fields: the packet identifier, the packet count, the byte count.
+pub const PID_SHIFT: u32 = 29;
+pub const PID_DATA1: u32 = 2;
+pub const PID_SETUP: u32 = 3;
+pub const PACKET_COUNT_SHIFT: u32 = 19;
+pub const TRANSFER_SIZE_MASK: u32 = 0x7_ffff;
+/// `HCINT` bits.
+pub const TRANSFER_COMPLETE: u32 = 1 << 0;
+pub const CHANNEL_HALTED: u32 = 1 << 1;
+pub const NAK: u32 = 1 << 4;
+
+/// The packet size every device accepts on its control endpoint before it has
+/// said otherwise; a high-speed device's is exactly this.
+pub const DEFAULT_PACKET: u32 = 64;
+pub const DEVICE_DESCRIPTOR_BYTES: usize = 18;
+/// GET_DESCRIPTOR(device), eighteen bytes, as the eight-byte SETUP packet.
+pub const GET_DEVICE_DESCRIPTOR: [u8; 8] = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
+/// How long one stage of a control transfer is given, and how many times a
+/// device may answer "not yet" before that is the answer.
+pub const STAGE_MICROSECONDS: u64 = 500_000;
+pub const NAK_LIMIT: u32 = 200;
+
 /// `GUSBCFG`: force the core's role regardless of the ID pin.
 pub const FORCE_HOST: u32 = 1 << 29;
 pub const FORCE_DEVICE: u32 = 1 << 30;
@@ -92,6 +156,18 @@ pub trait Registers
 {
     fn read(&mut self, offset: usize) -> u32;
     fn write(&mut self, offset: usize, value: u32);
+}
+
+/// One buffer the controller reads and writes by itself, at an address it is
+/// given. The adapter backs it with storage no cache holds a copy of, so
+/// neither side needs to synchronize it.
+pub trait TransferBuffer
+{
+    /// The buffer's address as the controller uses it.
+    fn address(&self) -> u32;
+    fn capacity(&self) -> usize;
+    fn fill(&mut self, bytes: &[u8]);
+    fn copy_out(&self, bytes: &mut [u8]);
 }
 
 /// Monotonic time, or `None` when the clock refused a reading.
@@ -158,7 +234,45 @@ pub enum Refusal
         status: u32
     },
     /// The clock refused a reading, so no wait could be bounded by it.
-    Clock
+    Clock,
+    /// The core has no DMA engine of its own, which is the only way this
+    /// driver moves data.
+    NoDma
+    {
+        hardware: u32
+    },
+    /// A FIFO flush never completed.
+    FlushStuck
+    {
+        control: u32
+    },
+    /// A stage of a control transfer did not finish in its time.
+    StageTimeout
+    {
+        stage:  Stage,
+        status: u32
+    },
+    /// A stage halted without completing: a stall, a transaction error, or
+    /// too many "not yet" answers. `status` is the channel's interrupt word.
+    StageFailed
+    {
+        stage:  Stage,
+        status: u32
+    },
+    /// The data stage completed with fewer bytes than a device descriptor.
+    ShortDescriptor
+    {
+        bytes: usize
+    }
+}
+
+/// The three stages of a control transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage
+{
+    Setup,
+    Data,
+    Status
 }
 
 impl fmt::Display for Refusal
@@ -180,7 +294,29 @@ impl fmt::Display for Refusal
             {
                 write!(f, "the core never entered host mode (GINTSTS={status:#010x})")
             }
-            Self::Clock => write!(f, "the clock refused a reading")
+            Self::Clock => write!(f, "the clock refused a reading"),
+            Self::NoDma { hardware } =>
+            {
+                write!(f, "the core has no internal DMA engine (GHWCFG2={hardware:#010x})")
+            }
+            Self::FlushStuck { control } =>
+            {
+                write!(f, "a FIFO flush never completed (GRSTCTL={control:#010x})")
+            }
+            Self::StageTimeout { stage,
+                                 status } =>
+            {
+                write!(f, "the {stage:?} stage did not finish (HCINT={status:#010x})")
+            }
+            Self::StageFailed { stage,
+                                status } =>
+            {
+                write!(f, "the {stage:?} stage halted without completing (HCINT={status:#010x})")
+            }
+            Self::ShortDescriptor { bytes } =>
+            {
+                write!(f, "the device answered with {bytes} bytes, fewer than a device descriptor")
+            }
         }
     }
 }
@@ -310,6 +446,120 @@ pub fn power_port(registers: &mut impl Registers, clock: &mut impl Clock) -> Res
     Ok(Port::Attached { speed: speed(port),
                         enabled: port & PORT_ENABLED != 0,
                         port })
+}
+
+/// Size the FIFOs, empty them, and let the core move transfer data itself.
+/// Done once, after the port is up and before the first transfer.
+pub fn prepare_transfers(registers: &mut impl Registers, clock: &mut impl Clock,
+                         identity: &Identity)
+                         -> Result<(), Refusal>
+{
+    if identity.hardware[1] & ARCHITECTURE_MASK != ARCHITECTURE_INTERNAL_DMA
+    {
+        return Err(Refusal::NoDma { hardware: identity.hardware[1] });
+    }
+    registers.write(GRXFSIZ, RX_FIFO_WORDS);
+    registers.write(GNPTXFSIZ, NON_PERIODIC_TX_FIFO_WORDS << 16 | RX_FIFO_WORDS);
+    registers.write(HPTXFSIZ,
+                    PERIODIC_TX_FIFO_WORDS << 16 | (RX_FIFO_WORDS + NON_PERIODIC_TX_FIFO_WORDS));
+    for flush in [TX_FIFO_FLUSH | TX_FIFO_ALL, RX_FIFO_FLUSH]
+    {
+        registers.write(GRSTCTL, flush);
+        if !wait(registers, clock, RESET_MICROSECONDS, |read| {
+               read(GRSTCTL) & (TX_FIFO_FLUSH | RX_FIFO_FLUSH) == 0
+           })?
+        {
+            return Err(Refusal::FlushStuck { control: registers.read(GRSTCTL) });
+        }
+    }
+    // The interrupt line stays gated; only the data path is switched on.
+    let bus = registers.read(GAHBCFG);
+    registers.write(GAHBCFG, (bus & !GLOBAL_INTERRUPT) | DMA_ENABLE | AXI_WRITE_WAIT);
+    // This driver reads the channel's status word itself and enables none of
+    // its interrupt sources.
+    registers.write(HCINTMSK, 0);
+    Ok(())
+}
+
+/// Run one stage on channel 0, to the device at address 0, endpoint 0.
+/// Returns the bytes the stage left untransferred.
+fn stage(registers: &mut impl Registers, clock: &mut impl Clock, stage: Stage, address: u32,
+         bytes: u32, inward: bool, pid: u32)
+         -> Result<u32, Refusal>
+{
+    let direction = if inward { CHANNEL_DIRECTION_IN } else { 0 };
+    // Device address 0, endpoint 0, type control (zero), one transaction per
+    // microframe.
+    let characteristics = DEFAULT_PACKET | direction | CHANNEL_ONE_TRANSACTION;
+    for _ in 0..NAK_LIMIT
+    {
+        registers.write(HCINT, u32::MAX);
+        registers.write(HCSPLT, 0);
+        registers.write(HCTSIZ, bytes | 1 << PACKET_COUNT_SHIFT | pid << PID_SHIFT);
+        registers.write(HCDMA, address);
+        registers.write(HCCHAR, characteristics | CHANNEL_ENABLE);
+        // With its own DMA the core halts the channel when the stage ends,
+        // whichever way it ends, so the halt is the one thing to wait for.
+        if !wait(registers, clock, STAGE_MICROSECONDS, |read| read(HCINT) & CHANNEL_HALTED != 0)?
+        {
+            let status = registers.read(HCINT);
+            // Ask the core to stop the channel and give it the same time to
+            // say it has, so the next use does not start on a live channel.
+            registers.write(HCCHAR, characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
+            let _ = wait(registers, clock, STAGE_MICROSECONDS, |read| {
+                read(HCINT) & CHANNEL_HALTED != 0
+            })?;
+            return Err(Refusal::StageTimeout { stage,
+                                               status });
+        }
+        let status = registers.read(HCINT);
+        if status & TRANSFER_COMPLETE != 0
+        {
+            return Ok(registers.read(HCTSIZ) & TRANSFER_SIZE_MASK);
+        }
+        if status & NAK == 0
+        {
+            return Err(Refusal::StageFailed { stage,
+                                              status });
+        }
+    }
+    Err(Refusal::StageFailed { stage,
+                               status: NAK })
+}
+
+/// Ask the device at the default address for its device descriptor: SETUP,
+/// one packet of data in, a zero-length status out.
+pub fn device_descriptor(registers: &mut impl Registers, clock: &mut impl Clock,
+                         buffer: &mut impl TransferBuffer)
+                         -> Result<[u8; DEVICE_DESCRIPTOR_BYTES], Refusal>
+{
+    debug_assert!(buffer.capacity() >= DEFAULT_PACKET as usize);
+    buffer.fill(&GET_DEVICE_DESCRIPTOR);
+    stage(registers,
+          clock,
+          Stage::Setup,
+          buffer.address(),
+          GET_DEVICE_DESCRIPTOR.len() as u32,
+          false,
+          PID_SETUP)?;
+    // A whole packet is asked for; the device ends the stage with the short
+    // one that carries its eighteen bytes.
+    let left = stage(registers,
+                     clock,
+                     Stage::Data,
+                     buffer.address(),
+                     DEFAULT_PACKET,
+                     true,
+                     PID_DATA1)?;
+    let received = DEFAULT_PACKET.saturating_sub(left) as usize;
+    if received < DEVICE_DESCRIPTOR_BYTES
+    {
+        return Err(Refusal::ShortDescriptor { bytes: received });
+    }
+    let mut descriptor = [0; DEVICE_DESCRIPTOR_BYTES];
+    buffer.copy_out(&mut descriptor);
+    stage(registers, clock, Stage::Status, buffer.address(), 0, false, PID_DATA1)?;
+    Ok(descriptor)
 }
 
 #[cfg(target_os = "none")]

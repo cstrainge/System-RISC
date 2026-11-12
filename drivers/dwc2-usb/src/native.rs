@@ -2,13 +2,13 @@
 //! registers, the clock, and the report of what bring-up observed.
 #![allow(unsafe_code)]
 
-use core::ptr::{read_volatile, write_volatile};
+use core::ptr::{copy_nonoverlapping, read_volatile, write_volatile};
 
-use mac_driver::{Client, Completion, Driver, Error, Request, Result as DriverResult,
+use mac_driver::{Client, Completion, Driver, Error, Phase, Request, Result as DriverResult,
                  devices::DeviceService, runtime::report};
 use spinning_top::Spinlock;
 
-use crate::{Clock, Port, REQUIRED_BYTES, Registers};
+use crate::{Clock, Port, REQUIRED_BYTES, Registers, TRANSFER_BUFFER_BYTES, TransferBuffer};
 
 /// The controller's `compatible` as this board's tree states it, which is the
 /// inventory key and the 16 bytes `module.json` matches on.
@@ -46,6 +46,45 @@ impl Registers for MachineRegisters
         unsafe { write_volatile((self.base + offset) as *mut u32, value.to_le()) };
     }
 }
+
+/// The transfer buffer: one page System allocated for the controller to read
+/// and write, which on this board is memory no cache holds.
+struct Page
+{
+    cpu:    usize,
+    device: u32
+}
+impl TransferBuffer for Page
+{
+    fn address(&self) -> u32
+    {
+        self.device
+    }
+
+    fn capacity(&self) -> usize
+    {
+        TRANSFER_BUFFER_BYTES
+    }
+
+    fn fill(&mut self, bytes: &[u8])
+    {
+        let count = bytes.len().min(TRANSFER_BUFFER_BYTES);
+        // SAFETY: the page is this module's allocation of
+        // `TRANSFER_BUFFER_BYTES`, and no transfer is running while it is
+        // filled.
+        unsafe { copy_nonoverlapping(bytes.as_ptr(), self.cpu as *mut u8, count) };
+    }
+
+    fn copy_out(&self, bytes: &mut [u8])
+    {
+        let count = bytes.len().min(TRANSFER_BUFFER_BYTES);
+        // SAFETY: as `fill`; the stage that wrote the page has halted.
+        unsafe { copy_nonoverlapping(self.cpu as *const u8, bytes.as_mut_ptr(), count) };
+    }
+}
+
+/// How long System is given to hand over the transfer page.
+const ALLOCATION_MICROSECONDS: u64 = 1_000_000;
 
 struct HostClock(Client);
 impl Clock for HostClock
@@ -94,6 +133,42 @@ impl Machine
         Err(Error(mac_abi::NOT_FOUND))
     }
 
+    /// One page for the controller to read and write, asked for as
+    /// device-accessed so System takes it from memory no cache holds.
+    fn transfer_page(&mut self, host: Client) -> DriverResult<Page>
+    {
+        let clock = |host: Client| host.monotonic_microseconds().map_err(|_| Error(mac_abi::IO_ERROR));
+        let bytes = TRANSFER_BUFFER_BYTES as u64;
+        let mut ticket = 0;
+        let deadline = clock(host)?.saturating_add(ALLOCATION_MICROSECONDS);
+        loop
+        {
+            let phase = if ticket == 0 { Phase::Start } else { Phase::Poll };
+            match self.service.allocate_device_accessed(self.claim, bytes, &mut ticket, phase)?
+            {
+                (Completion::Complete(_), Some(buffer)) =>
+                {
+                    return Ok(Page { cpu:    usize::try_from(buffer.cpu_address)
+                                                 .map_err(|_| Error(mac_abi::BAD_ABI))?,
+                                     device: u32::try_from(buffer.device_address)
+                                                 .map_err(|_| Error(mac_abi::BAD_ABI))? });
+                }
+                (Completion::Pending, _) if clock(host)? < deadline => (),
+                _ =>
+                {
+                    if ticket != 0
+                    {
+                        let _ = self.service.allocate_device_accessed(self.claim,
+                                                                      bytes,
+                                                                      &mut ticket,
+                                                                      Phase::Cancel);
+                    }
+                    return Err(Error(mac_abi::NO_MEMORY));
+                }
+            }
+        }
+    }
+
     /// Identify the core, make it a host, power the port, and say what was
     /// seen at each stage. Each line is a fact from the hardware; the next
     /// step of this driver is written against them.
@@ -135,8 +210,43 @@ impl Machine
             {
                 report(format_args!("USB_ROOT_PORT attached speed={speed:?} enabled={enabled} \
                                      hprt={port:#010x}\n"));
+                if !enabled
+                {
+                    return;
+                }
             }
-            Err(refusal) => report(format_args!("USB_ROOT_PORT_REFUSED: {refusal}\n"))
+            Err(refusal) =>
+            {
+                report(format_args!("USB_ROOT_PORT_REFUSED: {refusal}\n"));
+                return;
+            }
+        }
+        // The first transfer: ask what is on the port what it is.
+        let mut page = match self.transfer_page(host)
+        {
+            Ok(page) => page,
+            Err(error) =>
+            {
+                report(format_args!("USB_BUFFER_REFUSED status={}\n", error.0));
+                return;
+            }
+        };
+        if let Err(refusal) = crate::prepare_transfers(&mut registers, &mut clock, &identity)
+        {
+            report(format_args!("USB_TRANSFERS_REFUSED: {refusal}\n"));
+            return;
+        }
+        match crate::device_descriptor(&mut registers, &mut clock, &mut page)
+        {
+            Ok(d) =>
+            {
+                report(format_args!("USB_DEVICE address=0 usb={:x}.{:02x} class={:02x} \
+                                     subclass={:02x} protocol={:02x} max_packet={} \
+                                     vendor={:02x}{:02x} product={:02x}{:02x} configurations={}\n",
+                                    d[3], d[2], d[4], d[5], d[6], d[7], d[9], d[8], d[11], d[10],
+                                    d[17]));
+            }
+            Err(refusal) => report(format_args!("USB_DEVICE_REFUSED: {refusal}\n"))
         }
     }
 }
