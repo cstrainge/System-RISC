@@ -132,7 +132,12 @@ impl HeapPartition
     {
         let offset = self.used
                          .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                             (used>0 && used<SYSTEM_RECOVERY_BYTES).then_some(SYSTEM_RECOVERY_BYTES)
+                             // The terminal's prefix, when a machine has a
+                             // terminal, is already taken; one without has
+                             // taken nothing, and recovery then receives the
+                             // whole reserve rather than being refused for
+                             // want of a neighbour.
+                             (used < SYSTEM_RECOVERY_BYTES).then_some(SYSTEM_RECOVERY_BYTES)
                          })
                          .map_err(|used| {
                              Error::Exhausted { requested:

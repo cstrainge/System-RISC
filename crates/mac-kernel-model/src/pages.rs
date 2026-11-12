@@ -76,7 +76,15 @@ pub struct Permissions
     pub write:   bool,
     pub execute: bool,
     pub access:  Access,
-    pub global:  bool
+    pub global:  bool,
+    /// The mapping is a peripheral's registers rather than memory.
+    ///
+    /// An architecture whose descriptors carry a memory type encodes it; one
+    /// whose descriptors do not ignores it and decodes `false`. It matters on
+    /// silicon and not under emulation: registers mapped as ordinary cacheable
+    /// memory are read and written through the cache, so a store may never
+    /// reach the device and a load may never ask it.
+    pub device:  bool
 }
 /// Pure geometry/address checks shared by build tooling and firmware; no fake
 /// CPU frame or invocation gate is needed just to validate a layout.

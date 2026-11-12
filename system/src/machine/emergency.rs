@@ -196,6 +196,34 @@ fn console_write(byte: u8)
     }
 }
 
+/// Sends the carriage return a line feed needs on a real terminal.
+///
+/// A line feed alone moves a terminal down without returning it to the left
+/// margin, so each line starts where the last one ended. An emulator's console
+/// hides this; a serial cable does not. Bounded like every other console write,
+/// and a return that cannot be sent is dropped rather than waited on.
+fn carriage_return()
+{
+    let mut sent = false;
+    for _ in 0..CONSOLE_SPIN_LIMIT
+    {
+        if !console_ready()
+        {
+            core::hint::spin_loop();
+            continue;
+        }
+        if sent
+        {
+            // Room again, so the line feed the caller writes next has somewhere
+            // to go. Writing it straight behind the return lost it on a board:
+            // the lines came out on top of one another.
+            return;
+        }
+        console_write(b'\r');
+        sent = true;
+    }
+}
+
 /// How long a console write waits for the transmitter before giving up.
 ///
 /// Bounded on purpose: a console that never reports ready must not hang the
@@ -227,6 +255,10 @@ pub(crate) fn write_bytes(bytes: &[u8])
         {
             return;
         }
+        if byte == b'\n'
+        {
+            carriage_return();
+        }
         console_write(byte);
     }
 }
@@ -253,6 +285,10 @@ pub(crate) fn serial(arguments: fmt::Arguments<'_>)
                 if !ready
                 {
                     return Err(fmt::Error);
+                }
+                if byte == b'\n'
+                {
+                    carriage_return();
                 }
                 console_write(byte);
             }

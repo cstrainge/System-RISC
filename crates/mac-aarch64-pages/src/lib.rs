@@ -26,6 +26,10 @@ const AF: u64 = 1 << 10;
 const SH_INNER: u64 = 0b11 << 8;
 /// Attribute index 0 in `MAIR_EL1`: normal, write-back.
 const ATTR_NORMAL: u64 = 0;
+/// Attribute index 1 in `MAIR_EL1`: Device-nGnRnE, in `AttrIndx` (bits 4:2).
+const ATTR_DEVICE: u64 = 1 << 2;
+/// The `AttrIndx` field.
+const ATTR_MASK: u64 = 0b111 << 2;
 /// Privileged execute-never.
 const PXN: u64 = 1 << 53;
 /// Unprivileged execute-never.
@@ -230,7 +234,8 @@ fn permissions_from(bits: u64) -> Permissions
 {
     // `AP[1]` (bit 6) grants EL0 access when set; `AP[2]` (bit 7) is the
     // read-only bit. A page executes only when both `PXN` and `UXN` are clear.
-    Permissions { read:    true,
+    Permissions { device:  bits & ATTR_MASK == ATTR_DEVICE,
+                  read:    true,
                   write:   bits & (1 << 7) == 0,
                   execute: bits & (PXN | UXN) == 0,
                   access:  if bits & (1 << 6) != 0
@@ -280,6 +285,7 @@ impl Entry
         if (!permissions.read && !permissions.execute)
            || (permissions.write && !permissions.read)
            || (ownership == PageOwnership::CopyOnWrite && permissions.write)
+           || (permissions.device && permissions.execute)
         {
             return Err(Error::Permissions);
         }
@@ -297,12 +303,14 @@ impl Entry
         // output address as if a table were there, which faults rather than
         // mapping anything.
         let leaf = if size == LeafSize::Page { LEAF } else { 0 };
+        // Registers are never cached, merged or reordered; memory is.
+        let attribute = if permissions.device { ATTR_DEVICE } else { ATTR_NORMAL };
         Ok(Self(output_bits(address, size.bytes())?
                  | VALID
                  | leaf
                  | AF
                  | SH_INNER
-                 | ATTR_NORMAL
+                 | attribute
                  | ap1
                  | ap2
                  | never_execute
@@ -319,7 +327,10 @@ impl Entry
         // Anything outside the fields this port writes is a descriptor the
         // decoder does not understand, and it is refused rather than accepted.
         let known = OUTPUT_MASK | SOFTWARE_MASK | VALID | LEAF | AF | SH_INNER | (3 << 6)
-                    | (1 << 11) | PXN | UXN;
+                    | (1 << 11) | PXN | UXN
+                    // The one memory type besides normal that this port writes. Any
+                    // other attribute index is still a descriptor nobody encoded.
+                    | ATTR_DEVICE;
         let reserved = bits & !known;
         if reserved != 0
         {

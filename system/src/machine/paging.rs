@@ -751,7 +751,8 @@ fn system_stack_containing(base: u64) -> Option<&'static Stack>
 }
 fn permissions(flags: u32, global: bool) -> Permissions
 {
-    Permissions { read: flags & READ != 0,
+    Permissions { device: false,
+                  read: flags & READ != 0,
                   write: flags & WRITE != 0,
                   execute: flags & EXECUTE != 0,
                   access: Access::Supervisor,
@@ -765,6 +766,23 @@ fn map(mapper: &mut Mapper<Frames>, virtual_base: u64, physical: u64, bytes: u64
                      PhysicalAddress(physical),
                      bytes,
                      permissions(flags, global),
+                     PageOwnership::Manual)
+          .map(|(_, changed)| changed)
+          .map_err(Error::Tables)
+}
+/// Maps a peripheral's register window at its own address.
+///
+/// Separate from [`map`] because registers are not memory: where the page
+/// format can say so, the mapping must, or the CPU is free to cache what it
+/// reads and hold back what it writes. An emulator does not model that; a board
+/// does, and the first thing it costs is the console.
+fn map_device(mapper: &mut Mapper<Frames>, base: u64, bytes: u64) -> Result<u64, Error>
+{
+    mapper.map_range(base,
+                     PhysicalAddress(base),
+                     bytes,
+                     Permissions { device: super::page_layout::DEVICE_MEMORY,
+                                   ..permissions(READ | WRITE, true) },
                      PageOwnership::Manual)
           .map(|(_, changed)| changed)
           .map_err(Error::Tables)
@@ -785,6 +803,22 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                       bank.virtual_address.0,
                       bank.physical.0,
                       bank.bytes,
+                      READ | WRITE,
+                      true)?;
+    }
+    // Memory the board's firmware owns but shares with the CPU, where the
+    // record declares any. It is in no RAM bank, so the loop above never reaches
+    // it, yet a display driver writes the firmware's framebuffer through the
+    // direct map exactly as it would write RAM. It is mapped as memory, not as
+    // a device window: pixel copies are free to use unaligned and vector
+    // stores, which a device mapping faults on.
+    if super::memory::FIRMWARE_MEMORY_BYTES != 0
+    {
+        let base = super::memory::FIRMWARE_MEMORY_BASE;
+        leaves += map(&mut mapper,
+                      VM_PHYSMAP_START + (base - VM_PHYSMAP_PHYSICAL_BASE),
+                      base,
+                      super::memory::FIRMWARE_MEMORY_BYTES,
                       READ | WRITE,
                       true)?;
     }
@@ -824,7 +858,7 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     // published through their canonical DDEF record after bootstrap.
     for &(base, end) in BOOT_MMIO_REGIONS
     {
-        leaves += map(&mut mapper, base, base, end - base, READ | WRITE, true)?;
+        leaves += map_device(&mut mapper, base, end - base)?;
     }
     // Every window comes from the machine's tree; admission resolved them all
     // before this root existed, so a missing one is an inconsistency rather
@@ -853,7 +887,7 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
         {
             continue;
         }
-        leaves += map(&mut mapper, start, start, end - start, READ | WRITE, true)?;
+        leaves += map_device(&mut mapper, start, end - start)?;
     }
     let (physical, mut tables) = mapper.into_tables();
     let (root, root_charge) = tables.take_root(physical)?;

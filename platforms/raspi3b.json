@@ -43,20 +43,35 @@
     "minimum_ram_bytes": "0x3b400000",
     "boot": {
       "base": "0x80000",
-      "bytes": "0xb0000"
+      "bytes": "0x180000"
     },
-    "firmware_code_bytes": "0x30000",
+    "firmware_code_bytes": "0x80000",
     "firmware_heap": {
-      "base": "0x130000",
-      "bytes": "0x800000"
+      "base": "0x200000",
+      "bytes": "0x1000000"
     },
     "images": {
-      "base": "0x930000",
+      "base": "0x1200000",
       "bytes": "0x10000000"
     },
     "display_scratch": {
-      "base": "0x10930000",
+      "base": "0x11200000",
       "bytes": "0x1b00000"
+    },
+    "firmware_memory": {
+      "base": "0x3b400000",
+      "bytes": "0x3c00000"
+    },
+    "bootstrap_io": {
+      "uart": {
+        "base": "0x3f201000",
+        "bytes": "0x1000",
+        "kind": "pl011"
+      },
+      "interrupt_controller": {
+        "base": "0x40000000",
+        "bytes": "0x1000"
+      }
     },
     "display": {
       "width": 800,
@@ -73,7 +88,7 @@
     "fdt_tail_bytes": "0x200000",
     "boot_stack_bytes": "0x40000",
     "monitor_stack_bytes": "0x1000",
-    "system_heap_bytes": "0x20000000",
+    "system_heap_bytes": "0x10000000",
     "system_recovery_bytes": "0x2000000",
     "stacks": {
       "system": {

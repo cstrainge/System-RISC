@@ -55,6 +55,10 @@ pub(crate) fn upper_half_start() -> u64
 /// format it was measured against.
 pub(crate) const NAME: &str = "aarch64-39";
 
+/// A descriptor here carries a memory type, so a register window is mapped as
+/// device memory. The bootstrap programs `MAIR_EL1` index 1 as Device-nGnRnE.
+pub(crate) const DEVICE_MEMORY: bool = true;
+
 /// This format as the shared `PageLayout` trait, so the geometry arithmetic is
 /// reached through one interface rather than re-derived here.
 struct Aarch64Layout;

@@ -206,8 +206,8 @@ impl core::fmt::Display for Refusal
             {
                 let end = compatible.iter().position(|&byte| byte == 0).unwrap_or(compatible.len());
                 write!(out,
-                       "the machine's interrupt controller `{}` is not a GICv2 this resident \
-                        path can program",
+                       "the machine's interrupt controller `{}` is not one this resident path \
+                        can program (GICv2 or the BCM2836 local controller)",
                        core::str::from_utf8(&compatible[..end]).unwrap_or("<unprintable>"))
             }
             Self::OutsideWindow { distributor,
@@ -223,7 +223,7 @@ impl core::fmt::Display for Refusal
             }
             Self::NoTimerNode =>
             {
-                out.write_str("the machine's device tree describes no `arm,armv8-timer`")
+                out.write_str("the machine's device tree describes no ARM generic timer")
             }
             Self::NoTimerSpecifier =>
             {
@@ -267,14 +267,60 @@ pub(crate) fn admit(info: &BootInfo) -> Result<(), Refusal>
         crate::machine::memory::primary_slice(info, info.device_tree, info.device_tree_bytes)
     }.map_err(|_| Refusal::Tree)?;
     let tree = Tree::new(blob).map_err(|_| Refusal::Tree)?;
-    let controller = tree.find(|node| node.enabled() && node.interrupt_controller)
-                          .map_err(|_| Refusal::Tree)?
-                          .ok_or(Refusal::NoController)?;
+    // The controller is the one the timer's interrupt is written for, found by
+    // following the timer's `interrupt-parent`, not the first node that calls
+    // itself a controller. A machine may have several - a pin controller and a
+    // peripheral controller cascade into the root on some boards - and only one
+    // of them can deliver the tick. A 64-bit board's tree may still name the
+    // timer by its 32-bit binding; it is the same timer.
+    let timer_node = tree.find(|node| {
+                             node.enabled()
+                             && TIMERS.iter().any(|name| node.names(name))
+                         })
+                         .map_err(|_| Refusal::Tree)?
+                         .ok_or(Refusal::NoTimerNode)?;
+    let controller = controller_of(&tree, &timer_node)?;
     let mut compatible = [0u8; 16];
     let identity = controller.compatible.unwrap_or("<unnamed>");
-    for (slot, byte) in compatible.iter_mut().zip(identity.as_bytes())
+    // The tail of the name, because that is the part that tells two controllers
+    // from one vendor apart; the head is the vendor both share.
+    let bytes = identity.as_bytes();
+    let tail = &bytes[bytes.len().saturating_sub(compatible.len())..];
+    for (slot, byte) in compatible.iter_mut().zip(tail)
     {
         *slot = *byte;
+    }
+    let base = crate::machine::memory::INTERRUPT_CONTROLLER_BASE;
+    let bytes = crate::machine::memory::INTERRUPT_CONTROLLER_BYTES;
+    let inside = |address: u64, length: u64| {
+        address >= base && address.checked_add(length).is_some_and(|end| end <= base + bytes)
+    };
+    if controller.names(LOCAL_CONTROLLER)
+    {
+        // One register block, at the address the CPU finds it.
+        let (registers, register_bytes) = tree.cpu_window(&controller)
+                                              .map_err(|_| Refusal::Tree)?
+                                              .ok_or(Refusal::NoController)?;
+        if !inside(registers, register_bytes)
+        {
+            return Err(Refusal::OutsideWindow { distributor:   registers,
+                                                cpu_interface: registers });
+        }
+        // This controller's specifier is a source number and flags, and the
+        // source numbers of the four timers are their bit positions.
+        let entry = timer_specifier(&timer_node, &controller, 2)?;
+        let source = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]);
+        if source > 3
+        {
+            return Err(Refusal::TimerNotPrivate { kind:   0,
+                                                  number: source });
+        }
+        let peripheral = tree.find(|node| node.names(PERIPHERAL_CONTROLLER))
+                             .map_err(|_| Refusal::Tree)?
+                             .and_then(|node| tree.cpu_window(&node).ok().flatten())
+                             .map(|(registers, _)| registers);
+        super::local_intc::admit(registers, source, peripheral);
+        return Ok(());
     }
     if !GICV2.iter().any(|name| controller.names(name))
     {
@@ -287,19 +333,80 @@ pub(crate) fn admit(info: &BootInfo) -> Result<(), Refusal>
         region(&controller, 0).ok_or(Refusal::NoController)?;
     let (cpu_interface, cpu_interface_bytes) =
         region(&controller, 1).ok_or(Refusal::NoController)?;
-    let base = crate::machine::memory::INTERRUPT_CONTROLLER_BASE;
-    let bytes = crate::machine::memory::INTERRUPT_CONTROLLER_BYTES;
-    let inside = |address: u64, length: u64| {
-        address >= base && address.checked_add(length).is_some_and(|end| end <= base + bytes)
-    };
     if !inside(distributor, distributor_bytes) || !inside(cpu_interface, cpu_interface_bytes)
     {
         return Err(Refusal::OutsideWindow { distributor,
                                             cpu_interface });
     }
-    let timer = timer_of(&tree, &controller)?;
+    let timer = timer_of(&timer_node, &controller)?;
     super::gic::admit(distributor, cpu_interface, timer);
     Ok(())
+}
+
+/// The names a machine's tree gives the ARM generic timer.
+const TIMERS: &[&str] = &["arm,armv8-timer", "arm,armv7-timer"];
+/// The per-core controller of the BCM2836 family, which has no GIC.
+const LOCAL_CONTROLLER: &str = "brcm,bcm2836-l1-intc";
+/// The VideoCore peripheral controller that cascades into it.
+const PERIPHERAL_CONTROLLER: &str = "brcm,bcm2836-armctrl-ic";
+
+/// The controller `node`'s interrupts are written for.
+///
+/// `interrupt-parent` is inherited from the nearest ancestor that states one,
+/// and its value is a phandle, so this walks up and then looks the phandle up.
+fn controller_of<'a>(tree: &Tree<'a>, node: &Node<'a>) -> Result<Node<'a>, Refusal>
+{
+    let mut current = *node;
+    let mut phandle = None;
+    for _ in 0..16
+    {
+        if let Some(found) = current.interrupt_parent
+        {
+            phandle = Some(found);
+            break;
+        }
+        let Some(index) = current.parent_index
+        else
+        {
+            break;
+        };
+        current = tree.find(|candidate| candidate.index == index)
+                      .map_err(|_| Refusal::Tree)?
+                      .ok_or(Refusal::Tree)?;
+    }
+    let phandle = phandle.ok_or(Refusal::NoController)?;
+    tree.find(|candidate| {
+            candidate.interrupt_controller
+            && (candidate.phandle == Some(phandle) || candidate.linux_phandle == Some(phandle))
+        })
+        .map_err(|_| Refusal::Tree)?
+        .ok_or(Refusal::NoController)
+}
+
+/// Dispatches to whichever controller this machine admitted.
+pub(crate) fn service() -> crate::machine::traps::Interrupt
+{
+    if super::local_intc::admitted()
+    {
+        super::local_intc::service()
+    }
+    else
+    {
+        super::gic::service()
+    }
+}
+
+/// Makes the inter-core source deliverable on whichever controller was admitted.
+pub(crate) fn admit_wake_source()
+{
+    if super::local_intc::admitted()
+    {
+        super::local_intc::admit_wake_source();
+    }
+    else
+    {
+        super::gic::admit_wake_source();
+    }
 }
 
 /// The `reg` entry at `index`, as an address and a length.
@@ -346,23 +453,11 @@ fn region(node: &Node<'_>, index: usize) -> Option<(u64, u64)>
 /// the timer the scheduler arms, is the non-secure physical one. Each specifier
 /// is as wide as the controller's `#interrupt-cells`, so the width is read from
 /// the controller rather than assumed.
-fn timer_of(tree: &Tree<'_>, controller: &Node<'_>) -> Result<u32, Refusal>
+fn timer_of(timer: &Node<'_>, controller: &Node<'_>) -> Result<u32, Refusal>
 {
-    let cells = controller.interrupt_cells.ok_or(Refusal::NoTimerSpecifier)? as usize;
     // A GICv2 specifier is type, number, flags. A narrower one is a different
     // controller's encoding and cannot be read with this layout.
-    if cells != 3
-    {
-        return Err(Refusal::NoTimerSpecifier);
-    }
-    let node = tree.find(|node| node.enabled() && node.names("arm,armv8-timer"))
-                   .map_err(|_| Refusal::Tree)?;
-    let specifiers =
-        node.ok_or(Refusal::NoTimerNode)?.interrupts.ok_or(Refusal::NoTimerSpecifier)?;
-    // The binding states four specifiers in a fixed order - secure physical,
-    // non-secure physical, virtual, hypervisor - and `CNTP_*`, which is the
-    // timer the scheduler arms, is the non-secure physical one.
-    let entry = specifiers.get(cells * 4..cells * 8).ok_or(Refusal::NoTimerSpecifier)?;
+    let entry = timer_specifier(timer, controller, 3)?;
     let kind = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]);
     let number = u32::from_be_bytes([entry[4], entry[5], entry[6], entry[7]]);
     // Type 1 is a private peripheral interrupt, which is what a timer is on this
@@ -375,4 +470,22 @@ fn timer_of(tree: &Tree<'_>, controller: &Node<'_>) -> Result<u32, Refusal>
                                               number });
     }
     Ok(super::gic::PPI_BASE + number)
+}
+
+/// The non-secure physical timer's specifier, as the controller's cells.
+///
+/// The timer binding states four specifiers and the second is the non-secure
+/// physical timer, which is `CNTP_*`, the one the scheduler arms. Each is as
+/// wide as the controller's `#interrupt-cells`; `cells` is the width the
+/// caller's controller defines, and a tree that states another is refused
+/// rather than read with the wrong stride.
+fn timer_specifier<'a>(timer: &Node<'a>, controller: &Node<'_>, cells: usize)
+                       -> Result<&'a [u8], Refusal>
+{
+    if controller.interrupt_cells != Some(cells as u32)
+    {
+        return Err(Refusal::NoTimerSpecifier);
+    }
+    let specifiers = timer.interrupts.ok_or(Refusal::NoTimerSpecifier)?;
+    specifiers.get(cells * 4..cells * 8).ok_or(Refusal::NoTimerSpecifier)
 }

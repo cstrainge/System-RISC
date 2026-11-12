@@ -107,6 +107,10 @@ pub(crate) fn interrupts_enabled(status: usize) -> bool
     status & 2 != 0
 }
 
+/// An Sv39 entry has no memory-type field, so a register window is mapped as
+/// any other page.
+pub(crate) const DEVICE_MEMORY: bool = false;
+
 /// The ISA profile this kernel requires the bootstrap to have sealed.
 ///
 /// Written out here rather than imported from the shared contract. The bootstrap

@@ -428,7 +428,8 @@ impl Entry
                                        ownership });
         }
         let permissions =
-            Permissions { read:    bits & READ != 0,
+            Permissions { device:  false,
+                          read:    bits & READ != 0,
                           write:   bits & WRITE != 0,
                           execute: bits & EXECUTE != 0,
                           access:  if bits & USER != 0 { Access::User } else { Access::Supervisor },

@@ -154,6 +154,16 @@ pub(crate) fn clear_mode_buffers()
 }
 pub fn setup_framebuffer() -> bool
 {
+    // A machine that declares no fw_cfg window has no ramfb to configure, and a
+    // zero base is that declaration. Asking anyway is not a refused request: it
+    // is a store to the selector register at address eight, which is nothing at
+    // all on such a machine.
+    if crate::machine::memory::FW_CFG_BASE == 0
+    {
+        serial!("DISPLAY_NO_RAMFB: this machine declares no fw_cfg; continuing until a video \
+                 driver attaches");
+        return false;
+    }
     let address = crate::machine::memory::DISPLAY_FRONTBUFFER_BASE;
     // The checked platform frontbuffer reservation is pinned for System's lifetime; bootstrap owns
     // exclusive fw_cfg access, before any application or secondary hart starts.

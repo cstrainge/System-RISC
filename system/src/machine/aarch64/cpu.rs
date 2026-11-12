@@ -154,7 +154,7 @@ pub(crate) fn breakpoint() -> !
 /// to have the source enabled, or the wake it waits for cannot arrive.
 pub(crate) fn admit_wake_source()
 {
-    super::gic::admit_wake_source();
+    super::interrupts::admit_wake_source();
 }
 
 /// The interrupt-enable register, whose bits say which sources can interrupt.

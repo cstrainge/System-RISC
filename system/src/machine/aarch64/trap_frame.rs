@@ -19,7 +19,6 @@
 //! and never compares a cause word to a bit pattern to decide whether a trap was
 //! an interrupt at all.
 
-use crate::machine::gic;
 use crate::machine::traps::{Interrupt, TrapFrame};
 
 /// The vector slot's exception kind. The sixteen slots are four kinds from four
@@ -124,7 +123,7 @@ pub(crate) fn interrupt(frame: &TrapFrame) -> Option<Interrupt>
     {
         return None;
     }
-    Some(gic::service())
+    Some(super::interrupts::service())
 }
 
 /// The service number, which this architecture carries in `x8`.

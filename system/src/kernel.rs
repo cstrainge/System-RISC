@@ -1309,12 +1309,23 @@ fn initialize_desktop(
     // Keep hardware activation at its original post-discovery boundary. UI
     // admission above must not begin queueing boot-time input earlier.
     let devices = crate::virtio_input::initialize();
-    if devices != 2
+    // A machine with a virtio bank is expected to carry the keyboard and the
+    // pointer on it, and one that does not present both is refused. A machine
+    // that declares no bank has no virtio input to be missing: it comes up
+    // without input until a driver for its own provides some.
+    if crate::machine::memory::VIRTIO_MMIO_SLOTS == 0
+    {
+        serial!("INPUT_ABSENT: this machine declares no virtio transport bank");
+    }
+    else if devices != 2
     {
         serial!("INPUT_UNAVAILABLE devices={}", devices);
         return Err(recovery_boot_error("native input initialization refused", NOT_SUPPORTED).into());
     }
-    serial!("VIRTIO_INPUT=READY devices={}", devices);
+    else
+    {
+        serial!("VIRTIO_INPUT=READY devices={}", devices);
+    }
     serial!("UI_OBSERVER address={} bytes=128 version=1",
             crate::toolbox::quickdraw::observer::address());
     runtime.boot_progress(&mut boot_screen, 4)?;
@@ -1520,7 +1531,18 @@ pub unsafe extern "C" fn start(payload: *const (), bytes: usize, role: u64)
 /// Entry validated the pinned BootInfo and switched onto the owned System stack.
 unsafe fn start_services(info: &BootInfo) -> *const SystemServices
 {
+    // The terminal kit is built on the fw_cfg display and the virtio input pair,
+    // so a machine that declares neither window has nothing to build it from.
+    // Such a machine still boots graphically; a fatal stop there is reported on
+    // the console alone, which is what a missing kit already means.
+    if info.flags & mac_abi::BOOT_GRAPHICAL != 0 && crate::machine::memory::FW_CFG_BASE == 0
+    {
+        crate::machine::emergency::serial(format_args!("EMERGENCY_KIT_ABSENT: this machine \
+                                                        declares no fw_cfg display; fatal stops \
+                                                        report on the console only"));
+    }
     if info.flags & mac_abi::BOOT_GRAPHICAL != 0
+       && crate::machine::memory::FW_CFG_BASE != 0
        && let Err(error) = crate::machine::emergency::prepare()
     {
         crate::machine::emergency::serial(format_args!("BOOT_EMERGENCY_KIT_REJECTED: {error}"));

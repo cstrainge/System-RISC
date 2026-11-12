@@ -17,6 +17,7 @@ pub(crate) mod clock;
 pub(crate) mod cpu;
 pub(crate) mod gic;
 pub(crate) mod interrupts;
+pub(crate) mod local_intc;
 pub(crate) mod mmu;
 pub(crate) mod page_layout;
 pub(crate) mod power;

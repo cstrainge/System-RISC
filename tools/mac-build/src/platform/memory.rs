@@ -99,6 +99,16 @@ pub(super) struct Definition
     /// The bootstrap IO windows this platform's first stage drives. A board
     /// booted by vendor firmware from removable media declares none.
     bootstrap_io:                Option<io::Definition>,
+    /// Memory that belongs to the board's firmware rather than to the CPU, but
+    /// that the CPU must still be able to reach: on a Raspberry Pi the
+    /// VideoCore keeps the top of the board's memory for itself and allocates
+    /// the framebuffer there, so a display driver writes pixels into it. It is
+    /// not RAM - the machine's tree does not list it and no allocator may take
+    /// it - so nothing maps it unless it is declared here. System maps it in
+    /// the direct map as ordinary non-executable memory. Absent on a machine
+    /// whose firmware shares nothing this way.
+    #[serde(default)]
+    firmware_memory:             Option<Region>,
     boot:                        Region,
     firmware_heap:               Region,
     images:                      Region,
@@ -140,6 +150,7 @@ pub struct Checked
     pub(super) flash:                       Option<Range<u64>>,
     pub(super) fw_cfg:                      Option<Range<u64>>,
     bootstrap_io:                           Option<io::Checked>,
+    firmware_memory:                        Option<Range<u64>>,
     pub(super) boot:                        Range<u64>,
     pub(super) firmware_heap:               Range<u64>,
     pub(super) images:                      Range<u64>,
@@ -215,6 +226,13 @@ impl Definition
                                .as_ref()
                                .map(|io| io.check(page, &ram, flash.as_ref(), fw_cfg.as_ref()))
                                .transpose()?;
+        let firmware_memory =
+            self.firmware_memory.as_ref().map(|r| region("firmware_memory", r, page)).transpose()?;
+        if firmware_memory.as_ref().is_some_and(|memory| overlaps(memory, &ram))
+        {
+            return Err(error("platform memory firmware_memory must lie outside the RAM the CPU \
+                              owns; memory inside it is a reservation, not firmware memory"));
+        }
         let boot = region("boot", &self.boot, page)?;
         // The boot window holds code and data, and the boot page tables split it
         // at the boundary the record declares. The linker asserts that `.data`
@@ -390,6 +408,7 @@ impl Definition
                      flash,
                      fw_cfg,
                      bootstrap_io,
+                     firmware_memory,
                      boot,
                      firmware_heap,
                      images,
@@ -598,6 +617,11 @@ impl Checked
             }
         }
         values.push(("FW_CFG_BASE", self.fw_cfg.as_ref().map(|fw| fw.start).unwrap_or(0)));
+        // Zero bytes is absence, as for flash: a consumer maps nothing.
+        values.push(("FIRMWARE_MEMORY_BASE",
+                     self.firmware_memory.as_ref().map_or(0, |memory| memory.start)));
+        values.push(("FIRMWARE_MEMORY_BYTES",
+                     self.firmware_memory.as_ref().map_or(0, |memory| memory.end - memory.start)));
         values.extend([("IMAGE_BASE", self.images.start),
                        ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
                        ("DISPLAY_SCRATCH_BYTES",

@@ -63,7 +63,13 @@ pub(super) struct Definition
     /// whatever the tree says.
     #[serde(default)]
     interrupt_controller: Option<Region>,
-    virtio_mmio: Virtio
+    /// Absent on a board with no virtio transport bank. Such a board still
+    /// needs its console declared - System's own diagnostics are written to it
+    /// before any device tree is read - so the bank cannot be what makes this
+    /// whole section mandatory. Absent is emitted as a zero window, like every
+    /// other part a machine does not have.
+    #[serde(default)]
+    virtio_mmio: Option<Virtio>
 }
 #[derive(Debug)]
 pub(super) struct Checked
@@ -73,7 +79,7 @@ pub(super) struct Checked
     clint:                Option<Range<u64>>,
     interrupt_controller: Option<Range<u64>>,
     console:              ConsoleKind,
-    virtio:               Range<u64>,
+    virtio:               Option<Range<u64>>,
     stride:               u64,
     slots:                u32,
     interrupt_base:       u32
@@ -102,30 +108,39 @@ impl Definition
             return Err(error("selected legacy CLINT window must cover exactly its 64 KiB \
                               binding"));
         }
-        let stride = address("bootstrap_io.virtio_mmio.stride", &self.virtio_mmio.stride)?;
-        let slots = self.virtio_mmio.slots;
-        let bytes = stride.checked_mul(u64::from(slots))
-                          .ok_or_else(|| error("platform bootstrap virtio MMIO extent overflows"))?;
-        let virtio = region("bootstrap_io.virtio_mmio",
-                            &Region { base:  self.virtio_mmio.base.clone(),
-                                      bytes: format!("{bytes:#x}") },
-                            page)?;
-        if !stride.is_power_of_two()
-           || stride < 512
-           || slots.checked_sub(1)
-                   .and_then(|last| self.virtio_mmio.interrupt_base.checked_add(last))
-                   .is_none()
+        let (virtio, stride, slots, interrupt_base) = match &self.virtio_mmio
         {
-            return Err(error("platform bootstrap virtio MMIO stride must be a power of two \
-                              covering the register window and interrupt routes must not \
-                              overflow"));
-        }
+            None => (None, 0, 0, 0),
+            Some(bank) =>
+            {
+                let stride = address("bootstrap_io.virtio_mmio.stride", &bank.stride)?;
+                let slots = bank.slots;
+                let bytes =
+                    stride.checked_mul(u64::from(slots))
+                          .ok_or_else(|| error("platform bootstrap virtio MMIO extent overflows"))?;
+                let virtio = region("bootstrap_io.virtio_mmio",
+                                    &Region { base:  bank.base.clone(),
+                                              bytes: format!("{bytes:#x}") },
+                                    page)?;
+                if !stride.is_power_of_two()
+                   || stride < 512
+                   || slots.checked_sub(1)
+                           .and_then(|last| bank.interrupt_base.checked_add(last))
+                           .is_none()
+                {
+                    return Err(error("platform bootstrap virtio MMIO stride must be a power of \
+                                      two covering the register window and interrupt routes \
+                                      must not overflow"));
+                }
+                (Some(virtio), stride, slots, bank.interrupt_base)
+            }
+        };
         let mut windows: Vec<&Range<u64>> = Vec::new();
         if let Some(fw_cfg) = fw_cfg
         {
             windows.push(fw_cfg);
         }
-        windows.extend([Some(&uart), rtc.as_ref(), Some(&virtio), clint.as_ref(),
+        windows.extend([Some(&uart), rtc.as_ref(), virtio.as_ref(), clint.as_ref(),
                         interrupt_controller.as_ref()]
                            .into_iter()
                            .flatten());
@@ -155,7 +170,7 @@ impl Definition
                      virtio,
                      stride,
                      slots,
-                     interrupt_base: self.virtio_mmio.interrupt_base })
+                     interrupt_base })
     }
 }
 impl Checked
@@ -168,7 +183,7 @@ impl Checked
          ("RTC_BASE", self.rtc.as_ref().map_or(0, |rtc| rtc.start)),
          ("CLINT_BASE", self.clint.as_ref().map_or(0, |clint| clint.start)),
          ("CLINT_BYTES", self.clint.as_ref().map_or(0, |clint| clint.end - clint.start)),
-         ("VIRTIO_MMIO_BASE", self.virtio.start),
+         ("VIRTIO_MMIO_BASE", self.virtio.as_ref().map_or(0, |bank| bank.start)),
          ("VIRTIO_MMIO_STRIDE", self.stride),
          ("VIRTIO_MMIO_SLOTS", u64::from(self.slots)),
          ("VIRTIO_INTERRUPT_BASE", u64::from(self.interrupt_base)),
@@ -193,7 +208,7 @@ impl Checked
         }
         windows.extend([Some(&self.uart),
                         self.rtc.as_ref(),
-                        Some(&self.virtio),
+                        self.virtio.as_ref(),
                         self.clint.as_ref(),
                         self.interrupt_controller.as_ref()]
                            .into_iter()
