@@ -7,6 +7,7 @@ use core::ptr::{copy_nonoverlapping, read_volatile, write_volatile};
 use mac_driver::{Client, Completion, Driver, Error, Phase, Request, Result as DriverResult,
                  devices::DeviceService, runtime::report};
 use mac_input_interface as input;
+use mac_interrupt_interface as interrupt;
 use spinning_top::Spinlock;
 
 use crate::{Clock, Port, REQUIRED_BYTES, Registers, TRANSFER_BUFFER_BYTES, TransferBuffer};
@@ -28,7 +29,52 @@ struct Machine
     page:    Option<Page>,
     mouse:   Option<Mouse>,
     /// When the mouse was last asked for a report.
-    asked:   u64
+    asked:   u64,
+    /// The mouse's read, in steps, once the controller's line is taken.
+    read:    Option<crate::SplitRead>,
+    /// Reports translated and waiting for System to ask for them.
+    queue:   [input::Event; QUEUE_EVENTS],
+    queued:  usize
+}
+
+/// As many events as one POLL reply holds.
+const QUEUE_EVENTS: usize = input::MAX_EVENTS;
+/// A transaction that has not halted by now never will.
+const WATCHDOG_MICROSECONDS: u64 = 50_000;
+/// How long to leave a mouse whose read failed before asking again.
+const FAILED_RETRY_MICROSECONDS: u64 = 100_000;
+
+/// Translates one boot report - buttons, then how far it moved across and
+/// down - into events, ending with the one that closes the group.
+fn translate(mouse: &mut Mouse, bytes: [u8; 3]) -> ([input::Event; 6], usize)
+{
+    let mut events = [input::Event::synchronize(); 6];
+    let mut count = 0;
+    for (bit, code) in [(1u8, input::BUTTON_LEFT),
+                        (2, input::BUTTON_RIGHT),
+                        (4, input::BUTTON_MIDDLE)]
+    {
+        if (bytes[0] ^ mouse.buttons) & bit != 0
+        {
+            events[count] = input::Event::key(code, bytes[0] & bit != 0);
+            count += 1;
+        }
+    }
+    mouse.buttons = bytes[0] & 0b111;
+    for (code, delta) in [(input::RELATIVE_X, bytes[1] as i8), (input::RELATIVE_Y, bytes[2] as i8)]
+    {
+        if delta != 0
+        {
+            events[count] = input::Event::relative(code, i32::from(delta));
+            count += 1;
+        }
+    }
+    if count != 0
+    {
+        events[count] = input::Event::synchronize();
+        count += 1;
+    }
+    (events, count)
 }
 
 /// A boot-protocol mouse behind the hub, and what reading it needs kept.
@@ -470,11 +516,124 @@ impl Machine
 
 impl Machine
 {
+    /// Takes the controller's interrupt line, if the machine gives one, and
+    /// starts reading the mouse from it. Without the line the mouse is read
+    /// when System asks, as before.
+    fn listen(&mut self)
+    {
+        let (Some(mouse), Some(page)) = (self.mouse.as_ref(), self.page)
+        else
+        {
+            return;
+        };
+        let line = match self.service.take_interrupt(self.claim)
+        {
+            Ok(line) => line,
+            Err(error) =>
+            {
+                report(format_args!("USB_INTERRUPT_REFUSED status={}: the mouse is read when \
+                                     System asks\n",
+                                    error.0));
+                return;
+            }
+        };
+        let mut registers = MachineRegisters { base: self.base };
+        let mut read =
+            crate::SplitRead::new(&page, mouse.route, mouse.address, mouse.endpoint, mouse.packet);
+        crate::listen_for_channel(&mut registers);
+        read.start(&mut registers, mouse.pid);
+        self.read = Some(read);
+        let alarm = self.service.set_alarm(self.claim, WATCHDOG_MICROSECONDS);
+        report(format_args!("USB_INTERRUPT line={line}: the mouse is read from the \
+                             controller's interrupt (alarm={})\n",
+                            if alarm.is_ok() { "set" } else { "refused" }));
+    }
+
+    /// The controller interrupted, or this driver's alarm fell due: take the
+    /// mouse's read one step on, and say when to be called next.
+    fn interrupted(&mut self, line: u32)
+    {
+        let (Some(read), Some(mouse), Some(page)) =
+            (self.read.as_mut(), self.mouse.as_mut(), self.page)
+        else
+        {
+            return;
+        };
+        let mut registers = MachineRegisters { base: self.base };
+        let step = if line != interrupt::ALARM
+        {
+            read.halted(&mut registers)
+        }
+        else if read.idle()
+        {
+            read.start(&mut registers, mouse.pid);
+            crate::ReadStep::Running
+        }
+        else
+        {
+            read.alarm(&mut registers)
+        };
+        let next = match step
+        {
+            crate::ReadStep::Stray => return,
+            crate::ReadStep::Running => WATCHDOG_MICROSECONDS,
+            crate::ReadStep::Wait(microseconds) => microseconds,
+            crate::ReadStep::Nothing => REPORT_INTERVAL_MICROSECONDS,
+            crate::ReadStep::Data(received) =>
+            {
+                mouse.pid =
+                    if mouse.pid == crate::PID_DATA0 { crate::PID_DATA1 } else { crate::PID_DATA0 };
+                if received >= 3
+                {
+                    let mut bytes = [0u8; 3];
+                    page.copy_out(&mut bytes);
+                    let (events, count) = translate(mouse, bytes);
+                    // A full queue means System has stopped asking; the
+                    // newest report is the one dropped.
+                    if self.queued + count <= QUEUE_EVENTS
+                    {
+                        self.queue[self.queued..self.queued + count]
+                            .copy_from_slice(&events[..count]);
+                        self.queued += count;
+                    }
+                }
+                REPORT_INTERVAL_MICROSECONDS
+            }
+            crate::ReadStep::Failed(status) =>
+            {
+                // Said once. A wrong data toggle is the likeliest cause, and
+                // trying the other one is the remedy either way.
+                if !mouse.refused
+                {
+                    mouse.refused = true;
+                    report(format_args!("USB_MOUSE_READ_REFUSED: the read halted without \
+                                         completing (HCINT={status:#010x})\n"));
+                }
+                mouse.pid =
+                    if mouse.pid == crate::PID_DATA0 { crate::PID_DATA1 } else { crate::PID_DATA0 };
+                FAILED_RETRY_MICROSECONDS
+            }
+        };
+        let _ = self.service.set_alarm(self.claim, next);
+    }
+
     /// POLL of the input class: ask the mouse for one report and translate
     /// it. Bounded: one split read, which a mouse with nothing to say ends at
     /// its first answer.
     fn poll(&mut self, request: Request<'_>, output: &mut [u8]) -> DriverResult<Completion>
     {
+        if request.class == interrupt::CLASS
+        {
+            if request.operation != interrupt::SERVICE || !output.is_empty()
+            {
+                return Err(Error(mac_abi::NOT_SUPPORTED));
+            }
+            if request.phase != Phase::Cancel
+            {
+                self.interrupted(interrupt::line(request.input).ok_or(Error(mac_abi::BAD_ARGUMENT))?);
+            }
+            return Ok(Completion::Complete(0));
+        }
         if request.class != input::CLASS || request.operation != input::POLL
         {
             return Err(Error(mac_abi::NOT_SUPPORTED));
@@ -486,6 +645,20 @@ impl Machine
         if !request.input.is_empty()
         {
             return Err(Error(mac_abi::BAD_ARGUMENT));
+        }
+        if self.read.is_some()
+        {
+            // The controller's interrupt reads the mouse; this hands over what
+            // it has gathered and touches no hardware.
+            let count = self.queued.min(output.len() / input::EVENT_BYTES);
+            for (slot, event) in
+                output.chunks_exact_mut(input::EVENT_BYTES).zip(&self.queue[..count])
+            {
+                slot.copy_from_slice(&event.encode());
+            }
+            self.queue.copy_within(count..self.queued, 0);
+            self.queued -= count;
+            return Ok(Completion::Complete(count * input::EVENT_BYTES));
         }
         let (Some(mouse), Some(mut page), Some(host)) = (self.mouse.as_mut(), self.page, self.host)
         else
@@ -529,36 +702,13 @@ impl Machine
         {
             return Ok(Completion::Complete(0));
         }
-        // The boot report: buttons, then how far it moved across and down.
         let mut bytes = [0u8; 3];
         page.copy_out(&mut bytes);
-        let mut events = [input::Event::synchronize(); 6];
-        let mut count = 0;
-        for (bit, code) in [(1u8, input::BUTTON_LEFT),
-                            (2, input::BUTTON_RIGHT),
-                            (4, input::BUTTON_MIDDLE)]
-        {
-            if (bytes[0] ^ mouse.buttons) & bit != 0
-            {
-                events[count] = input::Event::key(code, bytes[0] & bit != 0);
-                count += 1;
-            }
-        }
-        mouse.buttons = bytes[0] & 0b111;
-        for (code, delta) in [(input::RELATIVE_X, bytes[1] as i8), (input::RELATIVE_Y, bytes[2] as i8)]
-        {
-            if delta != 0
-            {
-                events[count] = input::Event::relative(code, i32::from(delta));
-                count += 1;
-            }
-        }
+        let (events, count) = translate(mouse, bytes);
         if count == 0
         {
             return Ok(Completion::Complete(0));
         }
-        events[count] = input::Event::synchronize();
-        count += 1;
         let needed = count * input::EVENT_BYTES;
         if output.len() < needed
         {
@@ -587,14 +737,21 @@ impl Driver for Usb
                                     host:    Some(host),
                                     page:    None,
                                     mouse:   None,
-                                    asked:   0 };
+                                    asked:   0,
+                                    read:    None,
+                                    queue:   [input::Event::synchronize(); QUEUE_EVENTS],
+                                    queued:  0 };
         // Nothing consumes this driver's class yet, so no request would ever
         // start it; bring-up runs here, bounded, and reports. A controller
         // that refuses is reported and left alone, and the module still
         // loads: a board with a dead USB core must still boot.
         match machine.claim()
         {
-            Ok(()) => machine.bring_up(host),
+            Ok(()) =>
+            {
+                machine.bring_up(host);
+                machine.listen();
+            }
             Err(error) => report(format_args!("USB_CLAIM_REFUSED status={}\n", error.0))
         }
         *slot = Some(machine);

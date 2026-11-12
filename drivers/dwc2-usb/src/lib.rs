@@ -55,6 +55,10 @@ pub const HCCHAR: usize = 0x500;
 pub const HCSPLT: usize = 0x504;
 pub const HCINT: usize = 0x508;
 pub const HCINTMSK: usize = 0x50c;
+/// Which channels may raise the host-channels interrupt, one bit each.
+pub const HAINTMSK: usize = 0x418;
+/// `GINTSTS` / `GINTMSK` bit 25: a host channel has something to report.
+pub const HOST_CHANNELS: u32 = 1 << 25;
 pub const HCTSIZ: usize = 0x510;
 pub const HCDMA: usize = 0x514;
 pub const HPRT: usize = 0x440;
@@ -1046,6 +1050,195 @@ pub fn split_read(registers: &mut impl Registers, clock: &mut impl Clock,
                                           status: completed });
     }
     Ok(None)
+}
+
+/// Lets channel 0's halt raise the core's interrupt line, and nothing else.
+///
+/// Every other source stays masked, the root port's among them, so a device
+/// that is unplugged is noticed by its transfers failing and not by an event.
+pub fn listen_for_channel(registers: &mut impl Registers)
+{
+    registers.write(HCINT, u32::MAX);
+    registers.write(HCINTMSK, CHANNEL_HALTED);
+    registers.write(HAINTMSK, 1);
+    registers.write(GINTSTS, u32::MAX);
+    registers.write(GINTMSK, HOST_CHANNELS);
+    let bus = registers.read(GAHBCFG);
+    registers.write(GAHBCFG, bus | GLOBAL_INTERRUPT);
+}
+
+/// Where an interrupt-driven read has got to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReadPhase
+{
+    /// Nothing on the bus.
+    Idle,
+    /// The hub has been told to start the transaction.
+    Started,
+    /// The hub is running it; the completion is asked for when the alarm falls.
+    Settling,
+    /// The hub has been asked how it went.
+    Completing
+}
+
+/// What the driver does next for an interrupt-driven read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadStep
+{
+    /// A transaction is on the bus; its halt is the next thing to happen.
+    Running,
+    /// Nothing to do: the interrupt was not this read's.
+    Stray,
+    /// Call [`SplitRead::alarm`] after this many microseconds.
+    Wait(u64),
+    /// The device answered with this many bytes, now in the transfer buffer.
+    Data(usize),
+    /// The device had nothing to report.
+    Nothing,
+    /// The transaction failed with this channel status.
+    Failed(u32)
+}
+
+/// One report from a full- or low-speed interrupt endpoint behind a hub, taken
+/// in steps the controller's interrupt and the driver's alarm drive, so that
+/// nothing waits in place.
+///
+/// The split is the same one [`split_read`] performs, start then completion,
+/// and it is still issued through the non-periodic queue as if the endpoint
+/// were bulk: the interval between reports is now the driver's alarm and so is
+/// kept, but the transaction is not placed in a particular microframe as a
+/// periodic schedule would place it.
+pub struct SplitRead
+{
+    characteristics: u32,
+    split:           u32,
+    packet:          u32,
+    address:         u32,
+    size:            u32,
+    phase:           ReadPhase,
+    completions:     u32
+}
+impl SplitRead
+{
+    pub fn new(buffer: &impl TransferBuffer, route: Route, device: u8, endpoint: u8, packet: u32)
+               -> Self
+    {
+        Self { characteristics: packet
+                                | CHANNEL_DIRECTION_IN
+                                | if route.low_speed { CHANNEL_LOW_SPEED } else { 0 }
+                                | CHANNEL_ONE_TRANSACTION
+                                | ENDPOINT_BULK << CHANNEL_TYPE_SHIFT
+                                | u32::from(endpoint & 0x0f) << CHANNEL_ENDPOINT_SHIFT
+                                | u32::from(device & 0x7f) << CHANNEL_ADDRESS_SHIFT,
+               split: SPLIT_ENABLE
+                      | SPLIT_WHOLE_PACKET
+                      | u32::from(route.hub & 0x7f) << SPLIT_HUB_SHIFT
+                      | u32::from(route.port & 0x7f),
+               packet,
+               address: buffer.address(),
+               size: 0,
+               phase: ReadPhase::Idle,
+               completions: 0 }
+    }
+
+    pub fn idle(&self) -> bool
+    {
+        self.phase == ReadPhase::Idle
+    }
+
+    fn issue(&mut self, registers: &mut impl Registers, split: u32)
+    {
+        registers.write(HCINT, u32::MAX);
+        registers.write(HCSPLT, split);
+        registers.write(HCTSIZ, self.size);
+        registers.write(HCDMA, self.address);
+        registers.write(HCCHAR, self.characteristics | CHANNEL_ENABLE);
+    }
+
+    /// Tells the hub to start a read under the data toggle `pid`.
+    pub fn start(&mut self, registers: &mut impl Registers, pid: u32)
+    {
+        self.size = self.packet | 1 << PACKET_COUNT_SHIFT | pid << PID_SHIFT;
+        self.completions = 0;
+        self.issue(registers, self.split);
+        self.phase = ReadPhase::Started;
+    }
+
+    /// The controller interrupted: says what the channel's halt means.
+    pub fn halted(&mut self, registers: &mut impl Registers) -> ReadStep
+    {
+        let status = registers.read(HCINT);
+        if status & CHANNEL_HALTED == 0
+        {
+            return ReadStep::Stray;
+        }
+        registers.write(HCINT, u32::MAX);
+        match self.phase
+        {
+            ReadPhase::Started =>
+            {
+                if status & ACK != 0
+                {
+                    self.phase = ReadPhase::Settling;
+                    return ReadStep::Wait(SPLIT_COMPLETION_MICROSECONDS);
+                }
+                self.phase = ReadPhase::Idle;
+                if status & NAK != 0 { ReadStep::Nothing } else { ReadStep::Failed(status) }
+            }
+            ReadPhase::Completing =>
+            {
+                if status & TRANSFER_COMPLETE != 0
+                {
+                    self.phase = ReadPhase::Idle;
+                    let left = registers.read(HCTSIZ) & TRANSFER_SIZE_MASK;
+                    return ReadStep::Data(self.packet.saturating_sub(left) as usize);
+                }
+                if status & NYET != 0
+                {
+                    self.completions += 1;
+                    if self.completions < SPLIT_COMPLETIONS
+                    {
+                        self.phase = ReadPhase::Settling;
+                        return ReadStep::Wait(SPLIT_COMPLETION_MICROSECONDS);
+                    }
+                    self.phase = ReadPhase::Idle;
+                    return ReadStep::Nothing;
+                }
+                self.phase = ReadPhase::Idle;
+                if status & NAK != 0 { ReadStep::Nothing } else { ReadStep::Failed(status) }
+            }
+            // A halt with nothing outstanding: the tail of a channel this
+            // read gave up on and disabled.
+            ReadPhase::Idle | ReadPhase::Settling => ReadStep::Stray
+        }
+    }
+
+    /// The driver's alarm fell due.
+    ///
+    /// While the hub is running the transaction this asks for its completion.
+    /// With a transaction still on the bus it is the watchdog: the channel
+    /// never halted, so it is disabled and the read reported as failed. With
+    /// nothing outstanding it is the interval, and the caller starts again.
+    pub fn alarm(&mut self, registers: &mut impl Registers) -> ReadStep
+    {
+        match self.phase
+        {
+            ReadPhase::Settling =>
+            {
+                self.issue(registers, self.split | SPLIT_COMPLETE);
+                self.phase = ReadPhase::Completing;
+                ReadStep::Running
+            }
+            ReadPhase::Started | ReadPhase::Completing =>
+            {
+                let status = registers.read(HCINT);
+                registers.write(HCCHAR, self.characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
+                self.phase = ReadPhase::Idle;
+                ReadStep::Failed(status)
+            }
+            ReadPhase::Idle => ReadStep::Nothing
+        }
+    }
 }
 
 /// Where a boot-protocol mouse's reports come from.
