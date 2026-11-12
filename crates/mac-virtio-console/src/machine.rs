@@ -218,9 +218,9 @@ struct Hardware
 }
 fn fence()
 {
-    unsafe {
-        core::arch::asm!("fence iorw, iorw", options(nostack));
-    }
+    // The instruction is the architecture's; the shared driver crate is the one
+    // place that names it.
+    mac_driver::arch::barrier();
 }
 impl Hardware
 {
@@ -539,6 +539,7 @@ impl Hardware
         Ok(count)
     }
 }
+#[cfg(target_arch = "riscv64")]
 fn monotonic_microseconds() -> u64
 {
     let ticks: u64;
@@ -547,6 +548,24 @@ fn monotonic_microseconds() -> u64
         core::arch::asm!("rdtime {ticks}",ticks=out(reg)ticks,options(nomem,nostack));
     }
     ticks / 10
+}
+#[cfg(target_arch = "aarch64")]
+fn monotonic_microseconds() -> u64
+{
+    let ticks: u64;
+    let hertz: u64;
+    // SAFETY: both are side-effect-free reads of the generic timer: the virtual
+    // count and the frequency the machine states for it. The rate is read rather
+    // than assumed because it is the machine's, not the architecture's.
+    unsafe {
+        core::arch::asm!("mrs {ticks}, cntvct_el0", ticks = out(reg) ticks, options(nomem, nostack));
+        core::arch::asm!("mrs {hertz}, cntfrq_el0", hertz = out(reg) hertz, options(nomem, nostack));
+    }
+    if hertz == 0
+    {
+        return 0;
+    }
+    ((ticks as u128 * 1_000_000) / hertz as u128) as u64
 }
 
 /// A named connection searches the complete resident device inventory. Initial

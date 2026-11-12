@@ -11,7 +11,7 @@ pub trait Connection: Channel
     fn diagnostic(&self) -> Diagnostic;
     fn unavailable(&self) -> bool;
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(target_os = "none")]
 impl Connection for mac_virtio_console::Device
 {
     fn generation(&self) -> u64

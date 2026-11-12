@@ -1,6 +1,9 @@
 fn main()
 {
-    if std::env::var("TARGET").unwrap() == "riscv64imac-unknown-none-elf"
+    // Every guest target needs the module contract and the relocatable image, not
+    // only RISC-V: the contract is what the loader binds, and it is the same
+    // record on any architecture.
+    if std::env::var("TARGET").unwrap() != std::env::var("HOST").unwrap()
     {
         mac_build::build_guest().expect("Host Clipboard native module build invariant");
     }

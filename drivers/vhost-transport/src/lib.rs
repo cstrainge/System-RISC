@@ -5,7 +5,7 @@
 #![deny(unsafe_code)]
 pub mod engine;
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(target_os = "none")]
 mod driver
 {
     use mac_abi::{NOT_SUPPORTED, SERVICE_BUSY};
@@ -59,5 +59,5 @@ mod driver
         }
     }
 }
-#[cfg(target_arch = "riscv64")]
+#[cfg(target_os = "none")]
 pub use driver::DRIVER;

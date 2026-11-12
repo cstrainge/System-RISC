@@ -292,7 +292,13 @@
       "mac-system",
       "virtio-gpu",
       "virtio-rng",
-      "psci-power"
+      "psci-power",
+      "vhost-transport",
+      "vdagent-channel",
+      "host-clipboard-extension",
+      "cli-extension",
+      "vhost-filesystem",
+      "stuffit-filesystem"
     ],
     "folders": {
       "applications": "Applications",

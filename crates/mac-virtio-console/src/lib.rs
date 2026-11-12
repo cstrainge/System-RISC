@@ -6,12 +6,12 @@
 #![deny(unsafe_code)]
 pub mod control;
 pub mod discovery;
-#[cfg(target_arch = "riscv64")]
+#[cfg(target_os = "none")]
 mod lifetime;
-#[cfg(target_arch = "riscv64")]
+#[cfg(target_os = "none")]
 mod machine;
 use mac_driver::Result;
-#[cfg(target_arch = "riscv64")]
+#[cfg(target_os = "none")]
 pub use machine::{Arena, Device};
 
 pub const FRAGMENT: usize = 4096;
