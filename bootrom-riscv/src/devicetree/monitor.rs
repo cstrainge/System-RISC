@@ -193,6 +193,10 @@ fn tree_error(cause: mac_devicetree::Error) -> Error
         mac_devicetree::Error::Strings => "monitor device tree string offset is invalid",
         mac_devicetree::Error::Cells => "monitor device tree cell declaration is invalid",
         mac_devicetree::Error::Cpu => "monitor device tree CPU node is not admissible",
+        mac_devicetree::Error::Ranges =>
+        {
+            "monitor device tree address translation is not readable"
+        }
         mac_devicetree::Error::DynamicReservation =>
         {
             "monitor device tree reserved-memory asks for dynamic allocation"

@@ -209,7 +209,9 @@ pub(crate) fn admit(info: &mac_abi::BootInfo) -> Result<(), Refusal>
     let Ok(Some(node)) = tree.find(|node| node.enabled() && PLIC.iter().any(|name| node.names(name)))
     else
     {
-        crate::machine::emergency::serial(format_args!("INTERRUPTS_READY: controller=none; the                                                         timer needs none, and no device line                                                         can be taken\n"));
+        crate::machine::emergency::serial(format_args!("INTERRUPTS_READY: controller=none; the timer \
+                                                        needs none, and no device line can be \
+                                                        taken\n"));
         return Ok(());
     };
     let Ok(Some((base, bytes))) = tree.cpu_window(&node)
@@ -232,7 +234,9 @@ pub(crate) fn admit(info: &mac_abi::BootInfo) -> Result<(), Refusal>
                                  context });
     // SAFETY: setting only this hart's supervisor external enable.
     unsafe { asm!("csrs sie, {mask}", mask = in(reg) SEIE, options(nostack)) };
-    crate::machine::emergency::serial(format_args!("INTERRUPTS_READY: controller=plic                                                     base={base:#x} context={context}                                                     threshold={:#x} sources_enabled=0\n",
+    crate::machine::emergency::serial(format_args!("INTERRUPTS_READY: controller=plic \
+                                                    base={base:#x} context={context} \
+                                                    threshold={:#x} sources_enabled=0\n",
                                                    read(control)));
     Ok(())
 }

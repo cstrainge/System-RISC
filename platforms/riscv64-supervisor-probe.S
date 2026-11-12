@@ -83,7 +83,9 @@
     sd t0,{start_observed}(a0)
     sd zero,{start_aux}(a0)
     bnez t0,\fail
-    li t1,0x22
+    # Supervisor software, timer and external interrupts. The external one is
+    # how a device line reaches the resident, through the PLIC.
+    li t1,0x222
     csrw mideleg,t1
     csrr t0,mideleg
     sd t0,{start_observed}(a0)
