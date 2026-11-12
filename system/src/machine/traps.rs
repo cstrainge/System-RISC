@@ -682,6 +682,14 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     // to the user. Never inspect request memory for a report.
     if user_origin
        && action == crate::machine::scheduler::service::RequestAction::Return
+       && (abi::result(frame) as isize) < 0
+    {
+        crate::machine::service_failures::record(thread.identity().app.0,
+                                                 number as u32,
+                                                 abi::result(frame) as isize as i64);
+    }
+    if user_origin
+       && action == crate::machine::scheduler::service::RequestAction::Return
        && abi::result(frame) as isize == SERVICE_BUSY as isize
        && !thread.traps.terminal_busy_reported()
     {
@@ -1089,6 +1097,10 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 return BAD_ARGUMENT as i64;
             }
             let bytes = if call.length == 0 { b"".as_ptr() } else { call.bytes };
+            // SAFETY: the bytes were checked as UTF-8 above, or the length is 0.
+            crate::machine::service_failures::report_for(unsafe {
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(bytes, call.length))
+            });
             (unsafe { crate::kernel::log(bytes, call.length) }) as i64
         }
         CRASH =>

@@ -37,6 +37,7 @@ pub(crate) mod video;
 pub(crate) mod monitor;
 pub(crate) mod paging;
 pub(crate) mod scheduler;
+pub(crate) mod service_failures;
 pub(crate) mod traps;
 
 #[cfg(target_arch = "riscv64")]
