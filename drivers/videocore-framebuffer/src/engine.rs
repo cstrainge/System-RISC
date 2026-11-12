@@ -170,15 +170,27 @@ impl Engine
     fn service(&mut self, device: &mut impl Hardware, input: &[u8], output: &mut [u8])
                -> Result<Completion>
     {
-        let damage = Damage::decode(input).ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        // SERVICE carries a list of damaged rectangles, none or as many as the
+        // contract's maximum, not exactly one. System sends whatever its dirty
+        // tracking collected since the last call - nothing on an idle tick,
+        // several when more than one window changed - and has already forgotten
+        // them by the time this returns, so a refusal here is a lost repaint.
+        if input.len() > Damage::BYTES * Damage::MAX_RECTS || input.len() % Damage::BYTES != 0
+        {
+            return Err(Error(mac_abi::BAD_ARGUMENT));
+        }
         let (_, applied) = self.attached.ok_or(Error(mac_abi::NOT_FOUND))?;
         if output.len() < Poll::BYTES
         {
             return Err(Error(mac_abi::BAD_ARGUMENT));
         }
-        if damage.width != 0 && damage.height != 0
+        for rect in input.chunks_exact(Damage::BYTES)
         {
-            device.present(damage).map_err(|refusal| self.refuse(refusal))?;
+            let damage = Damage::decode(rect).ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+            if damage.width != 0 && damage.height != 0
+            {
+                device.present(damage).map_err(|refusal| self.refuse(refusal))?;
+            }
         }
         // This driver's firmware never reports a mode it chose, so the only
         // settled size is one the driver itself has not yet adopted. Reporting

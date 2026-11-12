@@ -15,8 +15,13 @@ use crate::{Bounds, Device, Engine, Refusal, library_mode,
 include!(concat!(env!("OUT_DIR"), "/platform-display.rs"));
 include!(concat!(env!("OUT_DIR"), "/platform-virtual.rs"));
 
-/// The `brcm,mbox` inventory key, the same value `module.json` matches on.
-const MAILBOX_KEY: [u8; 16] = *b"brcm,mbox\0\0\0\0\0\0\0";
+/// The mailbox's inventory key, the same value `module.json` matches on.
+///
+/// The key is the first sixteen bytes of the name the machine's own tree gives
+/// the part, `brcm,bcm2835-mbox`, so it ends one letter short. It used to be
+/// `brcm,mbox`, a name no tree states, and the module was skipped as having no
+/// device on the one machine it exists for.
+const MAILBOX_KEY: [u8; 16] = *b"brcm,bcm2835-mbo";
 /// Deferred allocation deadline. The resident services the request from its own
 /// loop; a mailbox that never answers is a defect, not a wait to extend.
 const ALLOCATION_TIMEOUT_MICROSECONDS: u64 = 1_000_000;
@@ -24,7 +29,13 @@ const ALLOCATION_TIMEOUT_MICROSECONDS: u64 = 1_000_000;
 /// Message storage. The firmware reads and writes it through the bus, so its
 /// bus address is mapped from this storage rather than assumed equal to its
 /// CPU address.
-#[repr(align(16))]
+// A whole cache line, not the sixteen bytes the mailbox protocol asks for: the
+// firmware writes its reply into this buffer behind the CPU's back, and the
+// cache maintenance that makes that visible works on whole lines. A buffer that
+// shares a line with a neighbouring static has the neighbour cleaned or
+// discarded with it. The bootstrap's copy of this buffer learned this on a
+// board.
+#[repr(align(64))]
 struct Storage([u32; WORDS]);
 static mut MESSAGE: Storage = Storage([0; WORDS]);
 
@@ -137,13 +148,15 @@ impl Machine
             // The record's register window must sit inside the page the
             // inventory claims. That agreement is what makes the two record
             // entries describe one device instead of two.
+            let page_start = description.registers & !0xfff;
             let page_end = description.registers
                                       .checked_add(description.register_bytes)
+                                      .and_then(|end| end.checked_next_multiple_of(0x1000))
                                       .ok_or(Error(mac_abi::BAD_ABI))?;
             let window_start = MAILBOX_BASE as u64;
             let window_end =
                 window_start.checked_add(MAILBOX_BYTES as u64).ok_or(Error(mac_abi::BAD_ABI))?;
-            if window_start < description.registers || window_end > page_end
+            if window_start < page_start || window_end > page_end
             {
                 return Err(Error(mac_abi::BAD_ABI));
             }

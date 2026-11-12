@@ -108,12 +108,20 @@ impl Machine
             // The record's window must sit inside the page the inventory claims.
             // That agreement is what makes the two record entries describe one
             // device rather than two.
+            // The inventory states the register block as the machine's tree
+            // does, which can be shorter than the block really is - this
+            // board's tree gives the generator sixteen bytes and its interrupt
+            // mask sits just past them. What a claim grants, and what System
+            // maps, is the whole pages containing that block, so those pages
+            // are what the record's window is checked against.
+            let page_start = description.registers & !0xfff;
             let page_end = description.registers
                                       .checked_add(description.register_bytes)
+                                      .and_then(|end| end.checked_next_multiple_of(0x1000))
                                       .ok_or(Error(mac_abi::BAD_ABI))?;
             let window_end =
                 (RNG_BASE as u64).checked_add(RNG_BYTES as u64).ok_or(Error(mac_abi::BAD_ABI))?;
-            if (RNG_BASE as u64) < description.registers || window_end > page_end
+            if (RNG_BASE as u64) < page_start || window_end > page_end
             {
                 self.cause = Cause::Driver(mac_abi::BAD_ABI);
                 return Err(Error(mac_abi::BAD_ABI));

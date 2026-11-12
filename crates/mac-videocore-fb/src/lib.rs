@@ -53,7 +53,7 @@ pub const TAG_SET_PHYSICAL_SIZE: u32 = 0x0004_8003;
 pub const TAG_SET_VIRTUAL_SIZE: u32 = 0x0004_8004;
 /// Bits per pixel. Value: depth.
 pub const TAG_SET_DEPTH: u32 = 0x0004_8005;
-/// 0 = RGB, 1 = BGR. Value: order.
+/// 0 = BGR, 1 = RGB. Value: order.
 pub const TAG_SET_PIXEL_ORDER: u32 = 0x0004_8006;
 /// Request value: alignment. Reply: base bus address, size in bytes.
 pub const TAG_ALLOCATE_BUFFER: u32 = 0x0004_0001;
@@ -81,8 +81,14 @@ impl PixelOrder
     {
         match self
         {
-            Self::Rgb => 0,
-            Self::Bgr => 1
+            // The firmware's own numbering, which is the reverse of what one
+            // would guess: zero is BGR. These were the other way round, so a
+            // caller asking for BGR - blue in the low byte, which is how System
+            // stores a pixel - was given RGB, and every colour came out with
+            // red and blue exchanged. Greys are unchanged by that, which is why
+            // a grey boot screen never showed it.
+            Self::Rgb => 1,
+            Self::Bgr => 0
         }
     }
 }
