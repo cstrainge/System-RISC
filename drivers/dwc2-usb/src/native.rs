@@ -91,8 +91,18 @@ struct Reader
     interval: u64,
     failures: u32,
     heard:    bool,
-    name:     &'static str
+    name:     &'static str,
+    /// How many reads ended with nothing to report, and how many of those
+    /// have been said.
+    quiet:    u32,
+    said:     u32
 }
+
+/// A read that keeps ending with nothing says so this often, this many times:
+/// a device that is silent because it has nothing to say and one whose
+/// answers are being missed look the same otherwise.
+const QUIET_EVERY: u32 = 256;
+const QUIET_SAID: u32 = 6;
 
 /// How many failed reads a device is allowed to report.
 const FAILURES_SAID: u32 = 4;
@@ -120,7 +130,20 @@ impl Reader
             crate::ReadStep::Stray => return None,
             crate::ReadStep::Running => (WATCHDOG_MICROSECONDS, None),
             crate::ReadStep::Wait(microseconds) => (microseconds, None),
-            crate::ReadStep::Nothing => (self.interval, None),
+            crate::ReadStep::Nothing =>
+            {
+                self.quiet += 1;
+                if self.quiet % QUIET_EVERY == 0 && self.said < QUIET_SAID && self.name != "hub"
+                {
+                    self.said += 1;
+                    let (status, asked) = self.read.last();
+                    report(format_args!("USB_READ_QUIET device={} reads={} last: HCINT={status:#010x} \
+                                         completions_asked={asked}\n",
+                                        self.name,
+                                        self.quiet));
+                }
+                (self.interval, None)
+            }
             crate::ReadStep::Data(received) =>
             {
                 // The toggle moves on only when a report was taken. After a
@@ -765,7 +788,9 @@ impl Machine
                                       interval: REPORT_INTERVAL_MICROSECONDS,
                                       failures: 0,
                                       heard: false,
-                                      name: "mouse" };
+                                      name: "mouse",
+                                      quiet: 0,
+                                      said: 0 };
             reader.step(registers, now, false);
             self.mouse_reader = Some(reader);
         }
@@ -785,7 +810,9 @@ impl Machine
                                       interval: REPORT_INTERVAL_MICROSECONDS,
                                       failures: 0,
                                       heard: false,
-                                      name: "keyboard" };
+                                      name: "keyboard",
+                                      quiet: 0,
+                                      said: 0 };
             reader.step(registers, now, false);
             self.keyboard_reader = Some(reader);
         }
@@ -917,7 +944,9 @@ impl Machine
                                       interval: HUB_INTERVAL_MICROSECONDS,
                                       failures: 0,
                                       heard: false,
-                                      name: "hub" };
+                                      name: "hub",
+                                      quiet: 0,
+                                      said: 0 };
             reader.step(&mut registers, now, false);
             self.hub_reader = Some(reader);
         }

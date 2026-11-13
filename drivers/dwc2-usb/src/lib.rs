@@ -1161,7 +1161,11 @@ pub struct SplitRead
     /// Issued as the interrupt transfer it is, and not as if it were bulk.
     periodic:        bool,
     /// Whether the last failure was the start of the split or its completion.
-    failed_start:    bool
+    failed_start:    bool,
+    /// What the channel last reported when it halted or was given up on, and
+    /// how many completions the last split asked for.
+    last_status:     u32,
+    last_asked:      u32
 }
 impl SplitRead
 {
@@ -1175,6 +1179,8 @@ impl SplitRead
         Self { channel: CHANNEL_STRIDE * channel,
                periodic: true,
                failed_start: false,
+               last_status: 0,
+               last_asked: 0,
                characteristics: packet
                                 | CHANNEL_DIRECTION_IN
                                 | CHANNEL_ONE_TRANSACTION
@@ -1216,6 +1222,8 @@ impl SplitRead
         Self { channel: CHANNEL_STRIDE * channel,
                periodic,
                failed_start: false,
+               last_status: 0,
+               last_asked: 0,
                characteristics: packet
                                 | CHANNEL_DIRECTION_IN
                                 | if route.low_speed { CHANNEL_LOW_SPEED } else { 0 }
@@ -1259,6 +1267,13 @@ impl SplitRead
         registers.write(HCCHAR + self.channel, self.characteristics | parity | CHANNEL_ENABLE);
     }
 
+    /// The channel's last status word, and how many completions the last
+    /// split had asked for when it ended.
+    pub fn last(&self) -> (u32, u32)
+    {
+        (self.last_status, self.last_asked)
+    }
+
     /// Whether the failure last reported was the start of the split.
     pub fn failed_at_start(&self) -> bool
     {
@@ -1283,6 +1298,8 @@ impl SplitRead
             return ReadStep::Stray;
         }
         registers.write(HCINT + self.channel, u32::MAX);
+        self.last_status = status;
+        self.last_asked = self.completions;
         match self.phase
         {
             ReadPhase::Started if self.split == 0 =>
@@ -1378,6 +1395,8 @@ impl SplitRead
                 }
                 registers.write(HCCHAR + self.channel, self.characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
                 self.failed_start = self.phase == ReadPhase::Started;
+                self.last_status = status;
+                self.last_asked = self.completions;
                 self.phase = ReadPhase::Idle;
                 // A device with nothing to say can leave a periodic channel
                 // enabled and asking, never halted. That is "nothing", not a
