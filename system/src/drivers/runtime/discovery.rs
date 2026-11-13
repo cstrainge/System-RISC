@@ -1,4 +1,7 @@
-//! Boot-only class-neutral module ordering and hardware admission.
+//! Boot-only module ordering and hardware admission. Ordering knows one
+//! class: a module that offers the display goes first, and System attaches to
+//! it before entering any other module, so the boot screen is up while the
+//! rest of the machine is found.
 #![forbid(unsafe_code)]
 use super::*;
 
@@ -16,6 +19,15 @@ fn offers(metadata: &[u8], dependency: mac_module::Dependency) -> bool
                                                                            })
                                                                   })
                                           })
+}
+
+/// Whether this module's contract offers the display class.
+fn shows(metadata: &[u8]) -> bool
+{
+    mac_module::Contract::decode(metadata).is_ok_and(|contract| {
+        contract.offers()
+                .any(|offer| offer.is_ok_and(|offer| offer.class == mac_video_interface::CLASS))
+    })
 }
 
 pub(crate) fn discover(boot: &mut crate::boot_screen::BootScreen) -> Result<(), Status>
@@ -77,6 +89,16 @@ pub(crate) fn discover(boot: &mut crate::boot_screen::BootScreen) -> Result<(), 
                                            failure.status);
                 }
             }
+        }
+    }
+    // Display providers first, each group otherwise in its installed order.
+    let mut front = 0;
+    for index in 0..waiting.len()
+    {
+        if shows(&waiting[index].1)
+        {
+            waiting[front..=index].rotate_right(1);
+            front += 1;
         }
     }
     let inventory =
@@ -214,6 +236,24 @@ pub(crate) fn discover(boot: &mut crate::boot_screen::BootScreen) -> Result<(), 
                 serial!("MODULE_REJECTED name={} status={}",
                         core::str::from_utf8(&candidate.name).unwrap_or("?"),
                         status);
+            }
+            else if shows(&metadata) && !crate::machine::video::attached()
+            {
+                // The boot screen has been drawn into System's own reservation
+                // until now; attaching carries it onto the real display. A
+                // refusal here is not final: boot attaches again after
+                // discovery and decides there whether a display is required.
+                match crate::machine::video::attach()
+                {
+                    Ok(true) =>
+                    {
+                        serial!("BOOT_DISPLAY_FIRST name={}: attached before the remaining \
+                                 modules",
+                                core::str::from_utf8(&candidate.name).unwrap_or("?"))
+                    }
+                    Ok(false) => (),
+                    Err(status) => serial!("BOOT_DISPLAY_DEFERRED status={status}")
+                }
             }
         }
         if !progress

@@ -171,6 +171,12 @@ fn call(operation: u32, input: &[u8], output: usize) -> Result<alloc::vec::Vec<u
 /// and the ramfb path stays in use.
 pub(crate) fn attach() -> Result<bool, Status>
 {
+    if attached()
+    {
+        // Boot attaches as soon as a display provider is ready and asks again
+        // once every module is in; the second ask finds the work done.
+        return Ok(true);
+    }
     let pending = super::interrupts::with_masked(|| *ATTACH_PENDING.lock());
     if let Some(surface) = pending
     {
