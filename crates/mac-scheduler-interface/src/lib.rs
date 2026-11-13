@@ -16,6 +16,7 @@ pub const CANDIDATE_BYTES: usize = 32;
 pub const MAX_ROUND_BYTES: usize = ROUND_HEADER + MAX_CANDIDATES * CANDIDATE_BYTES;
 pub const DECISION_BYTES: usize = 48;
 pub mod control;
+pub mod events;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
 {
