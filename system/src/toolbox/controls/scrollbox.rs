@@ -282,21 +282,28 @@ fn dimensions(spec: Spec) -> Result<(usize, usize, usize), Status>
     }
     Ok((w as usize, h as usize, h as usize / spec.row_height as usize))
 }
+/// Says which of a scroll box's own allocations came back short, and how
+/// many elements it had asked for, then gives the status the caller returns.
+fn short(stage: &'static str, amount: usize) -> Status
+{
+    serial!("SCROLL_BOX_REFUSED stage={stage} amount={amount}");
+    NO_MEMORY
+}
 fn raster(spec: Spec) -> Result<Arc<Raster>, Status>
 {
     let (width, height, count) = dimensions(spec)?;
     let mut rows = Vec::new();
-    rows.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
+    rows.try_reserve_exact(count).map_err(|_| short("row-table", count))?;
     rows.resize_with(count, || None);
     let mut valid = Vec::new();
-    valid.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
+    valid.try_reserve_exact(count).map_err(|_| short("valid-table", count))?;
     valid.resize(count, false);
     Arc::try_new(Raster { width,
                           height,
                           row_height: spec.row_height as usize,
                           background: spec.background,
                           rows,
-                          valid }).map_err(|_| NO_MEMORY)
+                          valid }).map_err(|_| short("raster", count))
 }
 fn writable(object: &mut Viewport) -> Result<&mut Raster, Status>
 {
@@ -304,10 +311,10 @@ fn writable(object: &mut Viewport) -> Result<&mut Raster, Status>
     {
         let source = &object.raster;
         let mut rows = Vec::new();
-        rows.try_reserve_exact(source.rows.len()).map_err(|_| NO_MEMORY)?;
+        rows.try_reserve_exact(source.rows.len()).map_err(|_| short("row-table-copy", source.rows.len()))?;
         rows.extend(source.rows.iter().cloned());
         let mut valid = Vec::new();
-        valid.try_reserve_exact(source.valid.len()).map_err(|_| NO_MEMORY)?;
+        valid.try_reserve_exact(source.valid.len()).map_err(|_| short("valid-table-copy", source.valid.len()))?;
         valid.extend_from_slice(&source.valid);
         // A snapshot shares immutable row tiles. Copy only the small row table;
         // filling a row later replaces that row, never the entire viewport.
@@ -316,7 +323,7 @@ fn writable(object: &mut Viewport) -> Result<&mut Raster, Status>
                                               row_height: source.row_height,
                                               background: source.background,
                                               rows,
-                                              valid }).map_err(|_| NO_MEMORY)?;
+                                              valid }).map_err(|_| short("raster-copy", 0))?;
     }
     Arc::get_mut(&mut object.raster).ok_or(SERVICE_BUSY)
 }
@@ -327,9 +334,9 @@ fn row_pixels(raster: &mut Raster, index: usize) -> Result<&mut [u32], Status>
     {
         let size = raster.width * raster.row_height;
         let mut pixels = Vec::new();
-        pixels.try_reserve_exact(size).map_err(|_| NO_MEMORY)?;
+        pixels.try_reserve_exact(size).map_err(|_| short("row-pixels", size))?;
         pixels.resize(size, raster.background);
-        *slot = Some(Arc::try_new(Row { pixels }).map_err(|_| NO_MEMORY)?);
+        *slot = Some(Arc::try_new(Row { pixels }).map_err(|_| short("row", size))?);
     }
     let row = slot.as_mut().ok_or(BAD_ABI)?;
     let row = Arc::get_mut(row).ok_or(SERVICE_BUSY)?;
@@ -695,7 +702,7 @@ impl Manager
             {
                 if w * h * 8 > self.reserved_raster_bytes
                 {
-                    return Err(NO_MEMORY);
+                    return Err(short("recovery-allowance", w * h * 8));
                 }
             }
         }

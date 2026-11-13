@@ -703,6 +703,21 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     }
     if user_origin
        && action == crate::machine::scheduler::service::RequestAction::Return
+       && abi::result(frame) as isize == mac_abi::NO_MEMORY as isize
+    {
+        // Which service said "no memory", to whom. The resident heap says so
+        // itself when it refuses; a refusal with no such line beside this one
+        // came from a bound that is not memory at all.
+        static SAID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        if SAID.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 32
+        {
+            let identity = thread.identity();
+            serial!("NATIVE_NO_MEMORY app={} thread={} trap={:#x}", identity.app.0,
+                    identity.thread.0, number);
+        }
+    }
+    if user_origin
+       && action == crate::machine::scheduler::service::RequestAction::Return
        && abi::result(frame) as isize == SERVICE_BUSY as isize
        && !thread.traps.terminal_busy_reported()
     {

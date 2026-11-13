@@ -356,7 +356,8 @@ impl super::Toolbox
         }
         crate::trace::record(crate::trace::TEXTEDIT, self.owner, 2, commands.len() as u64, 0, 0);
         let bytes = commands.iter().map(RenderCommand::storage).sum::<usize>();
-        if self.retained_bytes() + bytes > super::MAX_RETAINED_BYTES
+        let (used, limit) = self.retained_room(call.window.0.into());
+        if used.saturating_add(bytes) > limit
         {
             return Err(NO_MEMORY);
         }

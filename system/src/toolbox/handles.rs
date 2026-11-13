@@ -427,13 +427,29 @@ pub(crate) fn pipe_kinds()
       .map_err(|error| registry_status(&error))
 }
 
+/// Says which object pool turned a request away as "no memory". A pool's
+/// bound is a count of slots, so this is the line that tells a full table
+/// from a full heap. Console only; allocates nothing.
+fn pool_refusal(cause: core::fmt::Arguments<'_>)
+{
+    static SAID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    if SAID.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 32
+    {
+        serial!("POOL_REFUSED cause={cause}");
+    }
+}
+
 pub(crate) fn projection_status(error: mac_object_table::projected::Error) -> mac_abi::Status
 {
     use mac_abi::*;
     use mac_object_table::domain::PoolError;
     match error
     {
-        mac_object_table::projected::Error::ProjectionExhausted => NO_MEMORY,
+        mac_object_table::projected::Error::ProjectionExhausted =>
+        {
+            pool_refusal(format_args!("ProjectionExhausted"));
+            NO_MEMORY
+        }
         mac_object_table::projected::Error::Pool(error) =>
         {
             match error
@@ -443,7 +459,11 @@ pub(crate) fn projection_status(error: mac_object_table::projected::Error) -> ma
                 | PoolError::RegistrationUsesExhausted { .. }
                 | PoolError::GrowthRequired { .. }
                 | PoolError::GrowthLimit { .. }
-                | PoolError::Exhausted { .. } => NO_MEMORY,
+                | PoolError::Exhausted { .. } =>
+                {
+                    pool_refusal(format_args!("{error:?}"));
+                    NO_MEMORY
+                }
                 PoolError::Stopping { .. } | PoolError::RegistrationUnavailable { .. } =>
                 {
                     SERVICE_BUSY

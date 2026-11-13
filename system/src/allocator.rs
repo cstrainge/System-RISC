@@ -444,6 +444,7 @@ unsafe impl GlobalAlloc for ResidentHeap
             let Ok(block) = BlockLayout::new(layout)
             else
             {
+                self.refused("layout", layout.size());
                 return ptr::null_mut();
             };
             let Ok(reservation) = crate::context::reserve_allocation(block.backing.size() as u64)
@@ -453,7 +454,10 @@ unsafe impl GlobalAlloc for ResidentHeap
                 return ptr::null_mut();
             };
             self.allocate(block, reservation)
-        }).unwrap_or(ptr::null_mut())
+        }).unwrap_or_else(|| {
+              self.refused("policy", layout.size());
+              ptr::null_mut()
+          })
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout)
@@ -530,6 +534,9 @@ unsafe impl GlobalAlloc for ResidentHeap
                 }
             }
             replacement
-        }).unwrap_or(ptr::null_mut())
+        }).unwrap_or_else(|| {
+              self.refused("policy-on-growth", size);
+              ptr::null_mut()
+          })
     }
 }

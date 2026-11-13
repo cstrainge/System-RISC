@@ -115,7 +115,15 @@ pub(crate) fn account_status(error: &mac_kernel_model::account::Error) -> mac_ab
     {
         Error::Closed { .. } => SERVICE_BUSY,
         Error::ForeignAccount { .. } => ACCESS_DENIED,
-        Error::Budget(_) | Error::Metadata { .. } => NO_MEMORY,
+        Error::Budget(_) | Error::Metadata { .. } =>
+        {
+            static SAID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            if SAID.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 32
+            {
+                serial!("ACCOUNT_REFUSED cause={error:?}");
+            }
+            NO_MEMORY
+        }
         Error::Operation(cause) =>
         {
             match cause

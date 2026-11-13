@@ -373,10 +373,11 @@ impl Toolbox
         }
     }
 
-    fn retained_bytes(&self) -> usize
+    /// What the owner of `id` retains and may retain; see `scene_admission`.
+    fn retained_room(&self, id: SceneTarget) -> (usize, usize)
     {
-        window_layout::ordinary_retained_bytes(&self.windows, &self.presentation.content,
-                                               &self.presentation.pending_content)
+        window_layout::scene_admission(&self.windows, &self.presentation.content,
+                                       &self.presentation.pending_content, id)
     }
 
     fn content_mut(&mut self, id: impl Into<SceneTarget>) -> Result<&mut Content, Status>

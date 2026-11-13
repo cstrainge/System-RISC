@@ -19,22 +19,55 @@ pub(super) fn ordinary_retained_bytes(windows: &WindowManager, content: &[Conten
            .fold(0usize, |bytes, c| bytes.saturating_add(c.storage()))
 }
 
+/// What one scene's owner already retains, and how much it may.
+///
+/// The ceiling belongs to the application that owns the target window. It was
+/// once a single sum over every ordinary application, which let a newly
+/// launched program's windows turn away a redraw in one already running. An
+/// application can now only reach its own ceiling. The ceiling is logical, as
+/// before: actual backing is charged to its owner by the allocator.
 pub(super) fn scene_admission(windows: &WindowManager, content: &[Content], pending: &[Content],
                               id: SceneTarget)
                               -> (usize, usize)
 {
-    let system_scene = |id: SceneTarget| {
-        id.window()
-          .ok()
-          .and_then(|id| windows.window(id))
-          .is_some_and(|w| w.uses_system_resources())
-    };
-    let system = system_scene(id);
+    let window = |id: SceneTarget| id.window().ok().and_then(|id| windows.window(id));
+    let system = |id: SceneTarget| window(id).is_some_and(|w| w.uses_system_resources());
+    if system(id)
+    {
+        let used = content.iter()
+                          .chain(pending)
+                          .filter(|c| system(c.id))
+                          .fold(0usize, |bytes, c| bytes.saturating_add(c.storage()));
+        return (used, usize::MAX);
+    }
+    let owner = window(id).map(|w| w.owner);
     let used = content.iter()
                       .chain(pending)
-                      .filter(|c| system_scene(c.id) == system)
+                      .filter(|c| !system(c.id) && window(c.id).map(|w| w.owner) == owner)
                       .fold(0usize, |bytes, c| bytes.saturating_add(c.storage()));
-    if system { (used, usize::MAX) } else { (used, MAX_RETAINED_BYTES) }
+    // A scroll box is admitted at four bytes for each pixel of its viewport, so
+    // the ceiling has to follow the screen: two screens' worth, and never less
+    // than the figure that suited a small display.
+    let limit = MAX_RETAINED_BYTES.max(crate::display::pixels().saturating_mul(8));
+    retained_high_water(owner, used, ordinary_retained_bytes(windows, content, pending), limit);
+    (used, limit)
+}
+
+/// Says each time the retained scenes of all ordinary applications together
+/// pass another quarter mebibyte, beside what the asking application holds.
+/// Past `MAX_RETAINED_BYTES` the shared ceiling would have refused this caller.
+fn retained_high_water(owner: Option<u64>, its: usize, all: usize, limit: usize)
+{
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static MARK: AtomicUsize = AtomicUsize::new(0);
+    let step = all / (256 * 1024);
+    if step > MARK.load(Ordering::Relaxed)
+    {
+        MARK.store(step, Ordering::Relaxed);
+        serial!("RETAINED_SCENE all_apps={all} asking_app={} its_bytes={its} its_limit={limit} \
+                 shared_ceiling_was={MAX_RETAINED_BYTES}",
+                owner.unwrap_or(0));
+    }
 }
 
 fn relayout(windows: &WindowManager, content: &mut [Content], pending: &[Content],
