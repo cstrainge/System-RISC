@@ -334,6 +334,7 @@ impl Toolbox
             Some(outcome) => serial!("PROCESS_EXIT app={owner} {outcome}"),
             None => serial!("PROCESS_EXIT app={owner} kind=unstarted")
         }
+        crate::kernel::report_memory("exit");
     }
 
     pub(crate) fn native_failure_selection(&mut self,
@@ -1550,6 +1551,7 @@ impl Toolbox
         call.info = info;
         self.notify_finder_file_state(call.volume, call.cnid, true);
         serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
+        crate::kernel::report_memory("launch");
         Ok(())
     }
 

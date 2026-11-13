@@ -29,6 +29,12 @@ impl Write for Serial
 }
 #[global_allocator]
 static HEAP: crate::allocator::ResidentHeap = crate::allocator::ResidentHeap::empty();
+
+/// The resident heap's and the page bank's state, said on the console.
+pub(crate) fn report_memory(event: &str)
+{
+    HEAP.report(event);
+}
 static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::new();
 static FONTS: Once<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>> = Once::new();
 static INSTALLED_FONTS:

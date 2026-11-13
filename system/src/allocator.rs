@@ -330,8 +330,45 @@ pub(crate) struct ResidentHeap
 {
     heap: LockedHeap
 }
+/// How many refusals have been said. An allocation that is refused is
+/// reported to its caller as "no memory" whatever the reason, and the reasons
+/// are not alike: the owner's account will not admit it, or the heap has no
+/// run of that size left. The first few are said, with the heap's state.
+static REFUSALS_SAID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+const REFUSALS_TO_SAY: u32 = 24;
+
 impl ResidentHeap
 {
+    /// Says that an allocation was refused, why, and what the ordinary heap
+    /// held at that moment. Writes to the console only; allocates nothing.
+    fn refused(&self, cause: &str, bytes: usize)
+    {
+        if REFUSALS_SAID.fetch_add(1, core::sync::atomic::Ordering::Relaxed) >= REFUSALS_TO_SAY
+        {
+            return;
+        }
+        let (free, used, size) = {
+            let heap = self.heap.lock();
+            (heap.free(), heap.used(), heap.size())
+        };
+        let pages = crate::machine::pages::free_pages().unwrap_or(0);
+        serial!("RESIDENT_ALLOCATION_REFUSED cause={cause} bytes={bytes} heap_free={free} \
+                 heap_used={used} heap_size={size} free_pages={pages}");
+    }
+
+    /// Says what the ordinary heap and the page bank hold, at a process's
+    /// launch or exit, so a refusal later can be read against what led to it.
+    pub(crate) fn report(&self, event: &str)
+    {
+        let (free, used, size) = {
+            let heap = self.heap.lock();
+            (heap.free(), heap.used(), heap.size())
+        };
+        let pages = crate::machine::pages::free_pages().unwrap_or(0);
+        serial!("MEMORY at={event} heap_free={free} heap_used={used} heap_size={size} \
+                 free_pages={pages}");
+    }
+
     pub(crate) const fn empty() -> Self
     {
         Self { heap: LockedHeap::empty() }
@@ -383,6 +420,7 @@ impl ResidentHeap
             // The heap guard has gone before reservation rollback can dispose
             // of its original account or its final foundation control block.
             drop(reservation);
+            self.refused("heap", block.backing.size());
             return ptr::null_mut();
         };
         let header = Header { backing: block.backing,
@@ -411,6 +449,7 @@ unsafe impl GlobalAlloc for ResidentHeap
             let Ok(reservation) = crate::context::reserve_allocation(block.backing.size() as u64)
             else
             {
+                self.refused("account", block.backing.size());
                 return ptr::null_mut();
             };
             self.allocate(block, reservation)
@@ -477,6 +516,7 @@ unsafe impl GlobalAlloc for ResidentHeap
                 crate::context::reserve_replacement(&header.receipt, block.backing.size() as u64)
             else
             {
+                self.refused("account-on-growth", block.backing.size());
                 return ptr::null_mut();
             };
             let replacement = self.allocate(block, reservation);
