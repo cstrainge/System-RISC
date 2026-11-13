@@ -34,6 +34,9 @@ struct Machine
     /// The reads, in steps, once the controller's line is taken.
     mouse_reader: Option<Reader>,
     keyboard_reader: Option<Reader>,
+    hub_reader: Option<Reader>,
+    /// How many ports the hub has, or 0 when there is none.
+    hub_ports: u8,
     listening: bool,
     /// Reports translated and waiting for System to ask for them.
     queue:   [input::Event; QUEUE_EVENTS],
@@ -63,6 +66,17 @@ const REPEAT_INTERVAL_MICROSECONDS: u64 = 40_000;
 /// transfer page its reports land in.
 const MOUSE_CHANNEL: usize = 0;
 const KEYBOARD_CHANNEL: usize = 1;
+const HUB_CHANNEL: usize = 2;
+/// The part of the transfer page the waiting transfers use, clear of the
+/// parts the reads above land in.
+const CONTROL_PART: usize = 4;
+/// A hub reports which ports changed on its one interrupt endpoint, a bit
+/// for each port. This is every hub's layout and is not read from this one's
+/// descriptors.
+const HUB_CHANGE_ENDPOINT: u8 = 1;
+const HUB_CHANGE_PACKET: u32 = 1;
+/// How often the hub is asked whether anything changed.
+const HUB_INTERVAL_MICROSECONDS: u64 = 100_000;
 
 /// One device's read, and what stepping it needs kept.
 struct Reader
@@ -73,6 +87,8 @@ struct Reader
     pid:     u32,
     /// When this read next wants the alarm, in microseconds, or 0.
     due:      u64,
+    /// How long after one answer the next is asked for.
+    interval: u64,
     failures: u32,
     heard:    bool,
     name:     &'static str
@@ -104,7 +120,7 @@ impl Reader
             crate::ReadStep::Stray => return None,
             crate::ReadStep::Running => (WATCHDOG_MICROSECONDS, None),
             crate::ReadStep::Wait(microseconds) => (microseconds, None),
-            crate::ReadStep::Nothing => (REPORT_INTERVAL_MICROSECONDS, None),
+            crate::ReadStep::Nothing => (self.interval, None),
             crate::ReadStep::Data(received) =>
             {
                 // The toggle moves on only when a report was taken. After a
@@ -119,7 +135,7 @@ impl Reader
                     report(format_args!("USB_READ_FIRST device={} bytes={received}\n",
                                         self.name));
                 }
-                (REPORT_INTERVAL_MICROSECONDS, Some(received))
+                (self.interval, Some(received))
             }
             crate::ReadStep::Failed(status) =>
             {
@@ -424,6 +440,9 @@ impl Machine
         };
         self.page = Some(Page { cpu:    page.cpu,
                                 device: page.device });
+        // The waiting transfers have a part of the page to themselves, so the
+        // ones made later, when a device arrives, do not land on a report.
+        let mut page = page.part(CONTROL_PART);
         if let Err(refusal) = crate::prepare_transfers(&mut registers, &mut clock, &identity)
         {
             report(format_args!("USB_TRANSFERS_REFUSED: {refusal}\n"));
@@ -501,170 +520,12 @@ impl Machine
                 // before the next port is touched.
                 for index in 0..hub.ports
                 {
-                    if hub.status[index].0 & crate::HUB_PORT_CONNECTED == 0
+                    if hub.status[index].0 & crate::HUB_PORT_CONNECTED != 0
                     {
-                        continue;
+                        self.attach_port(&mut registers, &mut clock, &mut page, (index + 1) as u8);
                     }
-                    let port = (index + 1) as u8;
-                    let (status, _) = match crate::reset_hub_port(&mut registers,
-                                                                  &mut clock,
-                                                                  &mut page,
-                                                                  crate::ROOT_DEVICE_ADDRESS,
-                                                                  port)
-                    {
-                        Ok(words) => words,
-                        Err(refusal) =>
-                        {
-                            report(format_args!("USB_HUB_PORT_RESET_REFUSED port={port}: \
-                                                 {refusal}\n"));
-                            continue;
-                        }
-                    };
-                    let high = status & crate::HUB_PORT_HIGH_SPEED != 0;
-                    let speed = if high
-                    {
-                        "high"
-                    }
-                    else if status & crate::HUB_PORT_LOW_SPEED != 0
-                    {
-                        "low"
-                    }
-                    else
-                    {
-                        "full"
-                    };
-                    report(format_args!("USB_HUB_PORT_RESET port={port} enabled={} speed={speed} \
-                                         status={status:#06x}\n",
-                                        status & crate::HUB_PORT_ENABLED != 0));
-                    if status & crate::HUB_PORT_ENABLED == 0
-                    {
-                        continue;
-                    }
-                    let address = crate::ROOT_DEVICE_ADDRESS + port;
-                    if !high
-                    {
-                        // Behind a high-speed hub, a slower device is reached
-                        // through the hub by split transactions.
-                        let route = crate::Route { hub: crate::ROOT_DEVICE_ADDRESS,
-                                                   port,
-                                                   low_speed: status
-                                                              & crate::HUB_PORT_LOW_SPEED
-                                                              != 0 };
-                        match crate::address_slow_device(&mut registers,
-                                                         &mut clock,
-                                                         &mut page,
-                                                         route,
-                                                         address)
-                        {
-                            Ok(d) =>
-                            {
-                                match crate::start_boot_inputs(&mut registers,
-                                                              &mut clock,
-                                                              &mut page,
-                                                              route,
-                                                              address,
-                                                              u32::from(d[7]))
-                                {
-                                    Ok(inputs) =>
-                                    {
-                                        for interface in &inputs.interfaces[..inputs.count]
-                                        {
-                                            report(format_args!("USB_INTERFACE port={port} \
-                                                                 number={} class={:02x} \
-                                                                 subclass={:02x} \
-                                                                 protocol={:02x}\n",
-                                                                interface[0],
-                                                                interface[1],
-                                                                interface[2],
-                                                                interface[3]));
-                                        }
-                                        if let Some(found) = inputs.mouse
-                                           && self.mouse.is_none()
-                                        {
-                                            report(format_args!("USB_MOUSE port={port} \
-                                                                 address={address} \
-                                                                 interface={} endpoint={} \
-                                                                 packet={}\n",
-                                                                found.interface,
-                                                                found.endpoint,
-                                                                found.packet));
-                                            self.mouse =
-                                                Some(Mouse { route,
-                                                             address,
-                                                             endpoint: found.endpoint,
-                                                             packet: found.packet.max(1),
-                                                             pid: crate::PID_DATA0,
-                                                             buttons: 0,
-                                                             refused: false });
-                                        }
-                                        if let Some(found) = inputs.keyboard
-                                           && self.keyboard.is_none()
-                                        {
-                                            report(format_args!("USB_KEYBOARD port={port} \
-                                                                 address={address} \
-                                                                 interface={} endpoint={} \
-                                                                 packet={}\n",
-                                                                found.interface,
-                                                                found.endpoint,
-                                                                found.packet));
-                                            self.keyboard =
-                                                Some(Keyboard { route,
-                                                                address,
-                                                                endpoint: found.endpoint,
-                                                                packet: found.packet.max(1),
-                                                                last: [0; 8],
-                                                                repeat: 0,
-                                                                repeats: 0 });
-                                        }
-                                    }
-                                    Err(refusal) =>
-                                    {
-                                        report(format_args!("USB_INPUT_REFUSED port={port}: \
-                                                             {refusal}\n"));
-                                    }
-                                }
-                                report(format_args!("USB_PORT_DEVICE port={port} \
-                                                     address={address} speed={speed} \
-                                                     usb={:x}.{:02x} class={:02x} \
-                                                     subclass={:02x} protocol={:02x} \
-                                                     max_packet={} vendor={:02x}{:02x} \
-                                                     product={:02x}{:02x}\n",
-                                                    d[3], d[2], d[4], d[5], d[6], d[7], d[9],
-                                                    d[8], d[11], d[10]));
-                            }
-                            Err(refusal) =>
-                            {
-                                report(format_args!("USB_PORT_DEVICE_REFUSED port={port} \
-                                                     speed={speed}: {refusal}\n"));
-                            }
-                        }
-                        continue;
-                    }
-                    let d = match crate::device_descriptor(&mut registers,
-                                                           &mut clock,
-                                                           &mut page,
-                                                           0)
-                    {
-                        Ok(descriptor) => descriptor,
-                        Err(refusal) =>
-                        {
-                            report(format_args!("USB_PORT_DEVICE_REFUSED port={port}: \
-                                                 {refusal}\n"));
-                            continue;
-                        }
-                    };
-                    if let Err(refusal) =
-                        crate::assign_address(&mut registers, &mut clock, &mut page, address)
-                    {
-                        report(format_args!("USB_PORT_DEVICE_REFUSED port={port}: {refusal}\n"));
-                        continue;
-                    }
-                    report(format_args!("USB_PORT_DEVICE port={port} address={address} \
-                                         usb={:x}.{:02x} class={:02x} subclass={:02x} \
-                                         protocol={:02x} vendor={:02x}{:02x} \
-                                         product={:02x}{:02x}\n",
-                                        d[3], d[2], d[4], d[5], d[6], d[9], d[8], d[11], d[10]));
                 }
+                self.hub_ports = hub.ports as u8;
             }
             Err(refusal) => report(format_args!("USB_HUB_REFUSED: {refusal}\n"))
         }
@@ -673,35 +534,223 @@ impl Machine
 
 impl Machine
 {
-    /// Takes the controller's interrupt line, if the machine gives one, and
-    /// starts reading the mouse and the keyboard from it. Without the line the
-    /// mouse is read when System asks, as before, and a keyboard is not read.
-    fn listen(&mut self)
+    /// One port of the hub: reset it, give what is there an address, and take
+    /// up any boot-protocol mouse or keyboard it carries. Used when the bus is
+    /// first walked and again whenever the hub says a port has gained a device.
+    fn attach_port(&mut self, registers: &mut MachineRegisters, clock: &mut HostClock,
+                   page: &mut Page, port: u8)
+    {
+        let (status, _) = match crate::reset_hub_port(registers,
+                                                      clock,
+                                                      page,
+                                                      crate::ROOT_DEVICE_ADDRESS,
+                                                      port)
+        {
+            Ok(words) => words,
+            Err(refusal) =>
+            {
+                report(format_args!("USB_HUB_PORT_RESET_REFUSED port={port}: \
+                                     {refusal}\n"));
+                return;
+            }
+        };
+        let high = status & crate::HUB_PORT_HIGH_SPEED != 0;
+        let speed = if high
+        {
+            "high"
+        }
+        else if status & crate::HUB_PORT_LOW_SPEED != 0
+        {
+            "low"
+        }
+        else
+        {
+            "full"
+        };
+        report(format_args!("USB_HUB_PORT_RESET port={port} enabled={} speed={speed} \
+                             status={status:#06x}\n",
+                            status & crate::HUB_PORT_ENABLED != 0));
+        if status & crate::HUB_PORT_ENABLED == 0
+        {
+            return;
+        }
+        let address = crate::ROOT_DEVICE_ADDRESS + port;
+        if !high
+        {
+            // Behind a high-speed hub, a slower device is reached
+            // through the hub by split transactions.
+            let route = crate::Route { hub: crate::ROOT_DEVICE_ADDRESS,
+                                       port,
+                                       low_speed: status
+                                                  & crate::HUB_PORT_LOW_SPEED
+                                                  != 0 };
+            match crate::address_slow_device(registers,
+                                             clock,
+                                             page,
+                                             route,
+                                             address)
+            {
+                Ok(d) =>
+                {
+                    match crate::start_boot_inputs(registers,
+                                                  clock,
+                                                  page,
+                                                  route,
+                                                  address,
+                                                  u32::from(d[7]))
+                    {
+                        Ok(inputs) =>
+                        {
+                            for interface in &inputs.interfaces[..inputs.count]
+                            {
+                                report(format_args!("USB_INTERFACE port={port} \
+                                                     number={} class={:02x} \
+                                                     subclass={:02x} \
+                                                     protocol={:02x}\n",
+                                                    interface[0],
+                                                    interface[1],
+                                                    interface[2],
+                                                    interface[3]));
+                            }
+                            if let Some(found) = inputs.mouse
+                               && self.mouse.is_none()
+                            {
+                                report(format_args!("USB_MOUSE port={port} \
+                                                     address={address} \
+                                                     interface={} endpoint={} \
+                                                     packet={}\n",
+                                                    found.interface,
+                                                    found.endpoint,
+                                                    found.packet));
+                                self.mouse =
+                                    Some(Mouse { route,
+                                                 address,
+                                                 endpoint: found.endpoint,
+                                                 packet: found.packet.max(1),
+                                                 pid: crate::PID_DATA0,
+                                                 buttons: 0,
+                                                 refused: false });
+                            }
+                            if let Some(found) = inputs.keyboard
+                               && self.keyboard.is_none()
+                            {
+                                report(format_args!("USB_KEYBOARD port={port} \
+                                                     address={address} \
+                                                     interface={} endpoint={} \
+                                                     packet={}\n",
+                                                    found.interface,
+                                                    found.endpoint,
+                                                    found.packet));
+                                self.keyboard =
+                                    Some(Keyboard { route,
+                                                    address,
+                                                    endpoint: found.endpoint,
+                                                    packet: found.packet.max(1),
+                                                    last: [0; 8],
+                                                    repeat: 0,
+                                                    repeats: 0 });
+                            }
+                        }
+                        Err(refusal) =>
+                        {
+                            report(format_args!("USB_INPUT_REFUSED port={port}: \
+                                                 {refusal}\n"));
+                        }
+                    }
+                    report(format_args!("USB_PORT_DEVICE port={port} \
+                                         address={address} speed={speed} \
+                                         usb={:x}.{:02x} class={:02x} \
+                                         subclass={:02x} protocol={:02x} \
+                                         max_packet={} vendor={:02x}{:02x} \
+                                         product={:02x}{:02x}\n",
+                                        d[3], d[2], d[4], d[5], d[6], d[7], d[9],
+                                        d[8], d[11], d[10]));
+                }
+                Err(refusal) =>
+                {
+                    report(format_args!("USB_PORT_DEVICE_REFUSED port={port} \
+                                         speed={speed}: {refusal}\n"));
+                }
+            }
+            return;
+        }
+        let d = match crate::device_descriptor(registers,
+                                               clock,
+                                               page,
+                                               0)
+        {
+            Ok(descriptor) => descriptor,
+            Err(refusal) =>
+            {
+                report(format_args!("USB_PORT_DEVICE_REFUSED port={port}: \
+                                     {refusal}\n"));
+                return;
+            }
+        };
+        if let Err(refusal) =
+            crate::assign_address(registers, clock, page, address)
+        {
+            report(format_args!("USB_PORT_DEVICE_REFUSED port={port}: {refusal}\n"));
+            return;
+        }
+        report(format_args!("USB_PORT_DEVICE port={port} address={address} \
+                             usb={:x}.{:02x} class={:02x} subclass={:02x} \
+                             protocol={:02x} vendor={:02x}{:02x} \
+                             product={:02x}{:02x}\n",
+                            d[3], d[2], d[4], d[5], d[6], d[9], d[8], d[11], d[10]));
+    }
+
+    /// Whatever was on this port is gone: stop reading it and forget it. Keys
+    /// a keyboard was holding are let up, or they would be held for ever.
+    fn detach_port(&mut self, registers: &mut MachineRegisters, port: u8)
+    {
+        if self.mouse.as_ref().is_some_and(|mouse| mouse.route.port == port)
+        {
+            if let Some(reader) = self.mouse_reader.as_mut()
+            {
+                reader.read.abandon(registers);
+            }
+            self.mouse_reader = None;
+            self.mouse = None;
+            report(format_args!("USB_MOUSE_GONE port={port}\n"));
+        }
+        if let Some(keyboard) = self.keyboard.as_ref()
+           && keyboard.route.port == port
+        {
+            let mut events = [input::Event::synchronize(); 15];
+            let mut count = 0;
+            crate::keyboard_changes(&keyboard.last, &[0; 8], |key, down| {
+                if count < 14
+                {
+                    events[count] = input::Event::key(key, down);
+                    count += 1;
+                }
+            });
+            if let Some(reader) = self.keyboard_reader.as_mut()
+            {
+                reader.read.abandon(registers);
+            }
+            self.keyboard_reader = None;
+            self.keyboard = None;
+            if count != 0
+            {
+                count += 1;
+                self.enqueue(&events[..count]);
+            }
+            report(format_args!("USB_KEYBOARD_GONE port={port}\n"));
+        }
+    }
+
+    /// Starts a read for each device that has none yet.
+    fn start_readers(&mut self, registers: &mut MachineRegisters, now: u64)
     {
         let Some(page) = self.page
         else
         {
             return;
         };
-        if self.mouse.is_none() && self.keyboard.is_none()
-        {
-            return;
-        }
-        let line = match self.service.take_interrupt(self.claim)
-        {
-            Ok(line) => line,
-            Err(error) =>
-            {
-                report(format_args!("USB_INTERRUPT_REFUSED status={}: the mouse is read when \
-                                     System asks, and a keyboard is not read\n",
-                                    error.0));
-                return;
-            }
-        };
-        let now = self.now();
-        let mut registers = MachineRegisters { base: self.base };
-        crate::listen_for_channels(&mut registers, 2);
-        if let Some(mouse) = self.mouse.as_ref()
+        if self.mouse_reader.is_none()
+           && let Some(mouse) = self.mouse.as_ref()
         {
             let page = page.part(MOUSE_CHANNEL);
             let mut reader = Reader { read: crate::SplitRead::new(MOUSE_CHANNEL,
@@ -713,13 +762,15 @@ impl Machine
                                       page,
                                       pid: mouse.pid,
                                       due: 0,
+                                      interval: REPORT_INTERVAL_MICROSECONDS,
                                       failures: 0,
                                       heard: false,
                                       name: "mouse" };
-            reader.step(&mut registers, now, false);
+            reader.step(registers, now, false);
             self.mouse_reader = Some(reader);
         }
-        if let Some(keyboard) = self.keyboard.as_ref()
+        if self.keyboard_reader.is_none()
+           && let Some(keyboard) = self.keyboard.as_ref()
         {
             let page = page.part(KEYBOARD_CHANNEL);
             let mut reader = Reader { read: crate::SplitRead::new(KEYBOARD_CHANNEL,
@@ -731,18 +782,152 @@ impl Machine
                                       page,
                                       pid: crate::PID_DATA0,
                                       due: 0,
+                                      interval: REPORT_INTERVAL_MICROSECONDS,
                                       failures: 0,
                                       heard: false,
                                       name: "keyboard" };
-            reader.step(&mut registers, now, false);
+            reader.step(registers, now, false);
             self.keyboard_reader = Some(reader);
+        }
+    }
+
+    /// Reads each port's change bits and clears the ones that are set, so the
+    /// hub's change report says only what happens from here on. Returns each
+    /// port's status and what had changed.
+    fn settle_port(&mut self, registers: &mut MachineRegisters, clock: &mut HostClock,
+                   page: &mut Page, port: u8)
+                   -> Option<(u16, u16)>
+    {
+        let (status, change) =
+            crate::hub_port_status(registers, clock, page, crate::ROOT_DEVICE_ADDRESS, port).ok()?;
+        // The change bits are features 16 to 20: connection, enable, suspend,
+        // over-current and reset.
+        for bit in 0..5u8
+        {
+            if change & 1 << bit != 0
+            {
+                let _ = crate::control(registers,
+                                       clock,
+                                       page,
+                                       crate::ROOT_DEVICE_ADDRESS,
+                                       [0x23, 0x01, 16 + bit, 0, port, 0, 0, 0],
+                                       &mut []);
+            }
+        }
+        Some((status, change))
+    }
+
+    /// The hub said these ports changed: find out how, and take up or let go
+    /// of what is on each. This runs the same bounded, waiting transfers the
+    /// first walk of the bus does, so a device arriving holds the caller for
+    /// as long as its reset and its questions take.
+    fn ports_changed(&mut self, registers: &mut MachineRegisters, changed: u32, now: u64)
+    {
+        let (Some(host), Some(page)) = (self.host, self.page)
+        else
+        {
+            return;
+        };
+        let mut clock = HostClock(host);
+        let mut page = page.part(CONTROL_PART);
+        for port in 1..=self.hub_ports
+        {
+            if changed & 1 << port == 0
+            {
+                continue;
+            }
+            let Some((status, change)) = self.settle_port(registers, &mut clock, &mut page, port)
+            else
+            {
+                continue;
+            };
+            if change & crate::HUB_PORT_CONNECTED == 0
+            {
+                continue;
+            }
+            // Whatever was known about the port is stale either way.
+            self.detach_port(registers, port);
+            if status & crate::HUB_PORT_CONNECTED != 0
+            {
+                report(format_args!("USB_PORT_ATTACHED port={port} status={status:#06x}\n"));
+                self.attach_port(registers, &mut clock, &mut page, port);
+                // The reset raised its own change bits; they are not news.
+                let _ = self.settle_port(registers, &mut clock, &mut page, port);
+            }
+            else
+            {
+                report(format_args!("USB_PORT_DETACHED port={port} status={status:#06x}\n"));
+            }
+        }
+        self.start_readers(registers, now);
+    }
+
+    /// Takes the controller's interrupt line, if the machine gives one, and
+    /// starts reading the mouse, the keyboard and the hub's change reports
+    /// from it. Without the line the mouse is read when System asks, as
+    /// before; a keyboard is not read and a device plugged in later is not
+    /// noticed.
+    fn listen(&mut self)
+    {
+        let (Some(page), Some(host)) = (self.page, self.host)
+        else
+        {
+            return;
+        };
+        if self.hub_ports == 0 && self.mouse.is_none() && self.keyboard.is_none()
+        {
+            return;
+        }
+        let line = match self.service.take_interrupt(self.claim)
+        {
+            Ok(line) => line,
+            Err(error) =>
+            {
+                report(format_args!("USB_INTERRUPT_REFUSED status={}: the mouse is read when \
+                                     System asks, a keyboard is not read, and a device plugged \
+                                     in later is not noticed\n",
+                                    error.0));
+                return;
+            }
+        };
+        let mut registers = MachineRegisters { base: self.base };
+        // What changed while the bus was first walked is already acted on.
+        {
+            let mut clock = HostClock(host);
+            let mut control = page.part(CONTROL_PART);
+            for port in 1..=self.hub_ports
+            {
+                let _ = self.settle_port(&mut registers, &mut clock, &mut control, port);
+            }
+        }
+        let now = self.now();
+        crate::listen_for_channels(&mut registers, 3);
+        self.start_readers(&mut registers, now);
+        if self.hub_ports != 0
+        {
+            let page = page.part(HUB_CHANNEL);
+            let mut reader = Reader { read: crate::SplitRead::direct(HUB_CHANNEL,
+                                                                     &page,
+                                                                     crate::ROOT_DEVICE_ADDRESS,
+                                                                     HUB_CHANGE_ENDPOINT,
+                                                                     HUB_CHANGE_PACKET),
+                                      page,
+                                      pid: crate::PID_DATA0,
+                                      due: 0,
+                                      interval: HUB_INTERVAL_MICROSECONDS,
+                                      failures: 0,
+                                      heard: false,
+                                      name: "hub" };
+            reader.step(&mut registers, now, false);
+            self.hub_reader = Some(reader);
         }
         self.listening = true;
         let alarm = self.rearm(now);
-        report(format_args!("USB_INTERRUPT line={line}: mouse={} keyboard={} are read from the \
-                             controller's interrupt (alarm={})\n",
+        report(format_args!("USB_INTERRUPT line={line}: mouse={} keyboard={} hub={} are read \
+                             from the controller's interrupt (alarm={})\n",
                             self.mouse_reader.is_some(),
                             self.keyboard_reader.is_some(),
+                            self.hub_reader.is_some(),
                             if alarm { "set" } else { "refused" }));
     }
 
@@ -754,7 +939,9 @@ impl Machine
     /// Sets the one alarm this claim has for whichever read is due first.
     fn rearm(&mut self, now: u64) -> bool
     {
-        let due = [self.mouse_reader.as_ref(), self.keyboard_reader.as_ref()].into_iter()
+        let due = [self.mouse_reader.as_ref(),
+                   self.keyboard_reader.as_ref(),
+                   self.hub_reader.as_ref()].into_iter()
                                                                              .flatten()
                                                                              .map(|reader| reader.due)
                                                                              .chain(self.keyboard
@@ -850,6 +1037,21 @@ impl Machine
                 count += 1;
                 self.enqueue(&events[..count]);
             }
+        }
+        // The hub's report is a bit for each port that changed.
+        let mut changed = 0u32;
+        if let Some(reader) = self.hub_reader.as_mut()
+           && concerned(reader, HUB_CHANNEL)
+           && let Some(received) = reader.step(&mut registers, now, halted)
+           && received >= 1
+        {
+            let mut bits = [0u8; 1];
+            reader.page.copy_out(&mut bits);
+            changed = u32::from(bits[0]);
+        }
+        if changed != 0
+        {
+            self.ports_changed(&mut registers, changed, now);
         }
         // A held key says so again: the input class's "repeat" is a key event
         // whose value is 2, which System turns into an auto-key.
@@ -992,6 +1194,8 @@ impl Driver for Usb
                                     keyboard: None,
                                     mouse_reader: None,
                                     keyboard_reader: None,
+                                    hub_reader: None,
+                                    hub_ports: 0,
                                     listening: false,
                                     queue:   [input::Event::synchronize(); QUEUE_EVENTS],
                                     queued:  0 };

@@ -61,6 +61,11 @@ pub const HAINTMSK: usize = 0x418;
 pub const HAINT: usize = 0x414;
 /// Each channel has the same registers, this far apart.
 pub const CHANNEL_STRIDE: usize = 0x20;
+/// The channel every waiting transfer runs on - the control transfers and the
+/// polled read - as an offset from channel 0's registers. The interrupt-driven
+/// reads have the channels below it, so a control transfer made while they
+/// run (a device arriving) shares nothing with them.
+pub const CONTROL_CHANNEL: usize = CHANNEL_STRIDE * 3;
 /// `GINTSTS` / `GINTMSK` bit 25: a host channel has something to report.
 pub const HOST_CHANNELS: u32 = 1 << 25;
 pub const HCTSIZ: usize = 0x510;
@@ -541,29 +546,29 @@ fn stage(registers: &mut impl Registers, clock: &mut impl Clock, stage: Stage, d
     let packets = bytes.div_ceil(DEFAULT_PACKET).max(1);
     for _ in 0..NAK_LIMIT
     {
-        registers.write(HCINT, u32::MAX);
-        registers.write(HCSPLT, 0);
-        registers.write(HCTSIZ, bytes | packets << PACKET_COUNT_SHIFT | pid << PID_SHIFT);
-        registers.write(HCDMA, address);
-        registers.write(HCCHAR, characteristics | CHANNEL_ENABLE);
+        registers.write(HCINT + CONTROL_CHANNEL, u32::MAX);
+        registers.write(HCSPLT + CONTROL_CHANNEL, 0);
+        registers.write(HCTSIZ + CONTROL_CHANNEL, bytes | packets << PACKET_COUNT_SHIFT | pid << PID_SHIFT);
+        registers.write(HCDMA + CONTROL_CHANNEL, address);
+        registers.write(HCCHAR + CONTROL_CHANNEL, characteristics | CHANNEL_ENABLE);
         // With its own DMA the core halts the channel when the stage ends,
         // whichever way it ends, so the halt is the one thing to wait for.
-        if !wait(registers, clock, STAGE_MICROSECONDS, |read| read(HCINT) & CHANNEL_HALTED != 0)?
+        if !wait(registers, clock, STAGE_MICROSECONDS, |read| read(HCINT + CONTROL_CHANNEL) & CHANNEL_HALTED != 0)?
         {
-            let status = registers.read(HCINT);
+            let status = registers.read(HCINT + CONTROL_CHANNEL);
             // Ask the core to stop the channel and give it the same time to
             // say it has, so the next use does not start on a live channel.
-            registers.write(HCCHAR, characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
+            registers.write(HCCHAR + CONTROL_CHANNEL, characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
             let _ = wait(registers, clock, STAGE_MICROSECONDS, |read| {
-                read(HCINT) & CHANNEL_HALTED != 0
+                read(HCINT + CONTROL_CHANNEL) & CHANNEL_HALTED != 0
             })?;
             return Err(Refusal::StageTimeout { stage,
                                                status });
         }
-        let status = registers.read(HCINT);
+        let status = registers.read(HCINT + CONTROL_CHANNEL);
         if status & TRANSFER_COMPLETE != 0
         {
-            return Ok(registers.read(HCTSIZ) & TRANSFER_SIZE_MASK);
+            return Ok(registers.read(HCTSIZ + CONTROL_CHANNEL) & TRANSFER_SIZE_MASK);
         }
         if status & NAK == 0
         {
@@ -808,22 +813,22 @@ fn activate(registers: &mut impl Registers, clock: &mut impl Clock, stage: Stage
             characteristics: u32, split: u32, size: u32, address: u32)
             -> Result<u32, Refusal>
 {
-    registers.write(HCINT, u32::MAX);
-    registers.write(HCSPLT, split);
-    registers.write(HCTSIZ, size);
-    registers.write(HCDMA, address);
-    registers.write(HCCHAR, characteristics | CHANNEL_ENABLE);
-    if !wait(registers, clock, STAGE_MICROSECONDS, |read| read(HCINT) & CHANNEL_HALTED != 0)?
+    registers.write(HCINT + CONTROL_CHANNEL, u32::MAX);
+    registers.write(HCSPLT + CONTROL_CHANNEL, split);
+    registers.write(HCTSIZ + CONTROL_CHANNEL, size);
+    registers.write(HCDMA + CONTROL_CHANNEL, address);
+    registers.write(HCCHAR + CONTROL_CHANNEL, characteristics | CHANNEL_ENABLE);
+    if !wait(registers, clock, STAGE_MICROSECONDS, |read| read(HCINT + CONTROL_CHANNEL) & CHANNEL_HALTED != 0)?
     {
-        let status = registers.read(HCINT);
-        registers.write(HCCHAR, characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
+        let status = registers.read(HCINT + CONTROL_CHANNEL);
+        registers.write(HCCHAR + CONTROL_CHANNEL, characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
         let _ = wait(registers, clock, STAGE_MICROSECONDS, |read| {
-            read(HCINT) & CHANNEL_HALTED != 0
+            read(HCINT + CONTROL_CHANNEL) & CHANNEL_HALTED != 0
         })?;
         return Err(Refusal::StageTimeout { stage,
                                            status });
     }
-    Ok(registers.read(HCINT))
+    Ok(registers.read(HCINT + CONTROL_CHANNEL))
 }
 
 /// One packet to or from a device behind a hub, as a split transaction: the
@@ -877,7 +882,7 @@ fn split_stage(registers: &mut impl Registers, clock: &mut impl Clock, stage: St
             last = completed;
             if completed & TRANSFER_COMPLETE != 0
             {
-                return Ok(registers.read(HCTSIZ) & TRANSFER_SIZE_MASK);
+                return Ok(registers.read(HCTSIZ + CONTROL_CHANNEL) & TRANSFER_SIZE_MASK);
             }
             if !inward && completed & ACK != 0
             {
@@ -1065,7 +1070,7 @@ pub fn split_read(registers: &mut impl Registers, clock: &mut impl Clock,
                                  address)?;
         if completed & TRANSFER_COMPLETE != 0
         {
-            let left = registers.read(HCTSIZ) & TRANSFER_SIZE_MASK;
+            let left = registers.read(HCTSIZ + CONTROL_CHANNEL) & TRANSFER_SIZE_MASK;
             return Ok(Some(packet.saturating_sub(left) as usize));
         }
         if completed & NYET != 0
@@ -1160,6 +1165,41 @@ pub struct SplitRead
 }
 impl SplitRead
 {
+    /// A read of a high-speed device's interrupt endpoint, which needs no hub
+    /// in between and so no split: one transaction, and the answer is its halt.
+    /// A hub's change report is read this way.
+    pub fn direct(channel: usize, buffer: &impl TransferBuffer, device: u8, endpoint: u8,
+                  packet: u32)
+                  -> Self
+    {
+        Self { channel: CHANNEL_STRIDE * channel,
+               periodic: true,
+               failed_start: false,
+               characteristics: packet
+                                | CHANNEL_DIRECTION_IN
+                                | CHANNEL_ONE_TRANSACTION
+                                | ENDPOINT_INTERRUPT << CHANNEL_TYPE_SHIFT
+                                | u32::from(endpoint & 0x0f) << CHANNEL_ENDPOINT_SHIFT
+                                | u32::from(device & 0x7f) << CHANNEL_ADDRESS_SHIFT,
+               split: 0,
+               packet,
+               address: buffer.address(),
+               size: 0,
+               phase: ReadPhase::Idle,
+               completions: 0 }
+    }
+
+    /// Gives up whatever is on the bus: the device is gone.
+    pub fn abandon(&mut self, registers: &mut impl Registers)
+    {
+        if self.phase == ReadPhase::Started || self.phase == ReadPhase::Completing
+        {
+            registers.write(HCCHAR + self.channel,
+                            self.characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
+        }
+        self.phase = ReadPhase::Idle;
+    }
+
     /// A read on its own channel and into its own buffer: reads of different
     /// devices run side by side.
     pub fn new(channel: usize, buffer: &impl TransferBuffer, route: Route, device: u8,
@@ -1245,6 +1285,18 @@ impl SplitRead
         registers.write(HCINT + self.channel, u32::MAX);
         match self.phase
         {
+            ReadPhase::Started if self.split == 0 =>
+            {
+                // No split: this one transaction is the whole read.
+                self.phase = ReadPhase::Idle;
+                self.failed_start = true;
+                if status & TRANSFER_COMPLETE != 0
+                {
+                    let left = registers.read(HCTSIZ + self.channel) & TRANSFER_SIZE_MASK;
+                    return ReadStep::Data(self.packet.saturating_sub(left) as usize);
+                }
+                if status & NAK != 0 { ReadStep::Nothing } else { ReadStep::Failed(status) }
+            }
             ReadPhase::Started =>
             {
                 if status & ACK != 0
@@ -1327,7 +1379,10 @@ impl SplitRead
                 registers.write(HCCHAR + self.channel, self.characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
                 self.failed_start = self.phase == ReadPhase::Started;
                 self.phase = ReadPhase::Idle;
-                ReadStep::Failed(status)
+                // A device with nothing to say can leave a periodic channel
+                // enabled and asking, never halted. That is "nothing", not a
+                // failure; the channel is stopped and asked again later.
+                if status & NAK != 0 { ReadStep::Nothing } else { ReadStep::Failed(status) }
             }
             ReadPhase::Idle => ReadStep::Nothing
         }
