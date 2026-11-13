@@ -1005,6 +1005,7 @@ pub fn address_slow_device(registers: &mut impl Registers, clock: &mut impl Cloc
 
 /// `HCCHAR`: the endpoint's transfer type, and the code for bulk.
 pub const CHANNEL_TYPE_SHIFT: u32 = 18;
+pub const ENDPOINT_CONTROL: u32 = 0;
 pub const ENDPOINT_BULK: u32 = 2;
 pub const ENDPOINT_INTERRUPT: u32 = 3;
 /// `HCCHAR` bit 29: send in an odd (micro)frame. A periodic transaction goes
@@ -1212,13 +1213,21 @@ impl SplitRead
                endpoint: u8, packet: u32)
                -> Self
     {
-        // A full-speed device's interrupt endpoint can be read through the
-        // hub's non-periodic path as if it were bulk, and the hub then keeps
-        // the answer until it is asked for. A low-speed device has no bulk
-        // endpoints, and a hub asked for one answers with a stall: on the
-        // board, a low-speed keyboard's every read halted that way. So a
-        // low-speed read is issued as the periodic transfer it is.
-        let periodic = route.low_speed;
+        // A slow device's interrupt endpoint is read through the hub's
+        // non-periodic path, where the hub keeps the answer until it is asked
+        // for. That matters here: the completion is asked for from a call a
+        // scheduler turn after the controller's interrupt, and a hub holds a
+        // periodic answer for a microframe or two and no longer. On the
+        // board a low-speed keyboard read as a periodic split answered every
+        // idle read and never once delivered a key: with a report waiting,
+        // every completion came back "not yet".
+        //
+        // A full-speed endpoint is named as bulk. A low-speed device has no
+        // bulk endpoints and this hub stalls a bulk split to one, so a
+        // low-speed endpoint is named as control, which a hub must carry for
+        // low speed and which is the same token on the device's wire.
+        let periodic = false;
+        let kind = if route.low_speed { ENDPOINT_CONTROL } else { ENDPOINT_BULK };
         Self { channel: CHANNEL_STRIDE * channel,
                periodic,
                failed_start: false,
@@ -1228,8 +1237,7 @@ impl SplitRead
                                 | CHANNEL_DIRECTION_IN
                                 | if route.low_speed { CHANNEL_LOW_SPEED } else { 0 }
                                 | CHANNEL_ONE_TRANSACTION
-                                | if periodic { ENDPOINT_INTERRUPT } else { ENDPOINT_BULK }
-                                  << CHANNEL_TYPE_SHIFT
+                                | kind << CHANNEL_TYPE_SHIFT
                                 | u32::from(endpoint & 0x0f) << CHANNEL_ENDPOINT_SHIFT
                                 | u32::from(device & 0x7f) << CHANNEL_ADDRESS_SHIFT,
                split: SPLIT_ENABLE

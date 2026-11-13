@@ -452,7 +452,7 @@ impl Machine
             }
         }
         // The first transfer: ask what is on the port what it is.
-        let mut page = match self.transfer_page(host)
+        let page = match self.transfer_page(host)
         {
             Ok(page) => page,
             Err(error) =>
