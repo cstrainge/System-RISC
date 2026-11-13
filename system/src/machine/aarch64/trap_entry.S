@@ -146,7 +146,9 @@ __system_trap_common:
     b.hs __system_trap_no_frame
     ldr x2, [x0, #{ctl_frames}]
     cbz x2, __system_trap_no_frame
-    mov x3, #{frame_bytes}
+    // Each slot is the vector registers' backing and then the frame's header,
+    // so slots are a stride apart and not a header apart.
+    ldr x3, [x0, #{ctl_stride}]
     madd x2, x1, x3, x2
 
     // x2 is now the frame base. Write the interrupted context into its own
@@ -189,6 +191,35 @@ __system_trap_common:
     stp x24, x25, [x2, #{registers} + 192]
     stp x26, x27, [x2, #{registers} + 208]
     stp x28, x29, [x2, #{registers} + 224]
+
+    // The vector registers, whole, into the backing below this frame's header,
+    // and the two floating-point control words into the header. This is done
+    // here, in assembly, before the first instruction of Rust: the System is
+    // built with NEON and the compiler copies structures through these
+    // registers, so any Rust code may overwrite them. An interrupted program
+    // that had half a structure in one resumed with what the System left
+    // there, sixteen bytes at a time.
+    sub x4, x2, #{vector_backing}
+    stp q0, q1, [x4, #0]
+    stp q2, q3, [x4, #32]
+    stp q4, q5, [x4, #64]
+    stp q6, q7, [x4, #96]
+    stp q8, q9, [x4, #128]
+    stp q10, q11, [x4, #160]
+    stp q12, q13, [x4, #192]
+    stp q14, q15, [x4, #224]
+    stp q16, q17, [x4, #256]
+    stp q18, q19, [x4, #288]
+    stp q20, q21, [x4, #320]
+    stp q22, q23, [x4, #352]
+    stp q24, q25, [x4, #384]
+    stp q26, q27, [x4, #416]
+    stp q28, q29, [x4, #448]
+    stp q30, q31, [x4, #480]
+    mrs x4, fpcr
+    str x4, [x2, #{fcsr}]
+    mrs x4, fpsr
+    str x4, [x2, #{vcsr}]
 
     // The two values the shared 30-slot register file cannot hold: AArch64's
     // return link and its software thread pointer. Both are captured before the
@@ -254,6 +285,28 @@ __system_restore_frame:
 .Lrestore_sp_privileged:
     mov sp, x4
 .Lrestore_sp_ready:
+    // The vector state this frame carries, restored while x4 is still free.
+    sub x4, x2, #{vector_backing}
+    ldp q0, q1, [x4, #0]
+    ldp q2, q3, [x4, #32]
+    ldp q4, q5, [x4, #64]
+    ldp q6, q7, [x4, #96]
+    ldp q8, q9, [x4, #128]
+    ldp q10, q11, [x4, #160]
+    ldp q12, q13, [x4, #192]
+    ldp q14, q15, [x4, #224]
+    ldp q16, q17, [x4, #256]
+    ldp q18, q19, [x4, #288]
+    ldp q20, q21, [x4, #320]
+    ldp q22, q23, [x4, #352]
+    ldp q24, q25, [x4, #384]
+    ldp q26, q27, [x4, #416]
+    ldp q28, q29, [x4, #448]
+    ldp q30, q31, [x4, #480]
+    ldr x4, [x2, #{fcsr}]
+    msr fpcr, x4
+    ldr x4, [x2, #{vcsr}]
+    msr fpsr, x4
     ldr x4, [x2, #{thread_pointer}]
     msr tpidr_el0, x4
     ldr x30, [x2, #{link_register}]

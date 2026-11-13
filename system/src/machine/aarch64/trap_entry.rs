@@ -23,8 +23,15 @@ use crate::machine::traps::{CPU_SLOTS, TrapFrame, hart};
 use crate::machine::trap_frame::{EXCEPTION_FIQ, EXCEPTION_IRQ, EXCEPTION_SERROR,
                                  EXCEPTION_SYNCHRONOUS};
 
+/// The thirty-two 128-bit vector registers, saved below each frame's header.
+/// The frame geometry derives the same figure from `cpu::vector_bytes`.
+const VECTOR_BACKING: usize = 32 * super::cpu::VECTOR_BYTES;
+
 global_asm!(include_str!("trap_entry.S"),
-    frame_bytes=const core::mem::size_of::<TrapFrame>(),
+    vector_backing=const VECTOR_BACKING,
+    fcsr=const core::mem::offset_of!(TrapFrame,fcsr),
+    vcsr=const core::mem::offset_of!(TrapFrame,vcsr),
+    ctl_stride=const core::mem::offset_of!(hart::Control,stride),
     saved_sp=const core::mem::offset_of!(TrapFrame,stack_pointer),
     prior_depth=const core::mem::offset_of!(TrapFrame,prior_depth),
     pc=const core::mem::offset_of!(TrapFrame,pc),

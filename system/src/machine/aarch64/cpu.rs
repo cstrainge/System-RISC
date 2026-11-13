@@ -98,11 +98,13 @@ pub(crate) unsafe fn install_trap_vector(vector: usize)
     }
 }
 
-/// Bytes per vector register. AArch64 has no such extension, so this reports
-/// zero and callers size their frames accordingly.
+/// Bytes per vector register: the NEON registers are 128 bits. Every frame
+/// carries all thirty-two, saved by the trap entry before any Rust runs.
+pub(crate) const VECTOR_BYTES: usize = 16;
+
 pub(crate) fn vector_bytes() -> usize
 {
-    0
+    VECTOR_BYTES
 }
 
 /// The current stack pointer.
