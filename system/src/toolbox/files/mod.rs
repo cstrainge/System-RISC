@@ -512,6 +512,10 @@ pub struct Manager
     #[cfg(systemrisc)]
     transfers:            objects::Objects<provider::runtime::transfer::Entry>,
     watches:              watch::Watches,
+    /// Which check last refused a scan request as a bad argument; said on the
+    /// console with the request, then cleared.
+    #[allow(dead_code)]
+    scan_refusal:         Option<&'static str>,
     /// `(volume, cnid)` of the volume's `Pipes` folder, when one exists. The
     /// folder is a real directory; only its contents come from the resident
     /// pipe registry.
@@ -538,6 +542,7 @@ impl Default for Manager
                #[cfg(systemrisc)]
                transfers:                                                    objects::Objects::new(),
                watches:                                                      watch::Watches::new(),
+               scan_refusal:                                                 None,
                pipes_folder:                                                 None,
                rejected_volumes:                                             0,
                #[cfg(systemrisc)]

@@ -20,8 +20,37 @@ impl Manager
 {
     pub(super) fn scan_request(&mut self, call: &mut FileScanCall) -> Result<(), Status>
     {
+        // What the request carried on entry. A scan is refused as a bad
+        // argument by four different checks, and the application that sent it
+        // can only say which folder it was reading.
+        let asked = call.cursor;
+        let (volume, directory) = (call.volume, call.directory);
+        let result = self.scan_request_checked(call);
+        if result == Err(BAD_ARGUMENT)
+        {
+            serial!("FILE_SCAN_REFUSED volume={volume} directory={directory} check={} \
+                     cursor: revision={} volume={} directory={} node={} previous={} index={} \
+                     traversed={} state={} reserved={} registry={}",
+                    self.scan_refusal.take().unwrap_or("scanner-rejected-cursor"),
+                    asked.revision,
+                    asked.volume,
+                    asked.directory,
+                    asked.node,
+                    asked.previous,
+                    asked.index,
+                    asked.traversed,
+                    asked.state,
+                    asked.reserved,
+                    asked.registry);
+        }
+        result
+    }
+
+    fn scan_request_checked(&mut self, call: &mut FileScanCall) -> Result<(), Status>
+    {
         if call.operation != SCAN_DIRECTORY || call.directory < ROOT_ID
         {
+            self.scan_refusal = Some("operation-or-directory");
             return Err(BAD_ARGUMENT);
         }
         // The Pipes folder appends registry rows after its real catalog
@@ -30,6 +59,7 @@ impl Manager
         let registry = self.pipes_scan_revision(call.volume, call.directory);
         if registry.is_none() && (call.cursor.reserved != 0 || call.cursor.registry != 0)
         {
+            self.scan_refusal = Some("registry-fields-on-ordinary-folder");
             return Err(BAD_ARGUMENT);
         }
         let mounted = self.mounted(call.volume)?;
@@ -42,6 +72,7 @@ impl Manager
         {
             if cursor != DirectoryScanCursor::default()
             {
+                self.scan_refusal = Some("fresh-cursor-not-empty");
                 return Err(BAD_ARGUMENT);
             }
             cursor.revision = mounted.catalog_revision;
@@ -53,6 +84,7 @@ impl Manager
         {
             if cursor.volume != call.volume || cursor.directory != call.directory
             {
+                self.scan_refusal = Some("cursor-for-another-folder");
                 return Err(BAD_ARGUMENT);
             }
             if cursor.revision != mounted.catalog_revision
