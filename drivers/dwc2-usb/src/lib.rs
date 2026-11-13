@@ -630,6 +630,10 @@ pub const HUB_PORTS: usize = 8;
 /// hub's ports this long beyond the hub's own figure to settle after power.
 pub const ADDRESS_SETTLE_MICROSECONDS: u64 = 10_000;
 pub const PORT_SETTLE_MICROSECONDS: u64 = 100_000;
+/// How many times a hub's ports are read for devices arriving, and how long
+/// apart: a second and a half in all.
+pub const ATTACH_ROUNDS: u32 = 16;
+pub const ATTACH_ROUND_MICROSECONDS: u64 = 100_000;
 
 /// Hub port status bits, from the hub class.
 pub const HUB_PORT_CONNECTED: u16 = 1 << 0;
@@ -756,22 +760,35 @@ pub fn start_hub(registers: &mut impl Registers, clock: &mut impl Clock,
     let mut hub = Hub { ports,
                         power_good_ms,
                         status: [(0, 0); HUB_PORTS] };
-    for port in 1..=ports
+    // A device announces itself when it is ready to, not when its port is
+    // powered: a keyboard with a controller of its own to start can take most
+    // of a second, and one look after the hub's figure misses it. The ports
+    // are read over a window, and what each says last is what is kept. This
+    // stands in for listening to the hub's own change reports, which is what
+    // noticing a device plugged in later will need.
+    for round in 0..ATTACH_ROUNDS
     {
-        // GET_STATUS(port): two little-endian words, status then change.
-        let mut words = [0u8; 4];
-        let received = control(registers,
-                               clock,
-                               buffer,
-                               device,
-                               [0xa3, 0x00, 0, 0, port as u8, 0, 4, 0],
-                               &mut words)?;
-        if received < 4
+        if round != 0
         {
-            return Err(Refusal::ShortDescriptor { bytes: received });
+            pause(registers, clock, ATTACH_ROUND_MICROSECONDS)?;
         }
-        hub.status[port - 1] = (u16::from_le_bytes([words[0], words[1]]),
-                                u16::from_le_bytes([words[2], words[3]]));
+        for port in 1..=ports
+        {
+            // GET_STATUS(port): two little-endian words, status then change.
+            let mut words = [0u8; 4];
+            let received = control(registers,
+                                   clock,
+                                   buffer,
+                                   device,
+                                   [0xa3, 0x00, 0, 0, port as u8, 0, 4, 0],
+                                   &mut words)?;
+            if received < 4
+            {
+                return Err(Refusal::ShortDescriptor { bytes: received });
+            }
+            hub.status[port - 1] = (u16::from_le_bytes([words[0], words[1]]),
+                                    u16::from_le_bytes([words[2], words[3]]));
+        }
     }
     Ok(hub)
 }
