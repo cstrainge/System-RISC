@@ -1001,6 +1001,15 @@ pub fn address_slow_device(registers: &mut impl Registers, clock: &mut impl Cloc
 /// `HCCHAR`: the endpoint's transfer type, and the code for bulk.
 pub const CHANNEL_TYPE_SHIFT: u32 = 18;
 pub const ENDPOINT_BULK: u32 = 2;
+pub const ENDPOINT_INTERRUPT: u32 = 3;
+/// `HCCHAR` bit 29: send in an odd (micro)frame. A periodic transaction goes
+/// out only in a frame of the parity it names.
+pub const CHANNEL_ODD_FRAME: u32 = 1 << 29;
+/// The frame the host is in, in its low bits.
+pub const HFNUM: usize = 0x408;
+/// How many times a periodic completion is asked for, one microframe after
+/// another, before the split is given up and started again at the interval.
+pub const PERIODIC_COMPLETIONS: u32 = 6;
 
 /// One attempt to read a packet from an endpoint of a slow device behind a
 /// hub. `Ok(None)` is the device saying it has nothing, which for a mouse
@@ -1143,7 +1152,11 @@ pub struct SplitRead
     phase:           ReadPhase,
     completions:     u32,
     /// The channel's registers, as an offset from channel 0's.
-    channel:         usize
+    channel:         usize,
+    /// Issued as the interrupt transfer it is, and not as if it were bulk.
+    periodic:        bool,
+    /// Whether the last failure was the start of the split or its completion.
+    failed_start:    bool
 }
 impl SplitRead
 {
@@ -1153,12 +1166,22 @@ impl SplitRead
                endpoint: u8, packet: u32)
                -> Self
     {
+        // A full-speed device's interrupt endpoint can be read through the
+        // hub's non-periodic path as if it were bulk, and the hub then keeps
+        // the answer until it is asked for. A low-speed device has no bulk
+        // endpoints, and a hub asked for one answers with a stall: on the
+        // board, a low-speed keyboard's every read halted that way. So a
+        // low-speed read is issued as the periodic transfer it is.
+        let periodic = route.low_speed;
         Self { channel: CHANNEL_STRIDE * channel,
+               periodic,
+               failed_start: false,
                characteristics: packet
                                 | CHANNEL_DIRECTION_IN
                                 | if route.low_speed { CHANNEL_LOW_SPEED } else { 0 }
                                 | CHANNEL_ONE_TRANSACTION
-                                | ENDPOINT_BULK << CHANNEL_TYPE_SHIFT
+                                | if periodic { ENDPOINT_INTERRUPT } else { ENDPOINT_BULK }
+                                  << CHANNEL_TYPE_SHIFT
                                 | u32::from(endpoint & 0x0f) << CHANNEL_ENDPOINT_SHIFT
                                 | u32::from(device & 0x7f) << CHANNEL_ADDRESS_SHIFT,
                split: SPLIT_ENABLE
@@ -1183,7 +1206,23 @@ impl SplitRead
         registers.write(HCSPLT + self.channel, split);
         registers.write(HCTSIZ + self.channel, self.size);
         registers.write(HCDMA + self.channel, self.address);
-        registers.write(HCCHAR + self.channel, self.characteristics | CHANNEL_ENABLE);
+        // A periodic transaction is sent in the next (micro)frame: the one of
+        // the other parity from the frame the host is in now.
+        let parity = if self.periodic && registers.read(HFNUM) & 1 == 0
+        {
+            CHANNEL_ODD_FRAME
+        }
+        else
+        {
+            0
+        };
+        registers.write(HCCHAR + self.channel, self.characteristics | parity | CHANNEL_ENABLE);
+    }
+
+    /// Whether the failure last reported was the start of the split.
+    pub fn failed_at_start(&self) -> bool
+    {
+        self.failed_start
     }
 
     /// Tells the hub to start a read under the data toggle `pid`.
@@ -1210,10 +1249,19 @@ impl SplitRead
             {
                 if status & ACK != 0
                 {
+                    if self.periodic
+                    {
+                        // The hub holds a periodic answer for a microframe or
+                        // two and no longer, so it is asked for at once.
+                        self.issue(registers, self.split | SPLIT_COMPLETE);
+                        self.phase = ReadPhase::Completing;
+                        return ReadStep::Running;
+                    }
                     self.phase = ReadPhase::Settling;
                     return ReadStep::Wait(SPLIT_COMPLETION_MICROSECONDS);
                 }
                 self.phase = ReadPhase::Idle;
+                self.failed_start = true;
                 if status & NAK != 0 { ReadStep::Nothing } else { ReadStep::Failed(status) }
             }
             ReadPhase::Completing =>
@@ -1227,7 +1275,12 @@ impl SplitRead
                 if status & NYET != 0
                 {
                     self.completions += 1;
-                    if self.completions < SPLIT_COMPLETIONS
+                    if self.periodic && self.completions < PERIODIC_COMPLETIONS
+                    {
+                        self.issue(registers, self.split | SPLIT_COMPLETE);
+                        return ReadStep::Running;
+                    }
+                    if !self.periodic && self.completions < SPLIT_COMPLETIONS
                     {
                         self.phase = ReadPhase::Settling;
                         return ReadStep::Wait(SPLIT_COMPLETION_MICROSECONDS);
@@ -1236,6 +1289,7 @@ impl SplitRead
                     return ReadStep::Nothing;
                 }
                 self.phase = ReadPhase::Idle;
+                self.failed_start = false;
                 if status & NAK != 0 { ReadStep::Nothing } else { ReadStep::Failed(status) }
             }
             // A halt with nothing outstanding: the tail of a channel this
@@ -1271,6 +1325,7 @@ impl SplitRead
                     return self.halted(registers);
                 }
                 registers.write(HCCHAR + self.channel, self.characteristics | CHANNEL_ENABLE | CHANNEL_DISABLE);
+                self.failed_start = self.phase == ReadPhase::Started;
                 self.phase = ReadPhase::Idle;
                 ReadStep::Failed(status)
             }

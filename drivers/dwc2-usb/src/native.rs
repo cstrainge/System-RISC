@@ -128,9 +128,17 @@ impl Reader
                 if self.failures < FAILURES_SAID
                 {
                     self.failures += 1;
-                    report(format_args!("USB_READ_REFUSED device={}: the read halted without \
-                                         completing (HCINT={status:#010x})\n",
-                                        self.name));
+                    report(format_args!("USB_READ_REFUSED device={} stage={}: the read halted \
+                                         without completing (HCINT={status:#010x})\n",
+                                        self.name,
+                                        if self.read.failed_at_start()
+                                        {
+                                            "start"
+                                        }
+                                        else
+                                        {
+                                            "completion"
+                                        }));
                 }
                 (FAILED_RETRY_MICROSECONDS, None)
             }
